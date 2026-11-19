@@ -10943,6 +10943,12 @@ REPL-facing module it feeds."
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 24
                       (+ (heap-read-u64 (data-addr nl_gc_stats) 24) 1))
+       ;; GNU `gcs_done++' on the `gcs-done' value cell: no allocation; a cell
+       ;; that no longer holds a fixnum is left alone.
+       (let* ((gobj (heap-read-u64 (data-addr nl_gc_until_base) 8)))
+         (if (= gobj 0) 0
+           (let* ((gcell (+ (- gobj 6) 16)) (gw (heap-read-u64 gcell 0)))
+             (if (= (logand gw 3) 1) (ptr-write-u64 gcell 0 (+ gw 4)) 0))))
        (nl_gc_debt_rearm_for (heap-read-u64 (data-addr nl_gc_stats) 16))))
     ;; 1 when the debt trigger is armed and the debt has reached it.
     (defun nl_gc_debt_due ()
@@ -38816,6 +38822,26 @@ bytes are written into a fresh 8-byte buffer instead."
                               (nl_ent_set obj 0 (if (= (nl_val_tag v) 0) 3 7))))
                         0)
                       1))))))
+    ;; GNU `gcs-done' (DEFVAR_INT, alloc.c): collections completed so far.  The
+    ;; symbol is a forwarded integer like `max-lisp-eval-depth', so a Lisp
+    ;; `setq' of a non-integer is refused as in GNU.  Its object word is cached in
+    ;; the spare word at +8 of `nl_gc_until_base' (zero-fresh on every start; this
+    ;; init runs on every boot, after a cold image restore too), and
+    ;; `nl_gc_debt_rearm' bumps the value cell inline at the end of each completed
+    ;; collection (inline and on an exported data symbol, because that function
+    ;; is part of the reloadable runtime source and may import nothing new).
+    ;; Symbol cells never move, so the cached object stays valid.
+    (defun nl_gcs_done_init (env)
+      (let* ((bytes (alloc-bytes 8 1)) (name (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 bytes 0 7308901721318843239)
+         (nl_alloc_symbol bytes 8 name)
+         (let* ((obj (nl_pa_entry env name)))
+           (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
+             (seq (nl_ent_set obj 7 (nl_imm_int 1))
+                  (nl_ent_set obj 0 (nl_imm_int (heap-read-u64 (data-addr nl_gc_stats) 24)))
+                  (ptr-write-u64 (data-addr nl_gc_until_base) 8 obj)
+                  1))))))
     (defun nl_sym_fwd_init (env)
       (let* ((bytes (alloc-bytes 24 1)))
         (seq
@@ -38827,6 +38853,7 @@ bytes are written into a fresh 8-byte buffer instead."
          (ptr-write-u64 bytes 8 8603403804415648099)
          (ptr-write-u64 bytes 16 495622973804)
          (nl_sym_fwd_mark env bytes 21 2)
+         (nl_gcs_done_init env)
          0)))
     ;; 1 when SYM names a FORWARDED symbol (an object with a descriptor).
     ;; 1 when SYM is FORWARDED (redirect 3); a forwarded variable made
