@@ -255,6 +255,31 @@ block leaders, deepest stack, the condition-case region of each pc
 
 (defconst nelisp-aot--fail '(seq (setq fail 1) (setq blk -1)))
 
+(defvar nelisp-aot--leaf nil
+  "Plist for the leaf fast path of `macroexp--expand-all' call sites, or nil.
+Keys :e :mm :m1 are the install ids of macroexp--expand-all,
+macroexp-macroexpand and macroexpand-1; :e-mm is the constants index of
+macroexp-macroexpand in the first, :mm-m1 and :mm-env those of macroexpand-1
+and macroexpand-all-environment in the second.  Set once by
+`nelisp-aot-bytecode--objects' (nil unless all three rows translate).")
+
+(defconst nelisp-aot--leaf-symbols t
+  "Non-nil: the leaf fast path also answers symbols (nil, t, keywords, plain), not
+only non-symbol atoms.  See target/ai/s11-design.md for the proof.")
+
+(defun nelisp-aot--leaf-info (rows)
+  "The `nelisp-aot--leaf' plist for the translated ROWS, or nil."
+  (cl-flet ((row (name) (cl-find name rows :key #'cadr)))
+    (let* ((e (row 'macroexp--expand-all)) (mm (row 'macroexp-macroexpand))
+           (m1 (row 'macroexpand-1)))
+      (when (and e mm m1)
+        (let ((e-mm (cl-position 'macroexp-macroexpand (aref (nth 3 e) 2)))
+              (mm-m1 (cl-position 'macroexpand-1 (aref (nth 3 mm) 2)))
+              (mm-env (cl-position 'macroexpand-all-environment (aref (nth 3 mm) 2))))
+          (when (and e-mm mm-m1 mm-env)
+            (list :e (nth 0 e) :mm (nth 0 mm) :m1 (nth 0 m1)
+                  :e-mm e-mm :mm-m1 mm-m1 :mm-env mm-env)))))))
+
 
 ;;;; Native-locals code generation (stage 4c).
 ;;
@@ -519,10 +544,18 @@ block leaders, deepest stack, the condition-case region of each pc
                 (add (if did
                          (let* ((e (assq callee nelisp-aot--direct)) (maxargs (nth 3 e)))
                            `(if (= (wf_aot_gd ,(x fi) ,(+ 32 (* did 8))) 1)
-                                (let* ((r (,(intern (format "wf_aot_%d" did)) env
-                                           ,@(append (mapcar (lambda (j) (x (+ fi 1 j))) (number-sequence 0 (1- n)))
-                                                     (make-list (- maxargs n) 3)))))
-                                  (if (= r 0) ,failf (setq ,(x fi) r)))
+                                ,(let ((direct
+                                        `(let* ((r (,(intern (format "wf_aot_%d" did)) env
+                                                    ,@(append (mapcar (lambda (j) (x (+ fi 1 j))) (number-sequence 0 (1- n)))
+                                                              (make-list (- maxargs n) 3)))))
+                                           (if (= r 0) ,failf (setq ,(x fi) r)))))
+                                   ;; (macroexp--expand-all ATOM) is ATOM while the chain is the
+                                   ;; original one (`wf_aot_leaf', target/ai/s11-design.md).
+                                   (if (and nelisp-aot--leaf (eq callee 'macroexp--expand-all) (= n 1))
+                                       `(if (= (wf_aot_leaf env ,(x (+ fi 1))) 1)
+                                            (setq ,(x fi) ,(x (+ fi 1)))
+                                          ,direct)
+                                     direct))
                               ,generic))
                        generic)
                      t)))
@@ -710,6 +743,7 @@ block leaders, deepest stack, the condition-case region of each pc
                (when (= pass 1) (message "[aot] refused %s: %s" name (cadr err)))))))
         (setq rows (nreverse rows))
         (when (= pass 0)
+          (setq nelisp-aot--leaf (nelisp-aot--leaf-info rows))
           (setq nelisp-aot--k (length rows))
           (setq nelisp-aot--direct
                 (mapcar (lambda (r)
@@ -834,9 +868,46 @@ FW and ENV are free in BODY."
          0)
      0))
 
+(defun nelisp-aot--expand-leaf-helper ()
+  "The DSL helper `wf_aot_leaf' (list of one defun), or nil without a plan.
+\(wf_aot_leaf ENV A) is 1 when (macroexp--expand-all A) may answer A: A is a
+non-cons atom (non-symbol atoms only unless `nelisp-aot--leaf-symbols'), the
+live function cells of macroexp-macroexpand and macroexpand-1 are exactly the
+installed objects (that of macroexp--expand-all is checked by the call site),
+and macroexpand-all-environment is nil.  Anything else answers 0."
+  (when nelisp-aot--leaf
+    (let* ((l nelisp-aot--leaf)
+           (st '(data-addr nl_aot_state))
+           (off (lambda (k) (+ 32 (* 8 (plist-get l k)))))
+           (cd (lambda (k) `(ptr-read-u64 ,st ,(+ 104 (* 8 (plist-get l k)))))))
+      (list
+       `(defun wf_aot_leaf (env a)
+          (let* ((tg (nl_val_tag a)))
+            (if ,(if nelisp-aot--leaf-symbols
+                     '(= tg 7)
+                   '(if (= tg 7) 1
+                      (if (< tg 2) 1 (if (= tg 4) 1 (if (= tg 16) 1 (= tg 19))))))
+                0
+              (let* ((cde ,(funcall cd :e)))
+                (if (= cde 0) 0
+                  (if (= (wf_aot_gd (ptr-read-u64 cde ,(* 8 (plist-get l :e-mm))) ,(funcall off :mm)) 1)
+                      (let* ((cdm ,(funcall cd :mm)))
+                        (if (= cdm 0) 0
+                          (if (= (wf_aot_gd (ptr-read-u64 cdm ,(* 8 (plist-get l :mm-m1))) ,(funcall off :m1)) 1)
+                              (if (= (extern-call nl_gv_fast env (ptr-read-u64 cdm ,(* 8 (plist-get l :mm-env)))) 3)
+                                  1 0)
+                            0)))
+                    0))))))))))
+
 (defun nelisp-aot--leaf-helpers ()
   "Inline leaf-subr fast paths for the AOT call sites.
 See `wf_aot_swp' and `wf_aot_fb'."
+  (append
+   (nelisp-aot--expand-leaf-helper)
+   (nelisp-aot--leaf-helpers-1)))
+
+(defun nelisp-aot--leaf-helpers-1 ()
+  "The `wf_aot_swp' and `wf_aot_fb' leaf helpers."
   (list
    ;; (symbol-with-pos-p A): the :word body answers t iff A's tag is 19.  Immediates and
    ;; conses are never positioned symbols; a vectorlike word is one iff its kind is 19.

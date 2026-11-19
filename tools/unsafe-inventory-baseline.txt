@@ -347,7 +347,12 @@
 # words with ptr-read-u64 to check the callee is still the original subr.
 # 2026-11-19: 2615 -> 2616 (+1), scripts/nelisp-standalone-build.el (pinned below):
 # the GNU `gcs-done' counter bump in `nl_gc_debt_rearm'.
-unsafe-call 2616
+# 2026-11-19: 2616 -> 2620 (+4), all in scripts/nelisp-aot-bytecode.el (34 -> 38,
+# pinned below): the leaf fast path `wf_aot_leaf' reads the cached words of
+# `nl_aot_state' and the callers' constant words with ptr-read-u64 to check that
+# macroexp--expand-all, macroexp-macroexpand and macroexpand-1 are still the
+# installed objects before it returns a non-symbol atom as is.
+unsafe-call 2620
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -618,7 +623,7 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # forwarded variable's value cell inline at the end of each completed collection (one raw read of the cached symbol
 # word, one raw ptr-write-u64; no allocation), and `nl_gcs_done_init' stores that word once per boot.
 pinned-kernel-call scripts/nelisp-standalone-build.el 1977
-pinned-kernel-call scripts/nelisp-aot-bytecode.el 34
+pinned-kernel-call scripts/nelisp-aot-bytecode.el 38
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

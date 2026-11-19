@@ -152,6 +152,21 @@
   (when (equal aot-smoke-control "detached")
     (aot-smoke-disable)))
 
+;; Leaf fast path: (macroexp--expand-all ATOM) is answered at the AOT call sites inside
+;; `macroexp--all-forms' without entering the callee, but only while the chain is the
+;; original one and macroexpand-all-environment is nil.  The entry counters of the
+;; callee row and of `macroexpand-1' show whether the callee ran.
+(defvar aot-smoke-leaf-hits 0)
+(defvar aot-smoke-leaf-atoms
+  (list 1 -7 2.5 "str" [v 1] (make-hash-table) (make-bool-vector 3 t) ?a 123456789012))
+(defun aot-smoke-leaf-run (&optional forms)
+  "Run FORMS (default the atom list) through the AOT call sites: (RESULT EXPAND-ENTRIES M1-ENTRIES)."
+  (let* ((c0 (aot-smoke-count-of 'macroexp--expand-all))
+         (m0 (aot-smoke-count-of 'macroexpand-1))
+         (r (aot-smoke-wrap (lambda () (funcall aot-smoke-c-forms (or forms aot-smoke-leaf-atoms))))))
+    (list r (- (aot-smoke-count-of 'macroexp--expand-all) c0)
+          (- (aot-smoke-count-of 'macroexpand-1) m0))))
+
 (let* ((installed (aot-smoke-installed)))
   ;; Install count: all seven functions, each slot `eq' to the live function.
   (aot-smoke-check "install-count" (= installed (length aot-smoke-names)))
@@ -409,6 +424,55 @@
         (aot-smoke-check (format "leaf-advised-honoured %s" leaf) (> hits 0))
         (advice-remove leaf 'aot-smoke-leaf-adv)
         (aot-smoke-check (format "leaf-advice-removed %s" leaf) (eq (symbol-function leaf) orig)))))
+
+  ;; Leaf fast path checks (see the definitions above `aot-smoke-leaf-run').
+  (let* ((r (aot-smoke-leaf-run)))
+    (aot-smoke-check "leaf-atoms-eq" (eq (car r) aot-smoke-leaf-atoms))
+    (aot-smoke-check "leaf-atoms-fast" (and (= (nth 1 r) 0) (= (nth 2 r) 0))))
+  (aot-smoke-disable)
+  (let ((v (aot-smoke-leaf-run)))
+    (aot-smoke-enable)
+    (aot-smoke-check "leaf-atoms-equal-vm" (equal (car v) aot-smoke-leaf-atoms)))
+  (let* ((c0 (aot-smoke-count-of 'macroexp--expand-all))
+         (r (aot-smoke-wrap (lambda () (funcall aot-smoke-c-forms (list '(a b) '(when x y)))))))
+    (aot-smoke-check "leaf-cons-slow" (and (equal r '((a b) (if x (progn y))))
+                                           (> (aot-smoke-count-of 'macroexp--expand-all) c0))))
+  (let ((r (let ((macroexpand-all-environment '((aot-smoke-leaf-m . nil))))
+             (aot-smoke-leaf-run))))
+    (aot-smoke-check "leaf-env-slow" (and (eq (car r) aot-smoke-leaf-atoms) (> (nth 1 r) 0))))
+  ;; Advice on macroexpand-1 / macroexp-macroexpand and an fset of macroexp--expand-all are
+  ;; honoured (the replacement sees the atom calls); undoing them restores the fast path.
+  (dolist (fn '(macroexpand-1 macroexp-macroexpand macroexp--expand-all))
+    (let ((orig (symbol-function fn)))
+      (setq aot-smoke-leaf-hits 0)
+      (fset fn (lambda (a &rest r)
+                 (unless (consp a) (setq aot-smoke-leaf-hits (1+ aot-smoke-leaf-hits)))
+                 (apply orig a r)))
+      (let ((r (aot-smoke-leaf-run)))
+        (aot-smoke-check (format "leaf-fset-honoured %s" fn)
+                         (and (> aot-smoke-leaf-hits 0) (eq (car r) aot-smoke-leaf-atoms))))
+      (fset fn orig)
+      (setq aot-smoke-leaf-hits 0)
+      (let ((r (aot-smoke-leaf-run)))
+        (aot-smoke-check (format "leaf-fset-restored-fast %s" fn)
+                         (and (= aot-smoke-leaf-hits 0) (= (nth 1 r) 0) (= (nth 2 r) 0))))
+      (when (condition-case nil
+                (progn (advice-add fn :around
+                                   (lambda (f a &rest r)
+                                     (unless (consp a) (setq aot-smoke-leaf-hits (1+ aot-smoke-leaf-hits)))
+                                     (apply f a r))
+                                   '((name . aot-smoke-leaf-adv2)))
+                       t)
+              (error nil))
+        (setq aot-smoke-leaf-hits 0)
+        (aot-smoke-leaf-run)
+        (aot-smoke-check (format "leaf-advice-honoured %s" fn) (> aot-smoke-leaf-hits 0))
+        (advice-remove fn 'aot-smoke-leaf-adv2)
+        (setq aot-smoke-leaf-hits 0)
+        (let ((r (aot-smoke-leaf-run)))
+          (aot-smoke-check (format "leaf-advice-restored-fast %s" fn)
+                           (and (eq (symbol-function fn) orig) (= aot-smoke-leaf-hits 0)
+                                (= (nth 1 r) 0) (= (nth 2 r) 0)))))))
 
   ;; Reduced GC stress: expansions interleaved with collections equal the VM's.
   (let ((ok t) (i 0) (expected (format "%S" (aot-smoke-vm-result))))
