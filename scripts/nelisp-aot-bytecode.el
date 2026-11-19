@@ -687,6 +687,37 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
                        `(seq ,(car o) ,form))))
         form))))
 
+;; Prototype (slice 9): inline single-predecessor blocks into their predecessor and drop
+;; unused per-activation locals.
+(defun nelisp-aot--mentions (form sym)
+  "Non-nil when the symbol SYM occurs anywhere in FORM."
+  (cond ((eq form sym) t)
+        ((consp form) (or (nelisp-aot--mentions (car form) sym) (nelisp-aot--mentions (cdr form) sym)))
+        (t nil)))
+
+(defun nelisp-aot--chain-blocks (vec handler-idxs)
+  "Return VEC (block forms by index) with every block that has exactly one
+`(setq blk N)' predecessor edge inlined at that edge, and the remaining blocks
+renumbered densely.  Block 0 and condition-case handler blocks are kept."
+  (let* ((n (length vec)) (cnt (make-vector n 0)) (new (make-vector n nil)) (k 0)
+         (max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
+    (cl-labels ((edge-p (f) (and (consp f) (eq (car f) 'setq) (eq (cadr f) 'blk)
+                                 (integerp (nth 2 f)) (>= (nth 2 f) 0)
+                                 (null (nthcdr 3 f))))
+                (count (f) (cond ((edge-p f) (cl-incf (aref cnt (nth 2 f))))
+                                 ((consp f) (count (car f)) (count (cdr f)))))
+                (inl-p (j) (and (> j 0) (= (aref cnt j) 1) (not (memq j handler-idxs))))
+                (expand (f) (cond ((edge-p f)
+                                   (let ((j (nth 2 f)))
+                                     (if (inl-p j) (expand (aref vec j)) `(setq blk ,(aref new j)))))
+                                  ((consp f) (cons (expand (car f)) (expand (cdr f))))
+                                  (t f))))
+      (dotimes (i n) (count (aref vec i)))
+      (dotimes (i n) (unless (inl-p i) (aset new i k) (setq k (1+ k))))
+      (let ((out nil))
+        (dotimes (i n) (unless (inl-p i) (push (expand (aref vec i)) out)))
+        (apply #'vector (nreverse out))))))
+
 (defun nelisp-aot-translate (id obj)
   "Return the DSL defun `wf_aot_ID' for the byte-code object OBJ, or refuse."
   (let* ((template (aref obj 0)) (code (aref obj 1)) (consts (aref obj 2)) (depth (aref obj 3)))
@@ -714,7 +745,8 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
         (push (cons i (nelisp-aot--emit-block insns sps leaders l consts)) blocks)
         (setq i (1+ i)))
       (setq blocks (nreverse blocks))
-      (let* ((vec (apply #'vector (mapcar #'cdr blocks)))
+      (let* ((vec (nelisp-aot--chain-blocks (apply #'vector (mapcar #'cdr blocks))
+                                            (mapcar (lambda (h) (cl-position h leaders)) handlers)))
              ;; Balanced decision tree over the block index: O(log n) per transition.
              (dispatch
               (cl-labels ((build (lo hi)
@@ -728,7 +760,12 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
                  (if (if (< rec 100) 0 (>= rec (nl_eval_depth_limit env rec)))
                      (seq (wf_bytecode_signal_nesting) 0)
                    (let* (,@(mapcar (lambda (j) (list (nelisp-aot--x j) 0)) (number-sequence nargs (1- nslots)))
-                          (res 0) (fail 0) (blk 0) (bec 0) (nb 0) (xb 0) (xbm 0) (scb 0) (cnd 0)
+                          (res 0) (fail 0) (blk 0)
+                          ,@(delq nil (mapcar (lambda (v) (and (or (nelisp-aot--mentions dispatch (car v)) (> maxbd 0)) v))
+                                              '((bec 0) (nb 0))))
+                          (xb 0) (xbm 0)
+                          ,@(delq nil (mapcar (lambda (v) (and (nelisp-aot--mentions dispatch (car v)) v))
+                                              '((scb 0) (cnd 0))))
                           (cdata (ptr-read-u64 (data-addr nl_aot_state) ,(+ 104 (* id 8))))
                           ,@(apply #'append
                                    (mapcar (lambda (j) (list (list (intern (format "bn%d" j)) 0)

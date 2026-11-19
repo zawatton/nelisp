@@ -29057,18 +29057,74 @@ Sets `--stackmap-live-table' (nil when the defun stays FULL) and
         (setq nelisp-aot-compiler--stackmap-reason 'no-fixpoint
               nelisp-aot-compiler--stackmap-live-table nil)))))
 
+;; jthread (lever 6b): the translated AOT rows are full of `jmp L' where L is itself a `jmp M' (if-joins,
+;; hops back to the dispatch head), and of conditional branches into such a `jmp'.  After a gated defun is
+;; emitted, every plain rel32 `jmp'/`jcc' whose target label is bound at an `E9' `jmp rel32' is pointed at that
+;; jump's own target (repeatedly).  Sizes and positions do not change, the skipped `jmp' only transfers
+;; control, so the stack map, the GC contract and every register/slot value at the destination are the same.
+(defvar nelisp-aot-compiler-jump-thread-functions
+  '(wf_aot_1 wf_aot_2 wf_aot_4 wf_aot_5 wf_aot_6)
+  "Defuns whose jump-to-jump chains are threaded; all others are emitted as before.")
+
+(defun nelisp-aot-compiler--thread-jumps (buf pos0)
+  "Retarget the rel32 jumps of the function emitted into BUF from POS0 on."
+  (let* ((bytes (apply #'concat (reverse (copy-sequence (aref buf 0)))))
+         (end (aref buf 1))
+         (fixups (aref buf 3))
+         (by-slot (make-hash-table :test 'eql))
+         (label-pos (make-hash-table :test 'eq))
+         (count 0))
+    (dolist (c (aref buf 2))
+      (unless (gethash (car c) label-pos) (puthash (car c) (cdr c) label-pos)))
+    (dolist (f fixups)
+      (when (and (integerp (car f)) (>= (car f) pos0) (< (car f) end) (symbolp (cdr f)) (cdr f))
+        (puthash (car f) f by-slot)))
+    (dolist (f fixups)
+      (let ((slot (car f)))
+        (when (and (integerp slot) (>= slot (+ pos0 2)) (< slot end) (symbolp (cdr f)) (cdr f)
+                   (or (= (aref bytes (1- slot)) #xE9)
+                       (and (= (aref bytes (- slot 2)) #x0F)
+                            (<= #x80 (aref bytes (1- slot)) #x8F))))
+          (let ((label (cdr f)) (hops 0) (seen nil) (go t))
+            (while go
+              (let* ((tpos (gethash label label-pos))
+                     (next (and tpos (>= tpos pos0) (< (+ tpos 5) end)
+                                (= (aref bytes tpos) #xE9)
+                                (not (memq tpos seen))
+                                (< hops 16)
+                                (let ((g (gethash (1+ tpos) by-slot))) (and g (cdr g))))))
+                (if next
+                    (progn (push tpos seen) (setq label next hops (1+ hops)))
+                  (setq go nil))))
+            (unless (eq label (cdr f))
+              (setcdr f label)
+              (setq count (1+ count)))))))
+    count))
+
+(defun nelisp-aot-compiler--emit-defun-1+ (defun-ir buf)
+  "`--emit-defun-1', then thread jumps when the defun is gated."
+  (if (and nelisp-aot-compiler-jump-thread-functions
+           (eq nelisp-aot-compiler--arch 'x86_64)
+           (memq (intern (format "%s" (nelisp-aot-compiler--ir-get defun-ir :name)))
+                 nelisp-aot-compiler-jump-thread-functions))
+      ;; Only the x86_64 buffer has the [chunks end labels fixups] layout read here.
+      (let ((pos0 (aref buf 1)))
+        (prog1 (nelisp-aot-compiler--emit-defun-1 defun-ir buf)
+          (nelisp-aot-compiler--thread-jumps buf pos0)))
+    (nelisp-aot-compiler--emit-defun-1 defun-ir buf)))
+
 (defun nelisp-aot-compiler--emit-defun (defun-ir buf)
   "Emit one function into BUF; with
 `--stackmap-records' bound, also record its map data."
   (if (not (consp nelisp-aot-compiler--stackmap-records))
-      (nelisp-aot-compiler--emit-defun-1 defun-ir buf)
+      (nelisp-aot-compiler--emit-defun-1+ defun-ir buf)
     (let* ((nelisp-aot-compiler--stackmap-live-table nil)
            (nelisp-aot-compiler--stackmap-ranges nil)
            (nelisp-aot-compiler--stackmap-reason nil)
            (nelisp-aot-compiler--stackmap-plet nil)
            (name (nelisp-aot-compiler--ir-get defun-ir :name))
            (pos0 (aref buf 1)))
-      (nelisp-aot-compiler--emit-defun-1 defun-ir buf)
+      (nelisp-aot-compiler--emit-defun-1+ defun-ir buf)
       (let* ((nm (if (stringp name) name (symbol-name name)))
              (labels (aref buf 2))
              (label (cdr (or (assq name labels) (assoc nm labels)
