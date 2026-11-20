@@ -588,7 +588,9 @@
            0))))
     (defun nelisp_reader_escape_base (src at n escaped)
       (let ((b (str-byte-at src at)))
-        (if (= escaped 0) (nelisp_reader_escape_plain src at n)
+        ;; `\' before a multibyte character is that character (GNU
+        ;; `read_char_escape' default arm): `?\‘' is #x2018, not its lead byte.
+        (if (or (= escaped 0) (>= b 128)) (nelisp_reader_escape_plain src at n)
           (if (or (and (>= b 48) (<= b 55))
                   (= b 120) (= b 117) (= b 85) (= b 78))
               (nelisp_reader_escape_numeric src at n b)
