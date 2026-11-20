@@ -513,7 +513,14 @@ explicit deletion, retaining NUL bytes and the requested buffer boundary."
           (emacs-process--native-drain-output process)
           (emacs-process--native-drain-stderr process))
         (setq observed t)
-        (emacs-process--native-invoke-sentinel process event state)))
+        (emacs-process--native-invoke-sentinel process event state)
+        ;; A core buffer pipe given as :stderr is closed (and notified) with
+        ;; the terminal event, whichever layer observes it first.
+        (when (and (memq state '(exit signal))
+                   (fboundp 'nelisp-process-buffer-close-stderr)
+                   (process-get process :stderr-channel))
+          (nelisp-process-buffer-drain-stderr process)
+          (nelisp-process-buffer-close-stderr process))))
     observed))
 
 (defun emacs-process--native-adapter-terminal-delivery (process _status)
