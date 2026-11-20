@@ -788,8 +788,15 @@
     ;; Reset the scratch-mutstr (= drain it for the next lex run).
     ;; ===========================================================
 
-    (defun nelisp_reader_p_reset_scratch (scratch-slot)
+    ;; The scratch MutStr is created once per parse (`nelisp_reader_p_init_scratch')
+    ;; and only emptied per token: `mut-str-finalize' clones it, so the buffer
+    ;; is never shared.  A slot that is not a MutStr yet is made one here.
+    (defun nelisp_reader_p_init_scratch (scratch-slot)
       (mut-str-make-empty scratch-slot 64))
+    (defun nelisp_reader_p_reset_scratch (scratch-slot)
+      (if (= (heap-read-u8 scratch-slot 0) 6)
+          (ptr-write-u64 (heap-read-u64 (+ scratch-slot 8) 0) 16 0)
+        (mut-str-make-empty scratch-slot 64)))
 
     ;; ===========================================================
     ;; Drive one lex call.  Returns the i64 kind code.
@@ -1685,11 +1692,17 @@
        (ptr-write-u64 268436448 0 parse-cap)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 0 0)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 8 0)
+       (nelisp_reader_p_init_scratch (nelisp_reader_p_slot slot-pool 0))
        (setq w (nelisp_reader_p_parse_at_w str-ptr cursor-slot 0 slot-pool depth))
        (if (and (/= w 0) (/= w 2))
            (if (>= (nelisp_reader_p_label_proxy_number w slot-pool 0) 0)
                (setq w (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0))
-             (setq w (nelisp_reader_p_label_resolve w slot-pool))) 0)
+             ;; No `#N=' / `#N#' was lexed (count 0): there is no proxy to swap
+             ;; in, and the resolve walk would only rewrite every cons and
+             ;; vector slot with its own value.
+             (if (= (nelisp_reader_p_label_count slot-pool) 0)
+                 0
+               (setq w (nelisp_reader_p_label_resolve w slot-pool)))) 0)
        (nelisp_reader_p_clear_used slot-pool parse-cap)
        (ptr-write-u64 268436448 0 pool-cap) w)))))
 

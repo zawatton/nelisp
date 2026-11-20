@@ -34169,11 +34169,11 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; (one-past-the-end): the shape `substring''s FROM/TO indices need.
     ;; -1 only when TARGET exceeds the true char length.
     (defun nl_u8_cidx_byte_bounded_incl (p bi n c target)
-      (let* ((bb bi) (cc c) (go 1))
+      (let* ((bb bi) (cc c) (go 1) (dp (nl_bi_strptr p)))
         (while (= go 1)
           (if (>= cc target) (setq go 0)
             (if (>= bb n) (setq go -1)
-              (seq (setq bb (+ bb (nl_u8_clen_at (m5_byte_at p bb))))
+              (seq (setq bb (+ bb (nl_u8_clen_at (heap-read-u8 dp bb))))
                    (setq cc (+ cc 1))))))
         (if (= go -1) -1 bb)))
     ;; --- Global ptr-keyed scan cache ---
@@ -39821,6 +39821,29 @@ bytes are written into a fresh 8-byte buffer instead."
                 (let* ((r (nl_str_sub_byte_off src limit target)))
                   (if (< r 0) limit r)))
             (bf_read_one_char_to_byte src 0 0 target limit)))))
+    ;; Reader cursor hint.  A caller reading form after form from one big
+    ;; string (`read' over a buffer's memoized text) passes START as a cons
+    ;; (START . (CHAR . BYTE)) instead of an integer: (CHAR . BYTE) is a
+    ;; char/byte position pair the caller keeps for this very string object.
+    ;; Unlike the 8-row pointer cache, the pair lives in a Lisp object, so
+    ;; it survives every collection (the cache is cleared by each GC and
+    ;; each boundary reclaim, which made the next read rescan from byte 0).
+    ;; The caller owns validity: it must drop the pair when the string
+    ;; changes, and pass END as the full character length (the hinted read
+    ;; always ends at the byte length).  Here the pair is only range-checked.
+    ;; Answers the byte offset of char START, or -1 to fall back to the
+    ;; cache-backed conversion.
+    (defun bf_read_one_hint_start (src cell start byte-len)
+      (if (= (sexp-tag src) 5)
+          (let* ((hc (nl_cons_car_word cell)) (hb (nl_cons_cdr_word cell)))
+            (if (if (= (nl_val_tag hc) 2) (= (nl_val_tag hb) 2) 0)
+                (let* ((c (sar hc 2)) (b (sar hb 2)))
+                  (if (if (>= c 0) (if (<= c start) (if (>= b 0) (<= b byte-len) 0) 0) 0)
+                      (if (= c start) b
+                        (nl_u8_cidx_byte_bounded_incl src b byte-len c start))
+                    -1))
+              -1))
+        -1))
     (defun bf_read_one_bytes_to_chars (src from to)
       (if (= (bf_string_unibyte_p src) 1)
           (- to from)
@@ -40021,10 +40044,16 @@ bytes are written into a fresh 8-byte buffer instead."
          ok)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_read_one_from_string_native_w (args env _pad)
-  (let* ((src (wf_arg_ptr args 0)) (start (wf_argval args 1))
+  (let* ((src (wf_arg_ptr args 0))
+         (hint (let* ((w (wf_arg_word args 1))) (if (= (nl_val_tag w) 7) w 0)))
+         (start (if (/= hint 0) (sar (nl_cons_car_word hint) 2) (wf_argval args 1)))
          (end (wf_argval args 2)) (byte-len (bf_str_len src))
-         (byte-start (bf_read_one_cb src start byte-len))
-         (byte-end (if (<= end start) byte-start (bf_read_one_cb src end byte-len)))
+         (hint-byte (if (/= hint 0)
+                        (bf_read_one_hint_start src (nl_cons_cdr_word hint) start byte-len)
+                      -1))
+         (byte-start (if (>= hint-byte 0) hint-byte (bf_read_one_cb src start byte-len)))
+         (byte-end (if (>= hint-byte 0) byte-len
+                     (if (<= end start) byte-start (bf_read_one_cb src end byte-len))))
          (view (alloc-bytes 32 8)) (cursor (alloc-bytes 32 8))
          (context (bf_read_load_file_name_w env 0))
          (limit (let* ((n (* 4 (- byte-end byte-start))))
@@ -40053,6 +40082,13 @@ bytes are written into a fresh 8-byte buffer instead."
            (seq (if (if (= (sexp-tag src) 5) (>= start 0) 0)
                     (nl_aref_cache_store (heap-read-u64 src 16) byte-len
                        (+ (* position 4294967296) byte-pos)) 0)
+                ;; Advance the caller's hint.  Both words are fixnums, so no
+                ;; heap box is installed into the old cons: no `wf_dirty'.
+                (if (if (/= hint 0) (= (sexp-tag src) 5) 0)
+                    (let* ((cell (nl_cons_cdr_word hint)))
+                      (seq (cons-set-car cell (nl_imm_int position))
+                           (cons-set-cdr cell (nl_imm_int byte-pos))))
+                  0)
                 (ptr-write-u64 268436448 0 prevcap)
                 (nelisp_cons_construct_w word (nl_imm_int position) 0)))
        (seq (ptr-write-u64 268435472 0 0)

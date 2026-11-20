@@ -22598,6 +22598,12 @@ reader."
           (when (= depth 0) (setq res t))))))
     res))
 
+(defvar nelisp--rd-hint nil
+  "Reader cursor hint (STRING NCHARS HDR) for the last large buffer text read.
+HDR is (START CHAR . BYTE): the native reader takes it in place of START, and
+CHAR/BYTE is a char/byte position pair valid for STRING only (it is dropped
+whenever STRING is not `eq' to the memoized text).")
+
 (defun nelisp--read-buffer-form (buf start end lo)
   "Read one form from BUF's text between 0-based START and END.
 END nil means the end of the text; LO is the index where the accessible
@@ -22619,10 +22625,32 @@ are reported the way GNU does, and the rest takes `read-from-string'."
                                   (nelisp-buffer-tick buf)))
                    (cdr cached)
                  (nelisp-buffer-string buf)))
-         (end (or end (length full)))
+         ;; A large text read in full gets a char/byte cursor hint kept in a
+         ;; Lisp object (`nelisp--rd-hint'), because the native cursor cache
+         ;; is cleared by every collection and would rescan from byte 0.
+         (h (and (null end)
+                 (let ((c nelisp--rd-hint))
+                   (if (and c (eq (car c) full))
+                       c
+                     (let ((n (length full)))
+                       (and (>= n 2048)
+                            (setq nelisp--rd-hint
+                                  (cons full (cons n (cons 0 (cons 0 0)))))))))))
+         (end (if h (car (cdr h)) (or end (length full))))
          (r (and (not nelisp--rd-positioning) (<= start end)
                  (fboundp 'nelisp--read-all-from-string-native)
-                 (nelisp--read-all-from-string-native full start end))))
+                 (nelisp--read-all-from-string-native
+                  full
+                  (if h
+                      (let ((hdr (cdr (cdr h))))
+                        ;; Backward seek: restart the cursor from the top.
+                        (when (< start (car (cdr hdr)))
+                          (setcar (cdr hdr) 0)
+                          (setcdr (cdr hdr) 0))
+                        (setcar hdr start)
+                        hdr)
+                    start)
+                  end))))
     (or r
         (let ((kind (nelisp--read-buffer-scan full start end)))
           (cond
