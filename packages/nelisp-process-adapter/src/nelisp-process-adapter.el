@@ -1755,7 +1755,12 @@ restriction."
    ((and (fboundp 'nelisp-process-object-p) (nelisp-process-object-p process))
     (unless (process-live-p process)
       (nelisp-process-adapter--subprocess-not-running-error process))
-    (nelisp-process-close-stdin process)
+    ;; A PTY child reads one terminal; its stdin cannot be closed
+    ;; separately.  GNU sends the terminal's EOF character instead.
+    (if (and (fboundp 'emacs-process--native-metadata)
+             (emacs-process--native-metadata process :pty-master))
+        (process-send-string process "\004")
+      (nelisp-process-close-stdin process))
     process)
    ((nelisp--network-process-p process)
     (signal 'wrong-type-argument (list 'nelisp-process-object-p process)))

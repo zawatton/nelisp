@@ -114,6 +114,11 @@ or environment string separately.  The dynamic owner list bounds lifetime."
               (ptr-write-u64 word 0
                              (logand (ptr-read-u64 word 0)
                                      (lognot #x400000000)))
+              ;; GNU's child_setup_tty also clears ECHO (lflag, bit 3 of the
+              ;; word at byte 12): the child must not see its input echoed.
+              (ptr-write-u64 word 8
+                             (logand (ptr-read-u64 word 8)
+                                     (lognot #x800000000)))
               (unless (= (syscall-direct 16 slave #x5402 word 0 0 0) 0)
                 (syscall-direct 60 127 0 0 0 0 0))
               (dolist (fd '(0 1)) (syscall-direct 33 slave fd 0 0 0 0))
