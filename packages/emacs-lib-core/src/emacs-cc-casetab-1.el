@@ -29,7 +29,9 @@
 
 (defun nelisp-casetab--sparse-table-p (table)
   "Return non-nil when TABLE belongs to the foundation adapter."
-  (and (fboundp 'emacs-char-table-p) (emacs-char-table-p table)))
+  (and (fboundp 'emacs-char-table-p)
+       (emacs-char-table-p table)
+       (not (funcall nelisp-casetab--native-p table))))
 
 (defun nelisp-casetab--char-table-p (table)
   "Return non-nil for a native or foundation char-table TABLE."
@@ -286,17 +288,20 @@ equivalence tables in extra slots 0, 1 and 2.  Missing tables are derived."
 (defun nelisp-casetab--copy-char-table (table)
   "Copy TABLE's local contents, default, parent and all extra slots.
 This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
-  (if (nelisp-casetab--sparse-table-p table)
+  ;; The broad foundation predicate also recognizes native char-tables.
+  ;; Keep native objects on the native operations throughout this copy.
+  (if (and (nelisp-casetab--sparse-table-p table)
+           (not (funcall nelisp-casetab--native-p table)))
       (emacs-char-table-copy table)
     (let* ((parent (funcall nelisp-casetab--native-parent table))
-           (default (nelisp-casetab--char-table-range table nil))
-           (subtype (nelisp-casetab--char-table-subtype table))
+           (default (funcall nelisp-casetab--native-range table nil))
+           (subtype (funcall nelisp-casetab--native-subtype table))
            (properties (copy-sequence (symbol-plist subtype)))
            (slot 0) (extras nil) done copy)
       (while (not done)
         (condition-case nil
             (progn
-              (push (nelisp-casetab--get-extra-slot table slot) extras)
+              (push (funcall nelisp-casetab--native-extra table slot) extras)
               (setq slot (1+ slot)))
           (args-out-of-range (setq done t))))
       ;; A subtype's allocation property can change after TABLE was made.
@@ -309,16 +314,20 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
       (unwind-protect
           (progn
             (funcall nelisp-casetab--native-set-parent table nil)
-            (nelisp-casetab--set-char-table-range table nil nil)
-            (nelisp-casetab--map-char-table
-             (lambda (range value) (nelisp-casetab--set-char-table-range copy range value)) table))
-        (nelisp-casetab--set-char-table-range table nil default)
+            (funcall nelisp-casetab--native-set-range table nil nil)
+            (funcall
+             nelisp-casetab--native-map
+             (lambda (range value)
+               (funcall nelisp-casetab--native-set-range copy range value))
+             table))
+        (funcall nelisp-casetab--native-set-range table nil default)
         (funcall nelisp-casetab--native-set-parent table parent))
-      (nelisp-casetab--set-char-table-range copy nil default)
+      (funcall nelisp-casetab--native-set-range copy nil default)
       (funcall nelisp-casetab--native-set-parent copy parent)
       (setq slot 0)
       (dolist (extra (nreverse extras))
-        (nelisp-casetab--put-extra-slot copy slot extra)
+        (setq nelisp-casetab--epoch (1+ nelisp-casetab--epoch))
+        (funcall nelisp-casetab--native-set-extra copy slot extra)
         (setq slot (1+ slot)))
       copy)))
 

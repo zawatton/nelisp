@@ -184,6 +184,17 @@ Image builders may call this without loading editor features or creating
 terminal state.  Retain the flag in the snapshot so each restored session
 does not repeat a full bootstrap collection before its first input."
   (when (and (fboundp 'nelisp--repr) (not nemacs-main--tui-heap-prepared-p))
+    (let ((startup-buffer (current-buffer)))
+      (when (and (buffer-live-p startup-buffer)
+                 (fboundp 'emacs-window-selected-window)
+                 (fboundp 'emacs-window-buffer)
+                 (fboundp 'emacs-window-set-window-buffer))
+        (let* ((window (emacs-window-selected-window))
+               (displayed-buffer (and window (emacs-window-buffer window))))
+          (when (and window
+                     (not (and (bufferp displayed-buffer)
+                               (buffer-live-p displayed-buffer))))
+            (emacs-window-set-window-buffer window startup-buffer)))))
     (garbage-collect)
     (setq nemacs-main--tui-heap-prepared-p t)))
 

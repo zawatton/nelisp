@@ -97,7 +97,8 @@
     nl_cons_car_word nl_cons_cdr_word nl_vector_slot_word nl_ht_marker_word
     nl_ht_int nl_ht_meta_slot nl_ht_data_slot))
 (defconst hr--defs
-  '(nl_val_tag nl_word_payload nl_word_data nl_word_length nl_word_tag64
+  '(nl_ht_obj nl_ht_raw_meta nl_ht_raw_index
+    nl_val_tag nl_word_payload nl_word_data nl_word_length nl_word_tag64
     nl_cons_car_word nl_cons_cdr_word nl_vector_slot_word nl_ht_marker_word
     nl_ht_marker_word_set nl_ht_int nl_ht_set_int nl_ht_meta_slot nl_ht_data_slot
     nl_ht_hash_index nl_ht_hash nl_ht_identity_key_hash nl_so_p bf_hash_table_p_raw
@@ -139,11 +140,15 @@
                        (hr--w a 4) (hr--w (+ a 8) (hr--str-flagged "hash-table")) (hr--w (+ a 40) 0)
                        (+ a 6)))))
 (defun hr--build (test cache &optional keys)
-  "A table of TEST (\"eq\" \"eql\" \"equal\") with slot 5 = CACHE (nil = 0).
+  "A kind-22 table of TEST with slot 5 = CACHE (nil = 0).
 KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
   (let* ((meta (hr--vec 15)) (cap 6) (isz 8)
          (pairs (hr--vec (* cap 2))) (hashes (hr--vec cap)) (next (hr--vec cap))
-         (index (hr--vec isz)) (table (hr--cons meta index)) (count 0))
+         (index (hr--vec isz)) (object (hr--alloc 24)) (count 0)
+         (table (+ object 6)))
+    (hr--w object (logior 256 22))
+    (hr--w (+ object 8) meta)
+    (hr--w (+ object 16) index)
     (hr--vset meta 0 (hr--mark-sym)) (hr--vset meta 1 (hr--fix 0))
     (hr--vset meta 2 (hr--symview test)) (hr--vset meta 3 (hr--fix cap))
     (hr--vset meta 5 (hr--fix (or cache 0)))
@@ -168,6 +173,8 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (list table meta index)))
 
 (defun hr--n () (cl-count-if (lambda (x) (memq x hr--helpers)) hr--calls))
+(defun hr--accessor-calls ()
+  (cl-remove-if-not (lambda (x) (memq x hr--helpers)) hr--calls))
 (defmacro hr--measure (&rest body)
   `(progn (setq hr--calls nil) (prog1 (progn ,@body) nil)))
 
@@ -177,13 +184,14 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (let* ((hr--marker-kind kind) (tb (car (hr--build "eq" -102))))
       (setq hr--calls nil)
       (should (= (bf_hash_table_p_raw tb) 1))
-      ;; every shape, including the flagged-length one, takes the fast path
+      ;; Marker metadata shape does not distinguish actual kind-22 tables.
       (should (= (hr--n) 0))
-      ;; the same table through a legacy cons view (tag byte 7, payload at +8)
+      ;; A legacy cons-shaped view is not a hash table, even when its
+      ;; payload points to a valid kind-22 object.
       (let ((v (hr--alloc 32)))
-        (hr--w v 7) (hr--w (+ v 8) (- tb 2))
+        (hr--w v 7) (hr--w (+ v 8) (- tb 6))
         (setq hr--calls nil)
-        (should (= (bf_hash_table_p_raw v) 1))
+        (should (= (bf_hash_table_p_raw v) 0))
         (should (= (hr--n) 0)))))
   (let* ((tb (car (hr--build "eq" -102)))
          (bad-name (let ((m (hr--vec 15)))
@@ -196,6 +204,7 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
          (nonvec (hr--cons (hr--fix 5) 3)))
     (setq hr--calls nil)
     (should (= (bf_hash_table_p_raw tb) 1))
+    (should (= (bf_hash_table_p_raw (- tb 6)) 1))
     (should (= (hr--n) 0))
     (should (= (bf_hash_table_p_raw (hr--fix 3)) 0))
     (should (= (bf_hash_table_p_raw 3) 0))
@@ -205,6 +214,14 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (should (= (bf_hash_table_p_raw short) 0))
     (should (= (bf_hash_table_p_raw nonvec) 0))
     (should (= (bf_hash_table_p_raw (hr--vec 4)) 0))))
+
+(ert-deftest hr-object-accessors ()
+  (hr--setup)
+  (let* ((built (hr--build "eq" -102 '(5 6)))
+         (table (car built)))
+    (should (= (nl_ht_obj table) (- table 6)))
+    (should (= (nl_ht_raw_meta table) (cadr built)))
+    (should (= (nl_ht_raw_index table) (nth 2 built)))))
 
 (ert-deftest hr-test-mode ()
   (hr--setup)
@@ -273,7 +290,8 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
       (setq hr--calls nil)
       (let ((i (nl_ht_find_index tb (hr--fix k) (bf_identity_hash (hr--fix k)) 1)))
         (should (= i (cl-position k keys)))
-        (should (= (hr--n) 0)))
+        (should (equal (hr--accessor-calls)
+                       '(nl_ht_data_slot nl_ht_meta_slot))))
       (should (= (nl_ht_find_in tb (hr--fix k)) (1+ (cl-position k keys)))))
     (should (= (nl_ht_find_in tb (hr--fix 99)) 0))
     (should (= (nl_ht_find_index tb (hr--fix 99) (bf_identity_hash (hr--fix 99)) 1) -1))
@@ -285,12 +303,28 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (dolist (k keys)
       (setq hr--calls nil)
       (should (= (wf_bytecode_switch_find tb (hr--fix k) 1) (1+ (cl-position k keys))))
-      (should (<= (hr--n) 0)))
+      (should (equal (hr--accessor-calls)
+                     '(nl_ht_data_slot nl_ht_meta_slot))))
     (should (= (wf_bytecode_switch_find tb (hr--fix 42) 1) 0))
     ;; a symbol object key, hashed by the stubbed symbol hash
     (let* ((s (hr--sym "foo")) (meta (cadr b)) (pairs (hr--vget meta 11)))
       (should (= (wf_bytecode_switch_find tb s 1) 0))
       (ignore pairs))))
+
+(ert-deftest hr-find-accessor-negative-control ()
+  (hr--setup)
+  (let* ((built (hr--build "eq" -102 '(5 6 7)))
+         (table (car built))
+         (key (hr--fix 5)))
+    (setq hr--calls nil)
+    (should (= (nl_ht_find_index table key (bf_identity_hash key) 1) 0))
+    (should (equal (hr--accessor-calls)
+                   '(nl_ht_data_slot nl_ht_meta_slot)))
+    ;; An actual unexpected helper call must fail the acceptance predicate.
+    (setq hr--calls nil)
+    (nl_word_payload table)
+    (should-not (equal (hr--accessor-calls)
+                       '(nl_ht_data_slot nl_ht_meta_slot)))))
 
 (ert-deftest hr-identity-hash ()
   (hr--setup)

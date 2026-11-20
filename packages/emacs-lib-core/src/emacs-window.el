@@ -358,7 +358,7 @@ Wraps around at the beginning."
 (defun emacs-window-get-buffer-window (buffer-or-name &optional _all-frames)
   "Return the first window currently displaying BUFFER-OR-NAME, or nil."
   (let ((bufs (cond
-               ((nelisp-ec-buffer-p buffer-or-name)
+               ((bufferp buffer-or-name)
                 (list buffer-or-name))
                ((stringp buffer-or-name)
                 (let ((b (cdr (assoc buffer-or-name nelisp-ec--buffers))))

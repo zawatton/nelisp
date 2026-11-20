@@ -60,6 +60,8 @@ length are at +16 and +24.")
   "Immutable GC-traced positioned symbol. Slot +8 points to a 40-byte box:
 inline bare-symbol Sexp at box+0, signed fixnum position at box+32.
 Clones retain box identity; marking and image relocation trace the bare symbol.")
+(defconst nelisp-sexp-layout-tag-sub-char-table 24
+  "Private managed sub-char-table kind with a fixed four-WORD traced body.")
 
 ;; predate the namespace boundary and use private names across files; new ABI
 ;; entries do not need to extend that conceded private-name escape surface.

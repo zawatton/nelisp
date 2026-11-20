@@ -150,7 +150,11 @@
 
 ;;;; --- error conditions ---------------------------------------------------
 
-(define-error 'nl-ffi-error "NeLisp FFI error")
+(unless (featurep 'nl-ffi-memory)
+  (load (expand-file-name
+         "nl-ffi-memory.el"
+         (or (and load-file-name (file-name-directory load-file-name))
+             default-directory))))
 
 (define-error 'nl-ffi-unavailable
   "nl-ffi-call is not available in this build/host"

@@ -598,7 +598,19 @@ invoked beyond reading `default-directory' for the seed CWD."
            (dd-windows-p (or nelisp-ec-file-name-drive-letters dd-home-p))
            (dd-path (if (nelisp-ec--path-absolute-p dd-path dd-windows-p)
                         dd-path
-                      (concat "/" dd-path)))
+                      ;; GNU resolves a relative DEFAULT-DIR against the
+                      ;; ambient `default-directory'.  Re-enter this helper
+                      ;; only with an absolute base, so the recursive call
+                      ;; terminates and keeps drive/tilde handling above.
+                      (let ((ambient (and (boundp 'default-directory)
+                                          default-directory)))
+                        (if (and (stringp ambient)
+                                 (nelisp-ec--path-absolute-p
+                                  ambient dd-windows-p))
+                            (nelisp-ec-expand-file-name dd-path ambient)
+                          ;; Preserve the historical root fallback when no
+                          ;; usable absolute ambient directory is available.
+                          (concat "/" dd-path)))))
            (seed (if (nelisp-ec--path-absolute-p
                       name-path
                       (or nelisp-ec-file-name-drive-letters name-home-p))

@@ -55,11 +55,13 @@
       (let* ((buffer (current-buffer))
              (ext (gethash buffer emacs-buffer--state))
              (stack (and ext (emacs-buffer--labeled-restrictions buffer))))
-	(when (and stack (eq label (caar stack)))
+        (when (and stack (eq label (caar stack)))
           (emacs-buffer-builtins--retain-label-stack (cdr stack))
           (emacs-buffer--set-labeled-restrictions buffer (cdr stack))
           (emacs-buffer-builtins--release-label-stack stack))
-	(widen)))))
+        ;; The public primitive may bypass the Lisp advice on `nelisp-widen'.
+        ;; Apply the same label-aware narrowing bridge directly in that case.
+        (emacs-buffer-builtins--restricted-widen #'nelisp-widen buffer)))))
 
 (unless (fboundp 'set-buffer-local-toplevel-value)
   (defun set-buffer-local-toplevel-value (&rest arguments)

@@ -1316,10 +1316,80 @@ are cleaned up by `find-file-noselect' on next visit.")
            (fboundp 'make-variable-buffer-local))
   (unless (boundp 'buffer-file-truename)
     (set-default 'buffer-file-truename nil))
+  (defvar buffer-file-number nil
+    "The inode number and device of the file visited in this buffer.
+The value is a list of the form (INODENUM DEVICE), or nil for a new file.")
+  (defvar buffer-save-without-query nil
+    "Non-nil means `save-some-buffers' should save this buffer without asking.")
   (dolist (--var-- '(buffer-file-name buffer-file-truename))
     (unless (local-variable-if-set-p --var--)
       (make-variable-buffer-local --var--))
-    (put --var-- 'permanent-local t)))
+    (put --var-- 'permanent-local t))
+  (dolist (--var-- '(buffer-file-number buffer-save-without-query))
+    (unless (local-variable-if-set-p --var--)
+      (make-variable-buffer-local --var--)))
+  (put 'buffer-file-number 'permanent-local t))
+
+;; Unlike an ordinary automatically-local variable, `buffer-file-name' is
+;; intrinsically local in every GNU buffer and starts nil there, regardless
+;; of its mutable default.  The standalone substrate's auto-local redirect
+;; creates a local slot only after assignment, so initialize each genuinely
+;; new native buffer before user code can observe its inherited default.
+(when (and (emacs-fileio-builtins--standalone-p)
+           (fboundp 'nelisp--repr)
+           (fboundp 'nelisp-generate-new-buffer)
+           (fboundp 'nelisp-get-buffer-create)
+           (fboundp 'nelisp-get-buffer)
+           (fboundp 'local-variable-p))
+  (defun emacs-fileio-builtins--initialize-new-buffer-file-name (buffer)
+    "Give fresh native BUFFER its intrinsic nil `buffer-file-name' local."
+    (when (and (buffer-live-p buffer)
+               (not (local-variable-p 'buffer-file-name buffer)))
+      (let ((old (current-buffer)))
+        (unwind-protect
+            (progn
+              (set-buffer buffer)
+              ;; Assignment to this auto-local variable creates its real
+              ;; per-buffer slot; this is not merely a getter-side default.
+              (setq buffer-file-name nil))
+          (when (and old (buffer-live-p old))
+            (set-buffer old)))))
+    buffer)
+
+  (unless (get 'nelisp-generate-new-buffer
+               'emacs-fileio-builtins--buffer-file-name-initialized)
+    (let ((original (symbol-function 'nelisp-generate-new-buffer)))
+      (fset 'nelisp-generate-new-buffer
+            (lambda (&rest arguments)
+              (let ((buffer (apply original arguments)))
+                (condition-case failure
+                    (emacs-fileio-builtins--initialize-new-buffer-file-name
+                     buffer)
+                  (error
+                   (when (buffer-live-p buffer)
+                     (condition-case nil (kill-buffer buffer) (error nil)))
+                   (signal (car failure) (cdr failure))))
+                buffer)))
+      (put 'nelisp-generate-new-buffer
+           'emacs-fileio-builtins--buffer-file-name-initialized t)))
+
+  (unless (get 'nelisp-get-buffer-create
+               'emacs-fileio-builtins--buffer-file-name-initialized)
+    (let ((original (symbol-function 'nelisp-get-buffer-create)))
+      (fset 'nelisp-get-buffer-create
+            (lambda (&rest arguments)
+              (let* ((existing (nelisp-get-buffer (car arguments)))
+                     (buffer (apply original arguments)))
+                (condition-case failure
+                    (emacs-fileio-builtins--initialize-new-buffer-file-name
+                     buffer)
+                  (error
+                   (when (and (not existing) (buffer-live-p buffer))
+                     (condition-case nil (kill-buffer buffer) (error nil)))
+                   (signal (car failure) (cdr failure))))
+                buffer)))
+      (put 'nelisp-get-buffer-create
+           'emacs-fileio-builtins--buffer-file-name-initialized t))))
 
 (when (emacs-fileio-builtins--install-function-p 'buffer-file-name)
   (defun buffer-file-name (&optional buffer)

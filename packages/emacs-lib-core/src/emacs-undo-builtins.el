@@ -99,6 +99,18 @@ preserve any existing undo history.  Return nil."
 Enabling undo and recording insertions create a buffer-local binding.
 The prefixed undo substrate has separate per-buffer storage."))
 
+;; Standalone swaps buffer values through the per-buffer registry instead of
+;; intercepting primitive `setq'.  Register the public variable only after
+;; its owning default exists, and only once: the registration snapshots that
+;; default, so repeating it after a buffer-local edit would freeze that edit
+;; as the default for future buffers.
+(when (and (or (not (boundp 'emacs-version))
+               (fboundp 'nelisp--write-stdout-bytes))
+           (fboundp 'make-variable-buffer-local)
+           (boundp 'emacs-buffer--variable-buffer-local)
+           (not (memq 'buffer-undo-list emacs-buffer--variable-buffer-local)))
+  (make-variable-buffer-local 'buffer-undo-list))
+
 ;; GNU Emacs defines these in undo.c.  Keep the definitions here beside the
 ;; `buffer-undo-list' compatibility surface, and leave every host value intact.
 (unless (boundp 'undo-limit)

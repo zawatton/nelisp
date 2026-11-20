@@ -256,7 +256,16 @@ Hash at most nine words using native byte access, without copying NAME."
   (defalias 'nelisp--obarray-intern #'emacs-symbol--obarray-intern)
   (defalias 'unintern #'emacs-symbol--unintern)
   (defalias 'mapatoms #'emacs-symbol--mapatoms)
-  (defalias 'obarray-clear #'emacs-symbol--obarray-clear))
+  (defalias 'obarray-clear #'emacs-symbol--obarray-clear)
+  ;; The native `intern' stores a symbol in a user obarray's name table
+  ;; without recording it in the bucket chains `mapatoms' walks.
+  (unless (fboundp 'emacs-symbol--native-intern)
+    (fset 'emacs-symbol--native-intern (symbol-function 'intern)))
+  (defun intern (name &optional obarray)
+    "Return the canonical symbol named NAME, interning it if necessary."
+    (if (and obarray (stringp name) (emacs-symbol--obarray-p obarray))
+        (emacs-symbol--obarray-intern name obarray)
+      (emacs-symbol--native-intern name obarray))))
 
 
 (unless (fboundp 'intern-soft)

@@ -2466,6 +2466,27 @@
     (garbage-collect)
     (list (char-table-subtype table) (aref table 0) (aref table 17)
           (char-table-extra-slot table 0) (eq (aref table 18) table))))
+
+;; Public identity of same-named record payloads survives the two table
+;; writes that used to collide with private topology records: a full ASCII
+;; span and a whole-table fill.
+(list
+ (let ((payload (record 'emacs-char-table--topology-node
+                        (make-vector 128 'payload-sentinel)))
+       (table (make-char-table 'par-topology-payload-ascii nil)))
+   (set-char-table-range table '(0 . 127) payload)
+   (and (eq (aref table 0) payload)
+        (eq (aref table 17) payload)
+        (eq (aref table 127) payload)))
+ (let ((payload (record 'emacs-char-table--topology-node
+                        (make-vector 128 'payload-sentinel)))
+       (table (make-char-table 'par-topology-payload-whole nil)))
+   (set-char-table-range table t payload)
+   (and (eq (aref table 0) payload)
+        (eq (aref table 17) payload)
+        (eq (aref table 127) payload)
+        (eq (aref table 128) payload)
+        (eq (aref table 4096) payload))))
  ;; Physical compatibility values remain valid WORDs through catch and
  ;; construction, including nil and signed integer endpoints.
  (let ((answers nil))

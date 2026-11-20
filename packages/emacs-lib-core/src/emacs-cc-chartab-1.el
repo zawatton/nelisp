@@ -57,6 +57,35 @@
       (signal 'wrong-type-argument (list 'functionp test)))
     nil))
 
+;; The prelude optimizer operates on NeLisp's native char-table storage.
+;; The emacs-char-table package also exposes tagged Lisp-owned tables, for
+;; which the default optimizer is a logical no-op: it may compact native
+;; storage, but must not change any character's value.  Keep the previous
+;; optimizer for native tables and foreign calls.  Owned tables with an
+;; explicit comparator use their Lisp topology so partial mutations and
+;; cache publication remain visible if the comparator signals.
+(defvar emacs-cc-chartab-1--previous-optimize-char-table
+  (and (fboundp 'optimize-char-table)
+       (symbol-function 'optimize-char-table)))
+
+(when (and (fboundp 'nelisp--chartab-standalone-p)
+           (nelisp--chartab-standalone-p)
+           emacs-cc-chartab-1--previous-optimize-char-table)
+  (defalias 'optimize-char-table
+    (lambda (char-table &optional test)
+      "Optimize CHAR-TABLE, preserving owned-table mutation semantics.
+TEST defaults to `equal'; custom owned-table calls use its topology helper."
+      (if (and (fboundp 'emacs-char-table--owned-p)
+               (emacs-char-table--owned-p char-table))
+          (if (null test)
+              nil
+            (if (fboundp 'emacs-char-table--owner-optimize)
+                (emacs-char-table--owner-optimize char-table test)
+              (funcall emacs-cc-chartab-1--previous-optimize-char-table
+                       char-table test)))
+        (funcall emacs-cc-chartab-1--previous-optimize-char-table
+                 char-table test)))))
+
 (unless (fboundp 'unicode-property-table-internal)
   (defun unicode-property-table-internal (prop)
     "Return a char-table for Unicode character property PROP; use `get-unicode-property-internal' and `put-unicode-property-internal' instead of `aref' and `aset' to get and put an element value."

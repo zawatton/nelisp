@@ -121,7 +121,9 @@ Slots:
   (modified-tick 0)
   (text-tick     0)
   (base-buffer   nil)
-  (overlays      nil))
+  (overlays      nil)
+  (property-delta 0)
+  (interval-root-present nil))
 
 (defun emacs-buffer--set-ext-locals (ext value)
   "Set EXT's locals without expanding a generalized place on each switch."
@@ -256,6 +258,99 @@ killed buffers' state.")
             (puthash buf (emacs-buffer--ext-make) emacs-buffer--state)
           (signal 'wrong-type-argument (list 'buffer-live-p buf))))))
 
+(defun emacs-buffer--native-property-mapping-changed-p
+    (plist request remove-p)
+  "Return non-nil if REQUEST changes PLIST under native property rules."
+  (let ((rest request)
+        changed)
+    (while (and rest (not changed))
+      (let* ((key (car rest))
+             (entry (plist-member plist key)))
+        (if remove-p
+            (when entry
+              (setq changed t))
+          (unless (and entry (eq (cadr entry) (cadr rest)))
+            (setq changed t))))
+      (setq rest (if remove-p (cdr rest) (cddr rest))))
+    changed))
+
+(defun emacs-buffer--native-property-range-mapping-changed-p
+    (intervals start end request remove-p)
+  "Return whether REQUEST changes mappings across [START, END)."
+  (when (< start end)
+    (let ((cursor start)
+          changed)
+      (while (and intervals (< cursor end) (not changed))
+        (let* ((cell (car intervals))
+               (cell-start (emacs-buffer--tp-start cell))
+               (cell-end (emacs-buffer--tp-end cell)))
+          (cond
+           ((<= cell-end cursor) nil)
+           ((>= cell-start end) (setq intervals nil))
+           (t
+            (when (< cursor cell-start)
+              (setq changed
+                    (emacs-buffer--native-property-mapping-changed-p
+                     nil request remove-p)))
+            (unless changed
+              (setq changed
+                    (emacs-buffer--native-property-mapping-changed-p
+                     (emacs-buffer--tp-plist cell) request remove-p)))
+            (setq cursor (min end cell-end)))))
+        (setq intervals (cdr intervals)))
+      (when (and (not changed) (< cursor end))
+        (setq changed
+              (emacs-buffer--native-property-mapping-changed-p
+               nil request remove-p)))
+      changed)))
+
+(defun emacs-buffer--native-property-range-changed-p
+    (operation intervals start end payload interval-root-present)
+  "Return whether OPERATION changes native properties in [START, END)."
+  (when (< start end)
+    (pcase operation
+      ('set (and (or (car payload) interval-root-present) t))
+      ('put
+       (emacs-buffer--native-property-range-mapping-changed-p
+        intervals start end (list (car payload) (cadr payload)) nil))
+      ('add
+       (emacs-buffer--native-property-range-mapping-changed-p
+        intervals start end (car payload) nil))
+      ('remove
+       (emacs-buffer--native-property-range-mapping-changed-p
+        intervals start end
+        (emacs-buffer--keys-from-arg (car payload)) t))
+      (_ nil))))
+
+(defun emacs-buffer--native-property-owner (buf)
+  "Return BUF's native text-property owner without creating sidecar state."
+  (let* ((ext (gethash buf emacs-buffer--state))
+         (base (or (and ext (emacs-buffer--ext-base-buffer ext)) buf)))
+    base))
+
+(defun emacs-buffer--native-property-state (buf &optional create)
+  "Return BUF's native property state, creating it only when CREATE is non-nil."
+  (let ((owner (emacs-buffer--native-property-owner buf)))
+    (if create
+        (emacs-buffer--ensure-text-property-ext owner)
+      (gethash owner emacs-buffer--state))))
+
+(defun emacs-buffer--native-property-text-commit (buf full-size mapping)
+  "Publish MAPPING after a successful text operation on native BUF."
+  (when (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buf)
+             (fboundp 'buffer-live-p) (buffer-live-p buf))
+    (let* ((target-ext (emacs-buffer--ensure-text-property-ext buf))
+           (owner-ext (emacs-buffer--native-property-state buf t))
+           (mapping (if (zerop full-size) nil mapping)))
+      (emacs-buffer--set-ext-text-props target-ext mapping)
+      (emacs-buffer--set-ext-text-props owner-ext mapping)
+      (cond
+       ((zerop full-size)
+        (setf (emacs-buffer--ext-interval-root-present owner-ext) nil))
+       (mapping
+        (setf (emacs-buffer--ext-interval-root-present owner-ext) t))))
+    nil))
+
 (defun emacs-buffer--native-buffer-text-property-mutation
     (operation buf start end &rest payload)
   "Mirror native-buffer text-property OPERATION into BUF's sidecar."
@@ -264,7 +359,15 @@ killed buffers' state.")
   (unless (and (integerp start) (integerp end) (<= start end))
     (signal 'wrong-type-argument (list 'integerp start end)))
   (let* ((ext (emacs-buffer--ensure-text-property-ext buf))
-         (intervals (emacs-buffer--ext-text-props ext))
+         (owner-ext (emacs-buffer--native-property-state buf t))
+         (intervals (emacs-buffer--ext-text-props owner-ext))
+         (prior-root
+          (and (or (emacs-buffer--ext-interval-root-present owner-ext)
+                   intervals)
+               t))
+         (changed
+          (emacs-buffer--native-property-range-changed-p
+           operation intervals start end payload prior-root))
          (updated
           (pcase operation
             ('put (emacs-buffer--tp-add intervals start end
@@ -277,8 +380,13 @@ killed buffers' state.")
                       (emacs-buffer--tp-clip intervals start end)
                     (emacs-buffer--tp-merge intervals start end (car payload))))
             (_ intervals))))
-    (setf (emacs-buffer--ext-text-props ext) updated)
+    (emacs-buffer--set-ext-text-props owner-ext updated)
+    (emacs-buffer--set-ext-text-props ext updated)
     (cl-incf (emacs-buffer--ext-modified-tick ext))
+    (when changed
+      (cl-incf (emacs-buffer--ext-property-delta owner-ext)))
+    (setf (emacs-buffer--ext-interval-root-present owner-ext)
+          (and (or prior-root (and (< start end) updated)) t))
     nil))
 
 ;; Global-cell access: use the NeLisp primitives when present and fall back to
@@ -457,6 +565,31 @@ fallback is a no-op."
   (when (fboundp 'nelisp--env-globals-set-value)
     (nelisp--env-globals-set-value sym value)))
 
+(defun emacs-buffer--native-local-cell (symbol buffer)
+  "Return SYMBOL's native private local cell in BUFFER, or nil.
+The evaluator keeps buffer-local values in private cell symbols.  Resolve
+that cell in Lisp after selecting BUFFER; the native top-level operations
+accept only the resolved cell and never select a buffer themselves."
+  (when (and (fboundp 'nelisp--env-globals-op)
+             (fboundp 'nelisp-buffer-local--redirect-vector))
+    (let* ((redirect (nelisp-buffer-local--redirect-vector symbol))
+           (pair (and redirect (assq buffer (aref redirect 1)))))
+      (cdr pair))))
+
+(defun emacs-buffer-buffer-local-toplevel-value (symbol buffer)
+  "Return SYMBOL's native top-level value in BUFFER, or nil if unavailable.
+When a native local cell exists, return (t . VALUE).  A nil VALUE is
+therefore distinct from the absence of a native local cell.  Signal
+`void-variable' when that local cell is unbound."
+  (let ((native-cell (emacs-buffer--native-local-cell symbol buffer)))
+    (when native-cell
+      (let ((boxed (with-current-buffer buffer
+                     (nelisp--env-globals-op
+                      'variable-toplevel-value native-cell))))
+        (if boxed
+            (cons t (car boxed))
+          (signal 'void-variable (list symbol)))))))
+
 ;;;###autoload
 (defun emacs-buffer-set-buffer-local-value (sym buf value)
   "Set the buffer-local binding of SYM in BUF to VALUE.
@@ -481,15 +614,25 @@ this helper (or `make-local-variable' + global `setq')."
       (puthash sym cell index)
       (setcar (gethash ext emacs-buffer--local-indexes)
               (emacs-buffer--ext-locals ext)))
-    ;; When BUF is current its live global cell is the swap source of truth;
-    ;; keep it in step so the next swap-out does not overwrite the new cell
-    ;; with the stale live value.
-    (when (and (boundp sym)
-               (eq buf (if (fboundp 'nelisp--repr)
-                           (current-buffer)
-                         (nelisp-ec-current-buffer))))
-      (set sym value)
-      (puthash sym value emacs-buffer--swapped-in))
+    ;; Keep the evaluator's private cell in step without writing through an
+    ;; active dynamic binding.  The native operation updates the oldest saved
+    ;; cell (or its mirror base cell); selecting BUF remains a Lisp concern.
+    (let ((native-cell (emacs-buffer--native-local-cell sym buf)))
+      (when native-cell
+        (with-current-buffer buf
+          (nelisp--env-globals-op 'variable-set-toplevel native-cell value)))
+      ;; Without a native private cell, preserve the legacy current-buffer
+      ;; synchronization path.
+      (when (and (not native-cell) (boundp sym)
+                 (eq buf (if (fboundp 'nelisp--repr)
+                             (current-buffer)
+                           (nelisp-ec-current-buffer))))
+        (set sym value))
+      (when (and (boundp sym)
+                 (eq buf (if (fboundp 'nelisp--repr)
+                             (current-buffer)
+                           (nelisp-ec-current-buffer))))
+        (puthash sym (symbol-value sym) emacs-buffer--swapped-in)))
     value))
 
 (defun emacs-buffer-set-buffer-local-toplevel-value (symbol value &optional buffer)
@@ -510,10 +653,10 @@ this helper (or `make-local-variable' + global `setq')."
                         (cons t (emacs-buffer--global-value symbol))
                       (cons nil nil))
              emacs-buffer--default-values))
+  ;; Materialize the binding in both the native runtime and the sidecar.
+  (with-current-buffer buffer
+    (make-local-variable symbol))
   (emacs-buffer-set-buffer-local-value symbol buffer value)
-  (when (eq buffer (current-buffer))
-    (emacs-buffer--global-set symbol value)
-    (puthash symbol value emacs-buffer--swapped-in))
   nil)
 
 ;;;###autoload
@@ -2034,7 +2177,13 @@ Checks read-only text and shifts/expands text-property intervals."
                 (emacs-buffer--tp-after-insert
                  (emacs-buffer--ext-text-props ext) start length))
           (emacs-buffer--insert-string-properties ext start strings)
-          (emacs-buffer--increment-ext-modified-tick ext))))))
+          (emacs-buffer--increment-ext-modified-tick ext)))
+      (when (and (fboundp 'buffer-live-p) (buffer-live-p buffer))
+        (with-current-buffer buffer
+          (let ((ext (gethash buffer emacs-buffer--state)))
+            (emacs-buffer--native-property-text-commit
+             buffer (buffer-size)
+             (and ext (emacs-buffer--ext-text-props ext)))))))))
 
 (defun emacs-buffer--property-current-buffer ()
   "Return the active native buffer owner, falling back to the compat owner."
@@ -2097,26 +2246,32 @@ Checks read-only text and shifts/expands text-property intervals."
 (defun emacs-buffer--copy-char-table (table)
   "Copy TABLE's sparse storage, sharing its values and parent.
 Preserve the stored extra-slot count independently of subtype properties."
-  (let ((copy (make-vector 7 nil))
-        (i 0))
-    ;; Ordinary array access to a tagged table addresses characters, not slots.
-    (while (< i 7)
-      (emacs-char-table--raw-set copy i (emacs-char-table--raw-ref table i))
-      (setq i (1+ i)))
-    (dolist (slot (list emacs-char-table--i-ascii emacs-char-table--i-extra))
+  (if (and (fboundp 'emacs-char-table--owned-p)
+           (emacs-char-table--owned-p table)
+           (fboundp 'emacs-char-table--copy-storage))
+      (emacs-char-table--copy-storage table)
+    (let ((copy (make-vector 7 nil))
+          (i 0))
+      ;; Ordinary array access to a tagged table addresses characters, not slots.
+      (while (< i 7)
+        (emacs-char-table--raw-set copy i (emacs-char-table--raw-ref table i))
+        (setq i (1+ i)))
+      (dolist (slot (list emacs-char-table--i-ascii emacs-char-table--i-extra))
+        (emacs-char-table--raw-set
+         copy slot (copy-sequence (emacs-char-table--raw-ref table slot))))
       (emacs-char-table--raw-set
-       copy slot (copy-sequence (emacs-char-table--raw-ref table slot))))
-    (emacs-char-table--raw-set
-     copy emacs-char-table--i-ranges
-     (mapcar (lambda (entry) (cons (car entry) (cdr entry)))
-             (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
-    copy))
+       copy emacs-char-table--i-ranges
+       (mapcar (lambda (entry) (cons (car entry) (cdr entry)))
+               (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
+      copy)))
 
 (defun emacs-buffer--copy-sequence-around (orig sequence &rest args)
-  "Copy sparse char-tables and preserve copied strings' sidecar runs."
+  "Copy sparse char-tables and preserve copied strings' sidecar runs.
+Delegate native char-tables to ORIG."
   (let ((result (if (and (null args)
                          (fboundp 'emacs-char-table-p)
-                         (emacs-char-table-p sequence))
+                         (emacs-char-table-p sequence)
+                         (not (emacs-char-table--native-p sequence)))
                     (emacs-buffer--copy-char-table sequence)
                   (apply orig sequence args))))
     (when (and (stringp sequence) (stringp result)
@@ -2148,7 +2303,8 @@ Checks read-only text and shifts/shrinks text-property intervals."
       (error "Marker does not point anywhere")))
   (setq start (emacs-buffer--pos-number start)
         end (emacs-buffer--pos-number end))
-  (let* ((b (emacs-buffer--current))
+  (let* ((target (current-buffer))
+         (b (emacs-buffer--current))
          (s (min start end))
          (e (max start end))
          (ext (emacs-buffer--ensure-ext b)))
@@ -2158,7 +2314,14 @@ Checks read-only text and shifts/shrinks text-property intervals."
         (emacs-buffer--set-ext-text-props
          ext (emacs-buffer--tp-after-delete
                (emacs-buffer--ext-text-props ext) s e))
-        (emacs-buffer--increment-ext-modified-tick ext)))))
+        (emacs-buffer--increment-ext-modified-tick ext))
+      (when (and (fboundp 'buffer-live-p) (buffer-live-p target))
+        (with-current-buffer target
+          (let ((target-ext (gethash target emacs-buffer--state)))
+            (emacs-buffer--native-property-text-commit
+             target (buffer-size)
+             (and target-ext
+                  (emacs-buffer--ext-text-props target-ext)))))))))
 
 (advice-add 'nelisp-ec-insert        :after #'emacs-buffer--bump-text-tick-advice)
 (advice-add 'nelisp-ec-delete-region :after #'emacs-buffer--bump-text-tick-advice)
@@ -2182,11 +2345,18 @@ sidecar authoritative also prevents obsolete native properties from being
 read back after a subsequent insertion.  Failed erasures retain their state."
   (let ((buffer (current-buffer)))
     (prog1 (apply orig args)
-      (let ((ext (gethash buffer emacs-buffer--state)))
-        (when ext
-          (emacs-buffer--set-ext-text-props ext nil)
-          (emacs-buffer--increment-ext-modified-tick ext)
-          (cl-incf (emacs-buffer--ext-text-tick ext)))))))
+      (when (and (fboundp 'buffer-live-p) (buffer-live-p buffer))
+        (with-current-buffer buffer
+          (let* ((ext (gethash buffer emacs-buffer--state))
+                 (full-size (buffer-size))
+                 (mapping (and ext (emacs-buffer--ext-text-props ext))))
+            (when ext
+              (when (zerop full-size)
+                (emacs-buffer--set-ext-text-props ext nil))
+              (emacs-buffer--increment-ext-modified-tick ext)
+              (cl-incf (emacs-buffer--ext-text-tick ext)))
+            (emacs-buffer--native-property-text-commit
+             buffer full-size (if (zerop full-size) nil mapping))))))))
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'erase-buffer))

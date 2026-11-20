@@ -323,6 +323,8 @@ Thin helper so callers do not need to know the builtins' state table."
                  (or buffer-or-name "*scratch*"))))
     (unless buffer
       (signal 'error (list "No buffer selected")))
+    (when (fboundp 'emacs-window-set-window-buffer)
+      (emacs-window-set-window-buffer nil buffer))
     (emacs-fileio--apply-buffer-state buffer)
     buffer))
 
@@ -452,24 +454,115 @@ NEWNAME must be a nonempty string."
 (defun kill-buffer (&optional buffer-or-name)
   "Kill BUFFER-OR-NAME, defaulting to the current buffer."
   (interactive)
-  (let* ((target (or (emacs-fileio--buffer-object buffer-or-name)
-                     (current-buffer))))
-    (unless target
-      (signal 'error '("No buffer to kill")))
-    (emacs-fileio--forget-buffer-state target)
-    (cond
-     ((and (fboundp 'nelisp-ec-buffer-p)
-           (nelisp-ec-buffer-p target)
-           (fboundp 'nelisp-ec-kill-buffer))
-      (nelisp-ec-kill-buffer target)
-      (when (and (null (current-buffer))
-                 (buffer-list))
-        (set-buffer (car (buffer-list))))
-      t)
-     (emacs-fileio--primitive-kill-buffer
-      (funcall emacs-fileio--primitive-kill-buffer target))
-     (t
-      (signal 'error '("kill-buffer is unavailable"))))))
+  (let ((target (if (null buffer-or-name)
+                    (current-buffer)
+                  (emacs-fileio--buffer-object buffer-or-name))))
+    (if (null target)
+        (if emacs-fileio--primitive-kill-buffer
+            (funcall emacs-fileio--primitive-kill-buffer buffer-or-name)
+          (signal 'error '("kill-buffer is unavailable")))
+      (cond
+       ((or (and (fboundp 'nelisp-ec-buffer-p)
+                 (nelisp-ec-buffer-p target)
+                 (fboundp 'nelisp-ec-kill-buffer))
+            (and (fboundp 'nelisp--repr)
+                 (fboundp 'buffer-live-p)
+                 (buffer-live-p target)
+                 (fboundp 'nelisp-kill-buffer)))
+        (let* ((caller (current-buffer))
+               (raw-kill (if (and (fboundp 'nelisp-ec-buffer-p)
+                                  (nelisp-ec-buffer-p target))
+                             #'nelisp-ec-kill-buffer
+                           #'nelisp-kill-buffer))
+               (result nil))
+          (unwind-protect
+              (progn
+                (set-buffer target)
+                (setq result
+                      (if (not (run-hook-with-args-until-failure
+                                'kill-buffer-query-functions))
+                          nil
+                        (if (not (emacs-fileio--buffer-live-p target))
+                            t
+                          (run-hooks 'kill-buffer-hook)
+                          ;; GNU runs the hook in the current buffer left by
+                          ;; query functions, then restores the caller.
+                          (when (emacs-fileio--buffer-live-p caller)
+                            (set-buffer caller))
+                          (if (not (emacs-fileio--buffer-live-p target))
+                              t
+                            (let ((alternate
+                                   (and (eq (current-buffer) target)
+                                        (other-buffer target))))
+                              (if (eq alternate target)
+                                  nil
+                                (when alternate
+                                  (set-buffer alternate))
+                                (let ((children
+                                       (delq nil
+                                             (mapcar
+                                              (lambda (process)
+                                                (let ((type
+                                                       (process-type process)))
+                                                  (when
+                                                      (and
+                                                       (eq (process-buffer process)
+                                                           target)
+                                                       (or
+                                                        (and
+                                                         (eq type 'real)
+                                                         (memq (process-status process)
+                                                               '(run stop))
+                                                         (integerp
+                                                          (process-id process))
+                                                         (> (process-id process)
+                                                            0))
+                                                        (memq type
+                                                              '(network serial
+                                                                        pipe))))
+                                                    process)))
+                                              (process-list)))))
+                                  (dolist (process children)
+                                    (when (and
+                                           (emacs-fileio--buffer-live-p target)
+                                           (eq (process-buffer process) target))
+                                      (let ((type (process-type process)))
+                                        (cond
+                                         ((eq type 'real)
+                                          (when (and
+                                                 (memq (process-status process)
+                                                       '(run stop))
+                                                 (integerp
+                                                  (process-id process))
+                                                 (> (process-id process) 0))
+                                            (signal-process process 'HUP)))
+                                         ((memq type '(network serial pipe))
+                                          (delete-process process))))))
+                                  (if (not (emacs-fileio--buffer-live-p target))
+                                      t
+                                    (emacs-fileio--forget-buffer-state target)
+                                    (funcall raw-kill target))))))))))
+            ;; Do not let cleanup replace a query or hook error.
+            (condition-case nil
+                (if (emacs-fileio--buffer-live-p caller)
+                    (set-buffer caller)
+                  (unless (emacs-fileio--buffer-live-p (current-buffer))
+                    (let ((alternate (other-buffer target)))
+                      (when (emacs-fileio--buffer-live-p alternate)
+                        (set-buffer alternate)))))
+              (error nil))
+            (condition-case nil
+                (unless (emacs-fileio--buffer-live-p (current-buffer))
+                  (let ((alternate (other-buffer target)))
+                    (when (emacs-fileio--buffer-live-p alternate)
+                      (set-buffer alternate))))
+              (error nil)))
+          result))
+       (emacs-fileio--primitive-kill-buffer
+        (emacs-fileio--forget-buffer-state target)
+        (funcall emacs-fileio--primitive-kill-buffer target))
+       (t
+        (signal 'error '("kill-buffer is unavailable")))))))
 
 ;;;###autoload
 (defun kill-buffer-and-window ()

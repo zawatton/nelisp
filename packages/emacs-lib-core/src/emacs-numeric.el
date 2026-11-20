@@ -240,8 +240,16 @@ Repeated multiplication / division by 2 — quadratic in |COUNT|."
          (cons 0.7853981633974483 3.061616997868383e-17) sum)
       sum)))
 
+;; `atan' may be fbound to a standalone primitive stub.  When the runtime
+;; exposes its FFI entry point, probe both public arities before trusting it;
+;; retain any implementation that can execute them, including GNU Emacs's.
 (unless (and (fboundp 'atan)
-             (not (get 'atan 'emacs-stub-bulk)))
+             (not (get 'atan 'emacs-stub-bulk))
+             (or (not (fboundp 'nl-ffi-call))
+                 (condition-case nil
+                          (and (numberp (atan 1.0))
+                               (numberp (atan 1.0 1.0)))
+                        (nelisp-unsupported-primitive nil))))
   (defun atan (y &optional x)
     "Return the inverse tangent of Y, or the angle of the vector (X, Y).
 With nil or omitted X, return the inverse tangent of Y in radians.

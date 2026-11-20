@@ -21,15 +21,21 @@ SYMBOL has no local binding or its local binding has no value."
       (signal 'wrong-type-argument (list 'symbolp symbol)))
     (let* ((buffer (emacs-cc-census-buffer-w101--buffer buffer))
            (cell (assq symbol (emacs-cc-census-buffer-w101--locals buffer))))
-      (unless cell
-        (signal 'void-variable (list symbol)))
-      (if (eq buffer (current-buffer))
-          ;; The evaluator's global-cell API bypasses dynamic bindings.
-          ;; The sidecar may be stale after an ordinary `set' or `setq'.
-          (if (nelisp--env-globals-is-bound symbol)
-              (nelisp--env-globals-get-value symbol)
-            (signal 'void-variable (list symbol)))
-        (cdr cell)))))
+      (cond
+       ((and (local-variable-p symbol buffer)
+             (fboundp 'emacs-buffer-buffer-local-toplevel-value))
+        (let ((native (emacs-buffer-buffer-local-toplevel-value
+                       symbol buffer)))
+          (if native
+              (cdr native)
+            (if cell (cdr cell)
+              (signal 'void-variable (list symbol))))))
+       (cell (cdr cell))
+       ;; Core buffer primitives can create local bindings without an
+       ;; extended sidecar cell.  Use their top-level accessor in that case.
+       ((local-variable-p symbol buffer)
+        (buffer-local-value symbol buffer))
+       (t (signal 'void-variable (list symbol)))))))
 
 (unless (fboundp 'buffer-local-variables)
   (defun buffer-local-variables (&optional buffer)

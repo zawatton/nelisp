@@ -176,7 +176,12 @@ RETURN-TYPE controls column names; EXECUTEP enables change counts."
 (defun emacs-sqlite--exec (db query)
   "Run QUERY on DB and return whether SQLite accepted it."
   (let ((handle (emacs-sqlite--handle db)))
-    (= (nl-ffi-call "sqlite3_exec" handle (emacs-sqlite--cstring query) 0 0 0) 0)))
+    (= (if (fboundp 'emacs-sqlite-ffi--call)
+           (emacs-sqlite-ffi--call "sqlite3_exec" handle
+                                   (emacs-sqlite--cstring query) 0 0 0)
+         (nl-ffi-call "sqlite3_exec" handle
+                      (emacs-sqlite--cstring query) 0 0 0))
+       0)))
 
 (unless (fboundp 'sqlite-open)
   (defun sqlite-open (&optional file readonly disable-uri)

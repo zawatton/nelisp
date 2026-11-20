@@ -133,6 +133,24 @@
 drained + sentinel-fired.  Populated by `make-process'; pruned by
 `delete-process' and by exit-detection inside the wait loop.")
 
+(defvar nelisp-process-adapter--names (make-hash-table :test 'eq :weakness 'key)
+  "Names for adapter-created processes, keyed by process identity.
+Each value is a cons so a recorded nil name is distinct from no entry.")
+
+(defun nelisp-process-adapter--name-entry (process)
+  "Return the private name entry for adapter-created PROCESS, if present."
+  (gethash process nelisp-process-adapter--names))
+
+(defun nelisp-process-adapter--name (process)
+  "Return adapter-created PROCESS's private name, or its core plist name."
+  (let ((entry (nelisp-process-adapter--name-entry process)))
+    (if entry (cdr entry) (process-get process :name))))
+
+(defvar nelisp-process-adapter--terminal-delivery-functions nil
+  "Optional handlers that may claim terminal notification for a process.
+Each function receives PROCESS and STATUS; a non-nil result means it
+handled delivery and suppresses this adapter's legacy sentinel path.")
+
 (defconst nelisp-process-adapter--poll-quantum 0.02
   "Sleep granularity (seconds) between zero-timeout `nelisp-process-poll'
 passes.  `nelisp-process-poll' (Doc 184 S1.1/S3.3) is a single
@@ -192,6 +210,14 @@ stays the authoritative signal, per the decode convention above)."
      ((= code 0) "finished\n")
      (t (format "exited abnormally with code %d\n" code)))))
 
+(defun nelisp-process-adapter--insert-default-sentinel (buffer name event)
+  "Insert a default process notification into live BUFFER.
+NAME and EVENT are already resolved by the owning process layer."
+  (when (and buffer (buffer-live-p buffer))
+    (with-current-buffer buffer
+      (goto-char (point-max))
+      (insert (format "\nProcess %s %s" name event)))))
+
 (defun nelisp-process-adapter--fire-sentinel (proc status)
   "Deliver STATUS (already Emacs-shaped, see
 `nelisp-process-adapter--sentinel-message') for PROC's termination.
@@ -215,14 +241,19 @@ as a live process whose buffer was killed out from under it on a
 host -- the default sentinel silently does nothing there too."
   (nelisp-process-buffer-drain-stderr proc)
   (unwind-protect
-      (let ((sentinel (process-get proc :sentinel)))
-        (if sentinel
-            (funcall sentinel proc status)
-          (let ((buffer (process-get proc :buffer)))
-            (when (and buffer (buffer-live-p buffer))
-              (with-current-buffer buffer
-                (goto-char (point-max))
-                (insert (format "\nProcess %s %s" (process-get proc :name) status)))))))
+      (let ((handlers nelisp-process-adapter--terminal-delivery-functions)
+            handled)
+        (while (and handlers (not handled))
+          (setq handled (funcall (car handlers) proc status)
+                handlers (cdr handlers)))
+        (unless handled
+          (let ((sentinel (process-get proc :sentinel)))
+            (if sentinel
+                (funcall sentinel proc status)
+              (nelisp-process-adapter--insert-default-sentinel
+               (process-get proc :buffer)
+               (nelisp-process-adapter--name proc)
+               status)))))
     (nelisp-process-buffer-close-stderr proc)))
 
 ;;; make-process: real :filter -------------------------------------------
@@ -260,7 +291,14 @@ at 2e3361b13: `(make-process :name \"e\" :command (list \"echo\" \"hi\")
                           (nelisp-process-buffer-stderr-command resolved stderr-buffer)
                         (list resolved nil nil)))
            (proc (condition-case err
-                     (apply #'nelisp-process-start (car transport))
+                     (if (or (eq (plist-get plist :connection-type) 'pty)
+                             (and (null (plist-get plist :connection-type))
+                                  (boundp 'process-connection-type)
+                                  process-connection-type))
+                         (if (fboundp 'emacs-process-posix-spawn-pty)
+                             (emacs-process-posix-spawn-pty (car transport))
+                           (error "make-process: genuine PTY provider unavailable (emacs-process-posix-spawn-pty)"))
+                       (apply #'nelisp-process-start (car transport)))
                    (error
                     (when (nth 2 transport) (delete-file (nth 2 transport)))
                     (when (nth 1 transport)
@@ -270,7 +308,9 @@ at 2e3361b13: `(make-process :name \"e\" :command (list \"echo\" \"hi\")
         (when (nth 2 transport) (delete-file (nth 2 transport)))
         (when (nth 1 transport) (nelisp-process-buffer-delete (nth 1 transport)))
         (error "Native process start failed"))
-      (process-put proc :name name)
+      ;; Keep public :name properties independent from the adapter's canonical
+      ;; name; process-mark may cause another layer to adopt process metadata.
+      (puthash proc (cons t name) nelisp-process-adapter--names)
       (process-put proc :sentinel sentinel)
       (process-put proc :stderr stderr-buffer)
       (process-put proc :filter filter)
@@ -1623,7 +1663,7 @@ honestly reads \"terminated\\n\" rather than Emacs's SIGKILL-derived
 \"killed\\n\") surfaces here unchanged rather than being duplicated."
   (signal 'error
           (list (format "Process %s not running: %s"
-                        (process-get process :name)
+                        (nelisp-process-adapter--name process)
                         (nelisp-process-adapter--sentinel-message process)))))
 
 (defun process-send-string (process string)

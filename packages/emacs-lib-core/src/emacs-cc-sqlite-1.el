@@ -56,9 +56,7 @@ STATEMENTS is a string containing 0 or more SQL statements."
            (code (emacs-sqlite-ffi--call
                   "sqlite3_exec" handle
                   (emacs-sqlite-ffi--cstring statements) 0 0 0)))
-      (unless (= code 0)
-        (signal 'sqlite-error (list (emacs-sqlite-ffi--errmsg handle))))
-      t)))
+      (= code 0))))
 
 (unless (fboundp 'sqlite-finalize)
   (defun sqlite-finalize (set)

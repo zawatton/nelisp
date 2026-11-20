@@ -108,6 +108,72 @@ operations; the symbol object itself never reaches Lisp."
         (aset redirect 1 (cons (cons buffer cell) (aref redirect 1)))
         (nelisp-buffer-local--note buffer (indirect-variable variable) cell)))
     variable))
+(defun nelisp-buffer-local--initialize-multibyte-cell (buffer flag)
+  "Initialize BUFFER's private enable-multibyte-characters cell to FLAG.
+Return the private cell.  This is a constructor operation and does not
+change the native multibyte table."
+  (let* ((variable (indirect-variable 'enable-multibyte-characters))
+         (owned (gethash buffer nelisp-buffer-local--owned))
+         (entry (assq variable owned))
+         (cell (cdr entry))
+         redirect)
+    (unless (buffer-live-p buffer)
+      (signal 'wrong-type-argument (list 'buffer-live-p buffer)))
+    (unless entry
+      ;; This is the constructor-only path proven to localize the constant
+      ;; metadata without changing its constant flag.
+      (setq redirect (nelisp--env-globals-op
+                      'variable-entry-slot-create variable 5))
+      (unless (vectorp redirect)
+        (setq redirect (nelisp--env-globals-op
+                        'variable-entry-slot-set variable
+                        (cons 5 (vector 'nelisp--current-buffer nil)))))
+      (unless (and (vectorp redirect)
+                   (eq (aref redirect 0) 'nelisp--current-buffer))
+        (error "Invalid multibyte redirect metadata"))
+      (let ((pair (assq buffer (aref redirect 1))))
+        (if pair
+            (setq cell (cdr pair))
+          (setq cell (nelisp-buffer-local--new-cell))
+          (set cell (and flag t))
+          (put cell 'nelisp--buffer-local-buffer buffer)
+          (put cell 'nelisp--buffer-local-variable variable)
+          (aset redirect 1 (cons (cons buffer cell) (aref redirect 1)))
+          (nelisp-buffer-local--note buffer variable cell)))
+      (unless (assq variable (gethash buffer nelisp-buffer-local--owned))
+        (nelisp-buffer-local--note buffer variable cell)))
+    (set cell (and flag t))
+    cell))
+(defun nelisp-buffer-local--clone (source target)
+  "Clone SOURCE's owned local values into TARGET using distinct cells."
+  (let ((snapshot
+         (mapcar (lambda (entry)
+                   (let ((cell (cdr entry)))
+                     (list (indirect-variable (car entry))
+                           (boundp cell)
+                           (and (boundp cell) (symbol-value cell)))))
+                 (copy-sequence (gethash source nelisp-buffer-local--owned)))))
+    (dolist (item snapshot)
+      (let* ((variable (car item))
+             (bound (cadr item))
+             (value (nth 2 item))
+             (target-entry (assq variable
+                                 (gethash target nelisp-buffer-local--owned)))
+             (target-cell (cdr target-entry)))
+        (unless target-entry
+          (when (eq variable 'enable-multibyte-characters)
+            (error "Target lacks its constructor-owned multibyte cell"))
+          (with-current-buffer target
+            (nelisp-buffer-local-make variable))
+          (setq target-entry
+                (assq variable (gethash target nelisp-buffer-local--owned)))
+          (unless target-entry
+            (error "Manager failed to publish cloned local %S" variable))
+          (setq target-cell (cdr target-entry)))
+        (if bound
+            (set target-cell value)
+          (makunbound target-cell))))
+    target))
 (defun nelisp-buffer-local-p (variable &optional buffer)
   "Return non-nil for an explicit local cell in BUFFER, including void cells."
   (or (eq (indirect-variable variable) 'enable-multibyte-characters)

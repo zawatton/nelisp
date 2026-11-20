@@ -174,4 +174,12 @@ FAMILY is nil, `ipv4' or `ipv6'; HINT supports `numeric'."
       (signal 'wrong-type-argument (list 'processp process)))
     (if (fboundp 'process-contact) (process-contact process :remote) nil)))
 
+(unless (fboundp 'process-query-on-exit-flag)
+  (defun process-query-on-exit-flag (process)
+    "Return the current value of query-on-exit flag for PROCESS."
+    (unless (processp process)
+      (signal 'wrong-type-argument (list 'processp process)))
+    (let ((flag (process-get process :noquery)))
+      (not flag))))
+
 (provide 'emacs-cc-process-1)

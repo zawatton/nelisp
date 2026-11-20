@@ -129,6 +129,9 @@ runtime-image process preload, which would re-enter `emacs-process-*' and
 recurse) never shadows the real primitive.  `defvar' (not `defconst') so a
 re-load after a wrapper leak keeps the original subr capture.")
 
+(defvar process-connection-type t
+  "Non-nil means subprocesses should use a pseudo-terminal by default.")
+
 (defvar emacs-process--fallback-processes nil
   "Process objects created by the standalone synchronous fallback.")
 
@@ -216,15 +219,13 @@ and anvil's socket daemon died the moment it bound one (measured
 
 (defun emacs-process--event-process-p (object)
   "Return non-nil when OBJECT belongs to the saved event-process owner."
-  (and (emacs-standalone-mode-p)
-       (let ((predicate (get 'processp 'emacs-process-events--event-owner)))
-         (and (functionp predicate) (funcall predicate object)))))
+  (let ((predicate (get 'processp 'emacs-process-events--event-owner)))
+    (and (functionp predicate) (funcall predicate object))))
 
 (defun emacs-process--event-process-list ()
   "Return the process list from the saved event-process owner, if loaded."
-  (and (emacs-standalone-mode-p)
-       (let ((owner (get 'process-list 'emacs-process-events--event-owner)))
-         (if (functionp owner) (funcall owner) nil))))
+  (let ((owner (get 'process-list 'emacs-process-events--event-owner)))
+    (if (functionp owner) (funcall owner) nil)))
 
 (defun emacs-process--event-status-reference (argument)
   "Resolve the process named by status ARGUMENT without changing its owner."
@@ -256,8 +257,7 @@ and anvil's socket daemon died the moment it bound one (measured
   "Return non-nil when saved event owner should handle SYM with ARGS.
 Only `process-status' has the broader Emacs argument forms (name, buffer,
 or nil); all other event operations require an event-owned process object."
-  (and (emacs-standalone-mode-p)
-       (functionp (get sym 'emacs-process-events--event-owner))
+  (and (functionp (get sym 'emacs-process-events--event-owner))
        (or (emacs-process--event-process-p (car args))
            ;; Strict object-only accessors must preserve the provider's
            ;; processp error for invalid arguments. Native, fallback, and
@@ -288,9 +288,14 @@ buffer and name live on the core plist, never in this layer's metadata."
 
 (defun emacs-process--native-prop (process key)
   "Return PROCESS's KEY from this layer's metadata, or the core plist."
-  (if (emacs-process--core-owned-p process)
-      (process-get process key)
-    (emacs-process--native-metadata process key)))
+  (let ((adapter-name
+         (and (eq key :name)
+              (fboundp 'nelisp-process-adapter--name-entry)
+              (nelisp-process-adapter--name-entry process))))
+    (cond (adapter-name (cdr adapter-name))
+          ((emacs-process--core-owned-p process)
+           (process-get process key))
+          (t (emacs-process--native-metadata process key)))))
 
 (defun emacs-process--native-set-prop (process key value)
   "Set PROCESS's KEY in this layer's metadata, or on the core plist."
@@ -449,23 +454,30 @@ explicit deletion, retaining NUL bytes and the requested buffer boundary."
           (nl-ffi-memory-release owner))))
     observed))
 
-(defun emacs-process--native-invoke-sentinel (process event)
+(defun emacs-process--native-invoke-sentinel (process event &optional state)
   "Run one notification with the asynchronous callback dynamic context."
   (let ((sentinel (emacs-process--native-metadata process :sentinel))
         (inhibit-quit t) (last-nonmenu-event t)
         (deactivate-mark (and (boundp 'deactivate-mark) deactivate-mark)))
-    (when (functionp sentinel)
-      (save-current-buffer
-        (save-match-data
-          (condition-case err
-              (funcall sentinel process event)
-            (error (if (and (boundp 'debug-on-error) debug-on-error)
-                       (signal (car err) (cdr err))
-                     (if (and (boundp 'command-error-function)
-                              (functionp command-error-function))
-                         (funcall command-error-function err "error in process sentinel: " nil)
-                       (message "error in process sentinel: %s"
-                                (error-message-string err)))))))))))
+    (if (functionp sentinel)
+        (save-current-buffer
+          (save-match-data
+            (condition-case err
+                (funcall sentinel process event)
+              (error (if (and (boundp 'debug-on-error) debug-on-error)
+                         (signal (car err) (cdr err))
+                       (if (and (boundp 'command-error-function)
+                                (functionp command-error-function))
+                           (funcall command-error-function err "error in process sentinel: " nil)
+                         (message "error in process sentinel: %s"
+                                  (error-message-string err))))))))
+      (when (and (null sentinel)
+                 (memq state '(stop exit signal))
+                 (fboundp 'nelisp-process-adapter--insert-default-sentinel))
+        (nelisp-process-adapter--insert-default-sentinel
+         (emacs-process--native-prop process :buffer)
+         (emacs-process--native-prop process :name)
+         event)))))
 
 (defun emacs-process--native-maybe-fire-sentinel (process)
   "Dispatch observed transitions without making a stop terminal."
@@ -501,8 +513,16 @@ explicit deletion, retaining NUL bytes and the requested buffer boundary."
           (emacs-process--native-drain-output process)
           (emacs-process--native-drain-stderr process))
         (setq observed t)
-        (emacs-process--native-invoke-sentinel process event)))
+        (emacs-process--native-invoke-sentinel process event state)))
     observed))
+
+(defun emacs-process--native-adapter-terminal-delivery (process _status)
+  "Claim adapter terminal delivery for PROCESS when this facade owns it."
+  (when (and (emacs-process--native-process-p process)
+             (emacs-process--native-metadata-cell process))
+    (emacs-process--native-maybe-fire-sentinel process)
+    ;; Ownership is independent of whether this call observed a new event.
+    t))
 
 (defun emacs-process--native-poll-event (process)
   "Return native PROCESS poll event as (READY EXITED EXIT-CODE), or nil."
@@ -1095,7 +1115,10 @@ unavailable and proceeds, rather than aborting the whole load."
                                                 delete buffer display
                                                 &rest args)
   "Synchronous program execution with input from a buffer region."
-  (if (and (emacs-standalone-mode-p)
+  ;; The NeLisp runtime binds `make-process' to a native subr, which fools
+  ;; the standalone heuristic; without a host `call-process-region' the
+  ;; delegate below would re-enter this function, so trust `nelisp--repr'.
+  (if (and (or (emacs-standalone-mode-p) (fboundp 'nelisp--repr))
            (emacs-process--standalone-capture-available-p))
       (emacs-process--standalone-call-process-region
        start end program delete buffer display args)
@@ -1514,7 +1537,7 @@ Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
   (emacs-process-send-control-signal process 'CONT current-group)
   (unless (emacs-process--native-metadata process :control-inhibited)
     (emacs-process--native-set-metadata process :stop-signal nil)
-    (emacs-process--native-invoke-sentinel process "run"))
+    (emacs-process--native-invoke-sentinel process "run" 'run))
   process)
 
 (defun emacs-process-kill-process (process)
@@ -1683,6 +1706,9 @@ unchanged.  Otherwise build a `call-process' invocation manually."
   "Send the current buffer's region START..END to PROCESS."
   (emacs-process-process-send-string
    process (buffer-substring-no-properties start end)))
+
+(add-hook 'nelisp-process-adapter--terminal-delivery-functions
+          #'emacs-process--native-adapter-terminal-delivery)
 
 (provide 'emacs-process)
 

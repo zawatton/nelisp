@@ -2,15 +2,16 @@
 
 ;;; Code:
 
-(defvar emacs-cc-category-1--docs (make-hash-table :test 'eq))
-
 (defun emacs-cc-category-1--docs-for (table)
-  (or (gethash table emacs-cc-category-1--docs)
-      (let ((v (make-vector 128 nil)))
-        (when (eq table (emacs-char-table-category-table))
-          (aset v ?\s "space for indent\nThis character counts as a space for indentation purposes."))
-        (puthash table v emacs-cc-category-1--docs)
-        v)))
+  "Return TABLE's category docstrings from char-table extra-slot 0."
+  (let ((docs (emacs-char-table-extra-slot table 0)))
+    (unless (and (vectorp docs) (= (length docs) 95))
+      (signal 'wrong-type-argument (list 'category-docstrings docs)))
+    (when (and (eq table (emacs-char-table-category-table))
+               (null (aref docs 0)))
+      (aset docs 0
+            "space for indent\nThis character counts as a space for indentation purposes."))
+    docs))
 
 (defun emacs-cc-category-1--category-p (category)
   (and (integerp category) (<= ?\s category) (<= category ?~)))
@@ -30,7 +31,7 @@ category table."
       (signal 'wrong-type-argument (list 'categoryp category)))
     (let* ((table (emacs-cc-category-1--table table))
            (docs (emacs-cc-category-1--docs-for table)))
-      (or (aref docs category)
+      (or (aref docs (- category ?\s))
           (and (= category ?A) "2-byte alnum\nAlphanumeric characters of 2-byte character sets")))) )
 
 (unless (fboundp 'category-set-mnemonics)
@@ -60,10 +61,11 @@ the current buffer's category table."
       (signal 'wrong-type-argument (list 'stringp docstring)))
     (let* ((table (emacs-cc-category-1--table table))
            (docs (emacs-cc-category-1--docs-for table))
-           (old (aref docs category)))
+           (index (- category ?\s))
+           (old (aref docs index)))
       (when old
         (signal 'error (list (format "Category ‘%c’ is already defined" category))))
-      (aset docs category docstring))
+      (aset docs index docstring))
     nil))
 
 (unless (fboundp 'get-unused-category)
@@ -75,7 +77,7 @@ it defaults to the current buffer's category table."
     (let* ((table (emacs-cc-category-1--table table))
            (docs (emacs-cc-category-1--docs-for table))
            (c ?\s))
-      (while (and (<= c ?~) (aref docs c)) (setq c (1+ c)))
+      (while (and (<= c ?~) (aref docs (- c ?\s))) (setq c (1+ c)))
       (and (<= c ?~) c))))
 
 (unless (fboundp 'make-category-set)
@@ -97,6 +99,29 @@ those categories."
             (signal 'wrong-type-argument (list 'categoryp category)))
           (aset set category t)))
       set)))
+
+;; The prelude's category primitives expect native char-tables.  When the
+;; emacs-lib vector char-tables are installed, point them at the emacs-lib
+;; standard and current tables so define-category and friends operate on the
+;; same objects `category-table' and `standard-category-table' return.
+(when (and (fboundp 'nelisp--category-standard)
+           (fboundp 'emacs-char-table-standard-category-table))
+  (defvar emacs-cc-category-1--standard-docs-p nil)
+  (defun nelisp--category-standard ()
+    "Return the emacs-lib standard category table with GNU's docstrings."
+    (let ((table (emacs-char-table-standard-category-table)))
+      (unless emacs-cc-category-1--standard-docs-p
+        (setq emacs-cc-category-1--standard-docs-p t)
+        (when (boundp 'nelisp--unicode-category-docstrings)
+          (let ((docs (emacs-char-table-extra-slot table 0)) (i 0))
+            (while (< i (length nelisp--unicode-category-docstrings))
+              (aset docs i (aref nelisp--unicode-category-docstrings i))
+              (setq i (1+ i))))))
+      table))
+  (defun nelisp--category-current ()
+    "Return the emacs-lib current category table."
+    (nelisp--category-standard)
+    (emacs-char-table-category-table)))
 
 (provide 'emacs-cc-category-1)
 ;;; emacs-cc-category-1.el ends here

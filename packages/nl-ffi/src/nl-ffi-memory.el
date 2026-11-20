@@ -13,6 +13,8 @@
 
 ;;; Code:
 
+(define-error 'nl-ffi-error "NeLisp FFI error")
+
 (declare-function syscall-direct "ext:nelisp-runtime"
                   (number a b c d e f))
 (declare-function nl-ffi-call "ext:nelisp-runtime" (name &rest args))

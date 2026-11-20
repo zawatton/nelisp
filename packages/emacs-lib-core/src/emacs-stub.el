@@ -1183,6 +1183,164 @@ without attempting to weave advice into existing function cells."
             (set-marker position nil))))
       nil)))
 
+(defvar emacs-stub--set-match-data-spine-owner nil
+  "Original standalone `set-match-data' function captured by the adapter.")
+(defvar emacs-stub--set-match-data-spine-installed nil
+  "Function object installed by `emacs-stub--install-set-match-data-spine-adapter'.")
+
+(defun emacs-stub--finite-match-data-spine (data)
+  "Signal like GNU Emacs when DATA is not a finite proper list.
+Only inspect cons-cell links; leave elements and the input cells untouched."
+  (let ((tail data)
+        (tortoise data)
+        (power 2)
+        (remaining 2))
+    (while tail
+      (unless (consp tail)
+        (signal 'wrong-type-argument (list 'listp tail)))
+      (setq tail (cdr tail)
+            remaining (1- remaining))
+      (if (= remaining 0)
+          (setq power (* 2 power)
+                remaining power
+                tortoise tail)
+        (when (and tail (eq tail tortoise))
+          (signal 'circular-list (list tail)))))))
+
+(defun emacs-stub--set-match-data-spine-adapter (list &optional reseat)
+  "Validate LIST's spine and apply its match registers in GNU element order.
+The captured setter remains the storage backend.  On an invalid element,
+restore the committed prefix and the untouched old suffix before signaling."
+  (condition-case err
+      (emacs-stub--finite-match-data-spine list)
+    (error
+     ;; GNU clears buffer provenance for listlike spine failures before it
+     ;; signals.  A scalar error does not enter that path.
+     (when (consp list)
+       (let ((saved (match-data t)))
+         (when (and saved (bufferp (car (last saved))))
+           (setq saved (butlast saved)))
+         (funcall emacs-stub--set-match-data-spine-owner saved nil)))
+     (signal (car err) (cdr err))))
+  (let* ((saved-data (match-data t))
+         (saved-values
+          (if (and saved-data (bufferp (car (last saved-data))))
+              (butlast saved-data)
+            saved-data))
+         (extent (/ (length list) 2))
+         (tail list)
+         (index 0)
+         (committed-reversed nil)
+         (desired-buffer nil)
+         (stopped nil)
+         (failed nil)
+         (bad-element nil))
+    (while (and tail (not stopped) (not failed))
+      (let ((start-cell tail)
+            (start (car tail)))
+        (cond
+         ;; GNU recognizes an explicit buffer before checking the pair extent,
+         ;; including when the buffer is the odd final cell.
+         ((bufferp start)
+          (setq desired-buffer start
+                stopped t))
+         ((>= index extent)
+          ;; Ignore an incomplete final element, including a marker under
+          ;; RESEAT.  It has no register or provenance effect.
+          (setq stopped t))
+         ((null start)
+          ;; A nil start commits an unmatched pair and skips its end cell.
+          (setq committed-reversed (cons nil (cons nil committed-reversed))
+                tail (cddr start-cell)
+                index (1+ index)))
+         (t
+          (let ((start-position nil)
+                (end-cell (cdr start-cell))
+                (end nil)
+                (end-position nil))
+            (cond
+             ((markerp start)
+              (let ((buffer (marker-buffer start))
+                    (position (marker-position start)))
+                (when buffer
+                  (setq desired-buffer buffer))
+                (setq start-position (or position 0))))
+             ((fixnump start)
+              (setq start-position start))
+             (t
+              (setq failed t
+                    bad-element start)))
+            ;; GNU detaches/nils a valid marker start before inspecting the
+            ;; end element.  Keep the original cell so the caller sees that
+            ;; destructive RESEAT side effect even if the end is invalid.
+            (when (and (not failed) reseat (markerp start))
+              (set-marker start nil)
+              (setcar start-cell nil))
+            (when (not failed)
+              (setq end (car end-cell))
+              (cond
+               ((markerp end)
+                (setq end-position (or (marker-position end) 0)))
+               ((fixnump end)
+                (setq end-position end))
+               (t
+                (setq failed t
+                      bad-element end)))
+              (when (and (not failed) reseat (markerp end))
+                (set-marker end nil)
+                (setcar end-cell nil))
+              (when (not failed)
+                (if (< start-position 0)
+                    (setq committed-reversed
+                          (cons nil (cons nil committed-reversed)))
+                  (setq committed-reversed
+                        (cons end-position
+                              (cons start-position committed-reversed))))
+                (setq tail (cdr end-cell)
+                      index (1+ index)))))))))
+    (let* ((committed (nreverse committed-reversed))
+           (values
+            (if failed
+                (append committed (nthcdr (* 2 index) saved-values))
+              committed))
+           (normalized
+            (append values
+                    (and desired-buffer (list desired-buffer))))
+           (result (funcall emacs-stub--set-match-data-spine-owner
+                            normalized nil)))
+      (when failed
+        (signal 'wrong-type-argument (list 'integer-or-marker-p bad-element)))
+      result)))
+
+(defun emacs-stub--install-set-match-data-spine-adapter ()
+  "Install a finite-spine validator around the current standalone setter.
+Preserve GNU's host primitive and never wrap a later owner or this adapter."
+  (let ((current (and (fboundp 'set-match-data)
+                      (symbol-function 'set-match-data))))
+    (cond
+     ((eq current emacs-stub--set-match-data-spine-installed) current)
+     ((or emacs-stub--set-match-data-spine-owner
+          emacs-stub--set-match-data-spine-installed)
+      current)
+     ((not (and current
+                (fboundp 'nelisp--closure-p)
+                (nelisp--closure-p current)))
+      current)
+     (t
+      (setq emacs-stub--set-match-data-spine-owner current)
+      (let* ((adapter (symbol-function 'emacs-stub--set-match-data-spine-adapter))
+             (installed
+              (if (and (subrp current)
+                       (nelisp--closure-p current)
+                       (fboundp 'nelisp--make-lisp-primitive))
+                  (nelisp--make-lisp-primitive adapter 'set-match-data)
+                adapter)))
+        (setq emacs-stub--set-match-data-spine-installed installed)
+        (fset 'set-match-data installed)
+        installed)))))
+
+(emacs-stub--install-set-match-data-spine-adapter)
+
 (unless (fboundp 'function-get)
   (defun function-get (f prop &optional _autoload)
     "Polyfill: value of F's function property PROP, following defalias chains.

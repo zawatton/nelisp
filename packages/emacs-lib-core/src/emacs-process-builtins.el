@@ -104,9 +104,23 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
               (error "Buffer %s has no process" (buffer-name buffer))))))
    (t (signal 'wrong-type-argument (list 'processp process)))))
 
-(defun emacs-process-builtins--initialize-command (process command)
+(defun emacs-process-builtins--initialize-command (process command
+                                                          &optional factory-properties)
   "Retain the requested COMMAND and the initial output marker for PROCESS."
   (when (emacs-process--process-object-p process)
+    ;; A core constructor may return a native object before the facade has
+    ;; adopted its factory properties. Seed only absent private keys, before
+    ;; command metadata causes this layer to own the process.
+    (let ((cell (emacs-process--native-metadata-cell process)))
+      (dolist (key '(:buffer :filter :sentinel))
+        (when (and factory-properties
+                   (plist-member factory-properties key)
+                   (not (and cell (plist-member (cdr cell) key))))
+          (let ((value (plist-get factory-properties key)))
+            (when (eq key :buffer)
+              (setq value (emacs-process--fallback-buffer value)))
+            (emacs-process--native-set-metadata process key value))
+          (setq cell (emacs-process--native-metadata-cell process)))))
     (emacs-process--native-set-metadata process :command command)
     (let ((marker (make-marker)) (buffer (process-buffer process)))
       (when (buffer-live-p buffer)
@@ -151,7 +165,7 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
     "Start PROGRAM with ARGS and retain its original command spelling."
     (emacs-process-builtins--initialize-command
      (apply #'emacs-process-start-process name buffer program args)
-     (cons program args))))
+     (cons program args) (list :buffer buffer))))
 
 (when (emacs-process-builtins--install-function-p 'start-file-process)
   (defun start-file-process (name buffer program &rest args)
@@ -164,7 +178,7 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
   (defun make-process (&rest args)
     "Create a subprocess described by the keyword options in ARGS."
     (emacs-process-builtins--initialize-command
-     (apply #'emacs-process-make-process args) (plist-get args :command))))
+     (apply #'emacs-process-make-process args) (plist-get args :command) args)))
 
 ;; Where the core process adapter owns `make-process' (this layer's own is not
 ;; installed), keep the core object and only record the original command on
@@ -181,20 +195,28 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
     (unless (and (symbolp core) (string-prefix-p "emacs-process-" (symbol-name core)))
       (fset 'make-process
             (lambda (&rest args)
-              (let ((process
-                     (apply core
-                            (if (consp (plist-get args :command))
-                                (plist-put
-                                 (copy-sequence args) :command
-                                 (emacs-process--cwd-command
-                                  (cons (emacs-process--resolve-program
-                                         (car (plist-get args :command)))
-                                        (cdr (plist-get args :command)))))
-                              args))))
+              (when (plist-member args :coding)
+                (let ((coding (plist-get args :coding)))
+                  (check-coding-system (if (consp coding) (car coding) coding))
+                  (check-coding-system (if (consp coding) (cdr coding) coding))))
+              (let* ((command (plist-get args :command))
+                     (process
+                      (apply core
+                             (if (consp command)
+                                 (plist-put
+                                  (copy-sequence args) :command
+                                  (emacs-process--cwd-command
+                                   (cons (emacs-process--resolve-program (car command))
+                                         (cdr command))))
+                               args))))
                 (when (and (processp process) (plist-get args :command)
-                           (emacs-process--native-process-p process)
-                           (not (emacs-process--native-metadata-cell process)))
-                  (process-put process :command (plist-get args :command)))
+                           (emacs-process--native-process-p process))
+                  (emacs-process-builtins--initialize-command
+                   process (plist-get args :command) args))
+                (when (and (processp process) (plist-member args :filter))
+                  (set-process-filter process (plist-get args :filter)))
+                (when (and (processp process) (plist-member args :sentinel))
+                  (set-process-sentinel process (plist-get args :sentinel)))
                 process))))))
 
 (when (emacs-process-builtins--install-function-p 'processp)

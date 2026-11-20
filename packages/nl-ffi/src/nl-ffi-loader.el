@@ -466,13 +466,15 @@
 ;; assigned a NEW span, growing DOWNWARD from `%fs' by the standard
 ;; Variant-II/TLS_TCB_AT_TP packing rule
 ;; (`new_used = align_up(used + memsz, align)'; the object's own tp-
-;; relative base is `-new_used'), its `PT_TLS' initialization image copied
-;; in from the read-only file mapping (`p_filesz' bytes; the remaining
-;; `p_memsz - p_filesz' is already zero -- fresh anonymous pages, and this
-;; span is never reused, exactly the same "implicit zero" argument
-;; `nl-ffi-loader--map-and-copy-segments' already relies on for a
-;; segment's own BSS tail), and the resulting offset recorded as
-;; `:tls-offset' in the object's OWN `dyn' plist (so `nl-ffi-loader--apply-
+;; relative base is `-new_used'), with its template metadata and
+;; `:tls-offset' recorded in the object's OWN `dyn' plist.  After all
+;; ordinary relocations, `nl-ffi-loader--initialize-tls-template' copies
+;; the now-relocated `p_filesz' bytes from the mapped image into that span
+;; before protection or deferred IRELATIVE calls.  The remaining
+;; `p_memsz - p_filesz' bytes are already zero in fresh anonymous pages;
+;; this span is never reused, matching the implicit-zero argument used by
+;; `nl-ffi-loader--map-and-copy-segments' for a segment's BSS tail.  The
+;; offset is consumed by `nl-ffi-loader--apply-
 ;; one-relocation''s existing `(path bias dyn rela-addr ...)' call shape
 ;; needed no change at all -- see `nl-ffi-loader--assign-tls-offset').
 ;; Exceeding the fixed arena refuses `:tls-arena-exhausted' rather than
@@ -555,62 +557,15 @@
 ;; ---------------------------------------------------------------------
 ;; THE REAL-SYSTEM-LIBRARY REACHABILITY QUESTION, RE-VERIFIED.
 ;;
-;; With `PT_TLS' no longer a blanket refusal, does `nl-ffi-loader-fixture-
-;; needs-dep.so' (`DT_NEEDED' on the SYSTEM `libm.so.6') now reach further
-;; into real glibc than increment 2 did?  Measured, not assumed, against
-;; this host's real libraries (2026-09-17): `libc.so.6' itself uses ONLY
-;; `R_X86_64_TPOFF64' for its own internal TLS (16 occurrences, `readelf
-;; -rW'; zero `DTPMOD64'/`TLSGD'/`TLSLD'/`GOTTPOFF' entries) -- the exact
-;; model this increment implements. So TLS, by itself, is no longer why
-;; `libc.so.6' would be refused.
-;;
-;; But `readelf -d' on both `libc.so.6' and `libm.so.6' shows a `DT_RELR'
-;; entry (tag `0x24' = 36 decimal -- the STANDARDIZED tag, per the generic-
-;; ABI addition adopted by binutils >= 2.38 and glibc >= 2.36; this host
-;; runs binutils 2.45 / glibc 2.41) -- a compact encoding of the (many)
-;; plain `R_X86_64_RELATIVE' fixups a modern `ld'/`ld.so' factor OUT of
-;; `.rela.dyn' into a separate `.relr.dyn' bitmap this file never reads.
-;; `nl-ffi-loader--parse-dynamic' ALREADY had a `:relr-p' detection meant
-;; to refuse exactly this (`nl-ffi-loader--dt-relr-lo'/`-hi') -- but it
-;; only matched the OLD, pre-standardization EXPERIMENTAL tag range
-;; (`0x6fffe035'..`0x6fffe037'), not the standardized `36'/`35'/`37' this
-;; host's real toolchain actually emits.  Confirmed by running the
-;; unmodified check against real `libc.so.6'/`libm.so.6': `:relr-p' came
-;; back nil for both, meaning the EXISTING "refuse `DT_RELR'" safety check
-;; was silently not firing against any modern system library on this host.
-;;
-;; That gap matters MUCH more once TLS stops being a blanket fence: without
-;; it, opening `libm.so.6' (no `PT_TLS' of its own, so nothing about THIS
-;; increment would refuse it) would silently skip whatever `.relr.dyn'
-;; encodes for it, then proceed to `libc.so.6' as ITS dependency and
-;; likewise skip libc's OWN compacted relative fixups (`libc.so.6''s
-;; `.rela.dyn' carries GLOB_DAT/IRELATIVE/JUMP_SLOT/TPOFF64 entries but,
-;; per `readelf -r', NOT ONE plain `R_X86_64_RELATIVE' -- confirming they
-;; really are all in the `.relr.dyn' this loader would silently ignore) --
-;; then run 46 real `R_X86_64_IRELATIVE' resolvers against a partially-
-;; un-relocated glibc image.  That is not a hypothetical: it is exactly
-;; the "appears to work in a smoke test and corrupts state later" failure
-;; shape this file's brief names, and it would have been a DIRECT, newly-
-;; exposed consequence of this increment's own TLS work loosening the one
-;; check that used to stop the traversal earlier.  Fixed by widening
-;; `:relr-p' detection to ALSO match the standardized tag values (`nl-ffi-
-;; loader--dt-relr'/`-relrsz'/`-relrent', 36/35/37) alongside the existing
-;; experimental range -- still a pure "is this tag present" refusal, same
-;; as before; no `.relr.dyn' bytes are read or relative relocations
-;; applied anywhere in this file.  That is a bug fix to an EXISTING,
-;; already-in-scope safety check discovered while widening what this
-;; loader reaches, not the start of `DT_RELR' support, which stays out of
-;; scope exactly as the design brief says.
-;;
-;; RE-VERIFIED CONCLUSION, with the fix in place: `nl-ffi-loader-fixture-
-;; needs-dep.so' now refuses ONE hop down, at `libm.so.6' itself
-;; (`:dependency-unsupported' naming `libm.so.6', inner reason
-;; `:relr-relocations') -- never reaching `libc.so.6' or its TLS at all,
-;; since `libm.so.6''s OWN `DT_RELR' now stops the graph first.  Real
-;; system libraries remain unreachable through this loader after this
-;; increment, exactly as after increment 2, but the evidence for WHY
-;; changed, and re-deriving it here (rather than trusting increment 2's
-;; version to still hold) is what caught the gap above.
+;; `DT_RELR' is the standardized compact relative-relocation format
+;; (DT_RELRSZ=35, DT_RELR=36, DT_RELRENT=37).  The loader validates the
+;; complete tag set and bounded table, preflights every destination, then
+;; applies direct and bitmap entries before ordinary RELA/PLT relocations
+;; and IFUNC resolvers.  Its no-libc packed fixture passes both this loader
+;; and GNU `dlopen'.  This does not establish general glibc support: the
+;; existing libm dependency fixture now reaches libc.so.6 and stops at
+;; the first unsupported relocation, R_X86_64_64 for `_res'.  libc's
+;; IRELATIVE resolvers and TPOFF64 entries remain outside this slice.
 
 ;;; Code:
 
@@ -645,9 +600,9 @@
 
 ;;;; --- error conditions ---------------------------------------------------
 ;;
-;; Both are children of `nl-ffi-error' (defined earlier in nl-ffi.el, which
-;; loads this file -- see that file's Commentary for the load order this
-;; relies on), so an existing broad `nl-ffi-error' handler keeps working
+;; Both are children of `nl-ffi-error' (owned by nl-ffi-memory.el, which
+;; this file loads above), so an existing broad `nl-ffi-error' handler
+;; keeps working
 ;; unchanged; a caller that wants to tell "the file/mapping step failed"
 ;; from "the object needs something this loader refuses to half-do" can
 ;; still catch these two by name.
@@ -730,6 +685,7 @@ tag-presence refusal, no `.relr.dyn' bytes are ever read.")
 (defconst nl-ffi-loader--dt-gnu-hash #x6ffffef5)
 
 (defconst nl-ffi-loader--reloc-relative 8)
+(defconst nl-ffi-loader--reloc-64 1)
 (defconst nl-ffi-loader--reloc-glob-dat 6)
 (defconst nl-ffi-loader--reloc-jump-slot 7)
 (defconst nl-ffi-loader--reloc-irelative 37)
@@ -737,6 +693,8 @@ tag-presence refusal, no `.relr.dyn' bytes are ever read.")
   "R_X86_64_TPOFF64 -- the one TLS relocation type this file implements
 (Initial-Exec) -- see this file's Commentary, \"TLS\", and
 `nl-ffi-loader--resolve-tpoff64'.")
+(defconst nl-ffi-loader--shn-abs 65521
+  "ELF SHN_ABS: the symbol value is absolute and must not be rebased.")
 
 (defconst nl-ffi-loader--stb-weak 2
   "ELF64_ST_BIND value for STB_WEAK -- see this file's Commentary, \"A real
@@ -976,16 +934,18 @@ same architecture/ABI it is itself running on."
 (defun nl-ffi-loader--program-headers (file-base)
   "Parse FILE-BASE's program headers.
 Returns a plist: `:loads' (a list of (P_VADDR P_OFFSET P_FILESZ P_MEMSZ
-P_FLAGS), sorted by P_VADDR ascending), `:dyn-vaddr' (PT_DYNAMIC's
-P_VADDR, or nil), `:tls-p' (non-nil when a PT_TLS header is present), and,
-only when `:tls-p' is non-nil, PT_TLS's own `:tls-file-offset'/`:tls-
-filesz'/`:tls-memsz'/`:tls-align' -- see this file's Commentary, \"TLS\",
-and `nl-ffi-loader--assign-tls-offset', the only caller that reads these."
+P_FLAGS), sorted by P_VADDR ascending), `:dyn-vaddr' and `:dyn-size'
+(PT_DYNAMIC's P_VADDR and P_MEMSZ, or nil/zero), `:tls-p' (non-nil when a
+PT_TLS header is present), and, only when `:tls-p' is non-nil, PT_TLS's own
+`:tls-file-offset'/`:tls-vaddr'/`:tls-filesz'/`:tls-memsz'/`:tls-align' -- see
+this file's Commentary, \"TLS\", and the map-node reader and TLS-slot assignment
+use these values."
   (let* ((phoff (ptr-read-u64 file-base 32))
          (phentsize (nl-ffi-loader--u16 file-base 54))
          (phnum (nl-ffi-loader--u16 file-base 56))
-         (loads nil) (dyn-vaddr nil) (tls-p nil)
-         (tls-file-offset nil) (tls-filesz nil) (tls-memsz nil) (tls-align nil)
+         (loads nil) (dyn-vaddr nil) (dyn-size 0) (tls-p nil)
+         (tls-file-offset nil) (tls-vaddr nil) (tls-filesz nil)
+         (tls-memsz nil) (tls-align nil)
          (i 0))
     (while (< i phnum)
       (let* ((ph (+ file-base phoff (* i phentsize)))
@@ -1000,18 +960,20 @@ and `nl-ffi-loader--assign-tls-offset', the only caller that reads these."
          ((= p-type nl-ffi-loader--pt-load)
           (push (list p-vaddr p-offset p-filesz p-memsz p-flags) loads))
          ((= p-type nl-ffi-loader--pt-dynamic)
-          (setq dyn-vaddr p-vaddr))
+          (setq dyn-vaddr p-vaddr dyn-size p-memsz))
          ((= p-type nl-ffi-loader--pt-tls)
           (setq tls-p t
                 tls-file-offset p-offset
+                tls-vaddr p-vaddr
                 tls-filesz p-filesz
                 tls-memsz p-memsz
                 tls-align p-align))))
       (setq i (1+ i)))
     (list :loads (sort (nreverse loads) (lambda (a b) (< (car a) (car b))))
-          :dyn-vaddr dyn-vaddr
+          :dyn-vaddr dyn-vaddr :dyn-size dyn-size
           :tls-p tls-p
-          :tls-file-offset tls-file-offset :tls-filesz tls-filesz
+          :tls-file-offset tls-file-offset :tls-vaddr tls-vaddr
+          :tls-filesz tls-filesz
           :tls-memsz tls-memsz :tls-align tls-align)))
 
 ;;;; --- mapping the image: reserve, carve, copy, (later) protect --------------
@@ -1130,33 +1092,99 @@ failed') if `arch_prctl(ARCH_SET_FS, ...)' fails or -- checked by reading
 `%fs' straight back with `ARCH_GET_FS' rather than trusting a zero return
 code alone -- does not actually take effect."
   (unless nl-ffi-loader--tls-tp
-    (let ((base (syscall-direct nl-ffi-loader--sys-mmap 0 nl-ffi-loader--tls-arena-size
-                                 (logior nl-ffi-loader--prot-read nl-ffi-loader--prot-write)
-                                 (logior nl-ffi-loader--map-private nl-ffi-loader--map-anonymous)
-                                 -1 0)))
-      (when (nl-ffi-loader--syscall-error-p base)
-        (signal 'nl-ffi-loader-open-failed (list :mmap-tls-arena-failed base)))
-      (let* ((tp (+ base nl-ffi-loader--tls-arena-size))
-             (src (syscall-direct nl-ffi-loader--sys-arch-prctl
-                                   nl-ffi-loader--arch-set-fs tp 0 0 0 0)))
-        (when (nl-ffi-loader--syscall-error-p src)
-          (signal 'nl-ffi-loader-unsupported (list :arch-prctl-failed src)))
-        (let* ((check (alloc-bytes 8 8))
-               (grc (syscall-direct nl-ffi-loader--sys-arch-prctl
-                                     nl-ffi-loader--arch-get-fs check 0 0 0 0)))
-          (when (or (nl-ffi-loader--syscall-error-p grc)
-                    (/= (ptr-read-u64 check 0) tp))
-            (signal 'nl-ffi-loader-unsupported (list :arch-prctl-verify-failed tp))))
-        (setq nl-ffi-loader--tls-tp tp
-              nl-ffi-loader--tls-used 0))))
+    (let* ((check (alloc-bytes 8 8))
+           (getrc (syscall-direct nl-ffi-loader--sys-arch-prctl
+                                  nl-ffi-loader--arch-get-fs check 0 0 0 0)))
+      (when (nl-ffi-loader--syscall-error-p getrc)
+        (signal 'nl-ffi-loader-unsupported (list :arch-prctl-get-fs-failed getrc)))
+      (let ((previous-fs (ptr-read-u64 check 0))
+            (map-size (+ nl-ffi-loader--tls-arena-size 4096))
+            (base nil)
+            (set-attempted nil)
+            (published nil))
+        (unwind-protect
+            (let ((mapped (syscall-direct
+                            nl-ffi-loader--sys-mmap 0 map-size
+                            (logior nl-ffi-loader--prot-read nl-ffi-loader--prot-write)
+                            (logior nl-ffi-loader--map-private
+                                    nl-ffi-loader--map-anonymous)
+                            -1 0)))
+              (when (nl-ffi-loader--syscall-error-p mapped)
+                (signal 'nl-ffi-loader-open-failed
+                        (list :mmap-tls-arena-failed mapped)))
+              (setq base mapped)
+              (let* ((tp (+ base nl-ffi-loader--tls-arena-size))
+                     (received 0))
+                ;; glibc's measured x86-64 TCB needs 2368 bytes beyond TP.
+                ;; Keep the loader's negative TLS capacity unchanged and
+                ;; reserve one owned page above TP for this bounded TCB.
+                (ptr-write-u64 tp 0 tp)
+                (ptr-write-u64 tp 8 0)
+                (ptr-write-u64 tp 16 tp)
+                (while (< received 16)
+                  (let ((count
+                         (syscall-direct 318 (+ tp 40 received)
+                                         (- 16 received) 0 0 0 0)))
+                    (cond
+                     ((= count -4) nil)
+                     ((and (> count 0) (<= count (- 16 received)))
+                      (setq received (+ received count)))
+                     (t
+                      (signal 'nl-ffi-loader-open-failed
+                              (list :tls-entropy-failed count received))))))
+                (ptr-write-u8 tp 40 0)
+                (setq set-attempted t)
+                (let ((src (syscall-direct nl-ffi-loader--sys-arch-prctl
+                                           nl-ffi-loader--arch-set-fs tp 0 0 0 0)))
+                  (when (nl-ffi-loader--syscall-error-p src)
+                    (signal 'nl-ffi-loader-unsupported
+                            (list :arch-prctl-failed src))))
+                (let ((grc (syscall-direct nl-ffi-loader--sys-arch-prctl
+                                           nl-ffi-loader--arch-get-fs check 0 0 0 0)))
+                  (when (or (nl-ffi-loader--syscall-error-p grc)
+                            (/= (ptr-read-u64 check 0) tp))
+                    (signal 'nl-ffi-loader-unsupported
+                            (list :arch-prctl-verify-failed tp grc))))
+                (setq nl-ffi-loader--tls-tp tp
+                      nl-ffi-loader--tls-used 0
+                      published t)))
+          (unless published
+            (when base
+              (if set-attempted
+                  (let* ((restore
+                          (syscall-direct nl-ffi-loader--sys-arch-prctl
+                                          nl-ffi-loader--arch-set-fs
+                                          previous-fs 0 0 0 0))
+                         (grc
+                          (syscall-direct nl-ffi-loader--sys-arch-prctl
+                                          nl-ffi-loader--arch-get-fs check 0 0 0 0))
+                         (restored
+                          (and (not (nl-ffi-loader--syscall-error-p grc))
+                               (= (ptr-read-u64 check 0) previous-fs))))
+                    (unless (and (not (nl-ffi-loader--syscall-error-p restore))
+                                 restored)
+                      ;; FS may still point into this mapping: retain it.
+                      (signal 'nl-ffi-loader-unsupported
+                              (list :arch-prctl-restore-failed restore grc)))
+                    (let ((rc (syscall-direct nl-ffi-loader--sys-munmap
+                                              base map-size 0 0 0 0)))
+                      (when (nl-ffi-loader--syscall-error-p rc)
+                        (signal 'nl-ffi-loader-open-failed
+                                (list :mmap-tls-arena-cleanup-failed rc))))
+                  (let ((rc (syscall-direct nl-ffi-loader--sys-munmap
+                                            base map-size 0 0 0 0)))
+                    (when (nl-ffi-loader--syscall-error-p rc)
+                      (signal 'nl-ffi-loader-open-failed
+                              (list :mmap-tls-arena-cleanup-failed rc))))))))))))
   nl-ffi-loader--tls-tp)
 
 (defun nl-ffi-loader--assign-tls-offset (file-base path file-offset filesz memsz align)
-  "Copy PATH's `PT_TLS' initialization image (FILESZ bytes read from
-FILE-BASE + FILE-OFFSET, zero-padded to MEMSZ, honouring ALIGN) into this
-process's static TLS arena, and return this object's own thread-pointer-
-relative base offset (always <= 0 -- see this file's Commentary, \"TLS\").
-Ensures the arena/`%fs' exist first (`nl-ffi-loader--ensure-tls-arena').
+  "Reserve PATH's aligned static TLS span and return its thread-pointer offset.
+FILE-BASE and FILE-OFFSET remain in the internal call shape, but the
+initializer is copied later from the relocated mapped image.  FILESZ bytes
+will be copied into a MEMSZ span honouring ALIGN.  The returned offset is
+always <= 0 -- see this file's Commentary, \"TLS\".  Ensures the arena/`%fs'
+exist first (`nl-ffi-loader--ensure-tls-arena').
 The MEMSZ - FILESZ tail needs no explicit zeroing: this span of the arena
 is freshly `mmap'ed anonymous memory and is never reused, the same
 \"implicit zero\" argument `nl-ffi-loader--map-and-copy-segments' already
@@ -1169,6 +1197,7 @@ unsupported' (ALIGN does not evenly divide the arena's own page
 alignment, so this loader's \"the thread pointer is always aligned
 enough\" assumption would not hold -- not reachable by any object this
 package's own fixtures produce)."
+  (ignore file-base file-offset filesz)
   (let* ((tp (nl-ffi-loader--ensure-tls-arena))
          (align (if (> align 0) align 1))
          (new-used (nl-ffi-loader--align-up (+ nl-ffi-loader--tls-used memsz) align)))
@@ -1178,14 +1207,85 @@ package's own fixtures produce)."
     (let ((dest (- tp new-used)))
       (unless (zerop (mod dest align))
         (signal 'nl-ffi-loader-unsupported (list :tls-alignment-unsupported path align)))
-      (when (> filesz 0)
-        (nl-ffi-loader--copy-bytes (+ file-base file-offset) dest filesz))
       (setq nl-ffi-loader--tls-used new-used)
       (- new-used))))
 
 ;;;; --- .dynamic parsing -------------------------------------------------------
 
-(defun nl-ffi-loader--parse-dynamic (bias dyn-vaddr)
+(defun nl-ffi-loader--load-range-containing (vaddr size loads &optional writable)
+  "Return the PT_LOAD containing VADDR..VADDR+SIZE, or nil.
+When WRITABLE is non-nil, require PF_W.  The range must fit one segment's
+P_MEMSZ; page-rounded reservation padding does not count as file data."
+  (and (> size 0)
+       (catch 'found
+         (dolist (seg loads)
+           (let ((base (nth 0 seg)) (memsz (nth 3 seg)) (flags (nth 4 seg)))
+             (when (and (<= base vaddr)
+                        (<= size (- (+ base memsz) vaddr))
+                        (or (not writable) (= (logand flags 2) 2)))
+               (throw 'found seg))))
+         nil)))
+
+(defun nl-ffi-loader--tls-template-file-backed-p
+    (vaddr file-offset filesz memsz loads)
+  "Return non-nil when a nonempty TLS template fits one file-backed PT_LOAD.
+A zero-length initializer needs no source segment.  A nonempty template
+must have matching virtual and file offsets in a single segment's actual
+P_FILESZ span; page padding and P_MEMSZ do not make file bytes available."
+  (ignore memsz)
+  (or (= filesz 0)
+      (catch 'found
+        (dolist (seg loads)
+          (let ((base (nth 0 seg))
+                (offset (nth 1 seg))
+                (file-size (nth 2 seg)))
+            (when (and (<= base vaddr)
+                       (<= (+ vaddr filesz) (+ base file-size))
+                       (= file-offset (+ offset (- vaddr base))))
+              (throw 'found t))))
+        nil)))
+
+(defun nl-ffi-loader--initialize-tls-template (node)
+  "Copy NODE's relocated TLS template to its reserved thread-pointer slot.
+Copy only once, after ordinary relocations and before protection or
+deferred IRELATIVE resolvers.  Anonymous arena bytes already provide the
+zero-filled tail beyond P_FILESZ."
+  (let* ((dyn (plist-get node :dyn))
+         (tls-offset (plist-get dyn :tls-offset)))
+    (when (and tls-offset (not (plist-get dyn :tls-initialized)))
+      (let* ((path (plist-get node :path))
+             (vaddr (plist-get dyn :tls-vaddr))
+             (file-offset (plist-get dyn :tls-file-offset))
+             (filesz (plist-get dyn :tls-filesz))
+             (memsz (plist-get dyn :tls-memsz))
+             (loads (plist-get node :loads))
+             (tp nl-ffi-loader--tls-tp)
+             (destination (+ tp tls-offset)))
+        (unless (and (integerp vaddr) (>= vaddr 0)
+                     (integerp file-offset) (>= file-offset 0)
+                     (integerp filesz) (>= filesz 0)
+                     (integerp memsz) (>= memsz 0) (<= filesz memsz))
+          (signal 'nl-ffi-loader-unsupported
+                  (list :tls-template-invalid path vaddr file-offset filesz memsz)))
+        (unless (and tp (<= tls-offset 0)
+                     (<= memsz (- tls-offset))
+                     (>= destination (- tp nl-ffi-loader--tls-arena-size))
+                     (<= (+ destination memsz) tp))
+          (signal 'nl-ffi-loader-unsupported
+                  (list :tls-template-destination-invalid path tls-offset memsz)))
+        (when (> filesz 0)
+          (unless (nl-ffi-loader--tls-template-file-backed-p
+                   vaddr file-offset filesz memsz loads)
+            (signal 'nl-ffi-loader-unsupported
+                    (list :tls-template-outside-file-load
+                          path vaddr file-offset filesz)))
+          (nl-ffi-loader--copy-bytes (+ (plist-get node :bias) vaddr)
+                                     destination filesz))
+        (setq dyn (plist-put dyn :tls-initialized t))
+        (plist-put node :dyn dyn)))
+  node))
+
+(defun nl-ffi-loader--parse-dynamic (bias dyn-vaddr dyn-size)
   "Read the Elf64_Dyn array at BIAS+DYN-VADDR into a plist of runtime facts.
 Every vaddr-shaped DT_* value (DT_STRTAB/DT_SYMTAB/DT_HASH/DT_GNU_HASH/
 DT_RELA/DT_JMPREL) is returned already biased into a real runtime
@@ -1198,20 +1298,21 @@ known.  `:rpath-off'/`:runpath-off' are the single (last-seen, matching
 ordinary dynamic-tag semantics) raw .dynstr offset for DT_RPATH/
 DT_RUNPATH, or nil.  `:init' is DT_INIT already biased, or nil;
 `:init-array'/`:init-arraysz' are DT_INIT_ARRAY (biased) and its byte
-size.  Also detects DT_RELR/DT_RELRSZ/DT_RELRENT (both the old
-experimental 0x6fffe035..0x6fffe037 tag range and the standardized
-35/36/37 tag values real modern toolchains emit -- see this file's
-Commentary, \"TLS\") so an object using the compact relative-relocation
-encoding is refused rather than silently under-relocated."
+size.  Also parses the complete standardized DT_RELR/DT_RELRSZ/DT_RELRENT
+set; the legacy experimental tag range is rejected."
   (let ((strtab nil) (symtab nil) (syment nil)
         (gnu-hash nil) (sysv-hash nil)
         (rela nil) (relasz 0) (relaent 0)
         (jmprel nil) (pltrelsz 0) (pltrel nil)
         (needed nil) (rpath-off nil) (runpath-off nil)
         (dt-init nil) (init-array nil) (init-arraysz 0)
-        (relr-p nil)
+        (relr nil) (relrsz nil) (relrent nil)
+        (relr-seen nil) (relrsz-seen nil) (relrent-seen nil)
+        (legacy-relr nil)
         (i 0) (go t))
-    (while go
+    (unless (and (integerp dyn-size) (>= dyn-size 16) (= (% dyn-size 16) 0))
+      (signal 'nl-ffi-loader-unsupported (list :dynamic-size dyn-size)))
+    (while (and go (< (* i 16) dyn-size))
       (let* ((entry (+ bias dyn-vaddr (* i 16)))
              (tag (ptr-read-u64 entry 0))
              (val (ptr-read-u64 entry 8)))
@@ -1234,12 +1335,27 @@ encoding is refused rather than silently under-relocated."
          ((= tag nl-ffi-loader--dt-gnu-hash) (setq gnu-hash (+ bias val)))
          ((= tag nl-ffi-loader--dt-rpath) (setq rpath-off val))
          ((= tag nl-ffi-loader--dt-runpath) (setq runpath-off val))
-         ((or (and (>= tag nl-ffi-loader--dt-relr-lo) (<= tag nl-ffi-loader--dt-relr-hi))
-              (= tag nl-ffi-loader--dt-relr)
-              (= tag nl-ffi-loader--dt-relrsz)
-              (= tag nl-ffi-loader--dt-relrent))
-          (setq relr-p t))))
+         ((= tag nl-ffi-loader--dt-relr)
+          (setq relr (+ bias val) relr-seen t))
+         ((= tag nl-ffi-loader--dt-relrsz)
+          (setq relrsz val relrsz-seen t))
+         ((= tag nl-ffi-loader--dt-relrent)
+          (setq relrent val relrent-seen t))
+         ((and (>= tag nl-ffi-loader--dt-relr-lo)
+               (<= tag nl-ffi-loader--dt-relr-hi))
+          (setq legacy-relr t))))
       (setq i (1+ i)))
+    (when go
+      (signal 'nl-ffi-loader-unsupported (list :dynamic-missing-null dyn-vaddr dyn-size)))
+    (when legacy-relr
+      (signal 'nl-ffi-loader-unsupported (list :legacy-relr-tags dyn-vaddr)))
+    (when (or relr-seen relrsz-seen relrent-seen)
+      (unless (and relr-seen relrsz-seen relrent-seen)
+        (signal 'nl-ffi-loader-unsupported (list :relr-tag-set dyn-vaddr)))
+      (unless (= relrent 8)
+        (signal 'nl-ffi-loader-unsupported (list :relr-entry-size relrent)))
+      (unless (= (% relrsz 8) 0)
+        (signal 'nl-ffi-loader-unsupported (list :relr-size relrsz))))
     (list :strtab strtab :symtab symtab :syment (or syment 24)
           :gnu-hash gnu-hash :sysv-hash sysv-hash
           :rela rela :relasz relasz :relaent (if (> relaent 0) relaent 24)
@@ -1247,7 +1363,74 @@ encoding is refused rather than silently under-relocated."
           :needed (nreverse needed)
           :rpath-off rpath-off :runpath-off runpath-off
           :init dt-init :init-array init-array :init-arraysz init-arraysz
-          :relr-p relr-p)))
+          :relr relr :relrsz (or relrsz 0) :relrent relrent)))
+
+(defun nl-ffi-loader--relr-targets (path bias dyn loads)
+  "Decode and validate NODE's RELR table, returning (VADDR . POINTER)s.
+Every table read and target write is checked against a PT_LOAD before any
+target is changed.  ELF64 bitmap words are examined as two u32 halves so
+bit 63 never needs to pass through the runtime's signed fixnum conversion."
+  (let* ((table (plist-get dyn :relr))
+         (size (plist-get dyn :relrsz))
+         (table-vaddr (and table (- table bias)))
+         (count (/ size 8))
+         (where nil) (targets nil) (i 0))
+    (when (> size 0)
+      (unless (and table (= (% size 8) 0)
+                   (nl-ffi-loader--load-range-containing table-vaddr size loads))
+        (signal 'nl-ffi-loader-unsupported
+                (list :relr-table-outside-load path table-vaddr size))))
+    (while (< i count)
+      (let* ((off (* i 8))
+             (lo (logand (ptr-read-u32 table off) #xffffffff))
+             (hi (logand (ptr-read-u32 table (+ off 4)) #xffffffff)))
+        (if (= (logand lo 1) 0)
+            (let ((addr (+ lo (ash hi 32))))
+              (when (or (> addr most-positive-fixnum)
+                        (> (+ addr 8) most-positive-fixnum))
+                (signal 'nl-ffi-loader-unsupported (list :relr-address-overflow path addr)))
+              (push addr targets)
+              (setq where (+ addr 8)))
+          (unless where
+            (signal 'nl-ffi-loader-unsupported (list :relr-bitmap-without-base path i)))
+          (let ((bit 1))
+            (while (< bit 32)
+              (when (/= (logand lo (ash 1 bit)) 0)
+                (push (+ where (* (- bit 1) 8)) targets))
+              (setq bit (1+ bit))))
+          (let ((bit 0))
+            (while (< bit 32)
+              (when (/= (logand hi (ash 1 bit)) 0)
+                (push (+ where (* (+ bit 31) 8)) targets))
+              (setq bit (1+ bit))))
+          (setq where (+ where (* 63 8)))))
+      (setq i (1+ i)))
+    (let ((end (and table-vaddr (+ table-vaddr size))) (validated nil))
+      (dolist (vaddr (nreverse targets))
+        (when (or (/= (logand vaddr 1) 0)
+                  (> (+ vaddr 8) most-positive-fixnum)
+                  (> (+ bias vaddr) most-positive-fixnum)
+                  (not (nl-ffi-loader--load-range-containing vaddr 8 loads t)))
+          (signal 'nl-ffi-loader-unsupported
+                  (list :relr-target-outside-writable-load path vaddr)))
+        (when (and end (< vaddr end) (< table-vaddr (+ vaddr 8)))
+          (signal 'nl-ffi-loader-unsupported
+                  (list :relr-target-overlaps-table path vaddr table-vaddr size)))
+        (push (cons vaddr (+ bias vaddr)) validated))
+      (nreverse validated))))
+
+(defun nl-ffi-loader--apply-relr (path bias dyn loads)
+  "Apply NODE's already-validated RELR table using 32-bit halves."
+  (dolist (target (nl-ffi-loader--relr-targets path bias dyn loads))
+    (let* ((ptr (cdr target))
+           (lo (logand (ptr-read-u32 ptr 0) #xffffffff))
+           (hi (logand (ptr-read-u32 ptr 4) #xffffffff))
+           (bias-lo (logand bias #xffffffff))
+           (bias-hi (logand (ash bias -32) #xffffffff))
+           (sum-lo (+ lo bias-lo))
+           (carry (if (> sum-lo #xffffffff) 1 0)))
+      (ptr-write-u32 ptr 0 (logand sum-lo #xffffffff))
+      (ptr-write-u32 ptr 4 (logand (+ hi bias-hi carry) #xffffffff)))))
 
 ;;;; --- symbol resolution: .gnu.hash / .hash / linear scan ---------------------
 
@@ -1373,8 +1556,8 @@ STT_GNU_IFUNC)."
 
 (defun nl-ffi-loader--lookup-in-node (node name)
   "Resolve NAME within NODE's own `.dynsym' only -- no cross-object search.
-Returns (VALUE BIND TYPE SIZE SHNDX), all already biased/absolute where
-applicable, for a DEFINED match, or nil."
+Returns (VALUE BIND TYPE SIZE SHNDX), with section-relative values biased
+by NODE and `SHN_ABS' values left absolute, for a DEFINED match, or nil."
   (let* ((dyn (plist-get node :dyn))
          (index
           (cond
@@ -1384,7 +1567,9 @@ applicable, for a DEFINED match, or nil."
     (when index
       (let ((entry (nl-ffi-loader--dynsym-entry dyn index)))
         (when (/= (nth 1 entry) 0) ; SHN_UNDEF
-          (list (+ (plist-get node :bias) (nth 0 entry))
+          (list (if (= (nth 1 entry) nl-ffi-loader--shn-abs)
+                    (nth 0 entry)
+                  (+ (plist-get node :bias) (nth 0 entry)))
                 (nth 2 entry) (nth 3 entry) (nth 4 entry) (nth 1 entry)))))))
 
 (defun nl-ffi-loader--lookup-across-graph (graph search-order name)
@@ -1515,7 +1700,7 @@ shared-object', `:no-load-segments', `:tls-arena-exhausted'/`:tls-
 alignment-unsupported' (a `PT_TLS' segment is present -- checked here,
 before any ordinary segment is even reserved -- and this loader could not
 give it a real arena slot; see `nl-ffi-loader--assign-tls-offset'),
-`:no-dynamic-section', `:relr-relocations', or `:no-dynamic-symbols'."
+`:no-dynamic-section', `:dynamic-outside-load', or `:no-dynamic-symbols'."
   (let* ((fm (nl-ffi-loader--map-file-readonly-tracked path))
          (file-base (car fm)))
     (nl-ffi-loader--check-elf-header file-base path)
@@ -1523,24 +1708,54 @@ give it a real arena slot; see `nl-ffi-loader--assign-tls-offset'),
            (loads (plist-get ph :loads)))
       (unless loads
         (signal 'nl-ffi-loader-unsupported (list :no-load-segments path)))
-      (let ((tls-offset
-             (when (plist-get ph :tls-p)
-               (nl-ffi-loader--assign-tls-offset
-                file-base path (plist-get ph :tls-file-offset)
-                (plist-get ph :tls-filesz) (plist-get ph :tls-memsz)
-                (plist-get ph :tls-align)))))
+      (let* ((tls-p (plist-get ph :tls-p))
+             (tls-vaddr (plist-get ph :tls-vaddr))
+             (tls-file-offset (plist-get ph :tls-file-offset))
+             (tls-filesz (plist-get ph :tls-filesz))
+             (tls-memsz (plist-get ph :tls-memsz))
+             (tls-align (plist-get ph :tls-align))
+             (tls-offset
+              (when tls-p
+                (unless (and (integerp tls-vaddr) (>= tls-vaddr 0)
+                             (integerp tls-file-offset) (>= tls-file-offset 0)
+                             (integerp tls-filesz) (>= tls-filesz 0)
+                             (integerp tls-memsz) (>= tls-memsz 0)
+                             (<= tls-filesz tls-memsz))
+                  (signal 'nl-ffi-loader-unsupported
+                          (list :tls-template-invalid path tls-vaddr
+                                tls-file-offset tls-filesz tls-memsz)))
+                (when (and (> tls-filesz 0)
+                           (not (nl-ffi-loader--tls-template-file-backed-p
+                                 tls-vaddr tls-file-offset tls-filesz
+                                 tls-memsz loads)))
+                  (signal 'nl-ffi-loader-unsupported
+                          (list :tls-template-outside-file-load path tls-vaddr
+                                tls-file-offset tls-filesz)))
+                (nl-ffi-loader--assign-tls-offset
+                 file-base path tls-file-offset tls-filesz tls-memsz tls-align))))
         (unless (plist-get ph :dyn-vaddr)
           (signal 'nl-ffi-loader-unsupported (list :no-dynamic-section path)))
+        (unless (nl-ffi-loader--load-range-containing
+                 (plist-get ph :dyn-vaddr) (plist-get ph :dyn-size) loads)
+          (signal 'nl-ffi-loader-unsupported
+                  (list :dynamic-outside-load path (plist-get ph :dyn-vaddr)
+                        (plist-get ph :dyn-size))))
         (let* ((reservation (nl-ffi-loader--reserve loads))
                (bias (car reservation)))
           (nl-ffi-loader--map-and-copy-segments bias file-base loads)
-          (let ((dyn (nl-ffi-loader--parse-dynamic bias (plist-get ph :dyn-vaddr))))
-            (when (plist-get dyn :relr-p)
-              (signal 'nl-ffi-loader-unsupported (list :relr-relocations path)))
+          (let ((dyn (nl-ffi-loader--parse-dynamic
+                      bias (plist-get ph :dyn-vaddr) (plist-get ph :dyn-size))))
             (unless (or (plist-get dyn :symtab) (plist-get dyn :strtab))
               (signal 'nl-ffi-loader-unsupported (list :no-dynamic-symbols path)))
+            (setq dyn (plist-put dyn :tls-offset tls-offset))
+            (when tls-p
+              (setq dyn (plist-put dyn :tls-file-offset tls-file-offset)
+                    dyn (plist-put dyn :tls-vaddr tls-vaddr)
+                    dyn (plist-put dyn :tls-filesz tls-filesz)
+                    dyn (plist-put dyn :tls-memsz tls-memsz)
+                    dyn (plist-put dyn :tls-initialized nil)))
             (list :path path :bias bias :loads loads
-                  :dyn (plist-put dyn :tls-offset tls-offset))))))))
+                  :dyn dyn)))))))
 
 (defun nl-ffi-loader--map-node-as-dependency (soname resolved-path requester-path)
   "Like `nl-ffi-loader--map-node', but any failure is wrapped as
@@ -1680,14 +1895,21 @@ executable."
 
 (defun nl-ffi-loader--resolve-relocation-symbol
     (path bias dyn graph search-order r-sym &optional runtime-symbols reloc-type)
-  "Resolve dynsym index R-SYM for a GLOB_DAT/JUMP_SLOT relocation
-belonging to the object at PATH (bias BIAS, own table DYN).  Returns the
-resolved, already-biased runtime address (0 for a legitimately
+  "Resolve dynsym index R-SYM for a symbol relocation, including
+GLOB_DAT/JUMP_SLOT and `R_X86_64_64', belonging to PATH (bias BIAS, own
+table DYN).  Returns a
+section-relative symbol's biased runtime address or an `SHN_ABS' symbol's
+raw absolute value (0 for a legitimately
 unresolved `STB_WEAK' reference -- see this file's Commentary, \"A real
 defect found while implementing\"), or signals
 `nl-ffi-loader-unsupported' (`:undefined-symbol' when nothing anywhere
 defines it and it is not weak, `:ifunc-symbol-via-relocation' when what
-WOULD answer it is `STT_GNU_IFUNC'-typed -- see \"IFUNC\" -- or
+WOULD answer it is a local `STT_GNU_IFUNC', or an external IFUNC whose
+defining node is absent, not distinct, or not relocation-ready, or any
+graph TLS template is uninitialized; a permitted external resolver is
+called through `ptr-call' with six zero argument slots only when its
+distinct defining node is relocation-ready and all graph TLS templates
+are initialized -- see \"IFUNC\" -- or
 `:tls-symbol-via-relocation' when what WOULD answer it is `STT_TLS'-typed
 -- see this file's Commentary, \"TLS\": an in-module TLS byte offset is
 not a `bias'-relative runtime address, and treating it as one would be
@@ -1713,7 +1935,9 @@ separate code path."
             (signal 'nl-ffi-loader-unsupported
                     (list :tls-symbol-via-relocation path
                           (nl-ffi-loader--dynsym-name dyn r-sym) path)))
-          (+ bias l-value))
+          (if (= l-shndx nl-ffi-loader--shn-abs)
+              l-value
+            (+ bias l-value)))
       (let* ((name (nl-ffi-loader--dynsym-name dyn r-sym))
              (provided (assoc name runtime-symbols))
              (hit (and (not provided) graph search-order
@@ -1730,13 +1954,33 @@ separate code path."
                     (list :runtime-symbol-type path name l-type reloc-type)))
           (cdr provided))
          (hit
-          (when (= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc)
-            (signal 'nl-ffi-loader-unsupported
-                    (list :ifunc-symbol-via-relocation path name (nth 3 hit))))
-          (when (= (nth 2 hit) nl-ffi-loader--stt-tls)
-            (signal 'nl-ffi-loader-unsupported
-                    (list :tls-symbol-via-relocation path name (nth 3 hit))))
-          (nth 0 hit))
+          (if (= (nth 2 hit) nl-ffi-loader--stt-gnu-ifunc)
+              (let* ((defining-path (nth 3 hit))
+                     (defining-node
+                      (and (hash-table-p graph)
+                           (gethash defining-path graph)))
+                     (graph-tls-ready t))
+                (when (hash-table-p graph)
+                  (maphash
+                   (lambda (_node-path node)
+                     (let ((node-dyn (plist-get node :dyn)))
+                       (when (and node-dyn
+                                  (plist-get node-dyn :tls-offset)
+                                  (not (plist-get node-dyn :tls-initialized)))
+                         (setq graph-tls-ready nil))))
+                   graph))
+                (unless (and defining-node
+                             (not (equal path defining-path))
+                             (plist-get defining-node :relocation-ready)
+                             graph-tls-ready)
+                  (signal 'nl-ffi-loader-unsupported
+                          (list :ifunc-symbol-via-relocation
+                                path name defining-path)))
+                (ptr-call (nth 0 hit) 0 0 0 0 0 0))
+            (when (= (nth 2 hit) nl-ffi-loader--stt-tls)
+              (signal 'nl-ffi-loader-unsupported
+                      (list :tls-symbol-via-relocation path name (nth 3 hit))))
+            (nth 0 hit)))
          ((= l-bind nl-ffi-loader--stb-weak) 0)
          (t
           (signal 'nl-ffi-loader-unsupported
@@ -1787,8 +2031,12 @@ elsewhere refuses to do."
   "Apply the single Elf64_Rela relocation at RELA-ADDR, belonging to the
 object at PATH (bias BIAS, own table DYN).  GRAPH/SEARCH-ORDER (both
 optional) enable cross-object symbol search for an otherwise-undefined
-GLOB_DAT/JUMP_SLOT symbol -- see `nl-ffi-loader--resolve-relocation-
-symbol' and this file's Commentary, \"Symbol search order\".  For
+GLOB_DAT/JUMP_SLOT/`R_X86_64_64' symbol -- see
+`nl-ffi-loader--resolve-relocation-symbol' and this file's Commentary,
+\"Symbol search order\".  `R_X86_64_64' writes low64(S+A), keeps SHN_ABS
+values absolute, and uses S=0 for symbol index zero.  `R_X86_64_GLOB_DAT'
+and `R_X86_64_JUMP_SLOT' write resolved S without applying the relocation
+addend.  For
 `R_X86_64_IRELATIVE' this CALLS the resolver (through `ptr-call', all six
 argument slots zero) and writes its result -- ALWAYS, unconditionally;
 deferring this relocation until after final segment protection is the
@@ -1806,13 +2054,23 @@ Commentary."
          (r-sym (ash r-info -32))
          (target (+ bias r-offset)))
     (cond
+     ((= r-type nl-ffi-loader--reloc-64)
+      (let* ((value (if (= r-sym 0)
+                        0
+                      (nl-ffi-loader--resolve-relocation-symbol
+                       path bias dyn graph search-order r-sym runtime-symbols r-type)))
+             (word (logand (+ value r-addend) #xffffffffffffffff))
+             (low (logand word #xffffffff))
+             (high (logand (ash word -32) #xffffffff)))
+        (ptr-write-u32 target 0 low)
+        (ptr-write-u32 target 4 high)))
      ((= r-type nl-ffi-loader--reloc-relative)
       (ptr-write-u64 target 0 (+ bias r-addend)))
      ((or (= r-type nl-ffi-loader--reloc-glob-dat)
           (= r-type nl-ffi-loader--reloc-jump-slot))
       (let ((value (nl-ffi-loader--resolve-relocation-symbol
                     path bias dyn graph search-order r-sym runtime-symbols r-type)))
-        (ptr-write-u64 target 0 (+ value r-addend))))
+        (ptr-write-u64 target 0 value)))
      ((= r-type nl-ffi-loader--reloc-irelative)
       (let* ((resolver-addr (+ bias r-addend))
              (result (ptr-call resolver-addr 0 0 0 0 0 0)))
@@ -1854,16 +2112,22 @@ later pass."
     (node graph search-order &optional runtime-symbols)
   "Apply every NON-IRELATIVE relocation (`.rela.dyn' and `.rela.plt', if
 present -- both Elf64_Rela on x86-64; refuses `:rel-style-plt-not-rela'
-if `DT_PLTREL' ever claims otherwise) for NODE, THEN protect NODE's
-segments to their real final permissions, THEN apply every
+if `DT_PLTREL' ever claims otherwise) for NODE, THEN copy NODE's
+relocated TLS template, protect NODE's segments to their real final
+permissions, THEN apply every
 `R_X86_64_IRELATIVE' relocation collected along the way -- see this
 file's Commentary, \"IFUNC\", for why this exact order (protect, only
-then irelative) is required."
+then irelative) is required. After all these steps succeed, publish NODE's
+relocation-ready marker in GRAPH; it is fresh per graph and is not
+published on failure. The function retains its nil return."
   (let* ((path (plist-get node :path)) (bias (plist-get node :bias))
          (dyn (plist-get node :dyn)) (irelative-box (list nil)))
     (when (and (plist-get dyn :jmprel) (plist-get dyn :pltrel)
                (/= (plist-get dyn :pltrel) nl-ffi-loader--dt-pltrel-rela))
       (signal 'nl-ffi-loader-unsupported (list :rel-style-plt-not-rela path)))
+    ;; RELR is applied before RELA/PLT relocations, and its complete target
+    ;; set is validated before its first write.
+    (nl-ffi-loader--apply-relr path bias dyn (plist-get node :loads))
     (nl-ffi-loader--apply-relocation-table
      path bias dyn (plist-get dyn :rela) (plist-get dyn :relasz) (plist-get dyn :relaent)
      graph search-order irelative-box runtime-symbols)
@@ -1871,9 +2135,12 @@ then irelative) is required."
      path bias dyn (plist-get dyn :jmprel) (plist-get dyn :pltrelsz)
      24 ; .rela.plt entries are always Elf64_Rela (24 bytes) on x86-64.
      graph search-order irelative-box runtime-symbols)
+    (nl-ffi-loader--initialize-tls-template node)
     (nl-ffi-loader--protect-segments bias (plist-get node :loads))
     (dolist (rela-addr (nreverse (car irelative-box)))
-      (nl-ffi-loader--apply-one-relocation path bias dyn rela-addr graph search-order))))
+      (nl-ffi-loader--apply-one-relocation path bias dyn rela-addr graph search-order))
+    (puthash path (plist-put node :relocation-ready t) graph)
+    nil))
 
 ;;;; --- initializers -------------------------------------------------------------
 
@@ -1948,8 +2215,7 @@ via `nl-ffi-loader--resolve-soname'.
 RUNTIME-SYMBOLS, when non-nil, is a caller-owned alist of (NAME . ADDRESS)
 trusted native function addresses.  It applies only to undefined symbol
 relocations in PATH itself; dependencies use the normal graph resolver.
-It does not resolve `DT_NEEDED' names, provide dependency symbols, or bypass
-the loader's `DT_RELR' refusal.
+It does not resolve `DT_NEEDED' names or provide dependency symbols.
 The caller must keep each address mapped for the handle's lifetime.  Only
 STT_FUNC imports use these entries, plus STT_NOTYPE on JUMP_SLOT (whose PLT
 relocation proves call use); ambiguous NOTYPE GLOB_DAT imports are refused.
@@ -1964,7 +2230,10 @@ itself, and `nl-ffi-loader-unsupported' for anything out of this
 increment's scope, whether in PATH itself (`:not-elf64-shared-object',
 `:no-load-segments', `:tls-arena-exhausted', `:tls-alignment-unsupported'
 -- a `PT_TLS' segment this loader could not give real storage; see this
-file's Commentary, \"TLS\" -- `:no-dynamic-section', `:relr-relocations',
+file's Commentary, \"TLS\" -- `:no-dynamic-section', `:relr-tag-set',
+`:relr-entry-size', `:relr-size', `:relr-table-outside-load',
+`:relr-bitmap-without-base', `:relr-target-outside-writable-load',
+`:relr-target-overlaps-table',
 `:no-dynamic-symbols', `:overlapping-segments', `:rel-style-plt-not-rela',
 `:undefined-symbol', `:runtime-symbol-provider-invalid',
 `:runtime-symbol-type', `:ifunc-symbol-via-relocation',

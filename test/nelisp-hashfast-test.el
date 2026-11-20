@@ -72,6 +72,7 @@
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
+              ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v roots)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) roots)))
               ((symbol-function 'nl_root_release) (lambda (_ mark) (setq released mark)))
@@ -116,6 +117,7 @@
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
+              ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v roots)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) roots)))
               ((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) roots)))
@@ -241,7 +243,10 @@
   (hf--install '(nl_ht_test_mode))
   (let ((meta (make-vector 15 0)) (reads 0) (reindexes 0))
     (aset meta 2 'eq)
-    (cl-letf (((symbol-function 'nl_cons_car_word) (lambda (_) meta))
+    ;; This fixture exercises generic metadata migration, not raw object
+    ;; layout; explicitly take the generic accessors in the current DSL.
+    (cl-letf (((symbol-function 'nl_ht_obj) (lambda (_) 0))
+              ((symbol-function 'nl_ht_meta_slot) (lambda (_) meta))
               ((symbol-function 'heap-sexp-tag-word) (lambda (_) 8))
               ((symbol-function 'vector-len) #'length)
               ((symbol-function 'vector-ref-ptr) #'aref)
@@ -353,17 +358,18 @@
     (should (null (nth 2 r)))))
 
 (defun hf--fake-table (kv markers cap)
-  "Fake memory for a table WORD 4098: cons at 4096 -> meta vector word 8198.
+  "Fake memory for a kind-22 table WORD 4102: object at 4096 -> meta 8198.
 Returns (MEMORY . TABLE-WORD).  Slot 3 of the meta is CAP, 11 the pairs, 12
 the index vector, all vectorlike WORDS (low bits 6)."
   (let ((mem (make-hash-table :test 'eql)) (fix (lambda (n) (+ (* n 4) 1))))
-    (puthash 4096 8198 mem)
+    (puthash 4096 278 mem)
+    (puthash 4104 8198 mem)
     (puthash (+ 8192 8 (* 3 8)) (funcall fix cap) mem)
     (puthash (+ 8192 8 (* 11 8)) 12294 mem)
     (puthash (+ 8192 8 (* 12 8)) 16390 mem)
     (let ((k 0)) (dolist (w kv) (puthash (+ 12288 8 (* k 8)) w mem) (cl-incf k)))
     (let ((k 0)) (dolist (m markers) (puthash (+ 16384 8 (* k 8)) (funcall fix m) mem) (cl-incf k)))
-    (cons mem 4098)))
+    (cons mem 4102)))
 
 (defun hf--fast-walk (table-mem mutate)
   "Walk the fake table with `wf_maphash_w'; MUTATE runs on the first callback."
@@ -374,6 +380,7 @@ the index vector, all vectorlike WORDS (low bits 6)."
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
+              ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v mem)))
               ((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) mem)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) mem)))

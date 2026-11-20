@@ -1488,9 +1488,10 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
                       (if (if (< i 1) 1 (> i (sar hdr 8))) 0
                         (heap-read-u64 (- arr 6) (+ 16 (* (- i 1) 8))))
                     (if (= k 8)
-                        (if (= (sar hdr 8) 7) 0
-                          (if (if (< i 0) 1 (>= i (sar hdr 8))) 0
-                            (heap-read-u64 (- arr 6) (+ 8 (* i 8)))))
+                        (if (= (bf_nemacs_char_table_owned_vector_p arr) 1) 0
+                          (if (= (sar hdr 8) 7) 0
+                            (if (if (< i 0) 1 (>= i (sar hdr 8))) 0
+                              (heap-read-u64 (- arr 6) (+ 8 (* i 8))))))
                       0)))
               0))
         ;; Genuine BoolVector is a legacy tag-10 slot, not a vectorlike
@@ -1524,11 +1525,12 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
                                             (if (= (logand value 3) 1) value (nl_word_canon value)))
                              value))
                     (if (= k 8)
-                        (if (= (sar hdr 8) 7) 0
-                          (if (if (< i 0) 1 (>= i (sar hdr 8))) 0
-                            (seq (wf_dirty)
-                                 (ptr-write-u64 (+ (- arr 6) (+ 8 (* i 8))) 0 value)
-                                 value)))
+                        (if (= (bf_nemacs_char_table_owned_vector_p arr) 1) 0
+                          (if (= (sar hdr 8) 7) 0
+                            (if (if (< i 0) 1 (>= i (sar hdr 8))) 0
+                              (seq (wf_dirty)
+                                   (ptr-write-u64 (+ (- arr 6) (+ 8 (* i 8))) 0 value)
+                                   value))))
                       0)))
               0))
         0))

@@ -15,6 +15,8 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'bytecomp)
+(require 'json)
 (require 'standalone-source-normalize)
 
 (defvar nelisp-bootstrap-output-file
@@ -48,8 +50,13 @@ final `.el' suffix with `.repl'.")
     "range.el"
     "let-alist.el"
     "thunk.el"
+    "nl-ffi-memory.el"
+    "nl-ffi-loader.el"
+    "nl-ffi.el"
     "emacs-network-ffi.el"
     "emacs-server-client-polyfills.el"
+    "lisp/nelisp-process-buffer.el"
+    "nelisp-process-adapter.el"
     "generator.el"
     ;; Macro parity has to precede generator.el during standalone replay.
     ;; `nelisp-bootstrap--hoist-standalone-definers' performs that targeted
@@ -81,7 +88,11 @@ final `.el' suffix with `.repl'.")
   "Hash table mapping truenames of package sources to logical names.")
 
 (defconst nelisp-bootstrap--package-source-globs
-  '("packages/emacs-lib-*/src/*.el" "packages/nl-ffi/src/nl-ffi-memory.el"
+  '("packages/emacs-lib-*/src/*.el"
+    "packages/nelisp-process-adapter/src/*.el"
+    "packages/nl-ffi/src/nl-ffi-memory.el"
+    "packages/nl-ffi/src/nl-ffi-loader.el"
+    "packages/nl-ffi/src/nl-ffi.el"
     "packages/nelisp-regex/src/nelisp-regex.el")
   "Repository-relative globs naming the bundled package sources.")
 
@@ -102,6 +113,252 @@ final `.el' suffix with `.repl'.")
   "Core `src/' files that ship in the bundle under their own logical name.
 These have a single owner in the NeLisp core tree; no package carries a
 copy, so the package globs alone would not find them.")
+
+(defconst nelisp-bootstrap--canonical-core-providers
+  '("lisp/nelisp-stdlib-regexp.el")
+  "Fixed genuine core providers emitted before package source bodies.")
+
+(defconst nelisp-bootstrap--canonical-provider-seam
+  ";;; >>> canonical core provider seam\n"
+  "Unique insertion anchor between bootstrap prologues and package bodies.")
+
+(defun nelisp-bootstrap--sha256-string (text)
+  "Return the SHA-256 of TEXT encoded as UTF-8."
+  (secure-hash 'sha256 (encode-coding-string text 'utf-8-emacs-unix)))
+
+(defun nelisp-bootstrap--canonical-provider-source (relative)
+  "Read and bytecode-transform the fixed core provider RELATIVE.
+Return (RELATIVE SOURCE TRANSFORMED INPUT-SHA TRANSFORMED-SHA GETTER-SHA
+TRANSFORMER-SHA)."
+  (unless (member relative nelisp-bootstrap--canonical-core-providers)
+    (error "Unregistered canonical core provider: %s" relative))
+  (let* ((path (expand-file-name relative nelisp-bootstrap-repo-root))
+         (transformer
+          (expand-file-name "scripts/nelisp-prelude-bytecode.el"
+                            nelisp-bootstrap-repo-root)))
+    (unless (file-regular-p path)
+      (error "Missing canonical core provider: %s" relative))
+    ;; Load the named repository implementation directly.  A different
+    ;; same-feature library earlier on host `load-path' must not silently
+    ;; transform this provider while the receipt hashes another file.
+    (load-file transformer)
+    (unless (equal (file-truename transformer)
+                   (file-truename
+                    (or (symbol-file 'nelisp-prelude-bytecode-transform 'defun)
+                        "")))
+      (error "Unexpected provider transformer source: %S"
+             (symbol-file 'nelisp-prelude-bytecode-transform 'defun)))
+    (let* ((source (with-temp-buffer
+                     (insert-file-contents path)
+                     (buffer-string)))
+           (transformed
+            (car (nelisp-prelude-bytecode-transform source relative nil t)))
+           (getters (nelisp-bootstrap--provider-definitions
+                     transformed 'nlre-match-data)))
+      (unless (= (length getters) 1)
+        (error "Canonical provider %s defines nlre-match-data %d times"
+               relative (length getters)))
+      (list relative source transformed
+            (nelisp-bootstrap--sha256-string source)
+            (nelisp-bootstrap--sha256-string transformed)
+            (nelisp-bootstrap--sha256-string (car getters))
+            (with-temp-buffer
+              (insert-file-contents-literally transformer)
+              (secure-hash 'sha256 (current-buffer)))))))
+
+(defun nelisp-bootstrap--provider-definitions (source name)
+  "Return printed top-level definitions named NAME in SOURCE."
+  (with-temp-buffer
+    (insert source)
+    (goto-char (point-min))
+    (let ((read-eval nil) found)
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (or (and (memq (car-safe form) '(defun defmacro))
+                             (eq (cadr form) name))
+                        (and (eq (car-safe form) 'defalias)
+                             (equal (cadr form) (list 'quote name))))
+                (push (prin1-to-string form) found))))
+        (end-of-file nil))
+      (nreverse found))))
+
+(defun nelisp-bootstrap--validate-canonical-provider-manifest (files)
+  "Reject missing, duplicate, or package-overlapping canonical providers."
+  (unless (= (length nelisp-bootstrap--canonical-core-providers) 1)
+    (error "Canonical provider manifest must contain exactly one source"))
+  (let ((provider (car nelisp-bootstrap--canonical-core-providers)))
+    (unless (= (cl-count provider nelisp-bootstrap--canonical-core-providers
+                         :test #'equal)
+               1)
+      (error "Canonical provider manifest contains duplicate source: %s"
+             provider))
+    (when (cl-some (lambda (file)
+                     (equal (nelisp-bootstrap--logical-name file) provider))
+                   files)
+      (error "Canonical provider also appears in package sources: %s" provider))
+    provider))
+
+(defun nelisp-bootstrap--provider-seam-position ()
+  "Return the unique canonical provider seam position in the current buffer."
+  (let ((expected ";;; >>> canonical core provider seam\n"))
+    (unless (equal nelisp-bootstrap--canonical-provider-seam expected)
+    (error "Canonical provider seam is missing"))
+    (let ((count 0) position (start (point-min)))
+      (save-excursion
+        (goto-char start)
+        (while (search-forward expected nil t)
+          (setq count (1+ count)
+                position (point))))
+      (unless (= count 1)
+        (error "Expected one canonical provider seam, found %d" count))
+      position)))
+
+(defun nelisp-bootstrap--substring-count (needle haystack)
+  "Count non-overlapping occurrences of NEEDLE in HAYSTACK."
+  (with-temp-buffer
+    (insert haystack)
+    (goto-char (point-min))
+    (let ((count 0))
+      (while (search-forward needle nil t)
+        (setq count (1+ count)))
+      count)))
+
+(defun nelisp-bootstrap--substring-position (needle haystack)
+  "Return the zero-based literal position of NEEDLE in HAYSTACK."
+  (with-temp-buffer
+    (insert haystack)
+    (goto-char (point-min))
+    (and (search-forward needle nil t)
+         (- (point) (length needle) 1))))
+
+(defconst nelisp-bootstrap--ffi-publication-chain
+  '("nl-ffi-memory.el" "nl-ffi-loader.el" "nl-ffi.el"
+    "emacs-sqlite-ffi.el"
+    "emacs-network-syscall-shim.el" "emacs-network-ffi.el")
+  "Logical package names in canonical eager FFI publication order.")
+
+(defun nelisp-bootstrap--ffi-publication-files ()
+  "Return the readable canonical FFI provider files, or signal an error."
+  (mapcar
+   (lambda (name)
+     (let ((file (nelisp-bootstrap--package-file name)))
+       (unless (and file (file-readable-p file))
+         (error "Missing readable bootstrap FFI provider %s" name))
+       file))
+   nelisp-bootstrap--ffi-publication-chain))
+
+(defun nelisp-bootstrap--validate-ffi-publication-order (files)
+  "Validate the complete unique FFI chain in FILES when any member occurs."
+  (let* ((mapped (mapcar (lambda (name) (nelisp-bootstrap--package-file name))
+                         nelisp-bootstrap--ffi-publication-chain))
+         (present (cl-remove-if-not (lambda (file) (and file (member file files)))
+                                    mapped)))
+    (when present
+      (let ((providers (nelisp-bootstrap--ffi-publication-files)))
+        (unless (equal present providers)
+          (error "Bootstrap FFI publication chain is incomplete"))
+        (let ((positions (mapcar (lambda (file)
+                                   (let ((tail (member file files)))
+                                     (and tail (- (length files) (length tail)))))
+                                 providers)))
+          (unless (and (= (length files)
+                          (length (delete-dups (copy-sequence files))))
+                       (equal positions (sort (copy-sequence positions) #'<)))
+            (error "Bootstrap FFI publication chain is duplicated or out of order")))))
+    files))
+
+(defun nelisp-bootstrap--validate-ffi-publication-buffer (files)
+  "Validate genuine FFI source bytes and their order in the generated buffer."
+  (nelisp-bootstrap--validate-ffi-publication-order files)
+  (when (cl-some (lambda (name)
+                   (let ((file (nelisp-bootstrap--package-file name)))
+                     (and file (member file files))))
+                 nelisp-bootstrap--ffi-publication-chain)
+    (let ((text (buffer-string))
+          (previous-end 0))
+      (dolist (file (nelisp-bootstrap--ffi-publication-files))
+        (let* ((logical (nelisp-bootstrap--logical-name file))
+               (marker (format ";;; >>> %s\n" logical))
+               (source (with-temp-buffer
+                         (insert-file-contents file)
+                         (buffer-string)))
+               (marker-position (nelisp-bootstrap--substring-position marker text))
+               (source-position (nelisp-bootstrap--substring-position source text)))
+          (unless (and (= (nelisp-bootstrap--substring-count marker text) 1)
+                       (= (nelisp-bootstrap--substring-count source text) 1)
+                       marker-position source-position
+                       (>= marker-position previous-end)
+                       (>= source-position marker-position))
+            (error "Bootstrap FFI source bytes or order failed validation: %s"
+                   logical))
+          (setq previous-end (+ source-position (length source))))))))
+
+(defun nelisp-bootstrap--validate-provider-bundle-buffer
+    (provider provider-start provider-offset files)
+  "Check provider bytes, uniqueness, prologue order, and package ordering."
+  (let* ((text (buffer-string))
+         (relative (car provider))
+         (transformed (nth 2 provider))
+         (provider-marker (format ";;; >>> %s [canonical provider]\n" relative))
+         (runtime-forms (nelisp-bootstrap--runtime-load-path-prologue-forms))
+         (runtime-marker (prin1-to-string (car runtime-forms)))
+         (first-package
+          (and files
+               (format ";;; >>> %s\n"
+                       (nelisp-bootstrap--logical-name (car files)))))
+         (runtime-position (string-match (regexp-quote runtime-marker) text))
+         (feature-position
+          (string-match (regexp-quote nelisp-bootstrap--feature-registry-prologue)
+                        text))
+         (provider-position (string-match (regexp-quote provider-marker) text))
+         (source-position
+          (nelisp-bootstrap--substring-position transformed text))
+         (package-position
+          (and first-package
+               (nelisp-bootstrap--substring-position first-package text)))
+         (package-count
+          (and first-package
+               (nelisp-bootstrap--substring-count first-package text)))
+         (calculated-offset
+          (length (encode-coding-string
+                   (substring text 0 (1- provider-start))
+                   'utf-8-emacs-unix))))
+    (unless (and (= (nelisp-bootstrap--substring-count provider-marker text) 1)
+                 (= (nelisp-bootstrap--substring-count transformed text) 1)
+                 runtime-position feature-position provider-position source-position
+                 (= source-position (1- provider-start))
+                 (or (null files)
+                     (and package-position
+                          (= package-count 1)
+                          (>= package-position
+                              (+ source-position (length transformed)))))
+                 (< runtime-position feature-position)
+                 (< feature-position provider-position)
+                 (= calculated-offset provider-offset))
+      (error "Canonical provider publication order or bytes failed validation"))))
+
+(defun nelisp-bootstrap--write-provider-receipt (output provider offset order)
+  "Write publication receipt for OUTPUT and PROVIDER at OFFSET in ORDER."
+  (let* ((bundle-hash
+          (with-temp-buffer
+            (insert-file-contents-literally output)
+            (secure-hash 'sha256 (current-buffer))))
+         (receipt-file (concat output ".provider.json"))
+         (receipt
+          `((schema . 1)
+            (provider . ,(nth 0 provider))
+            (input_sha256 . ,(nth 3 provider))
+            (transformer_sha256 . ,(nth 6 provider))
+            (transformed_sha256 . ,(nth 4 provider))
+            (getter_nlre_match_data_sha256 . ,(nth 5 provider))
+            (bundle_sha256 . ,bundle-hash)
+            (insertion_byte_offset . ,offset)
+            (insertion_order . ,order))))
+    (let ((coding-system-for-write 'utf-8-unix))
+      (with-temp-file receipt-file
+        (insert (json-encode receipt) "\n")))
+    receipt-file))
 
 (defun nelisp-bootstrap--core-owned-source-files ()
   "Return the absolute paths of `nelisp-bootstrap--core-owned-sources'."
@@ -500,7 +757,7 @@ bundled source that may evaluate a declaration."
         (setq eager (cons inline (delete inline eager))))
       (setq eager (cons gv (delete gv eager)))
       (setq eager (cons macroexp (delete macroexp eager))))
-    eager))
+    (nelisp-bootstrap--validate-ffi-publication-order eager)))
 
 ;; Local files re-appended AFTER the vendor tail.
 (defvar nelisp-bootstrap-post-vendor-tail-files
@@ -651,12 +908,18 @@ qualify; other loaded files (vendor, host Emacs) are not local sources."
 (defun nelisp-bootstrap--extra-source-file (name)
   "Return the file for bootstrap list entry NAME.
 A bare NAME is a logical package source resolved through the package
-table.  A NAME with a directory part is a vendored GNU file relative to the
-vendor directory and must exist."
-  (if (string-match-p "/" name)
-      (or (nelisp-bootstrap--vendor-source-file name)
-          (error "Missing readable bootstrap vendor file: %s" name))
-    (nelisp-bootstrap--package-file name)))
+table.  The process-buffer source is the one explicit repository-relative
+local path; other names with a directory part are vendor files."
+  (cond
+   ((equal name "lisp/nelisp-process-buffer.el")
+    (let ((file (expand-file-name name nelisp-bootstrap-repo-root)))
+      (if (file-readable-p file)
+          file
+        (error "Missing readable bootstrap source: %s" file))))
+   ((string-match-p "/" name)
+    (or (nelisp-bootstrap--vendor-source-file name)
+        (error "Missing readable bootstrap vendor file: %s" name)))
+   (t (nelisp-bootstrap--package-file name))))
 
 (defun nelisp-bootstrap--complete-file-list (files)
   "Add standalone-only source files to FILES in a dependency-safe spot."
@@ -701,18 +964,15 @@ vendor directory and must exist."
                  (member text-buffer out))
         (setq out (nelisp-bootstrap--insert-before
                    text-buffer compat (delete text-buffer out)))))
-    (let ((owner (nelisp-bootstrap--package-file "nl-ffi-memory.el"))
-          (adapter (nelisp-bootstrap--package-file "emacs-network-syscall-shim.el"))
-          (network-ffi (nelisp-bootstrap--package-file "emacs-network-ffi.el")))
+    (let* ((chain (nelisp-bootstrap--ffi-publication-files))
+           (network-ffi (car (last chain))))
       (when (member network-ffi out)
-        (unless (file-readable-p adapter)
-          (error "Missing readable bootstrap network syscall shim: %s" adapter))
-        (unless (file-readable-p owner)
-          (error "Missing readable bootstrap FFI memory owner: %s" owner))
-        (setq out (nelisp-bootstrap--insert-before
-                   adapter network-ffi (delete adapter out)))
-        (setq out (nelisp-bootstrap--insert-before
-                   owner adapter (delete owner out)))))
+        (dolist (file (butlast chain))
+          (setq out (delete file out)))
+        (let ((anchor network-ffi))
+          (dolist (file (reverse (butlast chain)))
+            (setq out (nelisp-bootstrap--insert-before file anchor out)
+                  anchor file)))))
     (let ((fileio (nelisp-bootstrap--package-file "emacs-fileio.el"))
           (fileio-gui (nelisp-bootstrap--package-file "emacs-fileio-gui.el"))
           (mode-builtins (nelisp-bootstrap--package-file "emacs-mode-builtins.el")))
@@ -781,7 +1041,27 @@ vendor directory and must exist."
         (unless (file-readable-p file)
           (error "Missing readable bootstrap post-vendor-tail file: %s" name))
         (setq out (append (delete file out) (list file)))))
-    out))
+    ;; Publish the real process-buffer provider before process consumers, then
+    ;; the adapter before the facade and related bridges. These selected units
+    ;; are emitted into the image; this builder never loads the adapter.
+    (let* ((adapter (nelisp-bootstrap--package-file "nelisp-process-adapter.el"))
+           (process-buffer (expand-file-name "lisp/nelisp-process-buffer.el"
+                                             nelisp-bootstrap-repo-root))
+           (consumers (list (nelisp-bootstrap--package-file "emacs-process.el")
+                            (nelisp-bootstrap--package-file "emacs-process-builtins.el")
+                            (nelisp-bootstrap--package-file "emacs-process-events.el")))
+           (consumer-anchor (cl-find-if (lambda (file) (member file consumers)) out)))
+      (unless (and (file-readable-p adapter) (file-readable-p process-buffer))
+        (error "Missing process adapter or process-buffer source"))
+      (unless (and (= (cl-count adapter out :test #'equal) 1)
+                   (= (cl-count process-buffer out :test #'equal) 1))
+        (error "Process adapter and process-buffer must each be selected exactly once"))
+      (unless consumer-anchor
+        (error "No process consumer selected for adapter publication"))
+      (setq out (delete adapter (delete process-buffer out)))
+      (setq out (nelisp-bootstrap--insert-before process-buffer consumer-anchor out))
+      (setq out (nelisp-bootstrap--insert-after adapter process-buffer out)))
+    (nelisp-bootstrap--validate-ffi-publication-order out)))
 
 (defun nelisp-bootstrap--file-features (file)
   "Return features provided by FILE."
@@ -1369,20 +1649,44 @@ strings or comments, and calls with any non-literal argument, are kept."
       (insert (prin1-to-string form) "\n"))
     (insert "\n")
     (insert nelisp-bootstrap--feature-registry-prologue)
-    (insert "\n")
-    (dolist (file files)
-      (let ((rel (nelisp-bootstrap--logical-name file)))
-        (insert "\n;;; >>> " rel "\n")
-        (nelisp-bootstrap--insert-bundle-file-body file rel)
-        (dolist (feature (nelisp-bootstrap--file-features file))
-          (insert "\n(provide '")
-          (insert (symbol-name feature))
-          (insert ")\n"))
-        (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
-          (insert form))
-        (insert "\n;;; <<< " rel "\n")))
-    (let ((coding-system-for-write 'utf-8-emacs-unix))
-      (write-region (point-min) (point-max) output nil 'silent))))
+    (insert "\n" nelisp-bootstrap--canonical-provider-seam)
+    (let* ((seam-position (nelisp-bootstrap--provider-seam-position))
+           (provider-path
+            (nelisp-bootstrap--validate-canonical-provider-manifest files))
+           (provider (nelisp-bootstrap--canonical-provider-source provider-path))
+           (provider-start nil)
+           (provider-offset nil))
+      (goto-char seam-position)
+      (insert "\n;;; >>> " provider-path " [canonical provider]\n")
+      (setq provider-start (point))
+      (insert (nth 2 provider))
+      (insert "\n;;; <<< " provider-path " [canonical provider]\n")
+      (setq provider-offset
+            (length
+             (encode-coding-string
+              (buffer-substring-no-properties (point-min) provider-start)
+              'utf-8-emacs-unix)))
+      (nelisp-bootstrap--provider-seam-position)
+      (dolist (file files)
+        (let ((rel (nelisp-bootstrap--logical-name file)))
+          (insert "\n;;; >>> " rel "\n")
+          (nelisp-bootstrap--insert-bundle-file-body file rel)
+          (dolist (feature (nelisp-bootstrap--file-features file))
+            (insert "\n(provide '")
+            (insert (symbol-name feature))
+            (insert ")\n"))
+          (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
+            (insert form))
+          (insert "\n;;; <<< " rel "\n")))
+      (nelisp-bootstrap--validate-provider-bundle-buffer
+       provider provider-start provider-offset files)
+      (nelisp-bootstrap--validate-ffi-publication-buffer files)
+      (let ((coding-system-for-write 'utf-8-emacs-unix))
+        (write-region (point-min) (point-max) output nil 'silent))
+      (nelisp-bootstrap--write-provider-receipt
+       output provider provider-offset
+       '("runtime-load-path-prologue" "feature-registry-prologue"
+         "lisp/nelisp-stdlib-regexp.el" "host-discovered-package-files")))))
 
 (defun nelisp-bootstrap--read-forms-from-file (file)
   "Return top-level forms read from FILE."

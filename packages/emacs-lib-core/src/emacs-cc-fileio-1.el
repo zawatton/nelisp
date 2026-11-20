@@ -12,8 +12,7 @@
 (unless (fboundp 'clear-buffer-auto-save-failure)
   (defun clear-buffer-auto-save-failure ()
     "Clear any record of a recent auto-save failure in the current buffer."
-    (when (local-variable-p 'auto-save-failure)
-      (setq auto-save-failure nil))))
+    nil))
 
 (unless (fboundp 'delete-directory-internal)
   (defvar emacs-cc-fileio--delete-directory-primitive

@@ -1,0 +1,37 @@
+(optimize-char-table
+ (let* ((subtype (make-symbol "gnu58-optimize-owned"))
+        (saved-plist (symbol-plist subtype)))
+   (unwind-protect
+       (progn
+         ;; Give the isolated subtype one real extra slot on both runtimes.
+         (put subtype 'char-table-extra-slots 1)
+         (let ((parent (make-char-table subtype))
+               (table (make-char-table subtype)))
+           (set-char-table-range parent ?B 'inherited)
+           (set-char-table-range table nil 'fallback)
+           (set-char-table-range table 0 'zero)
+           (set-char-table-range table ?A 'alpha)
+           (set-char-table-parent table parent)
+           (set-char-table-extra-slot table 0 'extra)
+           (let ((before (list (get subtype 'char-table-extra-slots)
+                               (char-table-subtype table)
+                               (char-table-range table nil)
+                               (aref table 0)
+                               (char-table-range table ?A)
+                               (char-table-range table ?B)
+                               (char-table-extra-slot table 0))))
+             (let ((result (optimize-char-table table)))
+               (list result
+                     (equal before
+                            (list (get subtype 'char-table-extra-slots)
+                                  (char-table-subtype table)
+                                  (char-table-range table nil)
+                                  (aref table 0)
+                                  (char-table-range table ?A)
+                                  (char-table-range table ?B)
+                                  (char-table-extra-slot table 0)))
+                     (eq parent (char-table-parent table)))))))
+     (setplist subtype saved-plist)))
+ (condition-case err (optimize-char-table nil) (error err))
+ (condition-case err (optimize-char-table) (error err))
+ (condition-case err (optimize-char-table nil nil nil) (error err)))

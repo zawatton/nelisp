@@ -3261,7 +3261,25 @@ of STRING.  Sets `nlre--match-data' as usual."
 
 (defun nlre-match-data (&optional integers reuse reseat)
   "Return flattened match data for the last NeLisp regexp match."
-  (when nlre--last-caps
+  (let* ((caps nlre--last-caps)
+         (n (and caps (length caps))))
+    ;; An all-unmatched capture vector has no effective registers.
+    (while (and n (> n 0) (null (aref caps (1- n))))
+      (setq n (1- n)))
+    (cond
+   ((and (= (or n 0) 0) (or caps nlre--last-buffer))
+    (if (consp reuse)
+        (let ((cell reuse) (first t))
+          (while (consp cell)
+            (let ((old (car cell)))
+              (when (and reseat (markerp old))
+                (set-marker old nil))
+              (setcar cell (and first integers nlre--last-buffer)))
+            (setq first nil
+                  cell (cdr cell)))
+          reuse)
+      (and integers nlre--last-buffer (list nlre--last-buffer))))
+   ((and caps (> n 0))
     ;; GNU RESEAT: the markers already in REUSE are detached, so they leave
     ;; the buffer's marker chain at once instead of at the next collection.
     (when (and reseat (consp reuse))
@@ -3269,10 +3287,8 @@ of STRING.  Sets `nlre--match-data' as usual."
         (while (consp cell)
           (when (markerp (car cell)) (set-marker (car cell) nil))
           (setq cell (cdr cell)))))
-    (let ((i 0) (n (length nlre--last-caps)) (out nil) (reuse-values reuse))
+    (let ((i 0) (out nil) (reuse-values reuse))
       ;; GNU omits unmatched groups beyond the last participating group.
-      (while (and (> n 1) (null (aref nlre--last-caps (1- n))))
-        (setq n (1- n)))
       (while (< i n)
         (let ((span (aref nlre--last-caps i)))
           (dolist (pos (if span (list (car span) (cdr span)) '(nil nil)))
@@ -3285,7 +3301,8 @@ of STRING.  Sets `nlre--match-data' as usual."
       (setq out (nreverse out))
       (when (and integers nlre--last-buffer)
         (setq out (append out (list nlre--last-buffer))))
-      (nlre--reuse-list reuse out))))
+      (nlre--reuse-list reuse out)))
+   (t nil))))
 
 (defun nlre--caps-offset (offset)
   (let ((i 0) (n (length nlre--last-caps)))

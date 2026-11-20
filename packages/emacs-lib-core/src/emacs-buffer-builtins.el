@@ -291,9 +291,27 @@ adjusts those positions before calling this function."
   (let* ((buffer (nelisp-buffer--ambient
                   (nth (cond ((eq operation 'delete) 2)
                              ((eq operation 'erase) 0) (t 1)) args)))
+         (marker-insert-p (eq operation 'insert-before-markers))
+         (marker-start (and marker-insert-p (nelisp-point buffer)))
+         (marker-length (and marker-insert-p (stringp (car args))
+                            (length (car args))))
          (family (emacs-buffer-builtins--indirect-family buffer)))
     (if (not family)
-        (apply orig args)
+        (prog1 (apply orig args)
+          (when (buffer-live-p buffer)
+            (when (and marker-length (> marker-length 0))
+              (let* ((ext (emacs-buffer--ensure-text-property-ext buffer))
+                     (mapping
+                      (emacs-buffer--tp-after-insert
+                       (emacs-buffer--ext-text-props ext)
+                       marker-start marker-length)))
+                (emacs-buffer--set-ext-text-props ext mapping)
+                (emacs-buffer--insert-string-properties
+                 ext marker-start (list (car args)))))
+            (let ((ext (gethash buffer emacs-buffer--state)))
+              (emacs-buffer--native-property-text-commit
+               buffer (nelisp-buffer-size buffer)
+               (and ext (emacs-buffer--ext-text-props ext))))))
       (let* ((insert-p (memq operation '(insert insert-before-markers)))
              (start (cond (insert-p (nelisp-point buffer))
                           ((eq operation 'erase) 1)
@@ -336,7 +354,22 @@ adjusts those positions before calling this function."
                 (nelisp-buffer--shift-overlays-on-delete peer start end))
               ;; Record the mapped point without clamping to the old text size.
               (setf (nelisp-buffer-pend peer) position)))
-          (emacs-buffer-builtins--share-text buffer))))))
+          (when (and marker-length (> marker-length 0)
+                     (buffer-live-p buffer))
+            (let* ((ext (emacs-buffer--ensure-text-property-ext buffer))
+                   (mapping
+                    (emacs-buffer--tp-after-insert
+                     (emacs-buffer--ext-text-props ext)
+                     marker-start marker-length)))
+              (emacs-buffer--set-ext-text-props ext mapping)
+              (emacs-buffer--insert-string-properties
+               ext marker-start (list (car args)))))
+          (emacs-buffer-builtins--share-text buffer)
+          (when (buffer-live-p buffer)
+            (let ((ext (gethash buffer emacs-buffer--state)))
+              (emacs-buffer--native-property-text-commit
+               buffer (nelisp-buffer-size buffer)
+               (and ext (emacs-buffer--ext-text-props ext))))))))))
 
 ;; The change-hook variables are C-level in GNU Emacs, so nothing in Lisp
 ;; defines them.  `emacs-buffer-builtins--change-edit' reads them on every
@@ -477,7 +510,8 @@ The aggregate itself is stored in that buffer's event side table.")
             (puthash base remaining emacs-buffer-builtins--indirect-families)
           (remhash base emacs-buffer-builtins--indirect-families))))
     (prog1 (funcall orig buffer)
-      (when (or family base) (remhash buffer emacs-buffer--state)))))
+      (when (not (buffer-live-p buffer))
+        (remhash buffer emacs-buffer--state)))))
 
 (defun emacs-buffer-builtins--indirect-set-modified (flag &optional buffer)
   "Publish BUFFER's modified FLAG to the rest of its indirect family."
@@ -505,12 +539,10 @@ The aggregate itself is stored in that buffer's event side table.")
     (setq buffer (or buffer (current-buffer)))
     (unless (bufferp buffer)
       (signal 'wrong-type-argument (list 'bufferp buffer)))
-    ;; Native buffers have no indirect clones.
-    (and (emacs-buffer-builtins--ec-buffer-p buffer)
-         (let ((ext (gethash buffer emacs-buffer--state)))
-           (or (and ext (emacs-buffer--ext-base-buffer ext))
-               (gethash (buffer-name buffer)
-                        emacs-buffer--indirect-base-by-name)))))
+    (let ((ext (gethash buffer emacs-buffer--state)))
+      (or (and ext (emacs-buffer--ext-base-buffer ext))
+          (gethash (buffer-name buffer)
+                   emacs-buffer--indirect-base-by-name))))
 
   (defun make-indirect-buffer (base-buffer name &optional clone inhibit-buffer-hooks)
     "Create an indirect buffer named NAME sharing BASE-BUFFER's text.
@@ -525,28 +557,34 @@ buffer creation and killing hooks in the new buffer."
       (if (not (nelisp-buffer-p base))
           (emacs-buffer-clone-indirect-buffer name base)
         (let* ((root (or (buffer-base-buffer base) base))
+               (multibyte (and (nelisp--buffer-multibyte-p root) t))
                (buffer (generate-new-buffer name inhibit-buffer-hooks))
                (ext (emacs-buffer--ensure-text-property-ext buffer))
                (base-ext (emacs-buffer--ensure-text-property-ext base)))
           (setf (emacs-buffer--ext-base-buffer ext) root)
+          (nelisp-buffer-local--initialize-multibyte-cell buffer multibyte)
+          (puthash buffer multibyte nelisp--buffer-multibyte-table)
           (nelisp-buffer--copy-text buffer base)
-          (setf (nelisp-buffer-narrow-start buffer) (nelisp-buffer-narrow-start base))
-          (setf (nelisp-buffer-narrow-end buffer) (nelisp-buffer-narrow-end base))
+          (setf (nelisp-buffer-narrow-start buffer) (nelisp-buffer-narrow-start root))
+          (setf (nelisp-buffer-narrow-end buffer) (nelisp-buffer-narrow-end root))
           (setf (nelisp-buffer-text-properties buffer) (nelisp-buffer-text-properties base))
           (setf (nelisp-buffer-modified buffer) (nelisp-buffer-modified base))
           (setf (emacs-buffer--ext-text-props ext) (emacs-buffer--ext-text-props base-ext))
           (setf (nelisp-buffer-tick buffer) (nelisp-buffer-tick base))
-          (nelisp-goto-char (nelisp-point base) buffer)
+          (nelisp-goto-char (nelisp-point root) buffer)
           (when clone
-            (when (eq base (current-buffer))
-              (emacs-buffer--swap-out
-               base (emacs-buffer--swap-active-symbols base base)))
-            (let ((locals nil))
-              (dolist (cell (buffer-local-variables base))
-                (push (if (consp cell)
-                          (cons (car cell) (buffer-local-value (car cell) base))
-                        cell) locals))
-              (setf (emacs-buffer--ext-locals ext) (nreverse locals))))
+            (nelisp-buffer-local--clone root buffer)
+            ;; GNU 31.1 buffer.c:944-955 constructor reset policy.
+            (emacs-buffer-set-buffer-local-toplevel-value 'buffer-file-name nil buffer)
+            (emacs-buffer-set-buffer-local-toplevel-value 'buffer-file-truename nil buffer)
+            (emacs-buffer-set-buffer-local-toplevel-value 'buffer-backed-up nil buffer)
+            (emacs-buffer-set-buffer-local-toplevel-value 'local-minor-modes nil buffer)
+            (emacs-buffer-set-buffer-local-toplevel-value 'buffer-auto-save-file-name nil buffer)
+            (emacs-buffer-set-buffer-local-toplevel-value 'buffer-save-without-query nil buffer)
+            (emacs-buffer-set-buffer-local-toplevel-value 'buffer-file-number nil buffer))
+          (emacs-buffer-set-buffer-local-toplevel-value
+           'buffer-undo-list (buffer-local-value 'buffer-undo-list root) buffer)
+          (emacs-buffer-set-buffer-local-toplevel-value 'buffer-display-count 0 buffer)
           (when inhibit-buffer-hooks
             (emacs-buffer-set-buffer-local-value 'kill-buffer-hook buffer nil)
             (emacs-buffer-set-buffer-local-value 'kill-buffer-query-functions buffer nil)
@@ -555,6 +593,12 @@ buffer creation and killing hooks in the new buffer."
                    (cons buffer (or (gethash root emacs-buffer-builtins--indirect-families)
                                     (list root)))
                    emacs-buffer-builtins--indirect-families)
+          (when (and clone (local-variable-p 'buffer-stale-function base))
+            (with-current-buffer buffer
+              (nelisp-buffer-local-kill 'buffer-stale-function)))
+          (when clone
+            (with-current-buffer buffer
+              (run-hooks 'clone-indirect-buffer-hook)))
           buffer)))))
 
 (defun emacs-buffer-builtins--buffer-local-variables (&optional buffer &rest extra)
@@ -852,6 +896,9 @@ under the live Magit bridge even when the actual current buffer is valid."
 ;; `defvar'd.
 (when (and (emacs-buffer-builtins--standalone-p)
            (fboundp 'emacs-buffer-declare-per-buffer))
+  ;; GNU's clone hook is a global special variable, not a buffer-local one.
+  (defvar clone-indirect-buffer-hook nil
+    "Hook run after creating an indirect buffer.")
   ;; An initialized defvar marks this intrinsic special without resetting an
   ;; existing bound value, so dynamic lets remain visible across caller files.
   (defvar buffer-read-only nil)
@@ -870,6 +917,15 @@ under the live Magit bridge even when the actual current buffer is valid."
   (defvar buffer-auto-save-file-name nil
     "Name of the current buffer's auto-save file, or nil.")
   (emacs-buffer-declare-per-buffer 'buffer-auto-save-file-name nil)
+  (defvar buffer-display-count 0
+    "Number of times this buffer has been displayed.")
+  (emacs-buffer-declare-per-buffer 'buffer-display-count 0)
+  (defvar buffer-backed-up nil
+    "Non-nil if this buffer has been backed up.")
+  (emacs-buffer-declare-per-buffer 'buffer-backed-up nil)
+  (defvar local-minor-modes nil
+    "List of minor modes enabled in this buffer.")
+  (emacs-buffer-declare-per-buffer 'local-minor-modes nil)
   (if (boundp 'default-directory)
       (emacs-buffer-declare-per-buffer 'default-directory default-directory)
     (emacs-buffer-declare-per-buffer 'default-directory)))
@@ -1031,15 +1087,51 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
   (advice-add 'text-properties-at :around
               #'emacs-buffer-builtins--text-properties-at-around))
 
+(defun emacs-buffer-builtins--native-put-property-undo-records
+    (target start end property value)
+  "Return GNU text-property undo records for TARGET's old values."
+  (let ((position start) records)
+    (while (< position end)
+      (let* ((properties (text-properties-at position target))
+             (old-value (plist-get properties property))
+             (record-p (or (not (plist-member properties property))
+                           (not (eq old-value value))))
+             (next (next-property-change position target))
+             (run-end (if (and next (> next position))
+                          (min next end)
+                        (min (1+ position) end))))
+        (when record-p
+          (push (list* nil property old-value position run-end) records))
+        (setq position run-end)))
+    records))
+
 (defun emacs-buffer-builtins--text-property-mutation-around
     (operation orig start end &rest args)
   "Mirror native text-property mutation OPERATION into the sidecar."
-  (let* ((result (apply orig start end args))
-         (put-p (eq operation 'put))
+  (let* ((put-p (eq operation 'put))
          (payload (car args))
          (value (cadr args))
          (object (if put-p (nth 2 args) (nth 1 args)))
-         (target (emacs-buffer-builtins--text-property-object object)))
+         (target (emacs-buffer-builtins--text-property-object object))
+         (undo-plan
+          (when (and put-p target (not (stringp target))
+                     (not (eq target :string-or-unsupported))
+                     (fboundp 'nelisp-buffer-p) (nelisp-buffer-p target))
+            (let* ((range
+                    (emacs-buffer-builtins--property-range
+                     (emacs-buffer-builtins--checked-position start)
+                     (emacs-buffer-builtins--checked-position end) target))
+                   (range-start (car range))
+                   (range-end (cadr range)))
+              (with-current-buffer target
+                (let ((undo-list buffer-undo-list)
+                      (modified-before (buffer-modified-p)))
+                  (when (and (not (eq undo-list t)) (< range-start range-end))
+                    (let ((records
+                           (emacs-buffer-builtins--native-put-property-undo-records
+                            target range-start range-end payload value)))
+                      (and records (list records modified-before)))))))))
+         (result (apply orig start end args)))
     (when (and (not (eq target :string-or-unsupported))
                (not (and (eq operation 'add) (null payload))))
       (when (memq operation '(put add))
@@ -1064,6 +1156,16 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
            'emacs-buffer--native-buffer-text-property-mutation
            (append (list operation target start end)
                    (if put-p (list payload value) (list payload))))))))
+    (when undo-plan
+      (let ((records (nth 0 undo-plan))
+            (modified-before (nth 1 undo-plan)))
+        (with-current-buffer target
+          (unless (eq buffer-undo-list t)
+            (let ((current-list buffer-undo-list))
+              (setq buffer-undo-list
+                    (append records
+                            (unless modified-before (list (cons t 0)))
+                            current-list)))))))
     (when (and (not (stringp target))
                (not (eq target :string-or-unsupported))
                (nelisp-buffer-p target))
@@ -1783,7 +1885,10 @@ buffers are returned regardless."
   (if (or (null native)
           (emacs-buffer-builtins--ec-buffer-p (or buffer (current-buffer))))
       (emacs-buffer-builtins-buffer-modified-tick buffer)
-    (funcall native buffer)))
+    (let ((value (funcall native buffer)))
+      (let* ((target (or buffer (current-buffer)))
+             (ext (emacs-buffer--native-property-state target)))
+        (+ value (if ext (emacs-buffer--ext-property-delta ext) 0))))))
 
 (defun emacs-buffer-builtins-bridge-buffer-modified-tick (&optional buffer)
   "Return BUFFER's modified tick, deferring to the native one for native buffers."
@@ -1914,11 +2019,19 @@ clamp + signal semantics."
         (nelisp-ec-insert replacement)))
     nil))
 
+(defun emacs-buffer-builtins--subst-char-region-position (position)
+  "Validate POSITION as `subst-char-in-region' does, then resolve markers."
+  (unless (or (integerp position) (markerp position))
+    (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
+  (emacs-buffer-builtins--position position))
+
 (defun emacs-buffer-builtins-subst-char-in-region
     (start end fromchar tochar &optional noundo)
   "Replace FROMCHAR with TOCHAR between START and END.
 Preserve point, markers and text properties.  NOUNDO suppresses
 recording replacement undo."
+  (setq start (emacs-buffer-builtins--subst-char-region-position start)
+        end (emacs-buffer-builtins--subst-char-region-position end))
   (if (emacs-buffer-builtins--ec-current-p)
       (emacs-buffer-builtins--ec-subst-char-in-region
        start end fromchar tochar)
@@ -1937,8 +2050,6 @@ buffer is set, so the host `current-buffer' is unrelated to it."
 (defun emacs-buffer-builtins--ec-subst-char-in-region
     (start end fromchar tochar)
   "`subst-char-in-region' over the ec current buffer, preserving point."
-  (setq start (emacs-buffer-builtins--position start)
-        end (emacs-buffer-builtins--position end))
   (unless (characterp fromchar)
     (signal 'wrong-type-argument (list 'characterp fromchar)))
   (unless (characterp tochar)
@@ -1966,8 +2077,6 @@ buffer is set, so the host `current-buffer' is unrelated to it."
 (defun emacs-buffer-builtins--host-subst-char-in-region
     (start end fromchar tochar &optional noundo)
   "`subst-char-in-region' over the native current buffer."
-  (setq start (emacs-buffer-builtins--position start)
-        end (emacs-buffer-builtins--position end))
   (unless (characterp fromchar)
     (signal 'wrong-type-argument (list 'characterp fromchar)))
   (unless (characterp tochar)
@@ -1984,7 +2093,9 @@ buffer is set, so the host `current-buffer' is unrelated to it."
              (/= (string-bytes (string fromchar))
                  (string-bytes (string tochar))))
     (error "Characters in ‘subst-char-in-region’ have different byte-lengths"))
-  (let ((text (buffer-substring start end)) (i 0) (changed nil))
+  (let ((original-text (buffer-substring start end))
+        (text (buffer-substring start end))
+        (i 0) (changed nil) (first-change nil))
     (while (< i (length text))
       (when (= (aref text i) fromchar)
         (unless changed
@@ -2002,6 +2113,8 @@ buffer is set, so the host `current-buffer' is unrelated to it."
                   (signal 'text-read-only nil)))
               (setq check (1+ check)))))
         (aset text i tochar)
+        (unless first-change
+          (setq first-change (+ start i)))
         (setq changed t))
       (setq i (1+ i)))
     (when changed
@@ -2013,27 +2126,67 @@ buffer is set, so the host `current-buffer' is unrelated to it."
                    (saved-point (nelisp-point buffer))
                    (replacement (concat (substring full 0 (1- start))
                                         text (substring full (1- end))))
-                   (ext (gethash buffer emacs-buffer--state)))
-              (when (and (not noundo) ext
-                         (not (eq (emacs-buffer--ext-undo-list ext) t)))
-                (setf (emacs-buffer--ext-undo-list ext)
-                      (cons (cons (substring full (1- start) (1- end)) start)
-                            (emacs-buffer--ext-undo-list ext))))
+                   (old-native-modified (nelisp-buffer-modified buffer))
+                   (old-public-modified (buffer-modified-p))
+                   (undo-list buffer-undo-list)
+                   (undo-recording (and (not noundo) (not (eq undo-list t))))
+                   (undo-records nil))
+              ;; GNU records each replaced character as an insertion range
+              ;; followed by the original character.  Its old-character
+              ;; position sign depends on whether point was just after that
+              ;; character before the replacement.
+              (when undo-recording
+                (let ((index 0))
+                  (while (< index (length text))
+                    (when (= (aref original-text index) fromchar)
+                      (let ((position (+ start index))
+                            (old-character
+                             (substring original-text index (1+ index))))
+                        (setq undo-records
+                              (cons
+                               (cons position (1+ position))
+                               (cons
+                                (cons old-character
+                                      (if (= saved-point (1+ position))
+                                          (- position)
+                                        position))
+                                undo-records)))))
+                    (setq index (1+ index)))
+                  (unless old-public-modified
+                    (setq undo-records
+                          (nconc undo-records (list (cons t 0))))))
+                (setq buffer-undo-list (append undo-records undo-list)))
               (nelisp-buffer--set-text buffer replacement (1- saved-point))
               (setf (nelisp-buffer-pend buffer) nil)
               (nelisp-buffer--bump-tick buffer)
-              (setf (nelisp-buffer-modified buffer) t)
+              (setf (nelisp-buffer-modified buffer)
+                    (if (and noundo (= (- end first-change) 1))
+                        old-native-modified
+                      t))
               (emacs-buffer-builtins--share-text buffer)
               ;; The file layer can own a separate saved-modification flag.
               (when (fboundp 'set-buffer-modified-p)
-                (set-buffer-modified-p t)))
+                (if noundo
+                    (if (= (- end first-change) 1)
+                        (if (fboundp 'restore-buffer-modified-p)
+                            (restore-buffer-modified-p old-public-modified)
+                          (set-buffer-modified-p old-public-modified))
+                      (set-buffer-modified-p t))
+                  (set-buffer-modified-p t))))
           (let ((saved-point (point)))
             (unwind-protect
                 (progn (goto-char start) (delete-region start end) (insert text))
               (goto-char saved-point)))))))
   nil)
 
-(when (emacs-buffer-builtins--install-function-p 'subst-char-in-region)
+(defun emacs-buffer-builtins--install-subst-char-in-region-p ()
+  "Return non-nil when the subst-char-in-region bridge should be installed."
+  (or (get 'subst-char-in-region 'emacs-stub-bulk)
+      (not (fboundp 'subst-char-in-region))
+      (not (boundp 'emacs-version))
+      (fboundp 'nelisp--write-stdout-bytes)))
+
+(when (emacs-buffer-builtins--install-subst-char-in-region-p)
   (defalias 'subst-char-in-region
     #'emacs-buffer-builtins-subst-char-in-region))
 

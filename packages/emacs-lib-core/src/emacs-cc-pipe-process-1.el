@@ -105,6 +105,84 @@ The first call loads the core unit, which then installs its own
 `make-pipe-process' over this dispatcher."
   (apply #'nelisp-process-buffer-make args))
 
+(defun emacs-cc-pipe-process-1--validate-make (original &rest args)
+  "Call ORIGINAL (the core pipe constructor) after GNU's option checks.
+The core file is loaded from the runtime, so its constructor is wrapped."
+  (when (plist-member args :name)
+    (unless (stringp (plist-get args :name))
+      (signal 'error (list ":name value not a string"))))
+  (let ((process (apply original args)))
+    ;; GNU creates a pipe process stopped when :stop is non-nil.
+    (when (plist-get args :stop) (aset process 2 'stop))
+    process))
+
+(defun emacs-cc-pipe-process-1--user-plist-p (key)
+  "Return non-nil when KEY belongs to the user's process plist.
+The core channel keeps its own options under keyword keys."
+  (not (and (symbolp key) (keywordp key))))
+
+(defun emacs-cc-pipe-process-1--pipe-call (name process args)
+  "Run public function NAME on core buffer pipe PROCESS with ARGS."
+  (cond
+   ((eq name 'process-plist)
+    (let ((plist (aref process 4)) (user nil))
+      (while plist
+        (when (emacs-cc-pipe-process-1--user-plist-p (car plist))
+          (setq user (append user (list (car plist) (cadr plist)))))
+        (setq plist (cddr plist)))
+      user))
+   ((eq name 'set-process-plist)
+    (let ((plist (aref process 4)) (kept nil))
+      (while plist
+        (unless (emacs-cc-pipe-process-1--user-plist-p (car plist))
+          (setq kept (append kept (list (car plist) (cadr plist)))))
+        (setq plist (cddr plist)))
+      (aset process 4 (append kept (car args)))
+      (car args)))
+   ((eq name 'process-query-on-exit-flag)
+    (not (process-get process :noquery)))
+   ((eq name 'set-process-query-on-exit-flag)
+    (process-put process :noquery (not (car args)))
+    (car args))
+   ((eq name 'process-coding-system)
+    (let ((coding (process-get process :coding)))
+      (cond ((consp coding) coding)
+            (coding (cons coding coding))
+            (t (cons 'utf-8-unix 'utf-8-unix)))))
+   ((eq name 'process-send-string)
+    (unless (stringp (car args))
+      (signal 'wrong-type-argument (list 'stringp (car args))))
+    nil)
+   ((eq name 'process-send-region)
+    (let ((start (car args)) (end (cadr args)))
+      (when (and (markerp start) (not (marker-buffer start)))
+        (error "Marker does not point anywhere"))
+      (buffer-substring-no-properties start end)
+      nil))
+   ((eq name 'process-send-eof)
+    ;; A pipe keeps its status; only the write side conceptually closes.
+    process)))
+
+(defun emacs-cc-pipe-process-1--pipe-around (name)
+  "Return an :around advice serving core buffer pipes for public NAME.
+Other processes continue to the previous definition; no public name is
+defined here, so the core file stays the only owner of the pipe object."
+  (lambda (original &rest args)
+    (if (and args (emacs-cc-pipe-process-1--core-pipe-p (car args)))
+        (emacs-cc-pipe-process-1--pipe-call name (car args) (cdr args))
+      (apply original args))))
+
+(defvar emacs-cc-pipe-process-1--advised nil
+  "Public names already advised for core buffer pipes.")
+
+(defun emacs-cc-pipe-process-1--advise-public (names)
+  "Advise each fbound public name in NAMES once."
+  (dolist (name names)
+    (when (and (fboundp name) (fboundp 'advice-add)
+               (not (memq name emacs-cc-pipe-process-1--advised)))
+      (push name emacs-cc-pipe-process-1--advised)
+      (advice-add name :around (emacs-cc-pipe-process-1--pipe-around name)))))
+
 (defun emacs-cc-pipe-process-1--notify-close (original process)
   "Run ORIGINAL (the core stderr close) and notify a pipe that it closed.
 GNU calls the pipe's sentinel, or inserts the default message, when the
@@ -130,7 +208,12 @@ nothing is stored by this unit."
              (not (advice-member-p #'emacs-cc-pipe-process-1--notify-close
                                    'nelisp-process-buffer-close-stderr)))
     (advice-add 'nelisp-process-buffer-close-stderr :around
-                #'emacs-cc-pipe-process-1--notify-close)))
+                #'emacs-cc-pipe-process-1--notify-close))
+  (when (and (fboundp 'advice-add) (featurep 'nelisp-process-buffer)
+             (not (advice-member-p #'emacs-cc-pipe-process-1--validate-make
+                                   'nelisp-process-buffer-make)))
+    (advice-add 'nelisp-process-buffer-make :around
+                #'emacs-cc-pipe-process-1--validate-make)))
 
 (when (fboundp 'nelisp--repr)
   (let ((entry (assq 'nelisp-process-buffer after-load-alist)))
@@ -288,6 +371,10 @@ Preserve the buffer's point unless it follows the process marker."
      'process-list nil #'emacs-cc-pipe-process-1--process-list)
     (emacs-process-events-register-handler
      'process-mark nil #'emacs-cc-pipe-process-1--process-mark))
+  (emacs-cc-pipe-process-1--advise-public
+   (list 'process-plist 'set-process-plist 'process-query-on-exit-flag
+         'set-process-query-on-exit-flag 'process-coding-system
+         'process-send-string 'process-send-region 'process-send-eof))
   ;; `accept-process-output' is owned by emacs-process-builtins' shared wait.
   (dolist (entry '((get-process . emacs-cc-pipe-process-1--get-process)
                    (process-command . emacs-cc-pipe-process-1--process-command)

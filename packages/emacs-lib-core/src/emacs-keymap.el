@@ -224,12 +224,25 @@ strings, integers) are returned as-is (= shared)."
          (lambda (e)
            (cond
             ((emacs-char-table-p e)
-             ;; Full-keymap char-table slot — deep-copy, recursing on
-             ;; nested keymap bindings.
-             (emacs-char-table-copy
-              e (lambda (b) (if (emacs-keymap-keymapp b)
-                                (emacs-keymap-copy-keymap b)
-                              b))))
+             ;; Copy raw storage first, then transform effective binding runs.
+             (if (and (fboundp 'emacs-char-table--owned-p)
+                      (emacs-char-table--owned-p e)
+                      (fboundp 'emacs-char-table--copy-storage))
+                 (let ((copy (emacs-char-table--copy-storage e)))
+                   (emacs-char-table-map
+                    (lambda (key binding)
+                      (emacs-char-table-set-range
+                       copy key
+                       (if (emacs-keymap-keymapp binding)
+                           (emacs-keymap-copy-keymap binding)
+                         binding)))
+                    copy)
+                   copy)
+               (emacs-char-table-copy
+                e (lambda (binding)
+                    (if (emacs-keymap-keymapp binding)
+                        (emacs-keymap-copy-keymap binding)
+                      binding)))))
             ((and (consp e) (eq (car e) t) (vectorp (cdr e)))
              ;; Legacy full-keymap slot vector — copy element-wise,
              ;; recurse on nested keymap bindings.
@@ -402,7 +415,13 @@ duplicating full-keymap mutation details."
          (integerp (aref key 0))
          (>= (aref key 0) 0)
          (< (aref key 0) (length slot-vector)))
-    (aset slot-vector (aref key 0) def)
+    (let* ((character (aref key 0))
+           (table (emacs-keymap-full-slot keymap)))
+      (if (and (emacs-char-table-p table)
+               (fboundp 'emacs-char-table--owned-p)
+               (emacs-char-table--owned-p table))
+          (emacs-char-table-set table character def)
+        (aset slot-vector character def)))
     def)
    ((fboundp 'define-key)
     (define-key keymap key def))

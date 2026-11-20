@@ -2483,6 +2483,8 @@ Symbols and lists signal `wrong-type-argument'."
 MVP: routes through the minibuffer reader (when available) and
 falls back to a queue-fed string.  DEFAULT-VALUE is used when the
 read input is empty."
+  (unless (stringp prompt)
+    (signal 'wrong-type-argument (list 'stringp prompt)))
   (let* ((reader (cond
                   ((fboundp 'emacs-minibuffer-completing-read)
                    (lambda (p)

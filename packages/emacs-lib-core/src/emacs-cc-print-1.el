@@ -49,52 +49,136 @@ newline, even when the stdout text already ended in a newline.")
 (defvar print-integers-as-characters nil)
 
 (defun emacs-cc-print-1--write-stderr-byte (byte)
-  "Write BYTE to the process stderr through libc and return BYTE.
-Use a duplicate of descriptor 2 so closing the stream leaves stderr open."
-  (require 'nl-ffi)
-  (require 'emacs-network-ffi)
-  (let ((libc emacs-network-ffi-libc-path))
-    (unless (and (stringp libc) (> (length libc) 0))
-      (error "external-debugging-output: system libc path is unavailable"))
-    (ffi:library libc)
-    (let* ((call (lambda (name c-name args result values)
-                   (funcall #'nl-ffi--invoke name c-name args result values)))
-           (fd (funcall call 'external-debugging-output--dup "dup"
-                        '(:sint32) :sint32 '(2)))
-           (stream nil))
-      (unless (and (integerp fd) (>= fd 0))
-        (error "external-debugging-output: dup(stderr) failed: %S" fd))
+  "Write BYTE to descriptor 2 without changing or flushing the stream."
+  (let ((buffer (syscall-direct 9 0 8 3 #x22 -1 0)))
+    (when (< buffer 0)
+      (error "external-debugging-output: mmap scratch allocation failed: %S"
+             buffer))
+    (let ((primary nil) (cleanup nil))
       (unwind-protect
-          (progn
-            (setq stream (funcall call 'external-debugging-output--fdopen
-                                  "fdopen" '(:sint32 :pointer) :pointer
-                                  (list fd "w")))
-            (unless (and (integerp stream) (/= stream 0))
-              (error "external-debugging-output: fdopen(stderr) failed"))
-            (unless (= (funcall call 'external-debugging-output--fputc
-                                "fputc" '(:sint32 :pointer) :sint32
-                                (list byte stream))
-                       byte)
-              (error "external-debugging-output: fputc failed")))
-        (if (and (integerp stream) (/= stream 0))
-            (funcall call 'external-debugging-output--fclose
-                     "fclose" '(:pointer) :sint32 (list stream))
-          (funcall call 'external-debugging-output--close
-                   "close" '(:sint32) :sint32 (list fd))))
-      byte)))
+          (condition-case err
+              (progn
+          (ptr-write-u8 buffer 0 byte)
+          (let ((done nil))
+            (while (not done)
+              (let ((written (syscall-direct 1 2 buffer 1 0 0 0)))
+                (cond
+                 ((= written -4) nil)
+                 ((< written 0)
+                  (signal 'emacs-cc-print-1--stderr-write-error
+                          (list written)))
+                 ((= written 0)
+                  (error "external-debugging-output: write(stderr) made no progress"))
+                 ((/= written 1)
+                  (error "external-debugging-output: invalid write count: %S"
+                         written))
+                 (t (setq done t)))))))
+            (t (setq primary err)))
+        (condition-case err
+            (let ((released (syscall-direct 11 buffer 8 0 0 0 0)))
+              (unless (= released 0)
+                (setq cleanup
+                      (list 'error
+                            (format "external-debugging-output: munmap failed: %S"
+                                    released)))))
+          (t (setq cleanup err))))
+      (cond
+       ((and primary cleanup)
+        (signal (car primary)
+                (append (cdr primary) (list :cleanup-failure cleanup))))
+       (primary (signal (car primary) (cdr primary)))
+       (cleanup (signal (car cleanup) (cdr cleanup)))))
+  byte))
 
-(unless (fboundp 'external-debugging-output)
-  (defun external-debugging-output (character)
+(define-error 'emacs-cc-print-1--stderr-write-error
+  "external-debugging-output: write(stderr) failed" 'error)
+
+(defun emacs-cc-print-1--internal-character-bytes (character)
+  "Return CHARACTER's GNU multibyte representation as byte integers.
+This follows GNU Emacs 31.1 `CHAR_STRING' and `char_string' in
+src/character.h and src/character.c, including extended and byte8 chars."
+  (cond
+   ((<= character #x7f) (list character))
+   ((<= character #x7ff)
+    (list (logior #xc0 (ash character -6))
+          (logior #x80 (logand character #x3f))))
+   ((<= character #xffff)
+    (list (logior #xe0 (ash character -12))
+          (logior #x80 (logand (ash character -6) #x3f))
+          (logior #x80 (logand character #x3f))))
+   ((<= character #x1fffff)
+    (list (logior #xf0 (ash character -18))
+          (logior #x80 (logand (ash character -12) #x3f))
+          (logior #x80 (logand (ash character -6) #x3f))
+          (logior #x80 (logand character #x3f))))
+   ((<= character #x3fff7f)
+    (list #xf8
+          (logior #x80 (logand (ash character -18) #xf))
+          (logior #x80 (logand (ash character -12) #x3f))
+          (logior #x80 (logand (ash character -6) #x3f))
+          (logior #x80 (logand character #x3f))))
+   (t
+    (let ((byte (- character #x3fff00)))
+      (list (logior #xc0 (logand (ash byte -6) 1))
+            (logior #x80 (logand byte #x3f)))))))
+
+(defun emacs-cc-print-1--write-character (character)
+  "Write the Emacs character CHARACTER using the active output coding."
+  (if (<= character 127)
+      (emacs-cc-print-1--write-stderr-byte character)
+    (let* ((text (string character))
+           (coding (or coding-system-for-write locale-coding-system)))
+      (if coding
+          (let ((bytes (encode-coding-string text coding)) (index 0))
+            (while (< index (length bytes))
+              (emacs-cc-print-1--write-stderr-byte (aref bytes index))
+              (setq index (1+ index))))
+        (dolist (byte (emacs-cc-print-1--internal-character-bytes character))
+          (emacs-cc-print-1--write-stderr-byte byte)))))
+  character)
+
+(defun emacs-cc-print-1--display-table-entry (character)
+  "Return CHARACTER's display-table expansion, if one is active."
+  (when (and (<= character #x3fffff)
+             (boundp 'standard-display-table)
+             (char-table-p standard-display-table)
+             (eq (char-table-subtype standard-display-table) 'display-table)
+             ;; The provider reports allocated capacity, not mutable subtype
+             ;; metadata.  Unknown native layouts are not assumed compatible.
+             (fboundp 'emacs-char-table-extra-slot-count)
+             (eql (emacs-char-table-extra-slot-count standard-display-table) 6))
+    (let ((entry (char-table-range standard-display-table character)))
+      (and (vectorp entry) (not (stringp entry)) entry))))
+
+(defun emacs-cc-print-1--external-debugging-output (character)
     "Write CHARACTER to stderr.
 You can call `print' while debugging emacs, and pass this function
 to make it write to the debugging output."
-    (unless (integerp character)
+    (unless (fixnump character)
       (signal 'wrong-type-argument (list 'fixnump character)))
-    (when (> character #x10ffff)
-      (signal 'error (list (format "Invalid character: %x" character))))
-    (mapc #'emacs-cc-print-1--write-stderr-byte
-          (append (encode-coding-string (string character) 'utf-8) nil))
+    (let* ((code (logand character #xffffffff))
+           (display (emacs-cc-print-1--display-table-entry code)))
+      (condition-case err
+          (if display
+              (dotimes (index (length display))
+                (let ((entry (aref display index)))
+                  (when (characterp entry)
+                    (emacs-cc-print-1--write-character entry))))
+            (let* ((resolved (char-resolve-modifiers code))
+                   (resolved (logand resolved (lognot #x0fc00000))))
+              (when (> resolved #x3fffff)
+                (signal 'error
+                        (list (format "Invalid character: %x" resolved))))
+              (emacs-cc-print-1--write-character resolved)))
+        (emacs-cc-print-1--stderr-write-error
+         (if (plist-get (cddr err) :cleanup-failure)
+             (signal (car err) (cdr err))
+           nil)))
     character))
+
+(unless (fboundp 'external-debugging-output)
+  (defalias 'external-debugging-output
+    #'emacs-cc-print-1--external-debugging-output))
 
 (unless (fboundp 'flush-standard-output)
   (defun flush-standard-output ()

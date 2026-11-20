@@ -22,8 +22,67 @@
 (defconst emacs-sqlite-ffi--done 101)
 
 (defun emacs-sqlite-ffi--call (name &rest args)
-  "Call fixed-table SQLite function NAME with ARGS."
-  (apply #'nl-ffi-call name args))
+  "Call supported SQLite function NAME with ARGS."
+  (let ((signature
+         (cond
+          ((equal name "sqlite3_open_v2")
+           (list '(:pointer :pointer :sint32 :pointer) :sint32))
+          ((equal name "sqlite3_libversion")
+           (list nil :pointer))
+          ((equal name "sqlite3_close_v2")
+           (list '(:pointer) :sint32))
+          ((equal name "sqlite3_errmsg")
+           (list '(:pointer) :pointer))
+          ((equal name "sqlite3_prepare_v2")
+           (list '(:pointer :pointer :sint32 :pointer :pointer) :sint32))
+          ((equal name "sqlite3_step")
+           (list '(:pointer) :sint32))
+          ((equal name "sqlite3_changes")
+           (list '(:pointer) :sint32))
+          ((equal name "sqlite3_finalize")
+           (list '(:pointer) :sint32))
+          ((equal name "sqlite3_bind_int64")
+           (list '(:pointer :sint32 :sint64) :sint32))
+          ((equal name "sqlite3_errcode")
+           (list '(:pointer) :sint32))
+          ((equal name "sqlite3_extended_errcode")
+           (list '(:pointer) :sint32))
+          ((equal name "sqlite3_errstr")
+           (list '(:sint32) :pointer))
+          ((equal name "sqlite3_column_count")
+           (list '(:pointer) :sint32))
+          ((equal name "sqlite3_column_type")
+           (list '(:pointer :sint32) :sint32))
+          ((equal name "sqlite3_column_int64")
+           (list '(:pointer :sint32) :sint64))
+          ((equal name "sqlite3_column_text")
+           (list '(:pointer :sint32) :pointer))
+          ((equal name "sqlite3_column_bytes")
+           (list '(:pointer :sint32) :sint32))
+          ((equal name "sqlite3_column_name")
+           (list '(:pointer :sint32) :pointer))
+          ((equal name "sqlite3_exec")
+           (list '(:pointer :pointer :pointer :pointer :pointer) :sint32)))))
+    (if (null signature)
+        (apply #'nl-ffi-call name args)
+      (let ((fixed-result nil)
+            (fixed-error nil))
+        (condition-case err
+            (setq fixed-result (apply #'nl-ffi-call name args))
+          (nelisp-unsupported-primitive
+           (setq fixed-error err)))
+        (if (null fixed-error)
+            fixed-result
+          (let ((path (nl-ffi-loader--resolve-soname
+                       "libsqlite3.so.0" nil)))
+            (if (null path)
+                (if fixed-error
+                    (signal (car fixed-error) (cdr fixed-error))
+                  fixed-result)
+              (ffi:library path)
+              (let ((nl-ffi--library-order (list path)))
+                (nl-ffi--invoke name name
+                                (car signature) (cadr signature) args)))))))))
 
 (defun emacs-sqlite-ffi--encode (string)
   "Encode STRING as UTF-8 bytes when coding support is available."
@@ -101,14 +160,23 @@
     (signal 'wrong-type-argument (list 'stringp query)))
   (let ((slot (alloc-bytes 8 8)))
     (ptr-write-u64 slot 0 0)
-    (emacs-sqlite-ffi--check
-     (emacs-sqlite-ffi--call "sqlite3_prepare_v2" handle
-                             (emacs-sqlite-ffi--cstring query) -1 slot 0)
-     handle "sqlite3_prepare_v2")
+    (let ((code (emacs-sqlite-ffi--call "sqlite3_prepare_v2" handle
+                                        (emacs-sqlite-ffi--cstring query)
+                                        -1 slot 0)))
+      (unless (= code emacs-sqlite-ffi--ok)
+        (let* ((primary (emacs-sqlite-ffi--call "sqlite3_errcode" handle))
+               (extended (emacs-sqlite-ffi--call
+                          "sqlite3_extended_errcode" handle))
+               (description
+                (emacs-sqlite-ffi--read-cstring
+                 (emacs-sqlite-ffi--call "sqlite3_errstr" primary)))
+               (message (emacs-sqlite-ffi--errmsg handle)))
+          (signal 'sqlite-error
+                  (list (list description message primary extended)))))
     (let ((statement (ptr-read-u64 slot 0)))
       (when (= statement 0)
         (error "sqlite3_prepare_v2 returned no statement"))
-      statement)))
+      statement))))
 
 (defun emacs-sqlite-ffi--value-count (values)
   "Return the number of VALUES in a list or vector."
@@ -219,20 +287,22 @@
              (handle (ptr-read-u64 slot 0)))
         (if (= code emacs-sqlite-ffi--ok)
             (emacs-sqlite-ffi--object handle)
-          (let ((message (if (= handle 0) "unable to open database"
-                           (emacs-sqlite-ffi--errmsg handle))))
-            (when (not (= handle 0))
-              (emacs-sqlite-ffi--call "sqlite3_close_v2" handle))
-            (error "sqlite-open: %s (SQLite code %d)" message code)))))))
+          (when (not (= handle 0))
+            (emacs-sqlite-ffi--call "sqlite3_close_v2" handle))
+          nil)))))
 
 (unless (fboundp 'sqlite-close)
   (defun sqlite-close (database)
     "Close DATABASE and return non-nil on success."
-    (let* ((handle (emacs-sqlite-ffi--handle database))
-           (code (emacs-sqlite-ffi--call "sqlite3_close_v2" handle)))
-      (emacs-sqlite-ffi--check code handle "sqlite-close")
-      (aset database 1 0)
-      t)))
+    (unless (emacs-sqlite-ffi--object-p database)
+      (signal 'wrong-type-argument (list 'sqlitep database)))
+    (let ((handle (aref database 1)))
+      (if (= handle 0)
+          t
+        (let ((code (emacs-sqlite-ffi--call "sqlite3_close_v2" handle)))
+          (emacs-sqlite-ffi--check code handle "sqlite-close")
+          (aset database 1 0)
+          t)))))
 
 (unless (fboundp 'sqlitep)
   (defun sqlitep (object)
@@ -255,8 +325,8 @@
                 (setq code
                       (emacs-sqlite-ffi--call "sqlite3_step" statement)))
               (unless (= code emacs-sqlite-ffi--done)
-                (error "sqlite-execute: %s (SQLite code %d)"
-                       (emacs-sqlite-ffi--errmsg handle) code))
+                (signal 'sqlite-error
+                        (list (emacs-sqlite-ffi--errmsg handle))))
               (emacs-sqlite-ffi--call "sqlite3_changes" handle)))
         (emacs-sqlite-ffi--call "sqlite3_finalize" statement)))))
 
@@ -286,9 +356,6 @@ With RETURN-TYPE `full', prepend the list of column names."
                             rows))
                 (setq code
                       (emacs-sqlite-ffi--call "sqlite3_step" statement)))
-              (unless (= code emacs-sqlite-ffi--done)
-                (error "sqlite-select: %s (SQLite code %d)"
-                       (emacs-sqlite-ffi--errmsg handle) code))
               (setq rows (nreverse rows))
               (if names (cons names rows) rows)))
         (emacs-sqlite-ffi--call "sqlite3_finalize" statement)))))

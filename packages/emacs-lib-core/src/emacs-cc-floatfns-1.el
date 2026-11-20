@@ -19,6 +19,42 @@
                   i (1+ i)))
           v)))))
 
+(defun emacs-cc-floatfns--typed-libm (operation arg)
+  "Call OPERATION in libm with numeric ARG through the typed FFI."
+  (unless (numberp arg)
+    (signal 'wrong-type-argument (list 'numberp arg)))
+  (unless (memq operation '(acos asin))
+    (error "Unsupported libm operation: %S" operation))
+  (unless (and (fboundp 'nl-ffi-call)
+               (fboundp 'nl-ffi-loader--resolve-soname)
+               (fboundp 'ffi:library)
+               (fboundp 'nl-ffi--invoke)
+               (boundp 'nl-ffi--library-order))
+    (signal 'nelisp-unsupported-primitive (list operation)))
+  (let ((path (nl-ffi-loader--resolve-soname "libm.so.6" nil)))
+    (unless path
+      (signal 'nelisp-unsupported-primitive (list operation)))
+    (ffi:library path)
+    (let ((nl-ffi--library-order (list path)))
+      (nl-ffi--invoke operation (symbol-name operation)
+                      '(:double) :double (list arg)))))
+
+;; Replace only native stubs that reject a valid numeric call.  Working
+;; host and dynamic-library implementations keep their original function cell.
+(when (fboundp 'nl-ffi-call)
+  (unless (condition-case nil
+              (progn (acos 0.5) t)
+            (nelisp-unsupported-primitive nil))
+    (defun acos (arg)
+      "Return the inverse cosine of ARG.\n\n(fn ARG)"
+      (emacs-cc-floatfns--typed-libm 'acos arg)))
+  (unless (condition-case nil
+              (progn (asin 0.5) t)
+            (nelisp-unsupported-primitive nil))
+    (defun asin (arg)
+      "Return the inverse sine of ARG.\n\n(fn ARG)"
+      (emacs-cc-floatfns--typed-libm 'asin arg))))
+
 (unless (fboundp 'copysign)
   (defun copysign (x1 x2)
     "Copy sign of X2 to value of X1, and return the result.\nCause an error if X1 or X2 is not a float.\n\n(fn X1 X2)"

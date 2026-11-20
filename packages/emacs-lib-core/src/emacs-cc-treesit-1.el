@@ -36,27 +36,96 @@
 
 (defun emacs-cc-treesit-1--dlopen (path)
   "Open external PATH with RTLD_NOW and local symbol visibility."
-  (let ((handle (emacs-cc-treesit-1--with-cstring
-                 path (lambda (pointer) (nl-ffi-call "dlopen" pointer 2)))))
-    (when (or (not (integerp handle)) (= handle 0))
-      (signal 'nl-ffi-library-open-failed
-              (list path (emacs-cc-treesit-1--dlerror))))
-    handle))
+  (condition-case nil
+      (let ((handle (emacs-cc-treesit-1--with-cstring
+                     path (lambda (pointer) (nl-ffi-call "dlopen" pointer 2)))))
+        (when (or (not (integerp handle)) (= handle 0))
+          (signal 'nl-ffi-library-open-failed
+                  (list path (emacs-cc-treesit-1--dlerror))))
+        handle)
+    (nelisp-unsupported-primitive
+     (let ((realpath (nl-ffi-loader--resolve-soname path nil)))
+       (unless realpath
+         (signal 'nl-ffi-library-open-failed (list path realpath)))
+       (condition-case problem
+           (ffi:library realpath)
+         ((nl-ffi-loader-open-failed nl-ffi-loader-unsupported)
+          (signal 'nl-ffi-library-open-failed
+                  (list path (error-message-string problem)))))
+       (let* ((registered (nl-ffi-library-handle realpath))
+              (handle (vector 'emacs-cc-treesit-1--ffi-handle
+                              realpath registered)))
+         (unless (emacs-cc-treesit-1--ffi-handle-p handle)
+           (signal 'nl-ffi-library-open-failed (list path registered)))
+         handle)))))
+
+(defun emacs-cc-treesit-1--ffi-handle-p (handle)
+  "Return non-nil when HANDLE is this shim's registered FFI handle."
+  (and (vectorp handle)
+       (= (length handle) 3)
+       (eq (aref handle 0) 'emacs-cc-treesit-1--ffi-handle)
+       (stringp (aref handle 1))
+       (fboundp 'nl-ffi-loader-handle-p)
+       (nl-ffi-loader-handle-p (aref handle 2))))
+
+(defun emacs-cc-treesit-1--release-handle (handle)
+  "Release an owned raw HANDLE; registered FFI handles remain borrowed."
+  (cond ((and (integerp handle) (> handle 0))
+         (nl-ffi-call "dlclose" handle))
+        ((emacs-cc-treesit-1--ffi-handle-p handle) nil)
+        (t (error "Unknown tree-sitter handle kind"))))
+
+(defun emacs-cc-treesit-1--typed-call (handle name args)
+  "Call one supported tree-sitter NAME through registered HANDLE."
+  (unless (emacs-cc-treesit-1--ffi-handle-p handle)
+    (error "Invalid registered tree-sitter handle"))
+  (let ((signature
+         (cond ((equal name "ts_parser_new") (list nil :pointer))
+               ((equal name "ts_parser_delete") (list '(:pointer) :void))
+               ((equal name "ts_language_version")
+                (list '(:pointer) :uint32)))))
+    (unless signature
+      (error "Unsupported tree-sitter function: %s" name))
+    (let ((nl-ffi--library-order (list (aref handle 1))))
+      (nl-ffi--invoke 'emacs-cc-treesit-1--typed-call name
+                      (car signature) (cadr signature) args))))
 
 (defun emacs-cc-treesit-1--dlsym (handle name)
   "Resolve NAME from external HANDLE without using package-private APIs."
-  (emacs-cc-treesit-1--with-cstring
-   name (lambda (pointer) (nl-ffi-call "dlsym" handle pointer))))
+  (cond ((emacs-cc-treesit-1--ffi-handle-p handle)
+         (let ((address (nl-ffi--symbol-address-in-library (aref handle 2) name)))
+           (unless (integerp address)
+             (error "Invalid tree-sitter symbol address: %s" name))
+           address))
+        ((and (integerp handle) (> handle 0))
+         (emacs-cc-treesit-1--with-cstring
+          name (lambda (pointer) (nl-ffi-call "dlsym" handle pointer))))
+        (t (error "Unknown tree-sitter handle kind"))))
 
 (defun emacs-cc-treesit-1--call (name &rest args)
   "Call external tree-sitter NAME using its resolved address."
-  (let ((address (cdr (assoc name emacs-cc-treesit-1--symbols))))
-    (unless address
-      (setq address (emacs-cc-treesit-1--dlsym emacs-cc-treesit-1--library name))
-      (when (= address 0) (error "Missing tree-sitter function: %s" name))
-      (push (cons name address) emacs-cc-treesit-1--symbols))
-    (while (< (length args) 6) (setq args (append args '(0))))
-    (apply #'ptr-call address args)))
+  (let ((handle emacs-cc-treesit-1--library))
+    (cond ((emacs-cc-treesit-1--ffi-handle-p handle)
+           (setq emacs-cc-treesit-1--symbols nil)
+           (emacs-cc-treesit-1--typed-call handle name args))
+          ((and (integerp handle) (> handle 0))
+           (unless (and (consp emacs-cc-treesit-1--symbols)
+                        (eq (caar emacs-cc-treesit-1--symbols)
+                            'emacs-cc-treesit-1--symbol-cache-owner)
+                        (equal (cdar emacs-cc-treesit-1--symbols) handle))
+             (setq emacs-cc-treesit-1--symbols
+                   (list (cons 'emacs-cc-treesit-1--symbol-cache-owner handle))))
+           (let ((address (cdr (assoc name (cdr emacs-cc-treesit-1--symbols)))))
+             (unless address
+               (setq address (emacs-cc-treesit-1--dlsym handle name))
+               (unless (and (integerp address) (/= address 0))
+                 (error "Missing tree-sitter function: %s" name))
+               (setcdr emacs-cc-treesit-1--symbols
+                       (cons (cons name address)
+                             (cdr emacs-cc-treesit-1--symbols))))
+             (while (< (length args) 6) (setq args (append args '(0))))
+             (apply #'ptr-call address args)))
+          (t (error "Unknown tree-sitter handle kind")))))
 
 ;; Shared shim interfaces for the split treesit-* compatibility modules.
 ;; These helpers are not promoted into the facade's stable consumer API.
@@ -65,28 +134,49 @@
 Loading this module makes no FFI calls and does not load the FFI package."
   (when (eq emacs-cc-treesit-1--library 'untried)
     (setq emacs-cc-treesit-1--library nil)
+    (setq emacs-cc-treesit-1--symbols nil)
     (when (and (fboundp 'nl-ffi-call) (fboundp 'ptr-call))
       (condition-case nil
           (progn
             (require 'nl-ffi)
             (require 'nl-ffi-memory)
-            (let ((names emacs-cc-treesit-1--library-names))
-              (while (and names (null emacs-cc-treesit-1--library))
-                (let ((handle nil) (parser nil))
+            (let ((names emacs-cc-treesit-1--library-names)
+                  (usable nil)
+                  (usable-symbols nil))
+              (while (and names (null usable))
+                (let ((handle nil)
+                      (parser nil)
+                      (emacs-cc-treesit-1--library nil)
+                      (emacs-cc-treesit-1--symbols nil))
                   (condition-case nil
                       (progn
                         (setq handle (emacs-cc-treesit-1--dlopen (car names))
                               emacs-cc-treesit-1--library handle)
-                        ;; Resolve both functions before allocating native state.
-                        (emacs-cc-treesit-1--call "ts_parser_delete" 0)
-                        (setq parser (emacs-cc-treesit-1--call "ts_parser_new"))
-                        (when (= parser 0) (error "Cannot allocate tree-sitter parser"))
-                        (emacs-cc-treesit-1--call "ts_parser_delete" parser))
+                        (unless (and
+                                 (/= (emacs-cc-treesit-1--dlsym
+                                      handle "ts_parser_new") 0)
+                                 (/= (emacs-cc-treesit-1--dlsym
+                                      handle "ts_parser_delete") 0))
+                          (error "Missing tree-sitter parser functions"))
+                        (unwind-protect
+                            (progn
+                              (setq parser
+                                    (emacs-cc-treesit-1--call "ts_parser_new"))
+                              (unless (and (integerp parser) (> parser 0))
+                                (error "Cannot allocate tree-sitter parser")))
+                          (when (and (integerp parser) (> parser 0))
+                            (emacs-cc-treesit-1--call
+                             "ts_parser_delete" parser)))
+                        (setq usable handle
+                              usable-symbols emacs-cc-treesit-1--symbols))
                     (error
-                     (when handle (nl-ffi-call "dlclose" handle))
-                     (setq emacs-cc-treesit-1--library nil
-                           emacs-cc-treesit-1--symbols nil))))
-                (setq names (cdr names)))))
+                     (when handle
+                       (emacs-cc-treesit-1--release-handle handle))
+                     (setq emacs-cc-treesit-1--symbols nil)))
+                  (setq names (cdr names))))
+              (when usable
+                (setq emacs-cc-treesit-1--library usable
+                      emacs-cc-treesit-1--symbols usable-symbols))))
         (error (setq emacs-cc-treesit-1--library nil)))))
   (and emacs-cc-treesit-1--library t))
 
@@ -126,14 +216,22 @@ On failure signal GNU's loader condition with actual dlerror diagnostics."
               (when handle
                 (let ((address (emacs-cc-treesit-1--dlsym handle function)))
                   (when (= address 0)
-                    (let ((diagnostic (emacs-cc-treesit-1--dlerror)))
-                      (nl-ffi-call "dlclose" handle)
-                      (signal 'treesit-load-language-error (list 'symbol-error diagnostic))))
+                    (unwind-protect
+                        (let ((diagnostic
+                               (cond ((and (integerp handle) (> handle 0))
+                                      (emacs-cc-treesit-1--dlerror))
+                                     ((emacs-cc-treesit-1--ffi-handle-p handle)
+                                      (format "Missing tree-sitter symbol %s in %s"
+                                              function (aref handle 1)))
+                                     (t (error "Unknown tree-sitter handle kind")))))
+                          (signal 'treesit-load-language-error
+                                  (list 'symbol-error diagnostic)))
+                      (emacs-cc-treesit-1--release-handle handle)))
                   (let* ((pointer (ptr-call address 0 0 0 0 0 0))
                          (abi (emacs-cc-treesit-1--call "ts_language_version" pointer)))
                     (unless (and (>= abi emacs-cc-treesit-1--abi-min)
                                  (<= abi emacs-cc-treesit-1--abi-max))
-                      (nl-ffi-call "dlclose" handle)
+                      (emacs-cc-treesit-1--release-handle handle)
                       (signal 'treesit-load-language-error (list 'version-mismatch abi)))
                     ;; The returned language points into HANDLE; keep it loaded.
                     (setq result (cons pointer path))))))))))

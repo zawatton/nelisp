@@ -11429,20 +11429,29 @@ microseconds, the dominant part of creating a buffer, so the positional
 form is used.  It must track the slot list of `nelisp-buffer': the first
 call checks it against the keyword constructor and falls back to that
 constructor if they ever disagree."
-  (let ((mode nelisp-buffer--new-mode))
-    (unless mode
-      ;; Compare slot by slot: `equal' on two records is not reliable this
-      ;; early in the prelude (it answered nil for identical records).
-      (let* ((a (let ((nelisp-buffer--spare-store nil)) (nelisp-buffer--new-fast "x")))
-             (b (nelisp-buffer--make :name "x"))
-             (i 0) (same (= (length a) (length b))))
-        (while (and same (< i (length a)))
-          (unless (equal (aref a i) (aref b i)) (setq same nil))
-          (setq i (1+ i)))
-        (setq mode (setq nelisp-buffer--new-mode (if same 'fast 'keyword)))))
-    (if (eq mode 'fast)
-        (nelisp-buffer--new-fast name)
-      (nelisp-buffer--make :name name))))
+  (let* ((mode nelisp-buffer--new-mode)
+         (buffer
+          (progn
+            (unless mode
+              ;; Compare slot by slot: `equal' on two records is not reliable this
+              ;; early in the prelude (it answered nil for identical records).
+              (let* ((a (let ((nelisp-buffer--spare-store nil)) (nelisp-buffer--new-fast "x")))
+                     (b (nelisp-buffer--make :name "x"))
+                     (i 0) (same (= (length a) (length b))))
+                (while (and same (< i (length a)))
+                  (unless (equal (aref a i) (aref b i)) (setq same nil))
+                  (setq i (1+ i)))
+                (setq mode (setq nelisp-buffer--new-mode (if same 'fast 'keyword)))))
+            (if (eq mode 'fast)
+                (nelisp-buffer--new-fast name)
+              (nelisp-buffer--make :name name)))))
+    ;; Initialize only actual allocations; the fast-layout self-check stays pure.
+    ;; The registry is absent only during bootstrap before local cells exist.
+    (when (boundp 'nelisp-buffer-local--owned)
+      (nelisp-buffer-local--initialize-undo-cell
+       buffer (and (stringp name) (> (length name) 0)
+                   (= (aref name 0) ?\s))))
+    buffer))
 
 (defun nelisp-generate-new-buffer (name)
   "Return a fresh `nelisp-buffer', uniquifying NAME via `<N>' suffix."
@@ -13507,22 +13516,27 @@ the registry still maps its name back to this exact object."
         (t (signal 'wrong-type-argument (list 'stringp buffer-or-name)))))
 
 (unless (fboundp 'other-buffer)
-  (defun other-buffer (&optional buffer _visible-ok _frame)
-    "Return a live buffer other than BUFFER (default: the current one),
-preferring buffers whose names do not start with a space; `*scratch*' is
+  (defun other-buffer (&optional buffer visible-ok _frame)
+    "Return a live buffer other than BUFFER, preferring buffers whose names
+do not start with a space; `*scratch*' is
 created when nothing else exists.
 
 (fn &optional BUFFER VISIBLE-OK FRAME)"
-    (let ((avoid (or buffer nelisp--current-buffer)) (fallback nil) (found nil)
-          (tail (nelisp-buffer-list)))
+    (let ((tail (nelisp-buffer-list)) (visible-fallback nil) (found nil))
       (while (and tail (not found))
-        (let ((b (car tail)))
-          (unless (eq b avoid)
-            (if (eq (aref (nelisp-buffer-name b) 0) ?\s)
-                (unless fallback (setq fallback b))
+        (let* ((b (car tail))
+               (name (nelisp-buffer-name b)))
+          (when (and (not (eq b buffer))
+                     (or (null name) (zerop (length name))
+                         (not (eq (aref name 0) ?\s))))
+            (if (and (not visible-ok)
+                     (fboundp 'emacs-window-get-buffer-window)
+                     (emacs-window-get-buffer-window b))
+                (unless visible-fallback
+                  (setq visible-fallback b))
               (setq found b))))
         (setq tail (cdr tail)))
-      (or found fallback (nelisp-get-buffer-create "*scratch*")))))
+      (or found visible-fallback (nelisp-get-buffer-create "*scratch*")))))
 
 (defvar kill-buffer-hook nil
   "Hook run (in the buffer being killed) before it is killed.")
@@ -17752,6 +17766,47 @@ events for an unbound prefix.
   (puthash buffer (cons (cons variable cell) (gethash buffer nelisp-buffer-local--owned))
            nelisp-buffer-local--owned))
 
+(defun nelisp-buffer-local--initialize-undo-cell (buffer disabled)
+  "Initialize BUFFER's private undo-list cell without the public setter path."
+  (unless (hash-table-p nelisp-buffer-local--owned)
+    (error "Invalid buffer-local ownership registry"))
+  (let* ((variable 'buffer-undo-list)
+         (redirect (nelisp--env-globals-op 'variable-entry-slot-create variable 5))
+         (owned (gethash buffer nelisp-buffer-local--owned))
+         (entry (assq variable owned))
+         (pair nil)
+         (cell nil))
+    (when (and (vectorp redirect)
+               (not (and (>= (length redirect) 2)
+                         (eq (aref redirect 0) 'nelisp--current-buffer))))
+      (error "Invalid undo-list redirect metadata"))
+    (unless (vectorp redirect)
+      (setq redirect (vector 'nelisp--current-buffer nil))
+      (nelisp--env-globals-op 'variable-entry-slot-set variable (cons 5 redirect))
+      (setq redirect (nelisp--env-globals-op 'variable-entry-slot variable 5)))
+    (unless (and (vectorp redirect) (>= (length redirect) 2)
+                 (eq (aref redirect 0) 'nelisp--current-buffer))
+      (error "Failed to install undo-list redirect metadata"))
+    (setq pair (assq buffer (aref redirect 1)))
+    (if pair
+        (progn
+          (unless (and entry (eq (cdr entry) (cdr pair)))
+            (error "Inconsistent existing undo-list cell"))
+          (setq cell (cdr pair))
+          (set cell (and disabled t)))
+      (when entry (error "Undo-list ownership has no redirect entry"))
+      (setq cell (nelisp-buffer-local--new-cell))
+      (set cell (and disabled t))
+      (put cell 'nelisp--buffer-local-buffer buffer)
+      (put cell 'nelisp--buffer-local-variable variable)
+      (aset redirect 1 (cons (cons buffer cell) (aref redirect 1)))
+      (nelisp-buffer-local--note buffer variable cell))
+    (let ((published (assq variable (gethash buffer nelisp-buffer-local--owned))))
+      (unless (and published (eq (cdr published) cell)
+                   (eq (cdr (assq buffer (aref redirect 1))) cell))
+        (error "Failed to publish private undo-list cell")))
+    cell))
+
 (defun nelisp-buffer-local--free (cell)
   "Reset CELL and return it to the free list."
   (setplist cell nil)
@@ -17793,7 +17848,7 @@ that carry that property.  Run `change-major-mode-hook' first.
     (dolist (entry (copy-sequence (gethash (current-buffer) nelisp-buffer-local--owned)))
       (let* ((var (car entry)) (prop (get var 'permanent-local)))
         (cond
-         ((eq var 'default-directory) nil) ; GNU: always-local, never reset
+         ((memq var '(default-directory buffer-file-name buffer-undo-list)) nil) ; GNU: always-local
          ((or (null prop) kill-permanent) (kill-local-variable var))
          ((eq prop 'permanent-local-hook)
           (let ((val (symbol-value var)) (keep nil))
@@ -19026,19 +19081,52 @@ filter it already wrote."
             (or (plist-get plist :name) "pipe")
             'open -1 nil (plist-get plist :filter) "")))
 (unless (fboundp 'call-process)
+  (defun nelisp--process-redirection (stdout stderr cwd)
+    (vector 'nelisp--process-redirection-v1 stdout stderr cwd))
+  (defun nelisp--process-output-buffer (destination)
+    (cond ((eq destination t) (current-buffer))
+          ((bufferp destination) destination)
+          ((stringp destination) (get-buffer-create destination))))
+  (defun nelisp--process-insert-output (file destination)
+    (let ((buffer (nelisp--process-output-buffer destination)))
+      (when (and file buffer)
+        (with-current-buffer buffer
+          (insert-file-contents file)))))
+  (defun nelisp--process-valid-destination-p (destination)
+    (if (consp destination)
+        (and (null (cddr destination))
+             (or (null (car destination)) (eq (car destination) t)
+                 (bufferp (car destination)) (stringp (car destination)))
+             (or (null (cadr destination)) (eq (cadr destination) t)
+                 (stringp (cadr destination))))
+      (or (null destination) (eq destination t) (bufferp destination)
+          (stringp destination))))
   (defun call-process (program &optional infile destination display &rest args)
-    (let ((resolved (or (executable-find program) program)))
-      (if (eq destination t)
-          (let ((out-file (make-temp-file "nelisp-call-process-out-")))
-            (unwind-protect
-                (let ((rc (apply #'nelisp-process-call-process
-                                 resolved infile out-file display args)))
-                  (when nelisp--current-buffer
-                    (insert-file-contents out-file))
-                  rc)
-              (ignore-errors (delete-file out-file))))
-        (apply #'nelisp-process-call-process
-               resolved infile destination display args)))))
+    (let* ((resolved (or (executable-find program) program))
+           (_valid (unless (nelisp--process-valid-destination-p destination)
+                     (error "Unsupported call-process destination: %S" destination)))
+           (spec (if (consp destination) destination
+                   (list destination (if destination t nil))))
+           (out-dest (car spec))
+           (err-dest (cadr spec))
+           (out-buffer (nelisp--process-output-buffer out-dest))
+           (out-file (and out-buffer (make-temp-file "nelisp-call-process-out-")))
+           (stdout (cond (out-buffer out-file)
+                         ((null out-dest) "/dev/null")
+                         (t out-dest)))
+           (stderr (cond ((eq err-dest t) t)
+                         ((null err-dest) "/dev/null")
+                         (t err-dest)))
+           (redirect (nelisp--process-redirection stdout stderr
+                                                  (and (boundp 'default-directory)
+                                                       default-directory))))
+      (unwind-protect
+          (let ((rc (apply #'nelisp-process-call-process
+                           resolved infile redirect display args)))
+            (nelisp--process-insert-output out-file out-dest)
+            rc)
+        (when out-file (ignore-errors (delete-file out-file)))
+        ))))
 (unless (fboundp 'start-process)
   (defun start-process (name buffer program &rest args)
     (make-process :name name :buffer buffer :command (cons program args))))
@@ -20370,12 +20458,27 @@ sub-char-table in `#^^[...]' form."
 
 (defun nelisp--prn-sub-char-table (chunks table escape depth)
   "print.c:2619-2629: `#^^[DEPTH MIN-CHAR' and the contents."
+  (if (and (fboundp 'nelisp--native-sub-char-table-p)
+           (fboundp 'nelisp--native-sub-char-table-slot)
+           (nelisp--native-sub-char-table-p table))
+      (let ((contents (nelisp--native-sub-char-table-slot table 2)))
+        (nelisp--prn-chunks-add
+         chunks
+         (format "#^^[%d %d"
+                 (nelisp--native-sub-char-table-slot table 0)
+                 (nelisp--native-sub-char-table-slot table 1)))
+        (when (and (vectorp contents) (> (length contents) 0))
+          (nelisp--prn-chunks-add chunks " "))
+        (nelisp--prn-chartab-elements chunks contents escape depth)
+        (nelisp--prn-chunks-add chunks "]"))
+    (progn
   (nelisp--prn-chunks-add chunks (format "#^^[%d %d" (aref table 1) (aref table 2)))
   (let* ((n (- (length table) 3)) (contents (make-vector n nil)) (i 0))
     (while (< i n) (aset contents i (aref table (+ i 3))) (setq i (1+ i)))
     (when (> n 0) (nelisp--prn-chunks-add chunks " "))
     (nelisp--prn-chartab-elements chunks contents escape depth))
   (nelisp--prn-chunks-add chunks "]"))
+    ))
 
 (defun nelisp--prn-char-table (table escape &optional depth)
   "print.c:2615-2618: `#^[' and every slot -- default, parent, purpose,
@@ -20565,6 +20668,8 @@ projection per cell and one slot vector per function for this print call."
         slots)))
 (defun nelisp--prn-graph-p (obj)
   (and (or (consp obj) (nelisp--closure-p obj) (and (vectorp obj) (> (length obj) 0)) (recordp obj)
+           (and (fboundp 'nelisp--native-sub-char-table-p)
+                (nelisp--native-sub-char-table-p obj))
            (byte-code-function-p obj) (and (stringp obj) (> (length obj) 0)))
        ;; Match the opaque branches of the print pass, including its buffer
        ;; adapter. Their hidden implementation graphs must never be walked.
@@ -20598,6 +20703,14 @@ projection per cell and one slot vector per function for this print call."
                      (setq work (cons key (cons value work)))) obj))
          ((consp obj)
           (setq work (cons (car obj) (cons (cdr obj) work))))
+         ((and (fboundp 'nelisp--native-sub-char-table-p)
+               (fboundp 'nelisp--native-sub-char-table-slot)
+               (nelisp--native-sub-char-table-p obj))
+          (let ((contents (nelisp--native-sub-char-table-slot obj 2)))
+            (when (vectorp contents)
+              (let ((i (length contents)))
+                (while (> i 0)
+                  (setq i (1- i) work (cons (aref contents i) work)))))))
          ((vectorp obj)
           (let ((i (length obj)))
             (while (> i 0)
@@ -20794,6 +20907,12 @@ without the `charset' property, `plain' to print the string without intervals."
       "#<overlay in no buffer>"))
    ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
     (nelisp--prn-bool-vector obj))
+   ((and (fboundp 'nelisp--native-sub-char-table-p)
+         (fboundp 'nelisp--native-sub-char-table-slot)
+         (nelisp--native-sub-char-table-p obj))
+    (let ((chunks (cons nil nil)))
+      (nelisp--prn-sub-char-table chunks obj escape depth)
+      (nelisp--prn-chunks-string chunks)))
    ((and (fboundp 'nelisp--char-table-slots) (char-table-p obj)
          (vectorp (nelisp--char-table-slots obj)))
     (nelisp--prn-char-table obj escape (1+ depth)))
@@ -25749,7 +25868,9 @@ comment above this definition for how that value was measured."))
 ;; equal; depth 201 signals "Stack overflow in equal".
 (defun nelisp--equal-container-p (o)
   (or (consp o) (vectorp o) (recordp o) (char-table-p o)
-      (and (fboundp 'bool-vector-p) (bool-vector-p o))))
+      (and (fboundp 'bool-vector-p) (bool-vector-p o))
+      (and (fboundp 'nelisp--native-sub-char-table-p)
+           (nelisp--native-sub-char-table-p o))))
 
 (defun nelisp--equal-seen (o1 o2 depth ht)
   "fns.c:2860-2884: non-nil when the pair (O1 O2) was already visited."
@@ -25798,6 +25919,22 @@ comment above this definition for how that value was measured."))
               (nelisp--native-equal o1 o2))
              ;; Native tables use cons storage, but GNU compares them by identity.
              ((hash-table-p o1) nil)
+             ((or (and (fboundp 'nelisp--native-sub-char-table-p)
+                       (nelisp--native-sub-char-table-p o1))
+                  (and (fboundp 'nelisp--native-sub-char-table-p)
+                       (nelisp--native-sub-char-table-p o2)))
+              (and (fboundp 'nelisp--native-sub-char-table-p)
+                   (fboundp 'nelisp--native-sub-char-table-slot)
+                   (nelisp--native-sub-char-table-p o1)
+                   (nelisp--native-sub-char-table-p o2)
+                   (= (nelisp--native-sub-char-table-slot o1 0)
+                      (nelisp--native-sub-char-table-slot o2 0))
+                   (= (nelisp--native-sub-char-table-slot o1 1)
+                      (nelisp--native-sub-char-table-slot o2 1))
+                   (nelisp--equal-1
+                    (nelisp--native-sub-char-table-slot o1 2)
+                    (nelisp--native-sub-char-table-slot o2 2)
+                    (1+ depth) ht)))
              ((consp o1)
               (if (not (consp o2)) nil
                 (let ((tort o1) (mx 2) (q 2) (r 'loop))
@@ -26844,6 +26981,8 @@ nil), so there is nothing else to update for that name."
      ;; As below: `symbolp' is nil for a symbol with position.
      ((symbolp x) 'symbol)
      ((char-table-p x) 'char-table)
+     ((and (fboundp 'nelisp--native-sub-char-table-p)
+           (nelisp--native-sub-char-table-p x)) 'sub-char-table)
      ((recordp x)
       (let ((ty (aref x 0)))
         (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty)))

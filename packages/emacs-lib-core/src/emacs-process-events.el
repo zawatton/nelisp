@@ -735,12 +735,17 @@ re-evaluated, and also runs when the facade has not loaded yet."
   ;; accessors, while child bridges must not steal event-owned vectors.
   (dolist (entry '((process-name emacs-process-process-name)
                    (process-id emacs-process-process-id)
+                   (process-exit-status emacs-process-process-exit-status)
                    (process-filter emacs-process-process-filter)
                    (process-sentinel emacs-process-process-sentinel)
                    (process-plist emacs-process-process-plist)
                    (process-query-on-exit-flag emacs-process-process-query-on-exit-flag)))
     (let ((name (car entry)))
-      (put name 'emacs-process-events--event-owner (symbol-function name))
+      (if (eq name 'process-exit-status)
+          (unless (plist-member (symbol-plist name)
+                                'emacs-process-events--event-owner)
+            (put name 'emacs-process-events--event-owner (symbol-function name)))
+        (put name 'emacs-process-events--event-owner (symbol-function name)))
       (put name 'emacs-process-events--child-owner (symbol-function (cadr entry)))
       ;; A real closure (lexical), not a quoted lambda: a dynamically bound
       ;; `process' leaked into the child owners' status reads.
@@ -882,7 +887,8 @@ handles (nil selects every call).  FUNCTION is called as
       (put (car row) 'emacs-process-events--child-owner
            (symbol-function (nth 2 row)))))
   ;; The one installer of these public names.
-  (dolist (name '(processp process-list process-status process-buffer
+  (dolist (name '(processp process-list process-status process-exit-status
+                  process-buffer
                   set-process-filter set-process-sentinel set-process-buffer
                   process-put process-get process-mark process-contact
                   make-pipe-process))
@@ -910,18 +916,21 @@ handles (nil selects every call).  FUNCTION is called as
              (emacs-process-events--terminal name args))))))))
 
 ;; The core buffer-pipe file (lisp/nelisp-process-buffer.el) redefines
-;; processp, process-status, process-buffer, process-get/put, process-mark,
+;; processp, process-status, process-exit-status, process-buffer, process-get/put, process-mark,
 ;; set-process-buffer and make-pipe-process when it loads.  In the runtime
 ;; image it is demand-loaded after this file, and its fall-through targets
 ;; were captured at boot (the bare process primitives), so it replaced the
 ;; dispatcher above: `process-buffer' of an emacs-lib child answered nil and
 ;; vc-print-log lost its output.  When the core loads after the dispatcher,
 ;; keep the core definition as the name's base and put the same dispatcher
-;; back.  Skip a name whose core fall-through already is the dispatcher
-;; (bundle load order), where re-wrapping would recurse.
+;; back.  Provider-owned dispatchers, rather than the global standalone-mode
+;; flag, determine whether event objects need routing.  Skip a name whose
+;; core fall-through already is the dispatcher (bundle load order), where
+;; re-wrapping would recurse.
 (defconst emacs-process-events--core-fallthrough
   '((processp . nelisp-process-buffer--original-p)
     (process-status . nelisp-process-buffer--original-status)
+    (process-exit-status . nelisp-process-buffer--original-exit)
     (process-buffer . nelisp-process-buffer--original-buffer)
     (process-get . nelisp-process-buffer--original-get)
     (process-put . nelisp-process-buffer--original-put))
@@ -929,13 +938,11 @@ handles (nil selects every call).  FUNCTION is called as
 
 (defun emacs-process-events--reassert-after-core ()
   "Put the dispatcher back over names the core file just redefined.
-Only where emacs-lib owns `make-process' (`emacs-standalone-mode-p', the
-runtime image): its children keep their state in emacs-lib metadata,
-which the core decorators cannot read.  Where the core adapter owns
-`make-process' (the bundle loaded with --load), the core decorators
-already answer for its processes and stay in place."
-  (when (and (fboundp 'emacs-standalone-mode-p) (emacs-standalone-mode-p))
-   (dolist (name '(processp process-status process-buffer set-process-buffer
+The saved provider-owned dispatchers route each object to its owner; the
+global standalone-mode flag does not determine ownership of event objects."
+  (when emacs-process-events--standalone-p
+   (dolist (name '(processp process-status process-exit-status process-buffer
+                  set-process-buffer
                   process-put process-get process-mark make-pipe-process))
     (let ((dispatcher (get name 'emacs-process-events--dispatcher))
           (var (cdr (assq name emacs-process-events--core-fallthrough))))

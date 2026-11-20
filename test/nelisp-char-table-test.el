@@ -167,6 +167,24 @@ misbehaving -- the shape `bf_wrong_number_of_args_make_char_table' in
 scripts/nelisp-standalone-build.el was built to match."
   (should-error (make-char-table) :type 'wrong-number-of-arguments))
 
+(ert-deftest nelisp-char-table/copy-leaf-payload-identity ()
+  "Copying a table preserves caller records stored as character values."
+  (let* ((payload (record 'emacs-char-table--topology-node (vector 'payload)))
+         (table (make-char-table nil nil)))
+    (set-char-table-range table '(0 . 31) payload)
+    (set-char-table-range table '(4096 . 4111) payload)
+    (let ((copy (copy-sequence table)))
+      (should (not (eq copy table)))
+      (should (eq (char-table-range copy 0) payload))
+      (should (eq (char-table-range copy 31) payload))
+      (should (null (char-table-range copy 32)))
+      (should (eq (char-table-range copy 4096) payload))
+      (should (eq (char-table-range copy 4111) payload))
+      (should (null (char-table-range copy 4112)))
+      (set-char-table-range copy 0 'changed)
+      (should (eq (char-table-range table 0) payload))
+      (should (eq (char-table-range copy 0) 'changed)))))
+
 (provide 'nelisp-char-table-test)
 
 ;;; nelisp-char-table-test.el ends here

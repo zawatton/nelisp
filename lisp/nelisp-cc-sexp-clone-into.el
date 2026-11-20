@@ -96,7 +96,7 @@
     ;; dispatch to the per-type clone (each bumps rc + returns box-ptr).
     ;; tag 6 MutStr holds NlStrRef -> nelisp_nlstr_clone (NOT a deep copy).
     (defun nl_sci_bump (tag box)
-      (if (= tag 7)  box     ; Doc 216 S2.2: cons cells carry no count
+      (if (or (= tag 7) (= tag 24)) box ; cons and kind24 are GC-owned
         (if (or (= tag 6) (= tag 15)) (nelisp_nlstr_clone box)
           (if (= tag 8)  (nelisp_nlvector_clone box)
             (if (= tag 9)  (nelisp_nlchartable_clone box)

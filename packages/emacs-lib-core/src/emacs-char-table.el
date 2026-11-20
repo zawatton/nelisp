@@ -83,6 +83,561 @@ the shared table still gives vendor libraries real mutation semantics.")
 (defconst emacs-char-table--i-ascii 4)
 (defconst emacs-char-table--i-ranges 5)
 (defconst emacs-char-table--i-extra 6)
+(defconst emacs-char-table--i-owner-state 7)
+
+;; GNU's raw character-table tree uses 6 top-level bits followed by
+;; subtables with 4, 5, and 7 index bits.  Keep the geometry in bits so the
+;; corresponding vector sizes remain derived from the source topology.
+(defconst emacs-char-table--topology-root-bits 6)
+(defconst emacs-char-table--topology-level-1-bits 4)
+(defconst emacs-char-table--topology-level-2-bits 5)
+(defconst emacs-char-table--topology-level-3-bits 7)
+(defconst emacs-char-table--topology-root-size
+  (ash 1 emacs-char-table--topology-root-bits))
+(defconst emacs-char-table--topology-level-1-size
+  (ash 1 emacs-char-table--topology-level-1-bits))
+(defconst emacs-char-table--topology-level-2-size
+  (ash 1 emacs-char-table--topology-level-2-bits))
+(defconst emacs-char-table--topology-level-3-size
+  (ash 1 emacs-char-table--topology-level-3-bits))
+
+;; The tag is uninterned and stable across provider reloads.  A same-named
+;; interned user record therefore remains an ordinary scalar leaf.
+(defvar emacs-char-table--topology-node-brand
+  (make-symbol "emacs-char-table--topology-node")
+  "Private record tag for allocated topology nodes.")
+
+(defun emacs-char-table--topology-node-create (contents)
+  "Return a typed topology node containing the vector CONTENTS."
+  (unless (vectorp contents)
+    (signal 'wrong-type-argument (list 'vectorp contents)))
+  (record emacs-char-table--topology-node-brand contents))
+
+(defun emacs-char-table--topology-node-p (object)
+  "Return non-nil when OBJECT is a private topology node."
+  (and (recordp object)
+       (eq (type-of object) emacs-char-table--topology-node-brand)
+       (= (length object) 2)))
+
+(defun emacs-char-table--topology-node-contents (object)
+  "Return the contents vector of topology node OBJECT."
+  (unless (emacs-char-table--topology-node-p object)
+    (signal 'wrong-type-argument
+            (list 'emacs-char-table--topology-node-p object)))
+  (aref object 1))
+
+(defun emacs-char-table--topology-create (init)
+  "Return the raw topology root with every top-level entry initialized to INIT."
+  (make-vector emacs-char-table--topology-root-size init))
+
+(defun emacs-char-table--topology-set-char (root char value)
+  "Set VALUE at CHAR in raw topology ROOT, expanding its missing path.
+This updates only ROOT and does not publish any table cache or mirror."
+  (let* ((root-index
+          (ash char (- (+ emacs-char-table--topology-level-1-bits
+                          emacs-char-table--topology-level-2-bits
+                          emacs-char-table--topology-level-3-bits))))
+         (level-1-index
+          (logand (ash char (- (+ emacs-char-table--topology-level-2-bits
+                                 emacs-char-table--topology-level-3-bits)))
+                  (1- emacs-char-table--topology-level-1-size)))
+         (level-2-index
+          (logand (ash char (- emacs-char-table--topology-level-3-bits))
+                  (1- emacs-char-table--topology-level-2-size)))
+         (leaf-index
+          (logand char (1- emacs-char-table--topology-level-3-size)))
+         (root-link (aref root root-index))
+         (level-1-node
+          (if (emacs-char-table--topology-node-p root-link)
+              root-link
+            (let ((node
+                   (emacs-char-table--topology-node-create
+                    (make-vector emacs-char-table--topology-level-1-size
+                                 root-link))))
+              (aset root root-index node)
+              node)))
+         (level-1-contents
+          (emacs-char-table--topology-node-contents level-1-node))
+         (level-1-link (aref level-1-contents level-1-index))
+         (level-2-node
+          (if (emacs-char-table--topology-node-p level-1-link)
+              level-1-link
+            (let ((node
+                   (emacs-char-table--topology-node-create
+                    (make-vector emacs-char-table--topology-level-2-size
+                                 level-1-link))))
+              (aset level-1-contents level-1-index node)
+              node)))
+         (level-2-contents
+          (emacs-char-table--topology-node-contents level-2-node))
+         (level-2-link (aref level-2-contents level-2-index))
+         (level-3-node
+          (if (emacs-char-table--topology-node-p level-2-link)
+              level-2-link
+            (let ((node
+                   (emacs-char-table--topology-node-create
+                    (make-vector emacs-char-table--topology-level-3-size
+                                 level-2-link))))
+              (aset level-2-contents level-2-index node)
+              node)))
+         (level-3-contents
+          (emacs-char-table--topology-node-contents level-3-node)))
+    (aset level-3-contents leaf-index value)
+    value))
+
+(defun emacs-char-table--topology-ref (root char)
+  "Return raw topology ROOT's value at CHAR, without default or parent lookup."
+  (let* ((root-index
+          (ash char (- (+ emacs-char-table--topology-level-1-bits
+                          emacs-char-table--topology-level-2-bits
+                          emacs-char-table--topology-level-3-bits))))
+         (level-1-index
+          (logand (ash char (- (+ emacs-char-table--topology-level-2-bits
+                                 emacs-char-table--topology-level-3-bits)))
+                  (1- emacs-char-table--topology-level-1-size)))
+         (level-2-index
+          (logand (ash char (- emacs-char-table--topology-level-3-bits))
+                  (1- emacs-char-table--topology-level-2-size)))
+         (leaf-index
+          (logand char (1- emacs-char-table--topology-level-3-size)))
+         (root-link (aref root root-index)))
+    (if (not (emacs-char-table--topology-node-p root-link))
+        root-link
+      (let* ((level-1-contents
+              (aref root-link 1))
+             (level-1-link (aref level-1-contents level-1-index)))
+        (if (not (emacs-char-table--topology-node-p level-1-link))
+            level-1-link
+          (let* ((level-2-contents
+                  (aref level-1-link 1))
+                 (level-2-link (aref level-2-contents level-2-index)))
+            (if (not (emacs-char-table--topology-node-p level-2-link))
+                level-2-link
+              (aref (aref level-2-link 1) leaf-index))))))))
+
+(defun emacs-char-table--topology-ascii-cache (root)
+  "Return ROOT's raw value at zero, or its typed depth-three node alias."
+  (let ((entry (aref root 0))
+        (depth 0))
+    (while (and (< depth 3)
+                (emacs-char-table--topology-node-p entry))
+      (if (= depth 2)
+          (setq depth 3)
+        (setq entry
+              (aref (emacs-char-table--topology-node-contents entry) 0)
+              depth (1+ depth))))
+    entry))
+
+(defun emacs-char-table--topology-leaf-span (root char)
+  "Return ROOT's scalar or leaf node for its aligned span at CHAR."
+  (let* ((root-index
+          (ash char (- (+ emacs-char-table--topology-level-1-bits
+                          emacs-char-table--topology-level-2-bits
+                          emacs-char-table--topology-level-3-bits))))
+         (level-1-index
+          (logand (ash char (- (+ emacs-char-table--topology-level-2-bits
+                                 emacs-char-table--topology-level-3-bits)))
+                  (1- emacs-char-table--topology-level-1-size)))
+         (level-2-index
+          (logand (ash char (- emacs-char-table--topology-level-3-bits))
+                  (1- emacs-char-table--topology-level-2-size)))
+         (entry (aref root root-index)))
+    (when (emacs-char-table--topology-node-p entry)
+      (setq entry
+            (aref (emacs-char-table--topology-node-contents entry)
+                  level-1-index))
+      (when (emacs-char-table--topology-node-p entry)
+        (setq entry
+              (aref (emacs-char-table--topology-node-contents entry)
+                    level-2-index))))
+    entry))
+
+(defun emacs-char-table--topology-copy-leaf-span (root char)
+  "Return a fresh 128-slot vector for ROOT's aligned span at CHAR."
+  (let ((entry (emacs-char-table--topology-leaf-span root char)))
+    (if (emacs-char-table--topology-node-p entry)
+        (copy-sequence (emacs-char-table--topology-node-contents entry))
+      (make-vector emacs-char-table--topology-level-3-size entry))))
+
+(defun emacs-char-table--topology--copy-node (node depth)
+  "Return a deep topology-node copy of NODE, sharing all scalar leaves."
+  (let* ((contents (emacs-char-table--topology-node-contents node))
+         (copied (copy-sequence contents))
+         (index 0))
+    ;; Depth-three contents are character values.  They can be records that
+    ;; resemble topology nodes, or native sub-char-table values; copy the
+    ;; vector but preserve those payloads by identity.
+    (when (< depth 3)
+      (while (< index (length copied))
+        (let ((entry (aref copied index)))
+          (when (emacs-char-table--topology-node-p entry)
+            (aset copied index
+                  (emacs-char-table--topology--copy-node entry (1+ depth))))
+          (setq index (1+ index)))))
+    (emacs-char-table--topology-node-create copied)))
+
+(defun emacs-char-table--topology-copy (root)
+  "Return a deep topology copy of ROOT, preserving scalar value identities."
+  (let ((copied (copy-sequence root))
+        (index 0))
+    (while (< index (length copied))
+      (let ((entry (aref copied index)))
+        (when (emacs-char-table--topology-node-p entry)
+          (aset copied index
+                  (emacs-char-table--topology--copy-node entry 1))))
+      (setq index (1+ index)))
+    copied))
+
+(defun emacs-char-table--topology--set-range-contents
+    (contents base depth from to value)
+  "Update intersecting CONTENTS blocks in raw inclusive range FROM..TO."
+  (let* ((block-size (cond ((= depth 0)
+                            (ash 1 (+ emacs-char-table--topology-level-1-bits
+                                      emacs-char-table--topology-level-2-bits
+                                      emacs-char-table--topology-level-3-bits)))
+                           ((= depth 1)
+                            (ash 1 (+ emacs-char-table--topology-level-2-bits
+                                      emacs-char-table--topology-level-3-bits)))
+                           ((= depth 2)
+                            (ash 1 emacs-char-table--topology-level-3-bits))
+                           (t 1)))
+         (index (max 0 (/ (max 0 (- from base)) block-size)))
+         (length (length contents)))
+    (while (and (< index length)
+                (<= (+ base (* index block-size)) to))
+      (let* ((block-start (+ base (* index block-size)))
+             (block-end (+ block-start block-size -1)))
+        (if (and (<= from block-start) (<= block-end to))
+            (aset contents index value)
+          (let* ((old-entry (aref contents index))
+                 (node
+                  (if (emacs-char-table--topology-node-p old-entry)
+                      old-entry
+                    (let* ((child-size
+                            (cond ((= depth 0)
+                                   emacs-char-table--topology-level-1-size)
+                                  ((= depth 1)
+                                   emacs-char-table--topology-level-2-size)
+                                  (t emacs-char-table--topology-level-3-size)))
+                           (child
+                            (emacs-char-table--topology-node-create
+                             (make-vector child-size old-entry))))
+                      (aset contents index child)
+                      child)))
+                 (child-contents
+                  (emacs-char-table--topology-node-contents node)))
+            (emacs-char-table--topology--set-range-contents
+             child-contents block-start (1+ depth) from to value))))
+      (setq index (1+ index)))))
+
+(defun emacs-char-table--topology-set-range (root from to value)
+  "Set raw ROOT's inclusive character range FROM..TO to VALUE.
+The private caller supplies valid ordered character bounds."
+  (if (= from to)
+      (emacs-char-table--topology-set-char root from value)
+    (emacs-char-table--topology--set-range-contents
+     root 0 0 from to value)
+    value))
+
+;; The owner's cache can intentionally retain a detached GNU ASCII subtree
+;; after an interrupted optimizer traversal.  Keep it beside the raw root.
+(defconst emacs-char-table--owner-state-version 2)
+
+(defun emacs-char-table--owner-state-create (root cache)
+  (record 'emacs-char-table--owner-state root cache
+          emacs-char-table--owner-state-version))
+
+(defun emacs-char-table--owner-state-p (object)
+  (and (recordp object)
+       (eq (type-of object) 'emacs-char-table--owner-state)
+       (or (= (length object) 3)
+           (= (length object) 4))))
+
+(defun emacs-char-table--topology-legacy-node-p (object depth)
+  "Return non-nil when OBJECT has the old node shape for DEPTH."
+  (and (recordp object)
+       (eq (type-of object) 'emacs-char-table--topology-node)
+       (= (length object) 2)
+       (vectorp (aref object 1))
+       (= (length (aref object 1))
+          (cond ((= depth 1) emacs-char-table--topology-level-1-size)
+                ((= depth 2) emacs-char-table--topology-level-2-size)
+                ((= depth 3) emacs-char-table--topology-level-3-size)
+                (t -1)))))
+
+(defun emacs-char-table--topology-upgrade-legacy-node (object depth node-map)
+  "Copy one old topology node at DEPTH into the private-tagged format."
+  (if (not (emacs-char-table--topology-legacy-node-p object depth))
+      object
+    (let ((contents (copy-sequence (aref object 1))))
+      (when (< depth 3)
+        (let ((index 0))
+          (while (< index (length contents))
+            (let ((child (aref contents index)))
+              (when (emacs-char-table--topology-legacy-node-p child
+                                                              (1+ depth))
+                (aset contents index
+                      (emacs-char-table--topology-upgrade-legacy-node
+                       child (1+ depth) node-map))))
+            (setq index (1+ index)))))
+      (let ((node (emacs-char-table--topology-node-create contents)))
+        (aset node-map 0 (cons (cons object node) (aref node-map 0)))
+        node))))
+
+(defun emacs-char-table--topology-upgrade-legacy-root (root node-map)
+  "Copy ROOT's structurally valid old nodes into the private-tagged format."
+  (let ((upgraded (copy-sequence root))
+        (index 0))
+    (while (< index (length upgraded))
+      (let ((child (aref upgraded index)))
+        (when (emacs-char-table--topology-legacy-node-p child 1)
+          (aset upgraded index
+                (emacs-char-table--topology-upgrade-legacy-node
+                 child 1 node-map))))
+      (setq index (1+ index)))
+    upgraded))
+
+(defun emacs-char-table--owned-p (table)
+  (and (vectorp table)
+       (> (length table) emacs-char-table--i-owner-state)
+       (eq (emacs-char-table--raw-ref table 0) emacs-char-table--tag)
+       (emacs-char-table--owner-state-p
+        (emacs-char-table--raw-ref table emacs-char-table--i-owner-state))))
+
+(defun emacs-char-table--owner-current-state (table)
+  "Return TABLE's current owner state, upgrading a legacy tree once."
+  (let ((state (emacs-char-table--raw-ref
+                table emacs-char-table--i-owner-state)))
+    (when (or (= (length state) 3)
+              (< (aref state 3) emacs-char-table--owner-state-version))
+      (let* ((node-map (vector nil))
+             (root (emacs-char-table--topology-upgrade-legacy-root
+                    (aref state 1) node-map))
+             (old-cache (aref state 2))
+             (mapped-cache (cdr (assq old-cache (aref node-map 0))))
+             (cache (or mapped-cache
+                        (if (emacs-char-table--topology-legacy-node-p
+                             old-cache 3)
+                            (emacs-char-table--topology-upgrade-legacy-node
+                             old-cache 3 node-map)
+                          old-cache)))
+             (new-state (emacs-char-table--owner-state-create root cache)))
+        (emacs-char-table--raw-set table emacs-char-table--i-owner-state
+                                   new-state)
+        (setq state new-state)))
+    state))
+
+(defun emacs-char-table--owner-root (table)
+  (aref (emacs-char-table--owner-current-state table) 1))
+
+(defun emacs-char-table--owner-cache (table)
+  (aref (emacs-char-table--owner-current-state table) 2))
+
+(defun emacs-char-table--owner-set-cache (table cache)
+  (aset (emacs-char-table--owner-current-state table) 2 cache))
+
+(defun emacs-char-table--owner-cache-ref (table char)
+  (let ((cache (emacs-char-table--owner-cache table)))
+    (if (emacs-char-table--topology-node-p cache)
+        (aref (aref cache 1) char)
+      cache)))
+
+(defun emacs-char-table--owner-overlay-range (table from to value)
+  "Replace the sparse view of TABLE's FROM..TO span with VALUE."
+  (let ((ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
+        (result nil)
+        (inserted nil)
+        (replacement (cons (cons from to) value)))
+    (if (or (null ranges)
+            (> from (cdr (car (car ranges)))))
+        ;; Owned views are descending and nonoverlapping.  A new high span
+        ;; can be prepended without scanning the existing ranges.
+        (when value
+          (emacs-char-table--raw-set
+           table emacs-char-table--i-ranges (cons replacement ranges)))
+      ;; Preserve untouched entries exactly.  Split only entries intersecting
+      ;; the replacement and build the result in descending coordinate order.
+      (dolist (entry ranges)
+        (let* ((bounds (car entry))
+               (lo (car bounds))
+               (hi (cdr bounds))
+               (old (cdr entry)))
+          (cond
+           ((> lo to)
+            (push entry result))
+           ((< hi from)
+            (unless inserted
+              (when value (push replacement result))
+              (setq inserted t))
+            (push entry result))
+           (t
+            (when (> hi to)
+              (push (cons (cons (1+ to) hi) old) result))
+            (unless inserted
+              (when value (push replacement result))
+              (setq inserted t))
+            (when (< lo from)
+                   (push (cons (cons lo (1- from)) old) result))))))
+      (unless inserted
+        (when value (push replacement result)))
+      (emacs-char-table--raw-set table emacs-char-table--i-ranges
+                                 (nreverse result)))))
+
+(defun emacs-char-table--owner-publish-span (table from to)
+  "Publish the already-written raw span FROM..TO into compatibility views."
+  (let ((ascii (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
+        (lo (max 0 from)) (hi (min 255 to)))
+    (while (<= lo hi)
+      (emacs-char-table--raw-set
+       ascii lo
+       (if (< lo 128)
+           (emacs-char-table--owner-cache-ref table lo)
+         (emacs-char-table--topology-ref (emacs-char-table--owner-root table)
+                                         lo)))
+      (setq lo (1+ lo)))
+    (when (> to 255)
+      (emacs-char-table--owner-overlay-range table (max 256 from) to
+                                             (emacs-char-table--topology-ref
+                                              (emacs-char-table--owner-root table)
+                                              (max 256 from))))))
+
+(defun emacs-char-table--owner-refresh-ascii-cache (table)
+  "Refresh TABLE's raw ASCII cache alias and publish its complete view."
+  (emacs-char-table--owner-set-cache
+   table (emacs-char-table--topology-ascii-cache
+          (emacs-char-table--owner-root table)))
+  (let* ((ascii (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
+         (span (emacs-char-table--topology-leaf-span
+                (emacs-char-table--owner-root table) 0))
+         (node-p (emacs-char-table--topology-node-p span))
+         (contents (and node-p
+                        (emacs-char-table--topology-node-contents span)))
+         (native-bridge (emacs-char-table--native-vector-bridge-p))
+         (char 0))
+    (if native-bridge
+        (while (< char 128)
+          (nelisp--raw-aset ascii char (if node-p (aref contents char) span))
+          (setq char (1+ char)))
+      (while (< char 128)
+        (funcall emacs-char-table--raw-aset
+                 ascii char (if node-p (aref contents char) span))
+        (setq char (1+ char))))))
+
+(defun emacs-char-table--owner-optimize-node
+    (table node base span depth test)
+  "Optimize NODE in TABLE over BASE..BASE+SPAN-1 using TEST.
+Return the collapsed scalar when every slot compares equal, otherwise NODE.
+Publish each collapsed child only after its parent slot has been updated."
+  (let* ((contents (emacs-char-table--topology-node-contents node))
+         (slot-span (/ span (length contents)))
+         (first (aref contents 0))
+         (uniform t)
+         (index 0))
+    (when (and (< depth 3)
+               (emacs-char-table--topology-node-p first))
+      (setq first
+            (emacs-char-table--owner-optimize-node
+             table first base slot-span (1+ depth) test))
+      (aset contents 0 first)
+      (unless (emacs-char-table--topology-node-p first)
+        (emacs-char-table--owner-publish-span
+         table base (+ base slot-span -1))))
+    (setq uniform (not (emacs-char-table--topology-node-p first))
+          index 1)
+    (while (< index (length contents))
+      (let* ((slot-base (+ base (* index slot-span)))
+             (current (aref contents index)))
+        (when (and (< depth 3)
+                   (emacs-char-table--topology-node-p current))
+          (setq current
+                (emacs-char-table--owner-optimize-node
+                 table current slot-base slot-span (1+ depth) test))
+          (aset contents index current)
+          (unless (emacs-char-table--topology-node-p current)
+            (emacs-char-table--owner-publish-span
+             table slot-base (+ slot-base slot-span -1))))
+        (when (and uniform (not (funcall test current first)))
+          (setq uniform nil)))
+      (setq index (1+ index)))
+    (if uniform first node)))
+
+(defun emacs-char-table--owner-optimize (table test)
+  "Optimize owned TABLE with the explicit comparison function TEST.
+Mutations and compatibility views follow GNU's recursive slot order."
+  (let* ((root (emacs-char-table--owner-root table))
+         (slot-span (/ (1+ emacs-char-table--max-char) (length root)))
+         (index 0))
+    (while (< index (length root))
+      (let* ((base (* index slot-span))
+             (entry (aref root index)))
+        (when (emacs-char-table--topology-node-p entry)
+          (setq entry
+                (emacs-char-table--owner-optimize-node
+                 table entry base slot-span 1 test))
+          (aset root index entry)
+          (unless (emacs-char-table--topology-node-p entry)
+            (emacs-char-table--owner-publish-span
+             table base (+ base slot-span -1))))
+        (setq index (1+ index))))
+    (emacs-char-table--owner-refresh-ascii-cache table)
+    nil))
+
+(defun emacs-char-table--owner-set-char (table char value)
+  "Apply GNU's single-character write path to owned TABLE."
+  (let ((cache (emacs-char-table--owner-cache table)))
+    (if (and (< char 128) (emacs-char-table--topology-node-p cache))
+        (aset (emacs-char-table--topology-node-contents cache) char value)
+      (emacs-char-table--topology-set-char
+       (emacs-char-table--owner-root table) char value)
+      (when (< char 128)
+        (emacs-char-table--owner-refresh-ascii-cache table)))
+    (emacs-char-table--owner-publish-span table char char))
+  value)
+
+(defun emacs-char-table--owner-set-range (table from to value)
+  "Apply a character range write to owned TABLE and return VALUE."
+  (cond
+   ((= from to)
+    (emacs-char-table--owner-set-char table from value))
+   ((> from to)
+    (when (< from 128)
+      (emacs-char-table--owner-refresh-ascii-cache table))
+    value)
+   (t
+    (emacs-char-table--topology-set-range
+     (emacs-char-table--owner-root table) from to value)
+    (when (< from 128)
+      (emacs-char-table--owner-refresh-ascii-cache table))
+    (when (>= to 128)
+      (emacs-char-table--owner-publish-span table (max 128 from) to))
+    value)))
+
+(defun emacs-char-table--copy-storage (table)
+  "Copy owned TABLE's raw storage without copying detached cache history."
+  (let* ((root (emacs-char-table--topology-copy
+                (emacs-char-table--owner-root table)))
+         (copy (make-vector (length table) nil))
+         (i 0))
+    (while (< i (length table))
+      (emacs-char-table--raw-set copy i (emacs-char-table--raw-ref table i))
+      (setq i (1+ i)))
+    (emacs-char-table--raw-set
+     copy emacs-char-table--i-extra
+     (copy-sequence (emacs-char-table--raw-ref table emacs-char-table--i-extra)))
+    (emacs-char-table--raw-set
+     copy emacs-char-table--i-ascii
+     (vconcat (emacs-char-table--topology-copy-leaf-span root 0)
+              (emacs-char-table--topology-copy-leaf-span root 128)))
+    (emacs-char-table--raw-set
+     copy emacs-char-table--i-ranges
+     (mapcar (lambda (entry)
+               (cons (cons (car (car entry)) (cdr (car entry))) (cdr entry)))
+             (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
+    (emacs-char-table--raw-set
+     copy emacs-char-table--i-owner-state
+     (emacs-char-table--owner-state-create
+      root (emacs-char-table--topology-ascii-cache root)))
+    copy))
 
 ;; Capture the array primitives before the standalone compatibility bridge is
 ;; installed.  `defvar' deliberately preserves the original functions when
@@ -223,21 +778,38 @@ the marker used in `emacs-keymap.el' / `emacs-fileio-builtins.el'."
 
 ;;;; --- constructor / predicate ----------------------------------------
 
+(defun emacs-char-table--register-display-table-extra-slots ()
+  "Register GNU's six display-table slots when no declaration exists."
+  (when (not (plist-member (symbol-plist 'display-table)
+                           'char-table-extra-slots))
+    (put 'display-table 'char-table-extra-slots 6)))
+
+(emacs-char-table--register-display-table-extra-slots)
+
 (defun emacs-char-table-make (subtype &optional init)
   "Return a fresh char-table with symbol SUBTYPE and initial value INIT.
 The subtype's `char-table-extra-slots' property determines its extra
 slot count, which remains fixed for the lifetime of the table."
   (unless (symbolp subtype)
     (signal 'wrong-type-argument (list 'symbolp subtype)))
-  (let ((slots (or (get subtype 'char-table-extra-slots)
-                   ;; The standalone does not preload these symbol properties.
-                   (cdr (assq subtype '((case-table . 3) (category-table . 2))))
-                   ;; Subtypes without a declared count keep the legacy
-                   ;; fixed capacity that existing callers rely on.
-                   emacs-char-table--extra-slots)))
+  (let* ((properties (symbol-plist subtype))
+         (declared-p (plist-member properties 'char-table-extra-slots))
+         (declared (get subtype 'char-table-extra-slots))
+         (slots (cond
+                 (declared-p (if (null declared) 0 declared))
+                 ;; A removed display-table declaration means zero slots;
+                 ;; the six-slot default is installed only at bootstrap.
+                 ((eq subtype 'display-table) 0)
+                 ;; The standalone does not preload these symbol properties.
+                 ((assq subtype '((case-table . 3) (category-table . 2)))
+                  (cdr (assq subtype '((case-table . 3)
+                                       (category-table . 2)))))
+                 ;; Subtypes without a declared count keep the legacy
+                 ;; fixed capacity that existing callers rely on.
+                 (t emacs-char-table--extra-slots))))
     (unless (and (integerp slots) (>= slots 0))
       (signal 'wrong-type-argument (list 'wholenump slots)))
-    (let ((ct (make-vector 7 nil))
+    (let ((ct (make-vector 8 nil))
           (ascii (make-vector emacs-char-table--ascii-size init)))
       (emacs-char-table--raw-set ct 0 emacs-char-table--tag)
       (emacs-char-table--raw-set ct emacs-char-table--i-subtype subtype)
@@ -251,15 +823,22 @@ slot count, which remains fixed for the lifetime of the table."
                            emacs-char-table--max-char) init))))
       (emacs-char-table--raw-set ct emacs-char-table--i-extra
                                  (make-vector slots nil))
+      (emacs-char-table--raw-set
+       ct emacs-char-table--i-owner-state
+       (emacs-char-table--owner-state-create
+        (emacs-char-table--topology-create init) init))
       ct)))
 
 (defun emacs-char-table-p (object)
   "Return non-nil when OBJECT is a NeLisp char-table."
-  (or (emacs-char-table--native-syntax-p object)
-      (emacs-char-table--native-p object)
-      (and (vectorp object)
+  ;; Tagged vectors are excluded by both native predicates below.  Check
+  ;; their existing structural tag first to avoid repeating those class
+  ;; checks on every access through the public `aref' bridge.
+  (or (and (vectorp object)
            (> (length object) 6)
-           (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag))))
+           (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag))
+      (emacs-char-table--native-syntax-p object)
+      (emacs-char-table--native-p object)))
 
 (defun emacs-char-table-same-p (first second)
   "Compare FIRST and SECOND by their logical char-table identity.
@@ -304,8 +883,15 @@ identity.  This query does not modify either table."
    ((emacs-char-table--native-p ct) (emacs-char-table--native-ref ct char))
    ((not (integerp char)) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
    ((and (>= char 0) (< char emacs-char-table--ascii-size))
-    (let ((v (emacs-char-table--raw-ref
-              (emacs-char-table--raw-ref ct emacs-char-table--i-ascii) char)))
+    (let ((v (if (and (< char 128) (emacs-char-table--owned-p ct))
+                 (emacs-char-table--owner-cache-ref ct char)
+               (emacs-char-table--raw-ref
+                (emacs-char-table--raw-ref ct emacs-char-table--i-ascii) char))))
+      (if v v (emacs-char-table--fallback ct char))))
+   ((and (integerp char) (>= char emacs-char-table--ascii-size)
+         (emacs-char-table--owned-p ct))
+    (let ((v (emacs-char-table--topology-ref
+              (emacs-char-table--owner-root ct) char)))
       (if v v (emacs-char-table--fallback ct char))))
    (t
     (let ((v (emacs-char-table--range-lookup ct char)))
@@ -317,13 +903,16 @@ identity.  This query does not modify either table."
   "Set CT's value for a single character CHAR to VALUE."
   (if (emacs-char-table--native-p ct)
       (emacs-char-table--native-set ct char value)
-   (if (and (integerp char) (>= char 0) (< char emacs-char-table--ascii-size))
+   (if (and (emacs-char-table--owned-p ct)
+            (integerp char) (<= 0 char emacs-char-table--max-char))
+       (emacs-char-table--owner-set-char ct char value)
+    (if (and (integerp char) (>= char 0) (< char emacs-char-table--ascii-size))
       (emacs-char-table--raw-set
        (emacs-char-table--raw-ref ct emacs-char-table--i-ascii) char value)
     (emacs-char-table--raw-set
      ct emacs-char-table--i-ranges
      (cons (cons (cons char char) value)
-           (emacs-char-table--raw-ref ct emacs-char-table--i-ranges)))))
+           (emacs-char-table--raw-ref ct emacs-char-table--i-ranges))))))
   value)
 
 ;;;; --- category-table integration ------------------------------------
@@ -332,8 +921,13 @@ identity.  This query does not modify either table."
   "Construct an empty standalone category table.
 Each character maps to a 128-slot category set, matching the index space
 of host Emacs's bool-vector returned by `char-category-set'."
-  (emacs-char-table-make 'category-table
-                         (make-vector emacs-char-table--category-set-size nil)))
+  (let ((table (emacs-char-table-make
+                'category-table
+                (make-vector emacs-char-table--category-set-size nil))))
+    ;; Extra slot 0 holds the 95 category docstrings (` ' through `~'), as
+    ;; category.c does; the category primitives index it directly.
+    (emacs-char-table-set-extra-slot table 0 (make-vector 95 nil))
+    table))
 
 (defun emacs-char-table-category-table-p (object)
   "Return non-nil when OBJECT is a standalone category table."
@@ -363,24 +957,40 @@ of host Emacs's bool-vector returned by `char-category-set'."
   (let* ((source (or table (emacs-char-table-standard-category-table)))
          (_ (unless (emacs-char-table-category-table-p source)
               (signal 'wrong-type-argument (list 'category-table-p source))))
-         (copy (emacs-char-table-copy
-                source
-                (lambda (value)
-                  ;; Category sets are vectors stored as char-table values.
-                  ;; Keep copied tables independent, as
-                  ;; `copy-category-table' does on the host.
-                  (if (vectorp value) (copy-sequence value) value)))))
+         (copy (if (emacs-char-table--owned-p source)
+                   (emacs-char-table--copy-storage source)
+                 (emacs-char-table-copy
+                  source
+                  (lambda (value)
+                    (if value (copy-sequence value) value)))))
+         )
     ;; The default value is not visited by `emacs-char-table-copy's VALFN.
     ;; Copy it separately so direct `char-category-set' mutation in the copy
     ;; cannot alter the source table's default set.
-    (emacs-char-table--raw-set
-     copy emacs-char-table--i-default
-     (copy-sequence
-      (emacs-char-table--raw-ref copy emacs-char-table--i-default)))
-    (when (and (boundp 'emacs-cc-category-1--docs)
-               (fboundp 'emacs-cc-category-1--docs-for))
-      (puthash copy (copy-sequence (emacs-cc-category-1--docs-for source))
-               emacs-cc-category-1--docs))
+    (let ((default (emacs-char-table--raw-ref copy emacs-char-table--i-default)))
+      (when default
+        (emacs-char-table--raw-set
+         copy emacs-char-table--i-default (copy-sequence default))))
+    ;; char-table copying duplicates the extra-slot vector but not values
+    ;; stored inside it.  Category docstrings live in slot 0 and must remain
+    ;; independent in the copied table.
+    (let ((docs (emacs-char-table-extra-slot source 0)))
+      (when docs
+        (emacs-char-table-set-extra-slot copy 0 (copy-sequence docs))))
+    (when (emacs-char-table--owned-p copy)
+      (emacs-char-table-map
+       (lambda (key value)
+         (when value
+           (let ((copied-value (copy-sequence value)))
+             (cond
+              ((integerp key)
+               (emacs-char-table--owner-set-char copy key copied-value))
+              ((consp key)
+               (emacs-char-table--owner-set-range
+                copy (car key) (cdr key) copied-value))
+              (t
+               (error "Invalid category-table map key: %S" key))))))
+       copy))
     copy))
 
 (defun emacs-char-table--category-set (table character)
@@ -425,7 +1035,8 @@ RESET removes CATEGORY.  CATEGORY must be defined in TABLE."
       ;; Otherwise the host builtin only understands host category tables;
       ;; a standalone table carries no registered docstrings to validate.
       (unless (if (fboundp 'emacs-cc-category-1--docs-for)
-                  (or (aref (emacs-cc-category-1--docs-for table) category)
+                  (or (aref (emacs-cc-category-1--docs-for table)
+                            (- category #x20))
                       (= category ?A))
                 (or (not (fboundp 'category-docstring))
                     (not (category-table-p table))
@@ -451,12 +1062,43 @@ RESET removes CATEGORY.  CATEGORY must be defined in TABLE."
       (emacs-char-table--raw-set vec i value)
       (setq i (1+ i)))))
 
+(defun emacs-char-table--owned-set-range (ct range value)
+  "Apply RANGE to owned char-table CT, then return VALUE."
+  (cond
+   ((null range)
+    (emacs-char-table--raw-set ct emacs-char-table--i-default value))
+   ((eq range t)
+    (let ((root (emacs-char-table--owner-root ct))
+          (index 0))
+      (while (< index emacs-char-table--topology-root-size)
+        (aset root index value)
+        (setq index (1+ index)))
+      (emacs-char-table--owner-set-cache ct value)
+      (emacs-char-table--owner-publish-span
+       ct 0 emacs-char-table--max-char)))
+   ((and (integerp range) (<= 0 range)
+         (<= range emacs-char-table--max-char))
+    (emacs-char-table-set ct range value))
+   ((consp range)
+    (let ((from (car range))
+          (to (cdr range)))
+      (dolist (character (list from to))
+        (unless (and (integerp character) (<= 0 character)
+                     (<= character emacs-char-table--max-char))
+          (signal 'wrong-type-argument (list 'characterp character))))
+      (emacs-char-table--owner-set-range ct from to value)))
+   (t (error "Invalid RANGE argument to ‘set-char-table-range’")))
+  value)
+
 (defun emacs-char-table-set-range (ct range value)
   "Set CT entries selected by RANGE to VALUE.
 RANGE is nil (the default value), t (the whole table), a character,
 or a cons (FROM . TO).  Large supra-ASCII ranges are stored sparsely
 rather than materialised."
   (emacs-char-table--check-table ct)
+  (if (emacs-char-table--owned-p ct)
+      (emacs-char-table--owned-set-range ct range value)
+    (progn
   (cond
    ((emacs-char-table--native-p ct)
     ;; Native tables are written element-wise; only single characters and
@@ -496,7 +1138,7 @@ rather than materialised."
                  (emacs-char-table--raw-ref
                   ct emacs-char-table--i-ranges)))))))
    (t (error "Invalid RANGE argument to ‘set-char-table-range’")))
-  value)
+  value)))
 
 (defun emacs-char-table-range (ct range)
   "Return CT's default or its value at RANGE's first character."
@@ -578,6 +1220,15 @@ rather than materialised."
         (signal 'args-out-of-range (list ct n))))
     (emacs-char-table--raw-ref
      (emacs-char-table--raw-ref ct emacs-char-table--i-extra) n)))
+
+(defun emacs-char-table-extra-slot-count (ct)
+  "Return CT's exact allocated extra-slot count, or nil if unavailable.
+Owned tagged-vector tables retain their allocated count in their storage;
+native tables expose no count accessor, so this function does not infer it
+from the mutable subtype property."
+  (emacs-char-table--check-table ct)
+  (unless (emacs-char-table--native-p ct)
+    (length (emacs-char-table--raw-ref ct emacs-char-table--i-extra))))
 
 (defun emacs-char-table-set-extra-slot (ct n value)
   "Set CT's extra slot N to VALUE."
@@ -680,6 +1331,10 @@ When VALFN is non-nil it transforms each non-nil value (used by
               (emacs-char-table-set new c (if valfn (funcall valfn v) v))))
           (setq c (1+ c)))
         new)
+   (if (emacs-char-table--owned-p ct)
+       (if valfn
+           (error "VALFN copy of owned char-tables requires caller-specific mapping")
+         (emacs-char-table--copy-storage ct))
    (let ((new (emacs-char-table-make
               (emacs-char-table--raw-ref ct emacs-char-table--i-subtype)
               (emacs-char-table--raw-ref ct emacs-char-table--i-default))))
@@ -704,7 +1359,7 @@ When VALFN is non-nil it transforms each non-nil value (used by
      new emacs-char-table--i-extra
      (copy-sequence
       (emacs-char-table--raw-ref ct emacs-char-table--i-extra)))
-    new)))
+    new))))
 
 ;;;; --- public array bridge -------------------------------------------
 

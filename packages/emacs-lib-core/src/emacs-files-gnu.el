@@ -4,6 +4,10 @@
 ;; vendor/staged-emacs-lisp/files.el (GNU Emacs 31.1).  The forms below
 ;; are copied verbatim; do not edit by hand.
 
+(defun emacs-files-gnu--install-provider-p (name)
+  "Install a GNU files.el provider only when it fills a gap."
+  (or (not (fboundp name)) (fboundp 'nelisp--write-stdout-bytes)))
+
 (defvar backup-enable-predicate 'normal-backup-enable-predicate
   "Predicate that looks at a file name and decides whether to make backups.
 Called with an absolute file name as argument, it returns t to enable backup.")
@@ -117,6 +121,122 @@ you visit a file you cannot alter, and buffers you make read-only
 using \\[read-only-mode]."
   :type 'boolean
   :group 'view)
+
+(defvar cd-path nil
+  "Value of the CDPATH environment variable, as a list.
+Not actually set up until the first time you use it.")
+
+(when (emacs-files-gnu--install-provider-p 'parse-colon-path)
+(defun parse-colon-path (search-path)
+  "Explode a search path into a list of directory names.
+Directories are separated by `path-separator' (which is colon in
+GNU and Unix systems).  Substitute environment variables into the
+resulting list of directory names.  For an empty path element (i.e.,
+a leading or trailing separator, or two adjacent separators), return
+nil (meaning `default-directory') as the associated list element."
+  (declare (ftype (function (string) list)))
+  (when (stringp search-path)
+    (let ((spath (substitute-env-vars search-path))
+          (double-slash-special-p
+           (memq system-type '(windows-nt cygwin ms-dos))))
+      (mapcar (lambda (f)
+                (if (equal "" f) nil
+                  (let ((dir (file-name-as-directory f)))
+                    ;; Previous implementation used `substitute-in-file-name'
+                    ;; which collapses multiple "/" in front, while
+                    ;; preserving double slash where it matters.  Do
+                    ;; the same for backward compatibility.
+                    (if (string-match "\\`//+" dir)
+                        (substring dir (- (match-end 0)
+                                          (if double-slash-special-p 2 1)))
+                      dir))))
+              (split-string spath path-separator)))))
+)
+
+(when (emacs-files-gnu--install-provider-p 'cd-absolute)
+(defun cd-absolute (dir)
+  "Change current directory to given absolute file name DIR."
+  ;; Put the name into directory syntax now,
+  ;; because otherwise expand-file-name may give some bad results.
+  (setq dir (file-name-as-directory dir))
+  ;; We used to additionally call abbreviate-file-name here, for an
+  ;; unknown reason.  Problem is that most buffers are setup
+  ;; without going through cd-absolute and don't call
+  ;; abbreviate-file-name on their default-directory, so the few that
+  ;; do end up using a superficially different directory.
+  (setq dir (expand-file-name dir))
+  (if (not (file-directory-p dir))
+      (error (if (file-exists-p dir)
+	         "%s is not a directory"
+               "%s: no such directory")
+             dir)
+    (unless (file-accessible-directory-p dir)
+      (error "Cannot cd to %s:  Permission denied" dir))
+    (setq default-directory dir)
+    (setq list-buffers-directory dir)))
+)
+
+(when (emacs-files-gnu--install-provider-p 'cd)
+(defun cd (dir)
+  "Make DIR become the current buffer's default directory.
+If your environment includes a `CDPATH' variable, try each one of
+that list of directories (separated by occurrences of
+`path-separator') when resolving a relative directory name.
+The path separator is colon in GNU and GNU-like systems."
+  (interactive
+   (list
+    ;; FIXME: There's a subtle bug in the completion below.  Seems linked
+    ;; to a fundamental difficulty of implementing `predicate' correctly.
+    ;; The manifestation is that TAB may list non-directories in the case where
+    ;; those files also correspond to valid directories (if your cd-path is (A/
+    ;; B/) and you have A/a a file and B/a a directory, then both `a' and `a/'
+    ;; will be listed as valid completions).
+    ;; This is because `a' (listed because of A/a) is indeed a valid choice
+    ;; (which will lead to the use of B/a).
+    (minibuffer-with-setup-hook
+        (lambda ()
+          (setq-local minibuffer-completion-table
+		      (apply-partially #'locate-file-completion-table
+				       cd-path nil))
+          (setq-local minibuffer-completion-predicate
+		      (lambda (dir)
+			(locate-file dir cd-path nil
+				     (lambda (f) (and (file-directory-p f) 'dir-ok))))))
+      (unless cd-path
+        (setq cd-path (or (parse-colon-path (getenv "CDPATH"))
+                          (list "./"))))
+      (read-directory-name "Change default directory: "
+                           default-directory default-directory
+                           t))))
+  (unless cd-path
+    (setq cd-path (or (parse-colon-path (getenv "CDPATH"))
+                      (list "./"))))
+  (cd-absolute
+   (or
+    ;; locate-file doesn't support remote file names, so detect them
+    ;; and support them here by hand.
+    (and (file-remote-p (expand-file-name dir))
+         (file-accessible-directory-p (expand-file-name dir))
+         (expand-file-name dir))
+    (locate-file dir cd-path nil
+                 (lambda (f) (and (file-directory-p f) 'dir-ok)))
+    (if (getenv "CDPATH")
+        (error "No such directory found via CDPATH environment variable: %s" dir)
+      (error "No such directory: %s" dir)))))
+)
+
+(when (emacs-files-gnu--install-provider-p 'file-local-copy)
+(defun file-local-copy (file)
+  "Copy the file FILE into a temporary file on this machine.
+Returns the name of the local copy, or nil, if FILE is directly
+accessible."
+  ;; This formerly had an optional BUFFER argument that wasn't used by
+  ;; anything.
+  (let ((handler (find-file-name-handler file 'file-local-copy)))
+    (if handler
+	(funcall handler 'file-local-copy file)
+      nil)))
+)
 
 (defun files--name-absolute-system-p (file)
   "Return non-nil if FILE is an absolute name to the operating system.

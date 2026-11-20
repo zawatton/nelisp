@@ -166,6 +166,63 @@
 
 ;;;; --- low-level loader API, direct ------------------------------------------
 
+(nl-ffi-loader-smoke-deftest ffi-loader-tls-tcb-positive-headroom
+  ;; Observe the real anonymous TLS arena mapping.  Do not inspect positive
+  ;; FS offsets or call the fixture unless the owned extent proves them safe.
+  (nl-ffi-loader-smoke-should (null nl-ffi-loader--tls-tp))
+  (let* ((original (symbol-function 'syscall-direct))
+         (reservations nil)
+         (handle nil))
+    (unwind-protect
+        (progn
+          (fset 'syscall-direct
+                (lambda (number address length prot flags fd offset)
+                  (let ((result (funcall original number address length prot
+                                         flags fd offset)))
+                    (when (and (= number nl-ffi-loader--sys-mmap)
+                               (= address 0)
+                               (memq length
+                                     (list nl-ffi-loader--tls-arena-size
+                                           (+ nl-ffi-loader--tls-arena-size 4096)))
+                               (= prot (logior nl-ffi-loader--prot-read
+                                               nl-ffi-loader--prot-write))
+                               (= (logand flags
+                                          (logior nl-ffi-loader--map-private
+                                                  nl-ffi-loader--map-anonymous))
+                                  (logior nl-ffi-loader--map-private
+                                          nl-ffi-loader--map-anonymous))
+                               (= fd -1) (= offset 0))
+                      (push (cons result length) reservations))
+                    result)))
+          (setq handle
+                (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-tls-ie)))
+      (fset 'syscall-direct original))
+    (nl-ffi-loader-smoke-should
+     (eq (symbol-function 'syscall-direct) original))
+    (nl-ffi-loader-smoke-should (= (length reservations) 1))
+    (let* ((reservation (car reservations))
+           (base (car reservation))
+           (size (cdr reservation))
+           (tp nl-ffi-loader--tls-tp)
+           (extent-valid
+            (and (> base 0)
+                 (= size (+ nl-ffi-loader--tls-arena-size 4096))
+                 (= tp (+ base nl-ffi-loader--tls-arena-size))
+                 (>= tp base)
+                 (<= (+ tp 2368) (+ base size)))))
+      (nl-ffi-loader-smoke-should extent-valid)
+      (when extent-valid
+        ;; Only after proving ownership and bounds may positive FS state be read.
+        (nl-ffi-loader-smoke-should (= (ptr-read-u64 tp 0) tp))
+        (nl-ffi-loader-smoke-should (= (ptr-read-u64 tp 8) 0))
+        (nl-ffi-loader-smoke-should (= (ptr-read-u64 tp 16) tp))
+        (nl-ffi-loader-smoke-should (= (ptr-read-u8 tp 40) 0))
+        (let ((probe (nl-ffi-loader-symbol
+                      handle "nl_ffi_loader_fixture_tls_ie_check_tcb")))
+          (nl-ffi-loader-smoke-should (> probe 0))
+          (nl-ffi-loader-smoke-should
+           (= (ptr-call probe tp 0 0 0 0 0) 42)))))))
+
 (nl-ffi-loader-smoke-deftest ffi-loader-open-and-jump-slot-call
   (let* ((h (nl-ffi-loader-open nl-ffi-loader-smoke--fixture))
          (addr (nl-ffi-loader-symbol h "nl_ffi_loader_fixture_call_double")))
@@ -178,8 +235,8 @@
 
 (nl-ffi-loader-smoke-deftest ffi-loader-ptr-call-rejects-invalid-arity-before-call
   ;; Exercise the reader's fixed-arity guard with a real, pure exported leaf.
-  ;; Every refusal is caught in this process; a padded seven-argument call
-  ;; afterward proves that the signal path did not poison later FFI calls.
+  ;; Preserve the exact wrong-number condition shape, including the function
+  ;; object (as in GNU Emacs' `apply' convention) and actual argument count.
   (let* ((h (nl-ffi-loader-open nl-ffi-loader-smoke--fixture))
          (addr (nl-ffi-loader-symbol h "nl_ffi_loader_fixture_double"))
          (count 0))
@@ -192,14 +249,24 @@
                                 'nl-ffi-loader-smoke--no-error)
                        (wrong-number-of-arguments data))))
         (nl-ffi-loader-smoke-should
-         (equal caught (list 'wrong-number-of-arguments 'ptr-call count))))
+         (= (length caught) 3))
+        (nl-ffi-loader-smoke-should
+         (eq (car caught) 'wrong-number-of-arguments))
+        (nl-ffi-loader-smoke-should
+         (eq (cadr caught) (symbol-function 'ptr-call)))
+        (nl-ffi-loader-smoke-should (= (nth 2 caught) count)))
       (setq count (1+ count)))
     (let ((caught (condition-case data
                       (progn (apply 'ptr-call (cons addr (make-list 7 0)))
                              'nl-ffi-loader-smoke--no-error)
                     (wrong-number-of-arguments data))))
       (nl-ffi-loader-smoke-should
-       (equal caught '(wrong-number-of-arguments ptr-call 8))))
+       (= (length caught) 3))
+      (nl-ffi-loader-smoke-should
+       (eq (car caught) 'wrong-number-of-arguments))
+      (nl-ffi-loader-smoke-should
+       (eq (cadr caught) (symbol-function 'ptr-call)))
+      (nl-ffi-loader-smoke-should (= (nth 2 caught) 8)))
     (nl-ffi-loader-smoke-should (= (ptr-call addr 20 0 0 0 0 0) 40))
     ;; Rebinding the named function cell must still bypass the builtin arm.
     (let ((saved (symbol-function 'ptr-call)))
@@ -325,30 +392,67 @@
          "libtotally-bogus-nl-ffi-fixture-xyz.so.1" nil))))
 
 (nl-ffi-loader-smoke-deftest ffi-loader-needs-dependency-reaches-relr
-  ;; nl-ffi-loader-fixture-needs-dep.so has a real DT_NEEDED on the SYSTEM
-  ;; libm.so.6.  RE-VERIFIED for increment 3 (this used to refuse two hops
-  ;; down, at libc.so.6's PT_TLS -- see nl-ffi-loader.el's Commentary,
-  ;; "TLS", "THE REAL-SYSTEM-LIBRARY REACHABILITY QUESTION" for the full
-  ;; story): `PT_TLS' is no longer a blanket refusal, and real libc.so.6
-  ;; turns out to use ONLY the Initial-Exec model internally -- but
-  ;; widening what this loader reaches also exposed a gap in the EXISTING
-  ;; `DT_RELR' check (it matched only the old, pre-standardization tag
-  ;; range, not the standardized one this host's real toolchain emits --
-  ;; see the same Commentary section), now fixed.  With the fix in place,
-  ;; this refuses ONE hop down, at libm.so.6 ITSELF (`DT_RELR' present,
-  ;; confirmed with `readelf -d'), never reaching libc.so.6 or its TLS at
-  ;; all.
-  (let ((sig (nl-ffi-loader-smoke-should-error
-              (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-needs-dep)
-              'nl-ffi-loader-unsupported)))
-    ;; DATA: (:dependency-unsupported REQUESTER-PATH SONAME RESOLVED-PATH
-    ;;        INNER-CONDITION-SYMBOL INNER-DATA) -- see
-    ;;        `nl-ffi-loader--map-node-as-dependency'.
-    (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :dependency-unsupported))
-    (nl-ffi-loader-smoke-should (equal (nth 2 (cdr sig)) "libm.so.6"))
-    (nl-ffi-loader-smoke-should (eq (nth 4 (cdr sig)) 'nl-ffi-loader-unsupported))
-    (let ((inner-data (nth 5 (cdr sig))))
-      (nl-ffi-loader-smoke-should (eq (nth 0 inner-data) :relr-relocations)))))
+  ;; Open the genuine fixture and follow its DT_NEEDED graph using the
+  ;; loader's resolved paths.  This proves the leaf is callable metadata,
+  ;; libm and libc are present as dependencies, libc's nonempty TLS template
+  ;; was initialized, and any libm RELR table has valid ABI size and bounds.
+  (let* ((handle (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-needs-dep))
+         (root-path (plist-get handle :path))
+         (graph (plist-get handle :graph))
+         (root-node (gethash root-path graph))
+         (root-dyn (plist-get root-node :dyn))
+         (libm-soname nil))
+    (nl-ffi-loader-smoke-should
+     (equal root-path nl-ffi-loader-smoke--fixture-needs-dep))
+    (nl-ffi-loader-smoke-should root-node)
+    (dolist (offset (plist-get root-dyn :needed))
+      (let ((soname (nl-ffi-loader--dynstr-string root-dyn offset)))
+        (when (equal soname "libm.so.6")
+          (setq libm-soname soname))))
+    (nl-ffi-loader-smoke-should (equal libm-soname "libm.so.6"))
+    (let* ((libm-path (nl-ffi-loader--resolve-soname libm-soname root-node))
+           (libm-node (and libm-path (gethash libm-path graph)))
+           (libm-dyn (and libm-node (plist-get libm-node :dyn)))
+           (libc-soname nil))
+      (nl-ffi-loader-smoke-should libm-path)
+      (nl-ffi-loader-smoke-should
+       (and libm-node (equal (plist-get libm-node :path) libm-path)))
+      (dolist (offset (plist-get libm-dyn :needed))
+        (let ((soname (nl-ffi-loader--dynstr-string libm-dyn offset)))
+          (when (equal soname "libc.so.6")
+            (setq libc-soname soname))))
+      (nl-ffi-loader-smoke-should (equal libc-soname "libc.so.6"))
+      (let* ((libc-path (nl-ffi-loader--resolve-soname libc-soname libm-node))
+             (libc-node (and libc-path (gethash libc-path graph)))
+             (libc-dyn (and libc-node (plist-get libc-node :dyn))))
+        (nl-ffi-loader-smoke-should libc-path)
+        (nl-ffi-loader-smoke-should
+         (and libc-node (equal (plist-get libc-node :path) libc-path)))
+        (let ((info (nl-ffi-loader-symbol-info
+                     handle "nl_ffi_loader_fixture_needs_dep"))
+              (address (nl-ffi-loader-symbol
+                        handle "nl_ffi_loader_fixture_needs_dep")))
+          (nl-ffi-loader-smoke-should info)
+          (nl-ffi-loader-smoke-should (> (plist-get info :address) 0))
+          (nl-ffi-loader-smoke-should
+           (= (plist-get info :type) nl-ffi-loader--stt-func))
+          (nl-ffi-loader-smoke-should
+           (equal (plist-get info :source-path) root-path))
+          (nl-ffi-loader-smoke-should (= (plist-get info :address) address)))
+        (when (> (or (plist-get libc-dyn :tls-memsz) 0) 0)
+          (nl-ffi-loader-smoke-should
+           (eq (plist-get libc-dyn :tls-initialized) t)))
+        (let ((relr (plist-get libm-dyn :relr))
+              (relrsz (plist-get libm-dyn :relrsz))
+              (relrent (plist-get libm-dyn :relrent)))
+          (when relr
+            (nl-ffi-loader-smoke-should (= relrent 8))
+            (nl-ffi-loader-smoke-should (= (% relrsz relrent) 0))
+            (when (> relrsz 0)
+              (nl-ffi-loader-smoke-should
+               (nl-ffi-loader--load-range-containing
+                (- relr (plist-get libm-node :bias)) relrsz
+                (plist-get libm-node :loads))))))))))
 
 ;;;; --- increment 2: initializers (DT_INIT/DT_INIT_ARRAY) ----------------------
 
@@ -436,6 +540,24 @@
     (ptr-call set1 123 0 0 0 0 0)
     (nl-ffi-loader-smoke-should (= (ptr-call get1 0 0 0 0 0 0) 123))
     (nl-ffi-loader-smoke-should (= (ptr-call get2 0 0 0 0 0 0) 7))))
+
+(nl-ffi-loader-smoke-deftest ffi-loader-tls-relocated-initialized-pointers
+  (let* ((h (nl-ffi-loader-open nl-ffi-loader-smoke--fixture-tls-ie))
+         (exported (nl-ffi-loader-symbol
+                    h "nl_ffi_loader_fixture_tls_ie_exported_pointer_matches"))
+         (local (nl-ffi-loader-symbol
+                 h "nl_ffi_loader_fixture_tls_ie_local_pointer_matches"))
+         (mask (nl-ffi-loader-symbol
+                h "nl_ffi_loader_fixture_tls_ie_pointer_mask")))
+    (nl-ffi-loader-smoke-should (> exported 0))
+    (nl-ffi-loader-smoke-should (> local 0))
+    (nl-ffi-loader-smoke-should (> mask 0))
+    ;; Compare initialized TLS pointer values with their real anchors without
+    ;; dereferencing either pointer.  The constructor records both comparisons
+    ;; before nl-ffi-loader-open returns; the getters independently recheck them.
+    (nl-ffi-loader-smoke-should (= (ptr-read-u32 mask 0) 3))
+    (nl-ffi-loader-smoke-should (= (ptr-call exported 0 0 0 0 0 0) 1))
+    (nl-ffi-loader-smoke-should (= (ptr-call local 0 0 0 0 0 0) 1))))
 
 (nl-ffi-loader-smoke-deftest ffi-loader-refuses-general-dynamic-tls
   ;; nl-ffi-loader-fixture-tls.so, UNCHANGED since increment 1/2: compiled
@@ -530,6 +652,16 @@ it via `nl-ffi-loader-smoke--fake-dyn'."
     (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
     (nl-ffi-loader-smoke-should (= (ptr-read-u64 target 0) 4096))))
 
+(nl-ffi-loader-smoke-deftest ffi-loader-glob-dat-jump-slot-ignore-addend
+  (let ((dyn (nl-ffi-loader-smoke--fake-dyn "defined_sym" 8 4096)))
+    (dolist (r-type (list nl-ffi-loader--reloc-glob-dat
+                          nl-ffi-loader--reloc-jump-slot))
+      (dolist (addend (list 37 #x28330))
+        (let* ((target (alloc-bytes 8 8))
+               (rela (nl-ffi-loader-smoke--fake-rela target 0 r-type addend)))
+          (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+          (nl-ffi-loader-smoke-should (= (ptr-read-u64 target 0) 4096)))))))
+
 (nl-ffi-loader-smoke-deftest ffi-loader-glob-dat-refuses-undefined-symbol
   (let* ((dyn (nl-ffi-loader-smoke--fake-dyn "undefined_sym" 0 0))
          (target (alloc-bytes 8 8))
@@ -547,6 +679,17 @@ it via `nl-ffi-loader-smoke--fake-dyn'."
     (let ((rela (nl-ffi-loader-smoke--fake-rela target 0 6 0)))
       (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
       (nl-ffi-loader-smoke-should (= (ptr-read-u64 target 0) 0)))))
+
+(nl-ffi-loader-smoke-deftest ffi-loader-glob-dat-jump-slot-weak-undefined-ignore-addend
+  (let ((dyn (nl-ffi-loader-smoke--fake-dyn "weak_undefined_sym" 0 0 2))) ; STB_WEAK
+    (dolist (r-type (list nl-ffi-loader--reloc-glob-dat
+                          nl-ffi-loader--reloc-jump-slot))
+      (dolist (addend (list 37 #x28330))
+        (let* ((target (alloc-bytes 8 8))
+               (rela (nl-ffi-loader-smoke--fake-rela target 0 r-type addend)))
+          (ptr-write-u64 target 0 999)
+          (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+          (nl-ffi-loader-smoke-should (= (ptr-read-u64 target 0) 0)))))))
 
 (nl-ffi-loader-smoke-deftest ffi-loader-refuses-ifunc-symbol-via-relocation
   ;; A GLOB_DAT/JUMP_SLOT relocation whose resolved (here: local) symbol
@@ -647,14 +790,19 @@ it via `nl-ffi-loader-smoke--fake-dyn'."
     (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :tls-relocation))))
 
 (nl-ffi-loader-smoke-deftest ffi-loader-refuses-plain-unsupported-type
-  (let* ((dyn (nl-ffi-loader-smoke--fake-dyn "some_sym" 8 4096))
-         (target (alloc-bytes 8 8))
-         (rela (nl-ffi-loader-smoke--fake-rela target 0 1 0)) ; R_X86_64_64
+  ;; R_X86_64_64 with r_sym=0 keeps its S=0 plus explicit addend behavior.
+  (let* ((target (alloc-bytes 8 8))
+         (rela (nl-ffi-loader-smoke--fake-rela target 0 1 555)))
+    (nl-ffi-loader--apply-one-relocation "synthetic" 0 nil rela)
+    (nl-ffi-loader-smoke-should (= (ptr-read-u64 target 0) 555)))
+  ;; R_X86_64_PC32 remains outside the supported relocation set.
+  (let* ((target (alloc-bytes 8 8))
+         (rela (nl-ffi-loader-smoke--fake-rela target 0 2 0))
          (sig (nl-ffi-loader-smoke-should-error
-               (nl-ffi-loader--apply-one-relocation "synthetic" 0 dyn rela)
+               (nl-ffi-loader--apply-one-relocation "synthetic" 0 nil rela)
                'nl-ffi-loader-unsupported)))
     (nl-ffi-loader-smoke-should (eq (nth 0 (cdr sig)) :relocation-type))
-    (nl-ffi-loader-smoke-should (= (nth 2 (cdr sig)) 1))))
+    (nl-ffi-loader-smoke-should (= (nth 2 (cdr sig)) 2))))
 
 ;;;; --- run ------------------------------------------------------------------
 
