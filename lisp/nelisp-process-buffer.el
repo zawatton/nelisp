@@ -135,11 +135,14 @@ This channel has no child pid or externally usable OS descriptor."
         (delq channel nelisp-process-buffer--channels))
   nil)
 
-(defun nelisp-process-buffer-stderr-command (command stderr)
-  "Return (ARGV CHANNEL SPOOL) for COMMAND with a separate STDERR sink."
+(defun nelisp-process-buffer-stderr-command (command stderr &optional name)
+  "Return (ARGV CHANNEL SPOOL) for COMMAND with a separate STDERR sink.
+NAME is the owning process name; GNU calls a stderr buffer's channel
+\"NAME stderr\"."
   (if (null stderr) (list command nil nil)
     (let* ((channel (if (nelisp-process-buffer-p stderr) stderr
-                      (nelisp-process-buffer-make :name "stderr" :buffer stderr)))
+                      (nelisp-process-buffer-make :name (if name (format "%s stderr" name) "stderr")
+                                                  :buffer stderr)))
            (shell (or (executable-find "sh") (error "Separate stderr requires POSIX sh")))
            (mktemp (or (executable-find "mktemp")
                        (error "Separate stderr requires mktemp")))

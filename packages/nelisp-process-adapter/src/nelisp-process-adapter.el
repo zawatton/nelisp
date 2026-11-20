@@ -288,7 +288,7 @@ at 2e3361b13: `(make-process :name \"e\" :command (list \"echo\" \"hi\")
     (unless (fboundp 'nelisp-process-start)
       (signal 'error (list "make-process: no native process primitive (nelisp-process-start) in this runtime")))
     (let* ((transport (if (fboundp 'nl-ffi-call)
-                          (nelisp-process-buffer-stderr-command resolved stderr-buffer)
+                          (nelisp-process-buffer-stderr-command resolved stderr-buffer name)
                         (list resolved nil nil)))
            (proc (condition-case err
                      (if (or (eq (plist-get plist :connection-type) 'pty)
