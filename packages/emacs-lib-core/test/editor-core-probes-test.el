@@ -107,6 +107,30 @@
          (progn (let ((current-prefix-arg 2)) (call-interactively 'delete-char))
                 (equal (buffer-string) "one twthree four")))))
 
+(editor-core-probes-check "shift_jis decode"
+  (equal (decode-coding-string "\x93\xfa" 'shift_jis) "日"))
+
+(editor-core-probes-check "japanese coding systems round trip"
+  (let ((bad nil) (text "日本語Aｱabc"))
+    (dolist (c '(shift_jis sjis japanese-shift-jis cp932 euc-jp japanese-iso-8bit
+                 iso-2022-jp))
+      (let ((enc (encode-coding-string text c)))
+        (unless (and (not (multibyte-string-p enc))
+                     (equal (decode-coding-string enc c)
+                            (if (eq c 'iso-2022-jp) "日本語A abc" text)))
+          (push c bad))))
+    (or (null bad) bad)))
+
+(editor-core-probes-check "japanese encodings match GNU bytes"
+  (and (equal (append (encode-coding-string "日" 'shift_jis) nil) '(147 250))
+       (equal (append (encode-coding-string "日" 'euc-jp) nil) '(198 252))
+       (equal (append (encode-coding-string "ｱ" 'euc-jp) nil) '(142 177))
+       (equal (append (encode-coding-string "日" 'iso-2022-jp) nil)
+              '(27 36 66 70 124 27 40 66))
+       (equal (append (encode-coding-string "A\n" 'shift_jis-dos) nil) '(65 13 10))
+       (equal (decode-coding-string "\306\374" 'euc-jp) "日")
+       (equal (decode-coding-string "\e$BF|\e(B" 'iso-2022-jp) "日")))
+
 (princ "PROBE-DONE\n")
 
 ;;; editor-core-probes-test.el ends here
