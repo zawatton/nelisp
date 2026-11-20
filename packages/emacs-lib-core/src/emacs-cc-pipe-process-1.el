@@ -183,32 +183,10 @@ defined here, so the core file stays the only owner of the pipe object."
       (push name emacs-cc-pipe-process-1--advised)
       (advice-add name :around (emacs-cc-pipe-process-1--pipe-around name)))))
 
-(defun emacs-cc-pipe-process-1--notify-close (original process)
-  "Run ORIGINAL (the core stderr close) and notify a pipe that it closed.
-GNU calls the pipe's sentinel, or inserts the default message, when the
-pipe is closed by the end of the child's output.  The core closes the
-channel silently, so read the channel state before and after.  Stateless:
-nothing is stored by this unit."
-  (let* ((channel (process-get process :stderr-channel))
-         (was-open (and channel (eq (aref channel 2) 'open))))
-    (prog1 (funcall original process)
-      (when (and was-open (eq (aref channel 2) 'closed))
-        (let ((sentinel (process-get channel :sentinel)))
-          (if (functionp sentinel)
-              (funcall sentinel channel "finished\n")
-            (nelisp-process-buffer-insert
-             channel (format "\nProcess %s finished\n" (aref channel 1)))))))))
-
-;; The core defines `nelisp-process-buffer-close-stderr' when it loads
-;; (lazily); advise it once then.  A core patch makes this unnecessary.
+;; The core file notifies a closing pipe itself; only the constructor
+;; validation is advised here, once the core has loaded (lazily).
 (defun emacs-cc-pipe-process-1--advise-core ()
-  "Install the close notification on the core stderr close, once."
-  (when (and (fboundp 'advice-add) (fboundp 'nelisp-process-buffer-close-stderr)
-             (featurep 'nelisp-process-buffer)
-             (not (advice-member-p #'emacs-cc-pipe-process-1--notify-close
-                                   'nelisp-process-buffer-close-stderr)))
-    (advice-add 'nelisp-process-buffer-close-stderr :around
-                #'emacs-cc-pipe-process-1--notify-close))
+  "Install the constructor validation on the core pipe maker, once."
   (when (and (fboundp 'advice-add) (featurep 'nelisp-process-buffer)
              (not (advice-member-p #'emacs-cc-pipe-process-1--validate-make
                                    'nelisp-process-buffer-make)))
