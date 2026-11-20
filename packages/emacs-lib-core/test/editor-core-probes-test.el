@@ -77,6 +77,36 @@
       (sit-for 0.1)
       (and (>= seen 3) (= n seen)))))
 
+(editor-core-probes-check "call-interactively forward-word"
+  (with-temp-buffer
+    (insert "foo bar") (goto-char 1)
+    (call-interactively 'forward-word)
+    (= (point) 4)))
+
+(editor-core-probes-check "C-level edit and motion commands are commands"
+  (let ((bad nil))
+    (dolist (f '(forward-word forward-char backward-char forward-line delete-char
+                 delete-region erase-buffer goto-char insert-char narrow-to-region
+                 widen upcase-word upcase-region search-forward re-search-forward
+                 move-to-column indent-to kill-local-variable make-local-variable
+                 write-region rename-file copy-file eval-buffer eval-region))
+      (unless (commandp f) (push f bad)))
+    (or (null bad) bad)))
+
+(editor-core-probes-check "interactive spec of C commands matches GNU"
+  (and (equal (interactive-form 'forward-word) '(interactive "^p"))
+       (equal (interactive-form 'delete-region) '(interactive "r"))
+       (equal (interactive-form 'forward-line) '(interactive "^p"))))
+
+(editor-core-probes-check "call-interactively motion/edit with prefix"
+  (with-temp-buffer
+    (insert "one two three four") (goto-char 1)
+    (let ((current-prefix-arg 2)) (call-interactively 'forward-word))
+    (and (= (point) 8)
+         (progn (call-interactively 'backward-char) (= (point) 7))
+         (progn (let ((current-prefix-arg 2)) (call-interactively 'delete-char))
+                (equal (buffer-string) "one twthree four")))))
+
 (princ "PROBE-DONE\n")
 
 ;;; editor-core-probes-test.el ends here
