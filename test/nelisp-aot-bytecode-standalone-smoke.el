@@ -482,6 +482,62 @@ but is reached through `apply' paths that bypass the AOT hook, so no entry is re
       (aot-smoke-check (format "plain-mixed-equal-vm %S" f) (equal (format "%S" a) (format "%S" (aot-smoke-plain-vm f))))))
   (let ((r (aot-smoke-plain-run '(when a (car x)))))
     (aot-smoke-check "plain-macro-slow" (and (equal (car r) '((if a (progn (car x))))) (> (nth 2 r) 0))))
+  ;; Cons-celled (interpreted closure) heads are plain too (lane L): fast, equal to the VM, and a
+  ;; macro / alias / redefinition / advice / compiler-macro on such a head is honoured at once.
+  (defun aot-smoke-pcl (x) (car x))
+  (defvar aot-smoke-pcl-form '(car (aot-smoke-pcl (cdr x) (car y))))
+  (aot-smoke-plain-run aot-smoke-pcl-form)
+  (let ((r (aot-smoke-plain-run aot-smoke-pcl-form)))
+    (aot-smoke-check "plain-closure-fast" (aot-smoke-plain-fast-p r))
+    (aot-smoke-check "plain-closure-equal-vm" (equal (car r) (aot-smoke-plain-vm aot-smoke-pcl-form))))
+  (let ((orig (symbol-function 'aot-smoke-pcl)))
+    (dolist (def (list (symbol-function 'aot-smoke-pmac) 'aot-smoke-pmac))
+      (fset 'aot-smoke-pcl def)
+      (let ((r (aot-smoke-plain-run '(progn (aot-smoke-pcl x)))))
+        (aot-smoke-check (format "plain-closure-redef-%s" (if (symbolp def) "alias" "macro"))
+                         (and (equal (car r) '((progn (car x))))
+                              (equal (car r) (aot-smoke-plain-vm '(progn (aot-smoke-pcl x))))
+                              (> (nth 2 r) 0)))))
+    (fset 'aot-smoke-pcl orig)
+    (aot-smoke-plain-run aot-smoke-pcl-form)
+    (aot-smoke-check "plain-closure-restored-fast" (aot-smoke-plain-fast-p (aot-smoke-plain-run aot-smoke-pcl-form)))
+    (advice-add 'aot-smoke-pcl :around (lambda (f &rest a) (apply f a)))
+    (aot-smoke-check "plain-closure-advised-equal-vm"
+                     (equal (format "%S" (car (aot-smoke-plain-run aot-smoke-pcl-form)))
+                            (format "%S" (aot-smoke-plain-vm aot-smoke-pcl-form))))
+    (advice-mapc (lambda (f _p) (advice-remove 'aot-smoke-pcl f)) 'aot-smoke-pcl)
+    (put 'aot-smoke-pcl 'compiler-macro (lambda (form &rest _) (cons 'aot-smoke-cm-hit (cdr form))))
+    (aot-smoke-check "plain-closure-compiler-macro-honoured"
+                     (equal (car (aot-smoke-plain-run '(progn (aot-smoke-pcl x)))) '((progn (aot-smoke-cm-hit x)))))
+    (put 'aot-smoke-pcl 'compiler-macro nil)
+    (aot-smoke-check "plain-closure-env-shadow"
+                     (let ((r (let ((macroexpand-all-environment (list (cons 'aot-smoke-pcl (lambda (&rest a) (cons 'cdr a))))))
+                                (aot-smoke-plain-run '(aot-smoke-pcl x)))))
+                       (equal (car r) '((cdr x))))))
+  ;; Cons-celled function cells ((lambda ...) and (closure ...) lists, as the workload's runtime
+  ;; functions are stored): plain, hence fast, while a (macro ...) cons and an autoload cons are not.
+  (fset 'aot-smoke-pcn (list 'lambda '(x) '(car x)))
+  (defvar aot-smoke-pcn-form '(car (aot-smoke-pcn (cdr x) (car y))))
+  (aot-smoke-plain-run aot-smoke-pcn-form)
+  (let ((r (aot-smoke-plain-run aot-smoke-pcn-form)))
+    (aot-smoke-check "plain-cons-fast" (aot-smoke-plain-fast-p r))
+    (aot-smoke-check "plain-cons-equal-vm" (equal (car r) (aot-smoke-plain-vm aot-smoke-pcn-form))))
+  (fset 'aot-smoke-pcn (cons 'macro (lambda (x) (list 'car x))))
+  (let ((r (aot-smoke-plain-run '(progn (aot-smoke-pcn y)))))
+    (aot-smoke-check "plain-cons-macro-honoured"
+                     (and (equal (car r) '((progn (car y)))) (> (nth 2 r) 0)
+                          (equal (car r) (aot-smoke-plain-vm '(progn (aot-smoke-pcn y)))))))
+  (fset 'aot-smoke-pcn (list 'lambda '(x) '(car x)))
+  (aot-smoke-plain-run aot-smoke-pcn-form)
+  (aot-smoke-check "plain-cons-restored-fast" (aot-smoke-plain-fast-p (aot-smoke-plain-run aot-smoke-pcn-form)))
+  (fset 'aot-smoke-pcn (list 'autoload "aot-smoke-no-such-file" nil nil nil))
+  (aot-smoke-check "plain-cons-autoload-not-fast"
+                   (> (nth 2 (aot-smoke-plain-run '(progn (aot-smoke-pcn y)))) 0))
+  (fset 'aot-smoke-pcn (list 'lambda '(x) '(car x)))
+  (put 'aot-smoke-pcn 'compiler-macro (lambda (form &rest _) (cons 'aot-smoke-cm-hit (cdr form))))
+  (aot-smoke-check "plain-cons-compiler-macro-honoured"
+                   (equal (car (aot-smoke-plain-run '(progn (aot-smoke-pcn x)))) '((progn (aot-smoke-cm-hit x)))))
+  (put 'aot-smoke-pcn 'compiler-macro nil)
   ;; A non-nil macroexpand-all-environment takes the slow path.
   (let ((r (let ((macroexpand-all-environment '((aot-smoke-leaf-m . nil))))
              (aot-smoke-plain-run aot-smoke-plain-form))))

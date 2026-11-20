@@ -365,7 +365,12 @@
 # 2026-11-20: scripts/nelisp-aot-bytecode.el 63 -> 64 (+1, pinned below): `wf_aot_adl' reads the
 # `autoload' symbol word with ptr-read-u64 to test the car of a boxed cons (lane H special forms).
 # The unsafe-call total is raised by this one only (2645 -> 2646); the base tree is still above it.
-unsafe-call 2646
+# 2026-11-21: scripts/nelisp-aot-bytecode.el 63 -> 69 (+6, pinned below): lane L extends
+# `wf_aot_plain_cell' to cons-celled function cells; `wf_aot_plain_car' and the cons arms read the
+# car word, the state epoch, the captured `autoload' word and the `macro' constant with
+# ptr-read-u8/u64 (measured on the base a2e9c24cd tree: 63 -> 69).
+# The unsafe-call total is raised by those 6 only (2646 -> 2652); the base tree's own +4 stays.
+unsafe-call 2652
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -637,7 +642,7 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # word, one raw ptr-write-u64; no allocation), and `nl_gcs_done_init' stores that word once per boot.
 # 2026-11-19: 1977 -> 1978.  `nl_alloc_bump_try' reserves a small block with one CAS bump (`nl_chunk_try_alloc' call site) when every free list is empty.
 pinned-kernel-call scripts/nelisp-standalone-build.el 1978
-pinned-kernel-call scripts/nelisp-aot-bytecode.el 64
+pinned-kernel-call scripts/nelisp-aot-bytecode.el 69
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

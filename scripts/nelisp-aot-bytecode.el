@@ -312,10 +312,12 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
         (let ((mm-m1 (cl-position 'macroexpand-1 (aref (nth 3 mm) 2)))
               (mm-swp (cl-position 'symbol-with-pos-p (aref (nth 3 mm) 2)))
               (m1-fb (cl-position 'fboundp (aref (nth 3 m1) 2)))
-              (m1-adl (cl-position 'autoload-do-load (aref (nth 3 m1) 2))))
+              (m1-adl (cl-position 'autoload-do-load (aref (nth 3 m1) 2)))
+              (m1-mac (cl-position 'macro (aref (nth 3 m1) 2))))
           (when (and mm-m1 mm-swp m1-fb m1-adl)
             (list :mm (nth 0 mm) :m1 (nth 0 m1)
-                  :mm-m1 mm-m1 :mm-swp mm-swp :m1-fb m1-fb :m1-adl m1-adl)))))))
+                  :mm-m1 mm-m1 :mm-swp mm-swp :m1-fb m1-fb :m1-adl m1-adl
+                  :m1-mac m1-mac)))))))
 
 ;;;; Native-locals code generation (stage 4c).
 ;;
@@ -1035,18 +1037,41 @@ live function cell of the head and the epoch-validated guards of
            (off (lambda (k) (+ nelisp-aot--obj-base (* 8 (plist-get l k)))))
            (cd (lambda (k) `(ptr-read-u64 ,st ,(+ nelisp-aot--cd-base (* 8 (plist-get l k)))))))
       (list
+       `(defun wf_aot_plain_car (car)
+          ;; 1 when CAR, the car of a cons function cell, is a canonical symbol object
+          ;; other than `macro' and `autoload' (the two cars macroexpand-1 acts on).
+          ;; Any other representation, or a state not valid for this compaction epoch
+          ;; (so the captured words may be absent), declines with 0.
+          (if (= (logand car 7) 6)
+              (if (= (logand (ptr-read-u8 car -6) 63) 4)
+                  (if (= (ptr-read-u64 ,st 24) (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+                      (let* ((aw (ptr-read-u64 ,st 192)) (cd1 ,(funcall cd :m1)))
+                        (if (= aw 0) 0
+                          (if (= cd1 0) 0
+                            (if (= car aw) 0
+                              ,(if (plist-get l :m1-mac)
+                                   `(let* ((mw (ptr-read-u64 cd1 ,(* 8 (plist-get l :m1-mac)))))
+                                      (if (= mw 0) 0 (if (= car mw) 0 1)))
+                                 0)))))
+                    0)
+                0)
+            0))
        `(defun wf_aot_plain_cell (h)
           ;; 1 when H is an interned symbol object whose function cell holds a heap
-          ;; object that is neither a symbol (alias, unbound marker) nor a cons
-          ;; (macro, autoload, lambda list): a Subr, byte-code function or closure.
+          ;; object that is neither a symbol (alias, unbound marker) nor a macro or
+          ;; autoload cons: a Subr, byte-code function, or a cons-celled closure whose
+          ;; car is not `macro'/`autoload' (see `wf_aot_plain_car').
           (if (= (logand h 7) 6)
               (if (= (logand (ptr-read-u8 h -6) 63) 4)
                   (let* ((c (ptr-read-u64 h 18)))
-                    (if (= (logand c 7) 6)
-                        (if (< c 4096) 0
+                    (if (< c 4096) 0
+                      (if (= (logand c 7) 6)
                           (let* ((k (logand (ptr-read-u8 c -6) 63)))
-                            (if (= k 4) 0 (if (= k 16) 0 (if (= k 19) 0 1)))))
-                      0))
+                            (if (= k 4) 0 (if (= k 16) 0 (if (= k 19) 0 1))))
+                        (if (= (logand c 7) 2) (wf_aot_plain_car (ptr-read-u64 c -2))
+                          (if (= (logand c 7) 0)
+                              (if (= (heap-read-u8 c 0) 7) (wf_aot_plain_car (nl_cons_car_word c)) 0)
+                            0)))))
                 0)
             0))
        `(defun wf_aot_subr_is (fw lo)
