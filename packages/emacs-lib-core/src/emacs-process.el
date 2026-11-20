@@ -415,10 +415,15 @@ buffer and name live on the core plist, never in this layer's metadata."
               (if (functionp filter)
                   (let ((inhibit-quit t) (last-nonmenu-event t))
                     (funcall filter process chunk))
-                (when (and buffer (buffer-live-p buffer))
-                  (with-current-buffer buffer
-                    (goto-char (point-max))
-                    (insert chunk)))))))))
+                ;; GNU's default filter inserts at the process mark and
+                ;; advances it.
+                (if (and buffer (buffer-live-p buffer)
+                         (fboundp 'nelisp-process-buffer-insert))
+                    (nelisp-process-buffer-insert process chunk)
+                  (when (and buffer (buffer-live-p buffer))
+                    (with-current-buffer buffer
+                      (goto-char (point-max))
+                      (insert chunk))))))))))
     observed))
 
 (defun emacs-process--native-drain-stderr (process)
