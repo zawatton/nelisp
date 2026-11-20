@@ -728,6 +728,41 @@ picosecond-exact comparison is not modeled."
         timer-idle-list (delq timer timer-idle-list))
   nil)
 
+;; Timers made by GNU timer.el (`run-at-time', `run-with-idle-timer' resolve
+;; to it) are records of their own shape.  GNU's C `timer_check' services them
+;; by calling `timer-event-handler'; the shared wait loop is that caller here.
+(defvar emacs-timer--gnu-idle-fired nil
+  "GNU idle timers already run in the current idle period.")
+
+(defun emacs-timer--gnu-p (timer)
+  "Return non-nil when TIMER is a GNU timer.el timer record."
+  (and (not (emacs-timer-p timer))
+       (fboundp 'timer-event-handler) (fboundp 'timer--time)
+       (fboundp 'timerp) (timerp timer)))
+
+(defun emacs-timer--gnu-run-pending ()
+  "Run due GNU regular timers through `timer-event-handler'; return count."
+  (let ((fired 0) (now (current-time)))
+    (dolist (tm (copy-sequence timer-list))
+      (when (and (emacs-timer--gnu-p tm) (memq tm timer-list)
+                 (not (timer--triggered tm))
+                 (not (time-less-p now (timer--time tm))))
+        (setq fired (1+ fired))
+        (timer-event-handler tm)))
+    fired))
+
+(defun emacs-timer--gnu-run-idle (idle-seconds)
+  "Run GNU idle timers whose delay has elapsed once per idle period."
+  (let ((fired 0))
+    (dolist (tm (copy-sequence timer-idle-list))
+      (when (and (emacs-timer--gnu-p tm) (memq tm timer-idle-list)
+                 (not (memq tm emacs-timer--gnu-idle-fired))
+                 (<= (float-time (timer--time tm)) idle-seconds))
+        (setq fired (1+ fired))
+        (push tm emacs-timer--gnu-idle-fired)
+        (timer-event-handler tm)))
+    fired))
+
 (defun emacs-timer-run-pending (&optional now)
   "Fire due regular timers (TRIGGER <= NOW); reschedule repeating ones.
 Return the number fired.
@@ -747,7 +782,7 @@ misreading its slots."
             (aset tm 1 (+ now (aref tm 2)))
           (setq timer-list (delq tm timer-list)))
         (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))))
-    fired))
+    (+ fired (emacs-timer--gnu-run-pending))))
 
 (defun emacs-timer-run-idle (idle-seconds)
   "Fire idle timers whose delay <= IDLE-SECONDS and not already fired this
@@ -764,11 +799,12 @@ skipped rather than indexed with our private vector layout."
         (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))
         (unless (aref tm 2)
           (setq timer-idle-list (delq tm timer-idle-list)))))
-    fired))
+    (+ fired (emacs-timer--gnu-run-idle idle-seconds))))
 
 (defun emacs-timer-reset-idle ()
   "Clear the per-idle-period fired flag (call when input resets idle time)."
-  (setq emacs-timer--idle-since nil)
+  (setq emacs-timer--idle-since nil
+        emacs-timer--gnu-idle-fired nil)
   (dolist (tm timer-idle-list) (when (emacs-timer-p tm) (aset tm 6 nil))))
 
 (defun emacs-timer-next-delay (maximum)
@@ -779,10 +815,15 @@ callbacks or waking continuously when no timer is scheduled."
         (idle (emacs-timer-idle-seconds)))
     (dolist (tm timer-list)
       (when (and (emacs-timer-p tm) (aref tm 1))
-        (setq delay (min delay (max 0 (- (aref tm 1) now))))))
+        (setq delay (min delay (max 0 (- (aref tm 1) now)))))
+      (when (and (emacs-timer--gnu-p tm) (not (timer--triggered tm)))
+        (setq delay (min delay (max 0 (- (float-time (timer--time tm)) now))))))
     (dolist (tm timer-idle-list)
       (when (and (emacs-timer-p tm) (not (aref tm 6)))
-        (setq delay (min delay (max 0 (- (aref tm 5) idle))))))
+        (setq delay (min delay (max 0 (- (aref tm 5) idle)))))
+      (when (and (emacs-timer--gnu-p tm)
+                 (not (memq tm emacs-timer--gnu-idle-fired)))
+        (setq delay (min delay (max 0 (- (float-time (timer--time tm)) idle))))))
     delay))
 
 (unless (and (not (fboundp 'nelisp--write-stdout-bytes))

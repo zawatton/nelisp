@@ -62,6 +62,21 @@
         (insert "a")))
     (equal (sort (mapcar #'symbol-name log) #'string<) '("g" "l"))))
 
+(editor-core-probes-check "run-with-timer fires during sit-for"
+  (let ((x nil))
+    (run-with-timer 0.05 nil (lambda () (setq x t)))
+    (dotimes (_ 30) (unless x (sit-for 0.05)))
+    x))
+
+(editor-core-probes-check "repeating timer fires repeatedly and cancels"
+  (let ((n 0) (tm nil))
+    (setq tm (run-with-timer 0.02 0.02 (lambda () (setq n (1+ n)))))
+    (dotimes (_ 40) (when (< n 3) (sit-for 0.02)))
+    (cancel-timer tm)
+    (let ((seen n))
+      (sit-for 0.1)
+      (and (>= seen 3) (= n seen)))))
+
 (princ "PROBE-DONE\n")
 
 ;;; editor-core-probes-test.el ends here
