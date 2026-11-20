@@ -2832,6 +2832,11 @@ Return an edit plist.  A zero-width range returns a no-op plist with
   (defvar words-include-escapes nil
     "Non-nil means escape and character-quote syntax belongs to words."))
 
+(unless (boundp 'open-paren-in-column-0-is-defun-start)
+  ;; syntax.c DEFVAR_BOOL; GNU lisp.el and lisp-mode.el read it.
+  (defvar open-paren-in-column-0-is-defun-start t
+    "Non-nil means an open paren in column 0 denotes the start of a defun."))
+
 (defun emacs-edit--word-constituent-p (position)
   "Return whether POSITION has word syntax in the current buffer."
   (let* ((entry (and (fboundp 'syntax-after) (syntax-after position)))

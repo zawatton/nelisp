@@ -466,6 +466,9 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
     ;; for project.el and anything calling `hack-dir-local-variables'.
     "emacs-files-gnu.el"
+    ;; GNU minibuffer.el completion-table-dynamic (generated, verbatim) for
+    ;; elisp-mode.el, which calls it while loading.
+    "emacs-minibuffer-gnu.el"
     "emacs-project.el"
     "project.el"
     "emacs-shell.el"
@@ -646,6 +649,15 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/jit-lock.el"
     "emacs-lisp/emacs-lisp/syntax.el"
     "emacs-lisp/font-lock.el"
+    ;; GNU Lisp editing modes: `emacs-lisp-mode' derives from `lisp-data-mode'
+    ;; (lisp-mode.el: `lisp-mode-variables', `lisp-indent-line',
+    ;; `calculate-lisp-indent', the Lisp font-lock keywords), which derives from
+    ;; `prog-mode'.  They replace the prelude stub `emacs-lisp-mode', which set
+    ;; no `indent-line-function' and no `font-lock-defaults'.
+    "emacs-lisp/progmodes/prog-mode.el"
+    "emacs-lisp/newcomment.el"
+    "emacs-lisp/emacs-lisp/lisp-mode.el"
+    "emacs-lisp/progmodes/elisp-mode.el"
     ;; S2 coverage batch 6 (2026-09-29): compile, pcomplete (shell.el's
     ;; live-`require' target), shell, ehelp (term.el's), term, woman,
     ;; project.  All are also listed in `nelisp-bootstrap-normalized-bundle-

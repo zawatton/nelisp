@@ -984,3 +984,5 @@ c84f4544897cd8c7f1d1e3dfa54aaca860ec63db2dde06d8aa63a2430856d336  vendor/emacs-l
 48b01f19594f79785f00c004bbafeae76d843b10262cc5b6a10809916ccd08b4  vendor/emacs-lisp/vc/pcvs-defs.el
 42323762a42aa9bec23cafd0a90fc53605ac9a64df82c17e9ef9df4fedd6dcef  vendor/emacs-lisp/vc/pcvs-info.el
 5f89d1081f2eaa6eafbb5363b203a432f50142b85b2cf33c4bf9e65ed9a27e5d  vendor/emacs-lisp/vc/pcvs-parse.el
+437417d146008c86e23390a08b31f67fe7377f567b0afc87b158b4b8b975bd98  vendor/emacs-lisp/progmodes/elisp-mode.el
+3700d9a36429442283dcb85b24427d41292d87d5ea0b951ce3d9993438dbd974  vendor/staged-emacs-lisp/minibuffer.el
