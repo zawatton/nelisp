@@ -14373,23 +14373,47 @@ Returns one of:
                   (list :static-imm32-table-define-element-out-of-range
                         e))))
       (nelisp-aot-compiler--make-ir 'table-define :name name :elements elements)))
-   ;; (data-blob NAME BYTES SECTION [RELOCS]) — Doc 06 Step A/C.  Define a
+   ;; (data-blob NAME BYTES SECTION [RELOCS] [:global BOOL]) — Doc 06 Step A/C.  Define a
    ;; same-unit static data symbol: BYTES (a unibyte string or list of
    ;; 0-255 ints) goes into SECTION (`rodata'/`data'/`bss') with a LOCAL
-   ;; symbol NAME at its offset.  Emits no `.text'; `(data-addr NAME)' takes
+   ;; symbol NAME at its offset.  :global t exports an ELF/COFF OBJECT symbol;
+   ;; the default remains local.  Emits no `.text'; `(data-addr NAME)' takes
    ;; its address via a PC32 reloc against this local symbol.  Optional
    ;; RELOCS (Step C-2) = a list of `(OFFSET TARGET-SYM ADDEND)' baking a
    ;; pointer to TARGET-SYM into the blob at byte OFFSET (an abs64 reloc in
    ;; `.rela.data').  Statement-only declaration.
    ((and (consp sexp) (eq (car sexp) 'data-blob))
-    (unless (and (memq (length sexp) '(4 5)) (symbolp (nth 1 sexp)))
+    (let* ((tail (nthcdr 4 sexp))
+           (has-relocs (and tail (not (keywordp (car tail)))))
+           (relocs (and has-relocs (car tail)))
+           (options (if has-relocs (cdr tail) tail))
+           (global nil)
+           (seen-global nil))
+    (unless (and (>= (length sexp) 4)
+                 (<= (length sexp) 7)
+                 (symbolp (nth 1 sexp)))
       (signal 'nelisp-aot-compiler-error
               (list :data-blob-malformed sexp)))
+    (unless (or (not has-relocs) (listp relocs))
+      (signal 'nelisp-aot-compiler-error
+              (list :data-blob-malformed sexp)))
+    (unless (= (% (length options) 2) 0)
+      (signal 'nelisp-aot-compiler-error
+              (list :data-blob-malformed sexp)))
+    (while options
+      (let ((key (pop options)) (value (pop options)))
+        (unless (and (eq key :global)
+                     (memq value '(nil t))
+                     (not seen-global))
+          (signal 'nelisp-aot-compiler-error
+                  (list :data-blob-malformed sexp)))
+        (setq seen-global t global value)))
     (nelisp-aot-compiler--make-ir 'data-blob
           :name (nth 1 sexp)
           :bytes (nth 2 sexp)
           :section (nth 3 sexp)
-          :relocs (nth 4 sexp)))
+          :relocs relocs
+          :global global)))
    ;; (exit VALUE-EXPR)
    ((and (consp sexp) (eq (car sexp) 'exit))
     (unless (= (length sexp) 2)
@@ -15148,7 +15172,7 @@ Sexp never does, so the first execution fills it and the rest copy."
           nelisp-aot-compiler--symbol-literal-registry))
 
 (defun nelisp-aot-compiler--collect-data-blobs (ir)
-  "Return a list of `(:name STR :bytes UNIBYTE :section SYM)' for every
+  "Return normalized descriptors for every
 top-level `data-blob' node in IR (Doc 06 Step A).  BYTES is normalised to
 a unibyte string (a list of 0-255 ints is packed)."
   (let ((acc nil))
@@ -15176,6 +15200,7 @@ a unibyte string (a list of 0-255 ints is packed)."
                              :bytes bytes
                              :section (or (nelisp-aot-compiler--ir-get node :section)
                                           'rodata)
+                             :global (nelisp-aot-compiler--ir-get node :global)
                              :relocs relocs)
                        acc)))
               ((eq (nelisp-aot-compiler--ir-kind node) 'seq)
@@ -32186,6 +32211,10 @@ register budgeting while ELF/Mach-O keep SysV."
          (data-blobs (append
                       (and ir (nelisp-aot-compiler--collect-data-blobs ir))
                       (nelisp-aot-compiler--symbol-literal-blobs))))
+    (when (and (memq format '(mach-o wasm))
+               (cl-some (lambda (blob) (plist-get blob :global)) data-blobs))
+      (signal 'nelisp-aot-compiler-error
+              (list :data-blob-global-unsupported format)))
     (when empty-source-p
       (dolist (form (plist-get extracted :module-forms))
         (nelisp-aot-compiler--eval-top-level-module-form form))
@@ -32314,7 +32343,7 @@ register budgeting while ELF/Mach-O keep SysV."
                 (dolist (b blob-rodata-blobs)
                   (let ((len (length (plist-get b :bytes))))
                     (push (list :name (plist-get b :name) :offset cur :len len
-                                :section 'rodata) acc)
+                                :section 'rodata :global (plist-get b :global)) acc)
                     (setq cur (+ cur len))))
                 (nreverse acc)))
              (blob-data-layout
@@ -32322,7 +32351,7 @@ register budgeting while ELF/Mach-O keep SysV."
                 (dolist (b blob-data-blobs)
                   (let ((len (length (plist-get b :bytes))))
                     (push (list :name (plist-get b :name) :offset cur :len len
-                                :section 'data) acc)
+                                :section 'data :global (plist-get b :global)) acc)
                     (setq cur (+ cur len))))
                 (nreverse acc)))
              (blob-bss-layout
@@ -32330,7 +32359,7 @@ register budgeting while ELF/Mach-O keep SysV."
                 (dolist (b blob-bss-blobs)
                   (let ((len (length (plist-get b :bytes))))
                     (push (list :name (plist-get b :name) :offset cur :len len
-                                :section 'bss) acc)
+                                :section 'bss :global (plist-get b :global)) acc)
                     (setq cur (+ cur len))))
                 (nreverse acc)))
              (blob-rodata
@@ -32360,16 +32389,53 @@ register budgeting while ELF/Mach-O keep SysV."
                             acc)))
                 (nreverse acc)))
              (blob-names (mapcar (lambda (b) (plist-get b :name)) data-blobs))
+             ;; A public data symbol is preemptible in a shared object, so
+             ;; code in this object must address a same-unit local alias.
+             ;; Keep aliases deterministic while avoiding every declared or
+             ;; referenced user name in the object.
+             (blob-global-aliases
+              (let ((used (append blob-names
+                                  (mapcar (lambda (d)
+                                            (let ((nm (nelisp-aot-compiler--ir-get d :name)))
+                                              (if (stringp nm) nm (symbol-name nm))))
+                                          defuns)
+                                  (mapcar (lambda (r) (plist-get r :symbol))
+                                          (append relocs blob-data-relocs))))
+                    (aliases nil))
+                (dolist (b data-blobs)
+                  (when (plist-get b :global)
+                    (let ((name (plist-get b :name)) (index 0) alias)
+                      (while (or (null alias) (member alias used))
+                        (setq alias (format "$nelisp$local$%s$%d" name index)
+                              index (1+ index)))
+                      (push alias used)
+                      (push (cons name alias) aliases))))
+                (nreverse aliases)))
+             (blob-internal-relocs
+              (mapcar (lambda (r)
+                        (let ((alias (cdr (assoc (plist-get r :symbol)
+                                                 blob-global-aliases))))
+                          (if alias (plist-put (copy-sequence r) :symbol alias) r)))
+                      relocs))
              (blob-symbols
-              (mapcar (lambda (bl)
-                        (list :name (plist-get bl :name)
-                              :value (plist-get bl :offset)
-                              :size (plist-get bl :len)
-                              :section (plist-get bl :section)
-                              :bind 'local
-                              :type 'object))
-                      (append blob-rodata-layout blob-data-layout
-                              blob-bss-layout)))
+              (apply #'append
+                     (mapcar (lambda (bl)
+                               (let ((name (plist-get bl :name))
+                                     (value (plist-get bl :offset))
+                                     (size (plist-get bl :len))
+                                     (section (plist-get bl :section)))
+                                 (if (plist-get bl :global)
+                                     (list (list :name (cdr (assoc name blob-global-aliases))
+                                                 :value value :size size :section section
+                                                 :bind 'local :type 'object)
+                                           (list :name name :value value :size size
+                                                 :section section :bind 'global
+                                                 :type 'object))
+                                   (list (list :name name :value value :size size
+                                               :section section :bind 'local
+                                               :type 'object)))))
+                             (append blob-rodata-layout blob-data-layout
+                                     blob-bss-layout))))
              (extern-names
               ;; UND symbols for every reloc target that is neither a
               ;; same-unit data blob nor a same-unit defun.  Step C-2/C-3:
@@ -32387,6 +32453,7 @@ register budgeting while ELF/Mach-O keep SysV."
                  (delete-dups
                   (cl-remove-if
                    (lambda (nm) (or (member nm blob-names)
+                                    (member nm (mapcar #'cdr blob-global-aliases))
                                     (member nm defun-names)))
                    (mapcar (lambda (r) (plist-get r :symbol))
                            (cl-remove-if-not
@@ -32394,7 +32461,7 @@ register budgeting while ELF/Mach-O keep SysV."
                               (memq (plist-get r :type)
                                     '(pc32 plt32 abs64 b26-pc
                                       adr-prel-pg-hi21 add-abs-lo12-nc)))
-                            (append relocs blob-data-relocs)))))
+                            (append blob-internal-relocs blob-data-relocs)))))
                  #'string<)))
              ;; Only the user-defined defun names should appear as
              ;; GLOBAL FUNC symbols.  The control-flow helper labels
@@ -32511,7 +32578,7 @@ register budgeting while ELF/Mach-O keep SysV."
               :data blob-data
               :bss-size blob-bss-size
               :symbols all-symbols
-              :relocs (append relocs blob-data-relocs)
+              :relocs (append blob-internal-relocs blob-data-relocs)
               :machine arch
               :defuns defun-layout
               :extern-symbols extern-names
