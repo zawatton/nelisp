@@ -1334,7 +1334,14 @@ See `wf_aot_swp' and `wf_aot_fb'."
                                      0 1)
                                (if (= (logand a 1) 1) 1
                                  (if (= a 3) 1
-                                   (if (= (wf_bytecode_w_consp a) 1) 0 1))))
+                                   ;; A boxed cons (a subr or special form is one, with car
+                                   ;; `builtin') answers 1 unless its car is `autoload', the
+                                   ;; same test as the direct-cons arm above.
+                                   (if (= (wf_bytecode_w_consp a) 1)
+                                       (if (= (nl_cons_car_word a)
+                                              (ptr-read-u64 (data-addr nl_aot_state) 192))
+                                           0 1)
+                                     1))))
                            0)
                        0)))
                0)

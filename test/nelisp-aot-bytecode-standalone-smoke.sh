@@ -11,6 +11,8 @@
 #   guard     mutation check fed an equal copy -> "FAIL mutated-install-refused"
 #   defunnohit defun slot cleared             -> "FAIL install-count"
 #   bqnohit   backquote-process slot cleared    -> "FAIL bq-entry-taken"
+# If NELISP_AOT_SMOKE_NOSF_BIN names an AOT binary without the special-form inline
+# answer of `wf_aot_adl', the smoke must fail there with "FAIL adl-special-form-inline".
 # If NELISP_AOT_SMOKE_BASE_BIN names a binary built without AOT (for example
 # the commit before the AOT change), the smoke must also fail there with
 # "FAIL aot-table-present".
@@ -68,6 +70,13 @@ if [ -n "${NELISP_AOT_SMOKE_BASE_BIN:-}" ]; then
     control nobuild "$NELISP_AOT_SMOKE_BASE_BIN" "" aot-table-present
 else
     echo "NOTE baseline-binary control skipped (set NELISP_AOT_SMOKE_BASE_BIN)"
+fi
+
+# A binary built before the special-form inline answer must go red on its check.
+if [ -n "${NELISP_AOT_SMOKE_NOSF_BIN:-}" ]; then
+    control nosfinline "$NELISP_AOT_SMOKE_NOSF_BIN" "" adl-special-form-inline
+else
+    echo "NOTE special-form control skipped (set NELISP_AOT_SMOKE_NOSF_BIN)"
 fi
 
 [ "$findings" = 0 ] || exit 1

@@ -102,6 +102,7 @@ but is reached through `apply' paths that bypass the AOT hook, so no entry is re
 (defvar aot-smoke-c-forms (aot-smoke-make-caller 'macroexp--all-forms 1))
 (defvar aot-smoke-c-clauses (aot-smoke-make-caller 'macroexp--all-clauses 1))
 (defvar aot-smoke-c-m1 (aot-smoke-make-caller 'macroexpand-1 1))
+(defvar aot-smoke-c-m1x (aot-smoke-make-caller 'macroexpand-1 2))
 (defvar aot-smoke-c-fg (aot-smoke-make-caller 'function-get 3))
 (defun aot-smoke-ref-cons (a b c)
   (if (and (eq a (car c)) (eq b (cdr c))) c (cons a b)))
@@ -368,6 +369,50 @@ but is reached through `apply' paths that bypass the AOT hook, so no entry is re
     (let ((h hits))
       (funcall aot-smoke-c-m1 '(when a b))
       (aot-smoke-check "adl-restored-fast" (= h hits))))
+  ;; Special-form heads (function cell a boxed cons with car `builtin') take the inline answer
+  ;; too: the VM `autoload-do-load' frame is not entered.  Observed as allocation per call
+  ;; (a VM frame allocates, the inline answer does not): a special-form head must cost what a
+  ;; plain `car' head costs.  The same measure with the AOT table detached (the VM
+  ;; macroexpand-1) must be far higher, proving the probe discriminates.
+  (let* ((heads '(if progn setq let cond while quote))
+         (alloc (lambda (form)
+                  (let ((a (nth 2 (nelisp--arena-stats))) (i 0))
+                    (while (< i 100) (funcall aot-smoke-c-m1 form) (setq i (1+ i)))
+                    (- (nth 2 (nelisp--arena-stats)) a)))))
+    (dolist (h heads) (funcall alloc (list h 'a 'b)))
+    (let ((base (funcall alloc '(car a b)))
+          (sf (apply #'max (mapcar (lambda (h) (funcall alloc (list h 'a 'b))) heads))))
+      (aot-smoke-check "adl-special-form-inline" (<= sf (+ base 2000)))
+      (aot-smoke-disable)
+      (let ((vm (funcall alloc '(if a b c))))
+        (aot-smoke-enable)
+        (aot-smoke-check "adl-special-form-probe-discriminates" (> vm (+ base 20000)))))
+    (aot-smoke-check "adl-special-form-results"
+                     (equal (mapcar (lambda (h) (funcall aot-smoke-c-m1 (list h 'a 'b))) heads)
+                            (mapcar (lambda (h) (list h 'a 'b)) heads))))
+  ;; A macro environment entry for a special-form symbol still wins; a special-form symbol whose
+  ;; function cell is made a macro expands as one (the live cell is read per call).
+  (aot-smoke-check "adl-env-entry-wins"
+                   (equal (aot-smoke-wrap (lambda () (funcall aot-smoke-c-m1x '(if a b c) '((if . (lambda (&rest r) (list 'env r)))))))
+                          '(env (a b c))))
+  (let ((orig (symbol-function 'if)))
+    (let ((r (condition-case nil
+                 (progn (fset 'if (cons 'macro (lambda (&rest r) (list 'redef r))))
+                        (aot-smoke-wrap (lambda () (funcall aot-smoke-c-m1 '(if a b c)))))
+               (error 'unsupported))))
+      (fset 'if orig)
+      (aot-smoke-check "adl-special-form-fset-macro-honoured" (member r '(unsupported (redef (a b c)))))
+      (aot-smoke-check "adl-special-form-fset-restored" (equal (funcall aot-smoke-c-m1 '(if a b c)) '(if a b c)))))
+  ;; The inline answer for a special-form head is guarded by the live function cell of
+  ;; `autoload-do-load' too: a redefinition is called, the restored object takes the fast path.
+  (let ((orig (symbol-function 'autoload-do-load)) (hits 0))
+    (fset 'autoload-do-load (lambda (def &rest _) (setq hits (1+ hits)) def))
+    (funcall aot-smoke-c-m1 '(if a b c))
+    (aot-smoke-check "adl-special-form-redefined-honoured" (> hits 0))
+    (fset 'autoload-do-load orig)
+    (let ((h hits))
+      (funcall aot-smoke-c-m1 '(if a b c))
+      (aot-smoke-check "adl-special-form-restored-fast" (= h hits))))
   ;; Advised `autoload-do-load' (nadvice replaces the function cell).
   (let ((orig (symbol-function 'autoload-do-load)) (hits 0))
     (when (condition-case nil
