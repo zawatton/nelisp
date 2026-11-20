@@ -991,12 +991,13 @@ WORD, m5_fx_word_ptr for a non-symbol pointer WORD that is not a view).")
      8
      ;; `nl_aot_state' (scripts/nelisp-aot-bytecode.el): the AOT install-table
      ;; cache.  +0 table mirror entry, +8 its compaction epoch, +16 call-arm miss
-     ;; filter, +24 filter epoch+1, +32+8i installed object words (8), +96 table
-     ;; data address, +104+8i constants data addresses (8), +176 lean counter
+     ;; filter, +24 filter epoch+1, +96 table
+     ;; data address, +176 lean counter
      ;; region address, +184 captured `autoload-do-load' object, +192 the
      ;; symbol `autoload', +200 the function epoch + 1 of the last validation of the
-     ;; plain-head fast paths.  Zero-fresh on every start.
-     208
+     ;; plain-head fast paths, +208+8i installed object words and +336+8i constants
+     ;; data addresses (16 rows).  Zero-fresh on every start.
+     464
      ;; `nl_cold_chunk0_domain'.
      16
      ;; `nl_gc_weak_head': the transient weak-table chain (Doc 228).
@@ -49905,6 +49906,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
          (expected (and entry
                         (list 'defun name '(x) doc
                               '(declare
+                                (side-effect-free t)
                                 (compiler-macro
                                  internal--compiler-macro-cXXr))
                               body))))
@@ -50337,8 +50339,8 @@ never on the build host.  Keep the original Lisp factory as the reference."
             (concat "\n;; Preserve GNU cXXr compiler-macro declarations.\n"
                     (mapconcat
                      (lambda (entry)
-                       (format "(put '%s 'compiler-macro 'internal--compiler-macro-cXXr)"
-                               (car entry)))
+                       (format "(put '%s 'compiler-macro 'internal--compiler-macro-cXXr)\n(put '%s 'side-effect-free t)"
+                               (car entry) (car entry)))
                      nelisp-standalone--prelude-cxxr-accessors "\n")
                     "\n"))
            (combined
@@ -51565,7 +51567,14 @@ prelude adoption gates accept them."
         (pcase name
           ('function-get
            (nelisp-standalone--vendor-function-source
-            "vendor/staged-emacs-lisp/subr.el" 'function-get)))))
+            "vendor/staged-emacs-lisp/subr.el" 'function-get))
+          ;; The baked backquote provider text: the install guard compares the live
+          ;; objects to the ones compiled from exactly this text.
+          ('backquote-process (nelisp-boot-image-provider 'backquote))
+          ('backquote-listify (nelisp-boot-image-provider 'backquote))
+          ;; byte-run.el's compiled `defun' expander and `byte-run--parse-body'.
+          ('byte-run--parse-body (nelisp-boot-image-provider 'byte-run))
+          ('defun (nelisp-boot-image-provider 'byte-run)))))
 
 (defun nelisp-standalone--vendor-define-error-source (relative-file name)
   "Return the exact source text of RELATIVE-FILE's `(define-error \\='NAME ...)'.

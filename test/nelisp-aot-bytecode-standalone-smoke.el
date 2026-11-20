@@ -44,9 +44,14 @@
     (princ (format "FAIL %s\n" name))))
 
 (defvar aot-smoke-control (getenv "NELISP_AOT_SMOKE_CONTROL"))
+(defvar aot-smoke-no-entry-check '(byte-run--parse-body defun)
+  "Rows the generic entry-taken loop skips: no workload of it expands a `defun'.
+`parse-body-entry-taken' covers the parse helper; the `defun' expander is installed
+but is reached through `apply' paths that bypass the AOT hook, so no entry is required.")
 (defvar aot-smoke-names
   '(macroexp--cons macroexp--all-forms macroexpand-1 macroexp--all-clauses
-    macroexp-macroexpand macroexp--expand-all function-get))
+    macroexp-macroexpand macroexp--expand-all function-get
+    backquote-process backquote-listify byte-run--parse-body defun))
 
 ;; The table vector is captured once so the helpers keep working while the
 ;; variable is detached.
@@ -59,7 +64,9 @@
 (defun aot-smoke-lean (i)
   (aref aot-smoke-table (+ (* 2 (aot-smoke-k)) i)))
 (defun aot-smoke-id (sym)
+  ;; A macro row is the expander inside (macro . FN).
   (let ((i 0) (r nil) (f (symbol-function sym)))
+    (when (eq (car-safe f) 'macro) (setq f (cdr f)))
     (while (< i (aot-smoke-k))
       (when (eq (aref aot-smoke-table i) f) (setq r i))
       (setq i (1+ i)))
@@ -147,6 +154,10 @@
   ;; Controls that act before the checks.
   (when (equal aot-smoke-control "partial")
     (aset aot-smoke-table (aot-smoke-id 'macroexp--all-forms) nil))
+  (when (equal aot-smoke-control "bqnohit")
+    (aset aot-smoke-table (aot-smoke-id 'backquote-process) nil))
+  (when (equal aot-smoke-control "defunnohit")
+    (aset aot-smoke-table (aot-smoke-id 'defun) nil))
   (when (equal aot-smoke-control "nolean")
     (aset aot-smoke-table (+ (* 2 (aot-smoke-k)) 5) 1))
   (when (equal aot-smoke-control "detached")
@@ -168,11 +179,11 @@
           (- (aot-smoke-count-of 'macroexpand-1) m0))))
 
 (let* ((installed (aot-smoke-installed)))
-  ;; Install count: all seven functions, each slot `eq' to the live function.
+  ;; Install count: all rows, each slot `eq' to the live function.
   (aot-smoke-check "install-count" (= installed (length aot-smoke-names)))
   (dolist (n aot-smoke-names)
     (aot-smoke-check (format "installed-eq %s" n) (aot-smoke-id n))
-    (aot-smoke-check (format "bytecode %s" n) (byte-code-function-p (symbol-function n))))
+    (aot-smoke-check (format "bytecode %s" n) (byte-code-function-p (let ((f (symbol-function n))) (if (eq (car-safe f) 'macro) (cdr f) f)))))
 
   ;; macroexp--cons: sharing and wrong-type behaviour.
   (dolist (c (list (list 1 2 (cons 1 2)) (let ((o (cons 'x 'y))) (list 'x 'y o))
@@ -197,7 +208,8 @@
     (aot-smoke-check "entry-taken-total" (> (aot-smoke-total) c0))
     (let ((i 0))
       (dolist (n aot-smoke-names)
-        (aot-smoke-check (format "entry-taken %s" n) (> (aot-smoke-count-of n) (nth i per)))
+        (unless (memq n aot-smoke-no-entry-check)
+          (aot-smoke-check (format "entry-taken %s" n) (> (aot-smoke-count-of n) (nth i per))))
         (setq i (1+ i))))
     (aot-smoke-check "lean-entry-taken" (> (aot-smoke-lean 0) l0)))
 
@@ -588,6 +600,97 @@
           (aot-smoke-check (format "leaf-advice-restored-fast %s" fn)
                            (and (eq (symbol-function fn) orig) (= aot-smoke-leaf-hits 0)
                                 (= (nth 1 r) 0) (= (nth 2 r) 0)))))))
+
+  ;; Backquote rows (lane F): `backquote-process' and `backquote-listify' are baked byte-code
+  ;; objects with AOT rows.  The hit path, redefinition, advice-style wrapping and a macro
+  ;; environment shadowing the backquote macro must all behave as the VM does.
+  (let* ((bq-form (list '\` (list 'a (list '\, 'b) (list '\,@ 'c) (list 'd (list '\, 'e)))))
+         (c0p (aot-smoke-count-of 'backquote-process))
+         (c0l (aot-smoke-count-of 'backquote-listify))
+         (a (macroexpand bq-form)) v)
+    (aot-smoke-check "bq-entry-taken" (and (> (aot-smoke-count-of 'backquote-process) c0p)
+                                           (> (aot-smoke-count-of 'backquote-listify) c0l)))
+    (aot-smoke-disable)
+    (setq v (macroexpand bq-form))
+    (aot-smoke-enable)
+    (aot-smoke-check "bq-equal-vm" (equal (format "%S" a) (format "%S" v)))
+    ;; Redefinition: the new definition runs, then the original re-enters the AOT row.
+    (let ((orig (symbol-function 'backquote-process)))
+      (fset 'backquote-process (lambda (&rest _) (cons 0 'aot-smoke-redefined)))
+      (aot-smoke-check "bq-process-redefined"
+                       (string-match-p "aot-smoke-redefined" (format "%S" (macroexpand bq-form))))
+      (fset 'backquote-process orig)
+      (let ((c1 (aot-smoke-count-of 'backquote-process)))
+        (aot-smoke-check "bq-process-restored" (equal (format "%S" (macroexpand bq-form)) (format "%S" a)))
+        (aot-smoke-check "bq-process-restored-reenters" (> (aot-smoke-count-of 'backquote-process) c1))))
+    ;; Advice-style wrapper around the AOT function: the wrapper runs, results equal.
+    (let ((orig (symbol-function 'backquote-listify)) (hits 0))
+      (fset 'backquote-listify (lambda (&rest args) (setq hits (1+ hits)) (apply orig args)))
+      (aot-smoke-check "bq-listify-wrapped"
+                       (and (equal (format "%S" (macroexpand bq-form)) (format "%S" a)) (> hits 0)))
+      (fset 'backquote-listify orig)
+      (let ((c1 (aot-smoke-count-of 'backquote-listify)))
+        (macroexpand bq-form)
+        (aot-smoke-check "bq-listify-restored-reenters" (> (aot-smoke-count-of 'backquote-listify) c1))))
+    ;; A macro in the ENVIRONMENT argument shadows the global backquote macro.
+    (let ((c1 (aot-smoke-count-of 'backquote-process)))
+      (aot-smoke-check "bq-env-shadow"
+                       (equal (macroexpand bq-form (list (cons '\` (lambda (_x) 'aot-smoke-shadowed))))
+                              'aot-smoke-shadowed))
+      (aot-smoke-check "bq-env-shadow-no-entry" (= (aot-smoke-count-of 'backquote-process) c1))))
+
+  ;; Lane F2: the baked `defun' macro expander and `byte-run--parse-body' (a &rest function and a
+  ;; macro row).  Hit path, redefinition by defmacro/fset, advice-style wrapping, a macro
+  ;; environment shadowing `defun', and rest-list construction under forced collections.
+  (let* ((df '(defun aot-smoke-fn (a &optional b) "doc" (interactive) (declare (indent 1)) (list a b)))
+         (c0d (aot-smoke-count-of 'defun))
+         (c0p (aot-smoke-count-of 'byte-run--parse-body))
+         (a (format "%S" (macroexpand df))) v)
+    (aot-smoke-check "defun-installed" (> c0d -1))
+    (aot-smoke-check "parse-body-entry-taken" (> (aot-smoke-count-of 'byte-run--parse-body) c0p))
+    (aot-smoke-disable)
+    (setq v (format "%S" (macroexpand df)))
+    (aot-smoke-enable)
+    (aot-smoke-check "defun-equal-vm" (equal a v))
+    ;; A new defmacro of `defun' must run, and restoring the original re-enters the AOT row.
+    (let ((orig (symbol-function 'defun)))
+      (eval '(defmacro defun (&rest _) (quote (quote aot-smoke-new-defun))) nil)
+      (aot-smoke-check "defun-redefined-runs-new" (equal (macroexpand df) '(quote aot-smoke-new-defun)))
+      (fset 'defun orig)
+      (aot-smoke-check "defun-restored-equal" (equal (format "%S" (macroexpand df)) a)))
+    ;; A wrapper around the macro expander (advice-style) runs and results are equal.
+    (let ((orig (symbol-function 'defun)) (hits 0))
+      (fset 'defun (cons 'macro (lambda (&rest args) (setq hits (1+ hits)) (apply (cdr orig) args))))
+      (aot-smoke-check "defun-wrapped"
+                       (and (equal (format "%S" (macroexpand df)) a) (> hits 0)))
+      (fset 'defun orig))
+    ;; The parse helper redefined: the new definition runs.
+    (let ((orig (symbol-function 'byte-run--parse-body)))
+      (fset 'byte-run--parse-body (lambda (&rest _) (list "aot-smoke-doc" nil nil '(aot-smoke-body))))
+      (aot-smoke-check "parse-body-redefined-runs-new"
+                       (string-match-p "aot-smoke-body" (format "%S" (macroexpand df))))
+      (fset 'byte-run--parse-body orig)
+      (let ((c1 (aot-smoke-count-of 'byte-run--parse-body)))
+        (macroexpand df)
+        (aot-smoke-check "parse-body-restored-reenters"
+                         (> (aot-smoke-count-of 'byte-run--parse-body) c1))))
+    ;; An ENVIRONMENT entry shadows the global `defun'.
+    (let ((c1 (aot-smoke-count-of 'defun)))
+      (aot-smoke-check "defun-env-shadow"
+                       (eq (macroexpand df (list (cons 'defun (lambda (&rest _) 'aot-smoke-shadowed))))
+                           'aot-smoke-shadowed))
+      (aot-smoke-check "defun-env-shadow-no-entry" (= (aot-smoke-count-of 'defun) c1)))
+    ;; The rest list is consed in native code: a long body under forced collections equals the VM.
+    (when (fboundp 'nelisp--debug-switch)
+      (let* ((body (make-list 600 '(list a b (quote c))))
+             (big (append '(defun aot-smoke-big (a b)) body))
+             (r1 nil) (r2 nil))
+        (nelisp--debug-switch 32 400)
+        (setq r1 (format "%S" (macroexpand big)))
+        (aot-smoke-disable)
+        (setq r2 (format "%S" (macroexpand big)))
+        (aot-smoke-enable)
+        (aot-smoke-check "defun-rest-gc-equal-vm" (equal r1 r2)))))
 
   ;; Reduced GC stress: expansions interleaved with collections equal the VM's.
   (let ((ok t) (i 0) (expected (format "%S" (aot-smoke-vm-result))))

@@ -116,10 +116,10 @@
     ;; The BSS size grows by the 64-byte block, ahead of nl_cold_chunk0_domain.
     ;; Doc 238 A0: between the 64 bytes and the 16 sits the census table's
     ;; (if (nelisp-standalone--census-p) 512 0), zero unless NELISP_REPR_CENSUS=1.
-    ;; The function epoch word (8) and the 208-byte `nl_aot_state' block follow
+    ;; The function epoch word (8) and the 464-byte (16-row) `nl_aot_state' block follow
     ;; the census table, ahead of the 16 and 8 of the cold chunk domain.
     (should (equal (cl-subseq (memq 2072 (nelisp-restore-alloc-test--atoms size)) 0 10)
-                   '(2072 64 if nelisp-standalone--census-p 512 0 8 208 16 8)))))
+                   '(2072 64 if nelisp-standalone--census-p 512 0 8 464 16 8)))))
 
 (provide 'nelisp-restore-alloc-test)
 ;;; nelisp-restore-alloc-test.el ends here

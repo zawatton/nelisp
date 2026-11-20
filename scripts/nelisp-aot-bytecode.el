@@ -19,10 +19,10 @@
 ;;  - `nelisp--aot-install' (boot Lisp) fills slot ID only when the live
 ;;    object's arity, code string and constants are `equal' to the build-time
 ;;    values; a mismatch leaves the function on the VM.
-;;  - `nl_aot_state' (208 BSS bytes) caches the table: +0 mirror entry, +8
+;;  - `nl_aot_state' (464 BSS bytes) caches the table: +0 mirror entry, +8
 ;;    its `nl_mxcache_epoch', +16 callee miss filter, +24 filter epoch+1,
-;;    +32+8i installed object words, +96 table data address, +104+8i constants
-;;    data addresses, +176 lean counter region address, +184 the captured
+;;    +208+8i installed object words (16 rows), +96 table data address, +336+8i
+;;    constants data addresses, +176 lean counter region address, +184 the captured
 ;;    `autoload-do-load' object and +192 the symbol `autoload' (0 when not
 ;;    heap words), which guard the inline autoload-do-load fast path.
 ;;
@@ -45,14 +45,18 @@
     (if env
         (mapcar #'intern (split-string env "," t))
       '(macroexp--cons macroexp--all-forms macroexpand-1 macroexp--all-clauses
-        macroexp-macroexpand macroexp--expand-all function-get)))
+        macroexp-macroexpand macroexp--expand-all function-get
+        backquote-process backquote-listify byte-run--parse-body defun)))
   "Functions the build tries to translate, in id order.
 Names in `nelisp-aot-bytecode-subr-names' come from the staged GNU subr.el, the
 others from vendor macroexp.el.
 NELISP_AOT_LIST (comma separated, possibly empty) overrides it for measurements.")
 
-(defconst nelisp-aot-bytecode-subr-names '(function-get)
-  "Build-list functions whose bytecode object comes from staged subr.el.
+(defconst nelisp-aot-bytecode-subr-names
+  '(function-get backquote-process backquote-listify byte-run--parse-body defun)
+  "Build-list functions whose bytecode object comes from the staged subr.el
+or the baked backquote provider (see
+`nelisp-aot-bytecode-subr-source-function').
 They are defined after the macroexp provider, so their install forms are emitted
 late (`nelisp-aot-bytecode-late-install-source').")
 
@@ -85,15 +89,21 @@ The text is the one the standalone build compiles."
             (nelisp-boot-image-provider 'macroexp))))
 
 (defun nelisp-aot-bytecode--make-form (text name)
-  "Return the `make-byte-code' form NAME is defined by in TEXT, or nil."
+  "Return the `make-byte-code' form NAME is defined by in TEXT, or nil.
+A macro expander is installed as (fset NAME (cons macro (make-byte-code ...)))."
   (let ((pos (and (stringp text)
-                  (string-match (format "(fset '%s (make-byte-code " (regexp-quote (symbol-name name)))
-                                text))))
+                  (or (string-match (format "(fset '%s (make-byte-code " (regexp-quote (symbol-name name)))
+                                    text)
+                      (string-match (format "(fset '%s (cons 'macro (make-byte-code " (regexp-quote (symbol-name name)))
+                                    text)))))
     (when pos
-      (let ((form (car (read-from-string text pos))))
+      (let* ((form (car (read-from-string text pos)))
+             (fn (nth 2 form)))
+        (when (and (eq (car-safe fn) 'cons) (equal (nth 1 fn) ''macro))
+          (setq fn (nth 2 fn)))
         (and (eq (car-safe form) 'fset)
-             (eq (car-safe (nth 2 form)) 'make-byte-code)
-             (nth 2 form))))))
+             (eq (car-safe fn) 'make-byte-code)
+             fn)))))
 
 (defun nelisp-aot-bytecode--object (make-form)
   "Evaluate MAKE-FORM on the host and return the byte-code object."
@@ -108,8 +118,8 @@ The refused function stays on the VM."
 
 ;; Opcode classes.
 (defconst nelisp-aot--ops-1 '(1 2 3 4 5 8 9 10 11 12 13 16 17 18 19 20 21 24 25 26 27 28 29
-                              32 33 34 35 36 37 40 41 42 43 44 45 48 57 58 60 61 62 64 65 66
-                              67 68 69 70 71 75 78 83 84 85 135 136 137 154 158 159 162 163 164 166 183)
+                              32 33 34 35 36 37 40 41 42 43 44 45 48 56 57 58 59 60 61 62 64 65 66
+                              67 68 69 70 71 75 78 83 84 85 86 87 88 89 135 136 137 154 158 159 162 163 164 166 183)
   "Supported single-byte opcodes (constants >= 192 are added in the decoder).")
 
 (defun nelisp-aot--decode (code)
@@ -118,8 +128,8 @@ The refused function stays on the VM."
     (while (< pc n)
       (let* ((op (aref code pc))
              (len (cond ((or (memq op nelisp-aot--ops-1) (>= op 192)) 1)
-                        ((memq op '(6 14 22 30 46 178 182)) 2)
-                        ((memq op '(7 15 23 31 47 49 129 130 131 132 133)) 3)
+                        ((memq op '(6 14 22 30 46 175 178 182)) 2)
+                        ((memq op '(7 15 23 31 47 49 129 130 131 132 133 134)) 3)
                         (t (nelisp-aot--refuse "unsupported opcode %d at %d" op pc)))))
         (when (> (+ pc len) n) (nelisp-aot--refuse "truncated instruction at %d" pc))
         (aset v pc (list op
@@ -192,12 +202,13 @@ block leaders, deepest stack, the condition-case region of each pc
                ((= op 178)
                 (when (or (< sp 1) (> arg (1- sp))) (nelisp-aot--refuse "stack-set range"))
                 (setq sp (1- sp)))
-               ((memq op '(64 65 57 58 60 75 83 84 159 162 163 71))
+               ((memq op '(64 65 57 58 59 60 75 83 84 159 162 163 71))
                 (when (< sp 1) (nelisp-aot--refuse "unary underflow")))
-               ((memq op '(66 61 85 158 164 62 78 154 166))
+               ((memq op '(66 61 56 85 86 87 88 89 158 164 62 78 154 166))
                 (when (< sp 2) (nelisp-aot--refuse "binary underflow")) (setq sp (1- sp)))
-               ((<= 67 op 70)
-                (let ((k (- op 66)))
+               ((or (<= 67 op 70) (= op 175))
+                (let ((k (if (= op 175) arg (- op 66))))
+                  (when (< k 1) (nelisp-aot--refuse "listN of nothing"))
                   (when (< sp k) (nelisp-aot--refuse "listN underflow"))
                   (setq sp (- sp (1- k)))))
                ((<= 32 op 37)
@@ -231,11 +242,11 @@ block leaders, deepest stack, the condition-case region of each pc
                   (dolist (tg targets) (push tg leaders) (push (list tg sp ctx bd) work))
                   (push next leaders) (push (list next sp ctx bd) work)
                   (throw 'done nil)))
-               ((memq op '(130 131 132 133))
+               ((memq op '(130 131 132 133 134))
                 (when (and (/= op 130) (< sp 1)) (nelisp-aot--refuse "branch underflow"))
                 (when (memq op '(131 132)) (setq sp (1- sp)))
                 (push arg leaders) (push (list arg sp ctx bd) work)
-                (when (= op 133) (setq sp (1- sp)))
+                (when (memq op '(133 134)) (setq sp (1- sp)))
                 (if (= op 130) (throw 'done nil) (push next leaders)))
                (t (nelisp-aot--refuse "unsupported opcode %d at %d" op pc)))
               (setq lastc thisc)
@@ -332,9 +343,13 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
   (if (not nelisp-aot--prof) 0
     (push (cons nelisp-aot--curname label) nelisp-aot--sites)
     `(wf_aot_prof ,(1- (length nelisp-aot--sites)))))
+(defconst nelisp-aot--obj-base 208 "Offset in `nl_aot_state' of the 16 installed object words.")
+(defconst nelisp-aot--cd-base 336 "Offset in `nl_aot_state' of the 16 constants data addresses.")
 (defun nelisp-aot--subst-l (form)
   "Substitute the table layout words %L% and %HL2% in the helper FORM."
-  (cl-subst (/ nelisp-aot--lw 2) '%HL2% (cl-subst nelisp-aot--lw '%L% form)))
+  (cl-subst nelisp-aot--obj-base '%OB%
+           (cl-subst nelisp-aot--cd-base '%CB%
+                     (cl-subst (/ nelisp-aot--lw 2) '%HL2% (cl-subst nelisp-aot--lw '%L% form)))))
 (defvar nelisp-aot--k 0 "Number of installed AOT rows (counter slots start after the objects).")
 
 (defun nelisp-aot--x (i)
@@ -440,6 +455,13 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
               (add `(let* ((w ,(x top)))
                       (setq ,(x top) (if (= (logand w 7) 2) 7
                                        (if (= (wf_bytecode_w_consp w) 1) 7 3))))))
+             ((= op 59)
+              ;; stringp: the VM's own predicate on a view of the word.
+              (add `(let* ((w ,(x top)))
+                      (setq ,(x top)
+                            (if (if (= (logand w 3) 1) 1 (if (= (logand w 7) 2) 1 (= w 3))) 3
+                              (if (= w 7) 3
+                                (if (= (wf_bytecode_predicate 59 (wf_bytecode_w_view w ,scr)) 1) 7 3)))))))
              ((= op 60)
               (add `(let* ((w ,(x top)))
                       (setq ,(x top) (if (= w 3) 7
@@ -500,12 +522,30 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
                           (setq ,(x (- sp 2)) (if (= a b) 7 3))
                         ,(nelisp-aot--slow sp 2 `(wf_bytecode_call_primitive env xb 2 85) failf)))
                    t))
+             ((memq op '(86 87 88 89))
+              ;; Fixnum comparison: tagged words order like their values.
+              (add `(let* ((a ,(x (- sp 2))) (b ,(x top)))
+                      (if (if (= (logand a 3) 1) (= (logand b 3) 1) 0)
+                          (setq ,(x (- sp 2)) (if (,(pcase op (86 '>) (87 '<) (88 '<=) (_ '>=)) a b) 7 3))
+                        ,(nelisp-aot--slow sp 2 `(wf_bytecode_call_primitive env xb 2 ,op) failf)))
+                   t))
              ((= op 166)
               (add (nelisp-aot--slow sp 2 `(if (= (wf_bytecode_small_arithmetic xb 2 166) 0) 0
                                             (wf_bytecode_w_boxed env xb 2 2 166 ,scr))
                                      failf)
                    t))
              ((= op 71) (add (nelisp-aot--named sp 1 "length" failf) t))
+             ((= op 56)
+              ;; (nth N LIST): walk a proper prefix inline; anything else takes the named call.
+              (add `(let* ((n ,(x (- sp 2))) (r ,(x top)) (nn (sar n 2)) (ok (if (= (logand n 3) 1) (if (>= nn 0) 1 0) 0)))
+                      (seq (while (if (= ok 1) (> nn 0) 0)
+                             (if (= (wf_bytecode_w_consp r) 1)
+                                 (seq (setq r (nl_cons_cdr_word r)) (setq nn (- nn 1)))
+                               (setq ok 0)))
+                           (if (if (= ok 1) (= (wf_bytecode_w_consp r) 1) 0)
+                               (setq ,(x (- sp 2)) (nl_cons_car_word r))
+                             ,(nelisp-aot--named sp 2 "nth" failf))))
+                   t))
              ((= op 154) (add (nelisp-aot--named sp 2 "equal" failf) t))
              ((= op 78)
               (add `(let* ((r (wf_bytecode_w_get_fast ,(x (- sp 2)) ,(x top))))
@@ -517,8 +557,8 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
                       (if (/= r 0) (setq ,(x (- sp 2)) r)
                         ,(nelisp-aot--named sp 2 "memq" failf)))
                    t))
-             ((<= 67 op 70)
-              (let* ((k (- op 66)) (form 3))
+             ((or (<= 67 op 70) (= op 175))
+              (let* ((k (if (= op 175) arg (- op 66))) (form 3))
                 (dotimes (j k)
                   (setq form `(wf_bytecode_w_cons2 ,(x (- sp 1 j)) ,form)))
                 (add `(setq ,(x (- sp k)) ,form))))
@@ -568,7 +608,7 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
                            (if (/= sw 0) (setq ,(x fi) sw) ,generic))))
                 (add (if did
                          (let* ((e (assq callee nelisp-aot--direct)) (maxargs (nth 3 e)))
-                           `(if (= (wf_aot_gd ,(x fi) ,(+ 32 (* did 8))) 1)
+                           `(if (= (wf_aot_gd ,(x fi) ,(+ nelisp-aot--obj-base (* did 8))) 1)
                                 ,(let ((direct
                                         `(let* ((r (,(intern (format "wf_aot_%d" did)) env
                                                     ,@(append (mapcar (lambda (j) (x (+ fi 1 j))) (number-sequence 0 (1- n)))
@@ -608,11 +648,14 @@ autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
                      (jump-when (if (= op 131) nilp `(= ,nilp 0)))
                      (jump (if (<= arg pc) `(seq ,nelisp-aot--back-poll (setq blk ,tgt)) `(setq blk ,tgt))))
                 (setq term `(if ,jump-when ,jump (setq blk ,fall)))))
-             ((= op 133)
+             ((memq op '(133 134))
+              ;; goto-if-nil-else-pop / goto-if-non-nil-else-pop: the jump keeps the value.
               (let* ((nilp `(= (wf_bytecode_w_nilp ,(x top)) 1))
                      (tgt (cl-position arg leaders)) (fall (cl-position next leaders))
                      (jump (if (<= arg pc) `(seq ,nelisp-aot--back-poll (setq blk ,tgt)) `(setq blk ,tgt))))
-                (setq term `(if ,nilp ,jump (setq blk ,fall)))))
+                (setq term (if (= op 133)
+                               `(if ,nilp ,jump (setq blk ,fall))
+                             `(if ,nilp (setq blk ,fall) ,jump)))))
              ((<= 8 op 15)
               (let ((i (nelisp-aot--var-index op arg)))
                 (add `(let* ((nm (ptr-read-u64 cdata ,(* i 8)))
@@ -723,9 +766,9 @@ renumbered densely.  Block 0 and condition-case handler blocks are kept."
   (let* ((template (aref obj 0)) (code (aref obj 1)) (consts (aref obj 2)) (depth (aref obj 3)))
     (unless (and (integerp template) (stringp code) (vectorp consts) (integerp depth))
       (nelisp-aot--refuse "not a lexical byte-code object"))
-    (when (/= (logand template 128) 0) (nelisp-aot--refuse "&rest"))
     (when (multibyte-string-p code) (nelisp-aot--refuse "multibyte code"))
-    (let* ((nargs (ash template -8))
+    ;; A &rest function takes its rest list as one more argument word (built by the entry wrapper).
+    (let* ((nargs (+ (ash template -8) (if (/= (logand template 128) 0) 1 0)))
            (insns (nelisp-aot--decode code))
            (an (nelisp-aot--analyze insns nargs depth consts))
            (sps (nth 0 an)) (leaders (nth 1 an)) (maxsp (nth 2 an))
@@ -766,7 +809,7 @@ renumbered densely.  Block 0 and condition-case handler blocks are kept."
                           (xb 0) (xbm 0)
                           ,@(delq nil (mapcar (lambda (v) (and (nelisp-aot--mentions dispatch (car v)) v))
                                               '((scb 0) (cnd 0))))
-                          (cdata (ptr-read-u64 (data-addr nl_aot_state) ,(+ 104 (* id 8))))
+                          (cdata (ptr-read-u64 (data-addr nl_aot_state) ,(+ nelisp-aot--cd-base (* id 8))))
                           ,@(apply #'append
                                    (mapcar (lambda (j) (list (list (intern (format "bn%d" j)) 0)
                                                              (list (intern (format "bv%d" j)) 0)
@@ -821,10 +864,13 @@ renumbered densely.  Block 0 and condition-case handler blocks are kept."
           (setq nelisp-aot--plain (nelisp-aot--plain-info rows))
           (setq nelisp-aot--k (length rows))
           (setq nelisp-aot--direct
-                (mapcar (lambda (r)
-                          (let ((tm (aref (nth 3 r) 0)))
-                            (list (nth 1 r) (nth 0 r) (logand tm 127) (ash tm -8))))
-                        rows)))))
+                ;; A &rest row is never called directly: its rest list is built by its entry wrapper.
+                (delq nil
+                      (mapcar (lambda (r)
+                                (let ((tm (aref (nth 3 r) 0)))
+                                  (and (= (logand tm 128) 0)
+                                       (list (nth 1 r) (nth 0 r) (logand tm 127) (ash tm -8)))))
+                              rows))))))
     rows))
 
 (defvar nelisp-aot-bytecode--rows nil "Cache of `nelisp-aot-bytecode-rows'.")
@@ -896,6 +942,8 @@ Empty when there is no late row (the seal is then part of the install source)."
      "        (t (equal a b))))\n"
      "(defun nelisp--aot-install (name id arity code consts)\n"
      "  (let ((f (and (fboundp name) (symbol-function name))))\n"
+     ;; A macro row: the expander is the function inside (macro . FN).
+     "    (when (eq (car-safe f) 'macro) (setq f (cdr f)))\n"
      "    (if (and (byte-code-function-p f) (eq (aref f 0) arity) (equal (aref f 1) code)\n"
      "             (nelisp--aot-equal (aref f 2) consts))\n"
      "        (progn (aset nelisp--aot-table id f) t)\n"
@@ -953,8 +1001,8 @@ and macroexpand-all-environment is nil.  Anything else answers 0."
   (when nelisp-aot--leaf
     (let* ((l nelisp-aot--leaf)
            (st '(data-addr nl_aot_state))
-           (off (lambda (k) (+ 32 (* 8 (plist-get l k)))))
-           (cd (lambda (k) `(ptr-read-u64 ,st ,(+ 104 (* 8 (plist-get l k)))))))
+           (off (lambda (k) (+ nelisp-aot--obj-base (* 8 (plist-get l k)))))
+           (cd (lambda (k) `(ptr-read-u64 ,st ,(+ nelisp-aot--cd-base (* 8 (plist-get l k)))))))
       (list
        `(defun wf_aot_leaf (env a)
           (let* ((tg (nl_val_tag a)))
@@ -984,8 +1032,8 @@ live function cell of the head and the epoch-validated guards of
     (let* ((l nelisp-aot--plain)
            (st '(data-addr nl_aot_state))
            (slot nelisp-aot--plain-state-slot)
-           (off (lambda (k) (+ 32 (* 8 (plist-get l k)))))
-           (cd (lambda (k) `(ptr-read-u64 ,st ,(+ 104 (* 8 (plist-get l k)))))))
+           (off (lambda (k) (+ nelisp-aot--obj-base (* 8 (plist-get l k)))))
+           (cd (lambda (k) `(ptr-read-u64 ,st ,(+ nelisp-aot--cd-base (* 8 (plist-get l k)))))))
       (list
        `(defun wf_aot_plain_cell (h)
           ;; 1 when H is an interned symbol object whose function cell holds a heap
@@ -1187,7 +1235,7 @@ See `wf_aot_swp' and `wf_aot_fb'."
                                 saved)))))))))))))
        (defun wf_aot_find_in (v func)
          ;; No VM arm.  1 + the installed id of FUNC in table vector V, else 0
-         ;; (linear scan of the at most 8 installed object slots).
+         ;; (linear scan of the at most 16 installed object slots).
          (let* ((n (- (/ (vector-len v) 2) %HL2%)) (i 0) (r 0) (p (nl_word_payload func)))
            (seq (while (if (= r 0) (< i n) 0)
                   (let* ((w (nl_vector_slot_word v i)))
@@ -1217,7 +1265,7 @@ See `wf_aot_swp' and `wf_aot_fb'."
                 (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
              0
            (let* ((n (- (/ (vector-len v) 2) %HL2%)) (i 0) (m 0))
-             (if (if (/= (nl_vector_slot_word v (+ %L% (* 2 n))) 7) 1 (> n 8)) 0
+             (if (if (/= (nl_vector_slot_word v (+ %L% (* 2 n))) 7) 1 (> n 16)) 0
                (seq (while (< i n)
                       (let* ((w (nl_vector_slot_word v i)))
                         (seq (if (= (logand w 7) 6)
@@ -1240,9 +1288,9 @@ See `wf_aot_swp' and `wf_aot_fb'."
                     (setq i 0)
                     (while (< i n)
                       (let* ((w (nl_vector_slot_word v i)))
-                        (seq (ptr-write-u64 (data-addr nl_aot_state) (+ 32 (* i 8))
+                        (seq (ptr-write-u64 (data-addr nl_aot_state) (+ %OB% (* i 8))
                                             (if (= (logand w 7) 6) w 0))
-                             (ptr-write-u64 (data-addr nl_aot_state) (+ 104 (* i 8))
+                             (ptr-write-u64 (data-addr nl_aot_state) (+ %CB% (* i 8))
                                             (if (= (logand w 7) 6)
                                                 (+ (nl_word_payload
                                                     (ptr-read-u64 (+ (nl_word_payload w) 16) 16))
@@ -1342,7 +1390,7 @@ See `wf_aot_swp' and `wf_aot_fb'."
                      (if (/= (logand (ptr-read-u8 func -6) 63) 17) 2
                        (if (= (wf_aot_maybe (- func 6)) 0) 2
                          (let* ((tpl (sar (ptr-read-u64 (- func 6) 16) 2)))
-                           (if (if (< argc (logand tpl 127)) 1 (> argc (/ tpl 256))) 2
+                           (if (if (< argc (logand tpl 127)) 1 (if (= (logand tpl 128) 0) (> argc (/ tpl 256)) 0)) 2
                              (let* ((r (wf_aot_try func mem (+ fi 1) argc env)))
                                (if (= r 2) 2
                                  (if (= r 0) 1
@@ -1532,11 +1580,22 @@ See `wf_aot_swp' and `wf_aot_fb'."
                          ,chain)))
         `(defun wf_aot_call (id func mem first argc env) ,chain)))
      (mapcar (lambda (row)
-               (let* ((id (nth 0 row)) (nargs (ash (aref (nth 3 row) 0) -8)))
+               (let* ((id (nth 0 row)) (tm (aref (nth 3 row) 0)) (nargs (ash tm -8))
+                      (rest-p (/= (logand tm 128) 0))
+                      (call `(,(intern (format "wf_aot_%d" id)) env
+                              ,@(mapcar (lambda (j) `(if (< ,j argc) (ptr-read-u64 mem (* (+ first ,j) 8)) 3))
+                                        (number-sequence 0 (1- nargs)))
+                              ,@(and rest-p '(rl)))))
                  `(defun ,(intern (format "wf_aot_ent_%d" id)) (mem first argc env)
-                    (,(intern (format "wf_aot_%d" id)) env
-                     ,@(mapcar (lambda (j) `(if (< ,j argc) (ptr-read-u64 mem (* (+ first ,j) 8)) 3))
-                               (number-sequence 0 (1- nargs)))))))
+                    ,(if rest-p
+                         ;; The rest list is consed from the last argument down; RL and I are native
+                         ;; locals, which the collector scans conservatively on the main thread.
+                         `(let* ((rl 3) (i (- argc 1)))
+                            (seq (while (>= i ,nargs)
+                                   (seq (setq rl (wf_bytecode_w_cons2 (ptr-read-u64 mem (* (+ first i) 8)) rl))
+                                        (setq i (- i 1))))
+                                 ,call))
+                       call))))
              rows)
      (mapcar (lambda (row) (nth 4 row)) rows))))
 

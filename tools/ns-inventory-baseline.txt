@@ -1070,7 +1070,13 @@ ns-prefix-violation 2430
 # and lisp/nelisp-artifact.el declares nl--with-handlers (the expansion
 # target of nl-handler-bind, now required at compile time).  Dropping
 # them returns those warnings to the lisp-byte-compile gate instead.
-ns-private-escape 2444
+# 2026-11-20: 2444 -> 2447 (+3).  scripts/nelisp-boot-image.el bakes byte-run.el's
+# `defun' expander and `byte-run--parse-body' as bytecode (lane F2) and reads the
+# opcode tables of scripts/nelisp-prelude-bytecode.el to refuse unsupported bodies:
+# `nelisp-prelude-bytecode--opcodes', `--decode-opcodes' and `--nested-unsupported',
+# the same build-time pairing as its existing `--top-level-spans' use.  The base
+# tree's own excess (2446) is not raised here.
+ns-private-escape 2447
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'

@@ -9,6 +9,8 @@
 #   partial   one installed slot cleared       -> "FAIL install-count"
 #   nolean    lean-entry disable flag set      -> "FAIL lean-entry-taken"
 #   guard     mutation check fed an equal copy -> "FAIL mutated-install-refused"
+#   defunnohit defun slot cleared             -> "FAIL install-count"
+#   bqnohit   backquote-process slot cleared    -> "FAIL bq-entry-taken"
 # If NELISP_AOT_SMOKE_BASE_BIN names a binary built without AOT (for example
 # the commit before the AOT change), the smoke must also fail there with
 # "FAIL aot-table-present".
@@ -39,7 +41,7 @@ run_case() {
 }
 
 run_case clean "$binary" ""
-if [ "$rc" = 0 ] && grep -q '^AOT-SMOKE aot=7 .* fail=0$' "$out_dir/clean.out"; then
+if [ "$rc" = 0 ] && grep -q '^AOT-SMOKE aot=11 .* fail=0$' "$out_dir/clean.out"; then
     echo "PASS aot smoke: $(grep '^AOT-SMOKE aot=' "$out_dir/clean.out")"
 else
     echo "FAIL aot smoke (rc=$rc)"; tail -15 "$out_dir/clean.out"
@@ -59,6 +61,8 @@ control() {  # control NAME BINARY CONTROL SIGNATURE
 control detached "$binary" detached entry-taken-total
 control partial "$binary" partial install-count
 control nolean "$binary" nolean lean-entry-taken
+control defunnohit "$binary" defunnohit install-count
+control bqnohit "$binary" bqnohit bq-entry-taken
 control guard "$binary" guard mutated-install-refused
 if [ -n "${NELISP_AOT_SMOKE_BASE_BIN:-}" ]; then
     control nobuild "$NELISP_AOT_SMOKE_BASE_BIN" "" aot-table-present
