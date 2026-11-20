@@ -1361,7 +1361,12 @@ matches the `files.el' convention of dispatching `start-file-process' on
     (aset process 6 filter)
     filter)
    ((emacs-process--native-process-p process)
-    (emacs-process--native-set-prop process :filter filter))
+    (emacs-process--native-set-prop process :filter filter)
+    ;; The core adapter reads its own plist copy when it drains output or
+    ;; fires the sentinel; keep it in step so the old value is not used.
+    (when (and (fboundp 'process-put) (not (emacs-process--core-owned-p process)))
+      (condition-case nil (process-put process :filter filter) (error nil)))
+    filter)
    (t (emacs-process--delegate 'set-process-filter (list process filter)))))
 
 (defun emacs-process-set-process-sentinel (process sentinel)
@@ -1371,7 +1376,12 @@ matches the `files.el' convention of dispatching `start-file-process' on
     (aset process 7 sentinel)
     sentinel)
    ((emacs-process--native-process-p process)
-    (emacs-process--native-set-prop process :sentinel sentinel))
+    (emacs-process--native-set-prop process :sentinel sentinel)
+    ;; The core adapter reads its own plist copy when it drains output or
+    ;; fires the sentinel; keep it in step so the old value is not used.
+    (when (and (fboundp 'process-put) (not (emacs-process--core-owned-p process)))
+      (condition-case nil (process-put process :sentinel sentinel) (error nil)))
+    sentinel)
    (t (emacs-process--delegate 'set-process-sentinel
                                (list process sentinel)))))
 
