@@ -388,14 +388,27 @@ adjusts those positions before calling this function."
   "Target of GNU's single deferred notification queue.
 The aggregate itself is stored in that buffer's event side table.")
 
-(defun emacs-buffer-builtins--change-edit (operation original args)
-  "Run OPERATION through ORIGINAL, recording deferred change notifications."
+(defun emacs-buffer-builtins--run-edit (operation original args public)
+  "Perform the edit; PUBLIC edits call ORIGINAL directly."
+  (if public
+      ;; Primitives built on other primitives (erase-buffer on delete-region,
+      ;; insert-before-markers on insert) must notify exactly once.
+      (let ((inhibit-modification-hooks t))
+        (apply original args))
+    (apply #'emacs-buffer-builtins--indirect-edit operation original args)))
+
+(defun emacs-buffer-builtins--change-edit (operation original args &optional public)
+  "Run OPERATION through ORIGINAL, recording deferred change notifications.
+PUBLIC non-nil means ARGS are those of the user-visible primitive: no
+buffer argument, strings or characters for insertion.  ORIGINAL is then
+called directly."
   (if (or inhibit-modification-hooks
           (and (null before-change-functions) (null after-change-functions)))
-      (apply #'emacs-buffer-builtins--indirect-edit operation original args)
+      (emacs-buffer-builtins--run-edit operation original args public)
     (let* ((buffer (nelisp-buffer--ambient
-                    (nth (cond ((eq operation 'delete) 2)
-                               ((eq operation 'erase) 0) (t 1)) args)))
+                    (and (not public)
+                         (nth (cond ((eq operation 'delete) 2)
+                                    ((eq operation 'erase) 0) (t 1)) args))))
            (size (nelisp-buffer-size buffer))
            (insert-p (memq operation '(insert insert-before-markers)))
            (beg (cond (insert-p (nelisp-point buffer))
@@ -403,17 +416,19 @@ The aggregate itself is stored in that buffer's event side table.")
                       (t (min (car args) (cadr args)))))
            (end (cond (insert-p beg) ((eq operation 'erase) (1+ size))
                       (t (max (car args) (cadr args)))))
-           (new-length (if insert-p (length (car args)) 0))
+           (new-length (cond ((not insert-p) 0)
+                            (public (emacs-buffer--insert-text-length args))
+                            (t (length (car args)))))
            (old-length (- end beg)))
       (if (and (= old-length 0) (= new-length 0))
-          (apply #'emacs-buffer-builtins--indirect-edit operation original args)
+          (emacs-buffer-builtins--run-edit operation original args public)
         (unless (and combine-after-change-calls (null before-change-functions))
           (emacs-buffer-builtins--flush-after-change
            emacs-buffer-builtins--after-change-buffer))
         (let ((inhibit-modification-hooks t))
           (when before-change-functions
             (run-hook-with-args 'before-change-functions beg end)))
-        (prog1 (apply #'emacs-buffer-builtins--indirect-edit operation original args)
+        (prog1 (emacs-buffer-builtins--run-edit operation original args public)
           (if (and combine-after-change-calls (null before-change-functions))
               (progn
                 (when (and emacs-buffer-builtins--after-change-buffer
@@ -532,6 +547,68 @@ The aggregate itself is stored in that buffer's event side table.")
               #'emacs-buffer-builtins--indirect-set-modified)
   (dolist (function '(insert insert-before-markers delete-region erase-buffer))
     (advice-add function :after #'emacs-buffer-builtins--share-current-text)))
+
+;;;; --- change hooks for the user-visible edit primitives ------------------
+;; GNU runs `before-change-functions' / `after-change-functions' from the C
+;; edit primitives themselves.  Here the public primitives are not built on
+;; `nelisp-insert' / `nelisp-delete-region' (the advised layer above), so each
+;; public name is wrapped around the same shared notification path.
+
+(defun emacs-buffer-builtins--public-position (value)
+  "Return VALUE as an integer position, or nil if it is not one."
+  (cond ((integerp value) value)
+        ((and (markerp value) (marker-buffer value)) (marker-position value))))
+
+(defun emacs-buffer-builtins--public-insert (orig &rest args)
+  "Run ORIG (`insert') with change hooks."
+  (emacs-buffer-builtins--change-edit 'insert orig args t))
+
+(defun emacs-buffer-builtins--public-insert-before-markers (orig &rest args)
+  "Run ORIG (`insert-before-markers') with change hooks."
+  (emacs-buffer-builtins--change-edit 'insert-before-markers orig args t))
+
+(defun emacs-buffer-builtins--public-delete-region (orig start end)
+  "Run ORIG (`delete-region') on START and END with change hooks."
+  (let ((s (emacs-buffer-builtins--public-position start))
+        (e (emacs-buffer-builtins--public-position end)))
+    (if (and s e (<= (point-min) (min s e)) (<= (max s e) (point-max)))
+        (emacs-buffer-builtins--change-edit
+         'delete (lambda (&rest _) (funcall orig start end)) (list s e) t)
+      (funcall orig start end))))
+
+(defun emacs-buffer-builtins--public-erase-buffer (orig)
+  "Run ORIG (`erase-buffer') with change hooks."
+  (emacs-buffer-builtins--change-edit
+   'erase (lambda (&rest _) (funcall orig)) nil t))
+
+(defun emacs-buffer-builtins--public-insert-char (orig char &optional count inherit)
+  "Run ORIG (`insert-char') with change hooks."
+  (if (and (characterp char) (or (null count) (integerp count)))
+      (emacs-buffer-builtins--change-edit
+       'insert (lambda (&rest _) (funcall orig char count inherit))
+       (list (make-string (max 0 (or count 1)) char)) t)
+    (funcall orig char count inherit)))
+
+(defun emacs-buffer-builtins--public-delete-char (orig n &optional killflag)
+  "Run ORIG (`delete-char') with change hooks."
+  (if (and (integerp n) (not killflag)
+           (<= (point-min) (+ (point) n)) (<= (+ (point) n) (point-max)))
+      (emacs-buffer-builtins--change-edit
+       'delete (lambda (&rest _) (funcall orig n killflag))
+       (list (point) (+ (point) n)) t)
+    (funcall orig n killflag)))
+
+(when (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'nelisp-insert))
+  (dolist (entry '((insert . emacs-buffer-builtins--public-insert)
+                   (insert-before-markers
+                    . emacs-buffer-builtins--public-insert-before-markers)
+                   (delete-region . emacs-buffer-builtins--public-delete-region)
+                   (erase-buffer . emacs-buffer-builtins--public-erase-buffer)
+                   (insert-char . emacs-buffer-builtins--public-insert-char)
+                   (delete-char . emacs-buffer-builtins--public-delete-char)))
+    (when (fboundp (car entry))
+      (advice-add (car entry) :around (cdr entry)))))
 
 (when (emacs-buffer-builtins--standalone-p)
   (defun buffer-base-buffer (&optional buffer)
