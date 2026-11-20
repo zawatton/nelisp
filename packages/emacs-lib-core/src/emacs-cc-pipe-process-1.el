@@ -225,13 +225,14 @@ NEXT continues with the previous owner for processes that are not events
 vectors."
   (unless (processp process)
     (signal 'wrong-type-argument (list 'processp process)))
-  (if (emacs-process--process-object-p process)
-      (or (emacs-process--native-metadata process :output-marker)
-          (progn
-            (emacs-process-builtins--initialize-command
-             process (emacs-process-process-command process))
-            (emacs-process--native-metadata process :output-marker)))
-    (funcall next process)))
+  (or (and (emacs-process--process-object-p process)
+           (or (emacs-process--native-metadata process :output-marker)
+               (progn
+                 (emacs-process-builtins--initialize-command
+                  process (emacs-process-process-command process))
+                 (emacs-process--native-metadata process :output-marker))))
+      ;; A process whose marker lives on the core plist (adapter-owned).
+      (funcall next process)))
 
 (defun emacs-cc-pipe-process-1--process-command (process)
   "Return PROCESS's original command, or nil for a pipe or network."

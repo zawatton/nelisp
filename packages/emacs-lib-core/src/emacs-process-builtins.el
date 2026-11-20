@@ -47,9 +47,16 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
     ;; processes it creates and bridges must hand those back to it.
     (when (or standalone (fboundp 'nelisp--repr))
       (emacs-process-remember-substrate-primitive symbol))
-    (or standalone
-        (not (boundp 'emacs-version))
-        (not (fboundp symbol)))))
+    ;; The core buffer-pipe file owns these names and dispatches to the
+    ;; handlers emacs-process-events.el registers; never alias over it.
+    (and (not (and (memq symbol '(processp process-status process-exit-status
+                                  process-buffer set-process-buffer
+                                  process-mark process-get process-put
+                                  make-pipe-process))
+                   (fboundp 'nelisp-process-kind-register)))
+         (or standalone
+             (not (boundp 'emacs-version))
+             (not (fboundp symbol))))))
 
 (defun emacs-process-builtins--check-string (value)
   "Require VALUE to be a string, using the public Emacs error predicate."
