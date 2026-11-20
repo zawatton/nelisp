@@ -495,6 +495,79 @@ reads kept the folded constant — a silently dropped mutation."
             (should (= (plist-get result :exit) 22))))
       (when (file-exists-p path) (delete-file path)))))
 
+(defun nelisp-aot-compiler-test--arena-walk-source (let-kind)
+  "Return the old `nl_gc_in_arena' shape using LET-KIND for its locals.
+Chunk descriptors live in an mmap page: +0 base, +16 size, +24 data
+start, +48 next.  The exit status is 16*MID + 2*HEAD + 4*TAIL + 8*OUT."
+  `(seq
+    (defun ina (addr)
+      (,let-kind ((head (ptr-read-u64 805306944 0))
+                  (tail (ptr-read-u64 805306952 0)))
+        (if (and (> head 0)
+                 (>= addr (ptr-read-u64 head 24))
+                 (< addr (+ (ptr-read-u64 head 0) (ptr-read-u64 805306368 0))))
+            1
+          (if (and (> tail 0) (not (= tail head))
+                   (>= addr (ptr-read-u64 tail 24))
+                   (< addr (+ (ptr-read-u64 tail 0) (ptr-read-u64 tail 16))))
+              1
+            (,let-kind ((chunk (if (= head 0) 0 (ptr-read-u64 head 48)))
+                        (found 0))
+              (seq
+               (while (and (> chunk 0) (= found 0))
+                 (if (and (>= addr (ptr-read-u64 chunk 24))
+                          (< addr (+ (ptr-read-u64 chunk 0)
+                                     (ptr-read-u64 chunk 16))))
+                     (setq found 1)
+                   (setq chunk (ptr-read-u64 chunk 48))))
+               found))))))
+    (defun mk (d base size next)
+      (seq (ptr-write-u64 d 0 base) (ptr-write-u64 d 16 size)
+           (ptr-write-u64 d 24 base) (ptr-write-u64 d 48 next) d))
+    (defun _start ()
+      (seq
+       (syscall-direct 9 805306368 4096 3 50 -1 0)
+       (mk 805307264 3000 100 0)
+       (mk 805307328 2000 100 805307264)
+       (mk 805307392 1000 100 805307328)
+       (ptr-write-u64 805306944 0 805307392)
+       (ptr-write-u64 805306952 0 805307264)
+       (ptr-write-u64 805306368 0 100)
+       (syscall-direct 60 (+ (* 16 (ina 2050)) (* 2 (ina 1050))
+                             (* 4 (ina 3050)) (* 8 (ina 5000)))
+                       0 0 0 0 0)))))
+
+(defun nelisp-aot-compiler-test--run-arena-walk (let-kind)
+  "Compile the arena walk through the standalone unit pipeline and run it."
+  (require 'nelisp-standalone-build)
+  (let* ((dir (make-temp-file "arena-walk-" t))
+         (exe (expand-file-name "probe" dir))
+         (nelisp-standalone--target 'linux-x86_64)
+         ;; Keep INA a real function: inlined into `_start' the loop is
+         ;; emitted in a context without the dead local-prefix state.
+         (nelisp-standalone--inline-boundaries
+          (cons 'ina nelisp-standalone--inline-boundaries)))
+    (unwind-protect
+        (progn
+          (nelisp-link-units
+           exe (list (nelisp-standalone--compile-to-unit
+                      "arena-walk.o"
+                      (nelisp-aot-compiler-test--arena-walk-source let-kind)))
+           "_start")
+          (call-process exe nil nil nil))
+      (delete-directory dir t))))
+
+(ert-deftest nelisp-aot-compiler/e2e-promoted-loop-keeps-results-after-let*-cache ()
+  "A register-promoted `while' after a let* local-prefix cache keeps its results.
+The ended cache used to wipe the loop's register map from inside the body,
+so the exit flush stored the entry values over CHUNK and FOUND
+\(nl_gc_in_arena answered 0 for every middle arena chunk).  Expected
+status 22: middle, head and tail chunks found, outside address not."
+  (unless (nelisp-aot-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (should (= 22 (nelisp-aot-compiler-test--run-arena-walk 'let*)))
+  (should (= 22 (nelisp-aot-compiler-test--run-arena-walk 'let))))
+
 (ert-deftest nelisp-aot-compiler/parse-free-symbol-errors ()
   "A free symbol reference signals `nelisp-aot-compiler-error'."
   (should-error

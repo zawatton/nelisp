@@ -27897,6 +27897,14 @@ body callback has returned and its lexical aliases have unwound."
       (setq saved (delete-dups saved)))
     (if (null pairs)
         (funcall emit-loop)
+      ;; The promoted map must outlive the body.  An ended local-prefix cache
+      ;; (a dead state vector, left by an earlier let* cache) would make every
+      ;; `--emit-value-1'/`--emit-effect' inside the loop `setq' the map to nil:
+      ;; the body then runs on frame slots while the entry loads and the exit
+      ;; flush still use the registers, so the exit stored the stale entry
+      ;; values back over the loop's results.  The region path already binds
+      ;; nil here (`--emit-call-free-region'); a direct `--emit-while' did not.
+      (let ((nelisp-aot-compiler--x86-local-prefix-state nil))
       (dolist (r saved)
         (nelisp-aot-compiler--emit-temp-push buf r))
       (when state
@@ -27920,7 +27928,7 @@ body callback has returned and its lexical aliases have unwound."
       (let ((cleanup (lambda ()
                        (nelisp-aot-compiler--emit-promotion-cleanup-x86
                         pairs written saved buf private-slots state))))
-        (if finish (funcall finish cleanup) (funcall cleanup))))))
+        (if finish (funcall finish cleanup) (funcall cleanup)))))))
 
 (defun nelisp-aot-compiler--emit-while (node buf)
   "Emit `while' loop; result = 0 (in rax) after loop exits.
