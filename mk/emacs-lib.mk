@@ -31,6 +31,9 @@ NEMACS_BOOTSTRAP_ARTIFACT ?= $(BUILD_DIR)/nemacs-bootstrap.neln
 NEMACS_BOOTSTRAP_COLD_IMAGE ?= $(BUILD_DIR)/nemacs-bootstrap.flat.nlri
 NEMACS_IMAGE ?= $(BUILD_DIR)/nemacs-loadup.nli
 NEMACS_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-runtime.nlri
+# Saved application image (heap dump) of the replayed bootstrap; see bake-runtime-dump.
+NEMACS_RUNTIME_DUMP ?= $(BUILD_DIR)/nemacs-runtime.dump
+NEMACS_RUNTIME_DUMP_REINIT ?= scripts/nemacs-runtime-dump-reinit.el
 NEMACS_INTERACTIVE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-interactive-runtime.nlri
 NEMACS_VENDOR_CORE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-vendor-core-runtime.nlri
 NEMACS_MAGIT_BRIDGE_BUNDLE ?= $(BUILD_DIR)/nelisp-emacs-magit-bridge-bundle.el
@@ -2136,6 +2139,23 @@ $(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(
 		"$(NELISP_BIN)" dump-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE)).tmp" \
 		'(progn (load "$(abspath $(NEMACS_RUNTIME_PROCESS_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_PRELOAD))" nil (quote no-message) t t) (nemacs-runtime-image-preload-batch "$(abspath .)" "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))"))'
 	mv "$(NEMACS_RUNTIME_IMAGE).tmp" "$(NEMACS_RUNTIME_IMAGE)"
+
+# Replay the bundle once and save the initialized heap; later starts use
+# `nelisp --cold-load-from DUMP' instead of replaying (~65 s -> ~20 ms).
+# Stale detection is the prerequisite list: bundle, preloads, reinit file and
+# the binary (the dump is also digest-checked against the binary at load).
+.PHONY: bake-runtime-dump
+bake-runtime-dump: $(NEMACS_RUNTIME_DUMP)
+
+$(NEMACS_RUNTIME_DUMP): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD) $(NEMACS_RUNTIME_DUMP_REINIT) $(NELISP_BIN)
+	test -x "$(NELISP_BIN)"
+	mkdir -p "$(dir $(NEMACS_RUNTIME_DUMP))"
+	rm -f "$(abspath $(NEMACS_RUNTIME_DUMP)).tmp"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NEMACS_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" --eval '(progn (load "$(abspath $(NEMACS_RUNTIME_PROCESS_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_PRELOAD))" nil (quote no-message) t t) (nemacs-runtime-image-preload-batch "$(abspath .)" "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))") (load "$(abspath $(NEMACS_RUNTIME_DUMP_REINIT))" nil (quote no-message) t t) (nelisp--arena-dump-image-stream "$(abspath $(NEMACS_RUNTIME_DUMP)).tmp") (kill-emacs 0))'
+	test -s "$(abspath $(NEMACS_RUNTIME_DUMP)).tmp"
+	mv "$(NEMACS_RUNTIME_DUMP).tmp" "$(NEMACS_RUNTIME_DUMP)"
 
 bake-interactive-runtime-image: $(NEMACS_INTERACTIVE_RUNTIME_IMAGE)
 
