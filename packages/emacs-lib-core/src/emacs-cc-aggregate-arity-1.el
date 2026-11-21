@@ -6,8 +6,15 @@
     (signal 'wrong-number-of-arguments (list name (length arguments))))
   (apply (get name 'emacs-aggregate-original) arguments))
 
+;; gnu562: only `char-table-p', whose definition is the library's Lisp
+;; `emacs-char-table-p', needs the wrapper.  The native `bool-vector-p',
+;; `hash-table-p' and `recordp' already signal GNU's data: the called
+;; symbol for a direct call and the subr for `funcall'/`apply' (GNU 31.1
+;; gives (wrong-number-of-arguments #<subr recordp> 0) there, which the
+;; wrapper turned into the symbol).  Their wrapper cost 0.44 us a call
+;; against 0.1 us.
 (when (fboundp 'nelisp--repr)
-  (dolist (name '(bool-vector-p char-table-p hash-table-p recordp))
+  (dolist (name '(char-table-p))
     (unless (get name 'emacs-aggregate-original)
       (put name 'emacs-aggregate-original (symbol-function name))
       ;; gnu562: a lexical closure, which the fx VM compiles, rather than a
