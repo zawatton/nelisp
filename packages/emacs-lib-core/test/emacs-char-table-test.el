@@ -555,6 +555,47 @@ until a later ASCII write, while a copy is built from the current topology."
       (should (equal (aref host-child index)
                      (emacs-char-table-ref mine-child index))))))
 
+(ert-deftest emacs-char-table-test/owned-ascii-native-fast-path ()
+  ;; Owned (eight-slot) tables must read and write ASCII entries through
+  ;; the native bridge: semantics equal the library path, and the cost
+  ;; stays near the old seven-slot native path (about 1 us, not ~270 us).
+  (skip-unless (emacs-char-table--standalone-p))
+  (let* ((parent (make-char-table 'emacs-char-table-test--fast))
+         (ct (make-char-table 'emacs-char-table-test--fast 'dflt)))
+    (skip-unless (emacs-char-table--owned-p ct))
+    (aset parent ?a 'from-parent)
+    (set-char-table-parent ct parent)
+    ;; Present entries, default fallback and non-ASCII still agree.
+    (aset ct ?b 'bee)
+    (should (eq (aref ct ?b) 'bee))
+    (should (eq (aref ct ?b) (emacs-char-table-ref ct ?b)))
+    (should (eq (aref ct ?c) 'dflt))
+    (aset ct #x3042 'kana)
+    (should (eq (aref ct #x3042) 'kana))
+    ;; A nil store falls back to the default, as the library path does.
+    (aset ct ?b nil)
+    (should (eq (aref ct ?b) (emacs-char-table-ref ct ?b)))
+    ;; The compatibility ASCII view stays in sync with the topology.
+    (aset ct ?z 'zed)
+    (should (eq (emacs-char-table--raw-ref
+                 (emacs-char-table--raw-ref ct emacs-char-table--i-ascii) ?z)
+                'zed))
+    ;; Range writes (library path) are visible to the native read.
+    (set-char-table-range ct '(?0 . ?9) 'digit)
+    (should (eq (aref ct ?5) 'digit))
+    (aset ct ?5 'five)
+    (should (eq (aref ct ?5) 'five))
+    (should (eq (aref ct ?6) 'digit))
+    ;; A table whose init value is a decoy record shaped like a node is
+    ;; returned as the value, never read through as a node.
+    (let ((decoy (record 'not-a-node (make-vector 128 'inner))))
+      (let ((d (make-char-table 'emacs-char-table-test--fast decoy)))
+        (should (eq (aref d ?a) decoy))))
+    ;; Speed: the Lisp fallback costs hundreds of microseconds per call.
+    (let ((n 2000) (i 0) (t0 (float-time)))
+      (while (< i n) (aref ct ?z) (aset ct ?z 'zed) (setq i (1+ i)))
+      (should (< (/ (* 1e6 (- (float-time) t0)) n) 50.0)))))
+
 (provide 'emacs-char-table-test)
 
 ;;; emacs-char-table-test.el ends here

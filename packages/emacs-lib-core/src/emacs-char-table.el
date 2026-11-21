@@ -877,8 +877,25 @@ identity.  This query does not modify either table."
      (parent (emacs-char-table-ref parent char))
      (t nil))))
 
+(defvar emacs-char-table--fast-aref-p
+  (and (fboundp 'emacs-char-table--native-vector-bridge-p)
+       (emacs-char-table--native-vector-bridge-p))
+  "Non-nil when `aref' on an owned char-table is dispatched natively.")
+
 (defun emacs-char-table-ref (ct char)
-  "Return CT's value for character CHAR (with default / parent fallback)."
+  "Return CT's value for character CHAR (with default / parent fallback).
+An owned table's ASCII entry goes through the native `aref' bridge, which
+declines to `emacs-char-table-aref' and then `emacs-char-table-ref-slow'
+(never back to this function), so there is no recursion."
+  (if (and emacs-char-table--fast-aref-p
+           (vectorp ct) (integerp char) (>= char 0) (< char 128)
+           (= (length ct) 8)
+           (eq (nelisp--raw-aref ct 0) emacs-char-table--tag))
+      (aref ct char)
+    (emacs-char-table-ref-slow ct char)))
+
+(defun emacs-char-table-ref-slow (ct char)
+  "Library implementation of `emacs-char-table-ref'."
   (cond
    ((emacs-char-table--native-p ct) (emacs-char-table--native-ref ct char))
    ((not (integerp char)) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
@@ -1375,7 +1392,7 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (if (emacs-char-table-p array)
       (progn
         (emacs-char-table--check-character index)
-        (emacs-char-table-ref array index))
+        (emacs-char-table-ref-slow array index))
     (emacs-char-table--raw-ref array index)))
 
 (defun emacs-char-table-aset (array index value)

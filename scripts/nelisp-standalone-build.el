@@ -36480,6 +36480,90 @@ bytes are written into a fresh 8-byte buffer instead."
                                          (nelisp_cons_construct_w cw cw 0) val 0)
                                         ranges 0))
                  1)))))
+    ;; Owned (eight-slot) library char-tables keep an owner-state record in
+    ;; slot 7: #s(owner-state ROOT CACHE VERSION).  For ASCII characters CACHE
+    ;; is either a scalar or a topology-node record #s(node CONTENTS) whose
+    ;; CONTENTS is a 128-slot vector; that vector is the whole ASCII view
+    ;; (clause 1, char-table slot access: same reads and writes as
+    ;; emacs-char-table-ref/-set, which stay the fallback for every case this
+    ;; declines).  The CONTENTS vector of a current-version state, or 0.
+    (defun nl_lct_state_typed_p (state)
+      (let ((view (alloc-bytes 32 8)))
+        (seq (nl_sexp_clone_into (nl_record_type_word state) view)
+             (sexp-name-eq view "emacs-char-table--owner-state"))))
+    ;; The node brand is an UNINTERNED symbol (make-symbol), so a same-named
+    ;; interned user record stays a scalar leaf, as in
+    ;; emacs-char-table--topology-node-p.  Natively that is the symbol-object
+    ;; kind 16; identity with the brand itself is not tested.
+    (defun nl_lct_node_typed_p (node)
+      (let* ((tw (nl_record_type_word node)))
+        (if (= (nl_so_p tw) 1)
+            (if (= (logand (heap-read-u64 (- tw 6) 0) 63) 16) 1 0)
+          0)))
+    (defun nl_lct_owner_cache (ct)
+      (let* ((state (nl_vector_slot_word ct 7)))
+        (if (= (nl_val_tag state) 12)
+            (if (if (= (record-slot-count state) 3) (nl_lct_state_typed_p state) 0)
+                (let* ((ver (nl_record_slot_word state 2)))
+                  (if (= (nl_val_tag ver) 2)
+                      (if (>= (nl_word_payload ver) 2)
+                          (nl_record_slot_word state 1)
+                        0)
+                    0))
+              0)
+          0)))
+    ;; The 128-slot node CONTENTS when the cache is a node, 0 otherwise.
+    (defun nl_lct_owner_contents (ct)
+      (let* ((cache (nl_lct_owner_cache ct)))
+        (if (= cache 0) 0
+          (if (= (nl_val_tag cache) 12)
+              (if (if (= (record-slot-count cache) 1) (nl_lct_node_typed_p cache) 0)
+                  (let* ((cont (nl_record_slot_word cache 0)))
+                    (if (= (nl_val_tag cont) 8)
+                        (if (= (vector-len cont) 128) cont 0)
+                      0))
+                0)
+            0))))
+    ;; The ASCII value of C, or 0 to leave the call to the library.  An
+    ;; unset entry follows emacs-char-table--fallback: own default, then the
+    ;; parent (owned library table, legacy library table or native table).
+    (defun nl_lct_owner_ref_depth (ct c depth)
+      (if (< c 128)
+          (if (> depth 64) 0
+            (let* ((cache (nl_lct_owner_cache ct)))
+              (if (= cache 0) 0
+                (let* ((cont (nl_lct_owner_contents ct))
+                       (v (if (/= cont 0) (nl_vector_slot_word cont c)
+                            (if (= (nl_val_tag cache) 12) 0 cache))))
+                  (if (= v 0) 0
+                  (if (/= (nl_val_tag v) 0) v
+                    (let* ((dflt (nl_vector_slot_word ct 2)))
+                      (if (/= (nl_val_tag dflt) 0) dflt
+                        (let* ((parent (nl_vector_slot_word ct 3)))
+                          (if (= (nl_val_tag parent) 0) 3
+                            (if (= (nl_val_tag parent) 8)
+                                (if (= (bf_nemacs_char_table_owned_vector_p parent) 1)
+                                    (nl_lct_owner_ref_depth parent c (+ depth 1))
+                                  0)
+                              0)))))))))))
+        0))
+    (defun nl_lct_owner_ref (ct c) (nl_lct_owner_ref_depth ct c 0))
+    ;; Single ASCII store: the node slot and the compatibility ASCII vector
+    ;; (slot 4), exactly what emacs-char-table--owner-set-char publishes.
+    (defun nl_lct_owner_set_try (ct c val)
+      (if (< c 128)
+          (let* ((cont (nl_lct_owner_contents ct)))
+            (if (= cont 0) 0
+              (let* ((ascii (nl_vector_slot_word ct 4)))
+                (if (= (nl_val_tag ascii) 8)
+                    (if (> (vector-len ascii) c)
+                        (seq (wf_dirty)
+                             (vector-slot-set cont c val)
+                             (vector-slot-set ascii c val)
+                             1)
+                      0)
+                  0))))
+        0))
     (defun bf_nemacs_char_table_call_w (args env _pad final-word)
       (let* ((name-buf (alloc-bytes 24 1)) (symbol-slot (alloc-bytes 32 8)))
         (seq (ptr-write-u64 name-buf 0 7521905776250678629) (ptr-write-u64 (+ name-buf 8) 0 7308324466015957601) (ptr-write-u64 (+ name-buf 16) 0 final-word) (nl_alloc_symbol name-buf 21 symbol-slot)
@@ -36492,8 +36576,14 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun bf_aref_nemacs_bridge_w (args env _pad)
       (if (= (nl_word_tag64 (wf_arg_word args 1)) 2)
           (if (= (bf_nemacs_char_table_owned_vector_p (wf_arg_ptr args 0)) 1)
-              (nl_argframe_list_only
-               (bf_nemacs_char_table_call_w args env 0 439788658989))
+              (let* ((r (if (= (nl_ct_char_ok (nl_word_payload (wf_arg_word args 1))) 1)
+                            (nl_lct_owner_ref (wf_arg_ptr args 0)
+                                              (nl_word_payload (wf_arg_word args 1)))
+                          0)))
+                (if (= r 0)
+                    (nl_argframe_list_only
+                     (bf_nemacs_char_table_call_w args env 0 439788658989))
+                  r))
             (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)
               ;; reprs: a present entry of the library layout is read natively.
               ;; callpath: the Lisp bridge takes the list; on the argv route it
@@ -36522,7 +36612,11 @@ bytes are written into a fresh 8-byte buffer instead."
                   (nl_g4arm_copy_w 0 (wf_arg_word args 2))
                 (bf_n2_call_lisp_char_table_aset_w args env 0))
           (if (= (bf_nemacs_char_table_owned_vector_p (wf_arg_ptr args 0)) 1)
-              (bf_nemacs_char_table_call_w args env 0 499918266669)
+              (if (= (nl_lct_owner_set_try (wf_arg_ptr args 0)
+                                           (nl_word_payload (wf_arg_word args 1))
+                                           (wf_arg_word args 2)) 1)
+                  (nl_g4arm_copy_w 0 (wf_arg_word args 2))
+                (bf_nemacs_char_table_call_w args env 0 499918266669))
             (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)
                 (if (= (nl_lct_set_try (wf_arg_ptr args 0)
                                        (nl_word_payload (wf_arg_word args 1))
