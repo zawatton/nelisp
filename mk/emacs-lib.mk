@@ -2161,6 +2161,12 @@ $(NEMACS_RUNTIME_DUMP): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(N
 	test -s "$(abspath $(NEMACS_RUNTIME_DUMP)).tmp"
 	mv "$(NEMACS_RUNTIME_DUMP).tmp" "$(NEMACS_RUNTIME_DUMP)"
 
+.PHONY: test-runtime-dump-smoke
+test-runtime-dump-smoke: bake-runtime-dump
+	NELISP_HOME="$(abspath $(NELISP_ROOT))" NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		NEMACS_RUNTIME_DUMP="$(abspath $(NEMACS_RUNTIME_DUMP))" \
+		sh test/emacs-lib/nemacs-runtime-dump-smoke.sh
+
 bake-interactive-runtime-image: $(NEMACS_INTERACTIVE_RUNTIME_IMAGE)
 
 $(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD)
