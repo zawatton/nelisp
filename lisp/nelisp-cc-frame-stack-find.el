@@ -681,19 +681,26 @@
     ;; is 0 (GNU SYMBOL_PLAINVAL, data.c find_symbol_value), read by the main thread with
     ;; no root pin; 2 when the cell holds the unbound marker; -1 for anything else.
     (defun nl_gv_fast (env sym)
+      ;; One mask test covers kind 4 and redirect 0 (bits 0-5 and 8-9 of the header);
+      ;; the worker and registry words are tested together (both must be 0).  A value
+      ;; word that cannot be the unbound marker (a vectorlike of another kind, a String
+      ;; word) is answered without the `wf_bytecode_w_unbound_p' call: the marker is a
+      ;; kind-16 vectorlike, and `nl_val_tag' of a String word is 5 or 14.
       (if (= (logand sym 7) 6)
           (let* ((hdr (ptr-read-u64 (- sym 6) 0)))
-            (if (= (logand hdr 63) 4)
-                (if (= (logand (sar hdr 8) 3) 0)
-                    (if (= (ptr-read-u64 env 168) 0)
-                        (if (= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0)
-                            (if (/= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2)
-                                (let* ((v (ptr-read-u64 (- sym 6) 16)))
-                                  (if (= (logand v 1) 1) v
-                                    (if (= (logand v 7) 2) v
-                                      (if (= (extern-call wf_bytecode_w_unbound_p env v) 1) 2 v))))
-                              -1)
-                          -1)
+            (if (= (logand hdr 831) 4)
+                (if (= (logior (ptr-read-u64 env 168)
+                               (ptr-read-u64 (data-addr nl_thread_registry) 0)) 0)
+                    (if (/= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2)
+                        (let* ((v (ptr-read-u64 (- sym 6) 16)))
+                          (if (= (logand v 1) 1) v
+                            (if (= (logand v 7) 2) v
+                              (if (= (logand v 7) 4) v
+                                (if (= (logand v 7) 6)
+                                    (if (= (logand (ptr-read-u8 (- v 6) 0) 63) 16)
+                                        (if (= (extern-call wf_bytecode_w_unbound_p env v) 1) 2 v)
+                                      v)
+                                  (if (= (extern-call wf_bytecode_w_unbound_p env v) 1) 2 v))))))
                       -1)
                   -1)
               -1))

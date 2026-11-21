@@ -1247,7 +1247,7 @@ See `wf_aot_swp' and `wf_aot_fb'."
                                                     (logand (ptr-read-u64 sb 0) 9223372036854775807)
                                                   n0)))
                                         (if (< n 1) 0
-                                          (if (= (heap-read-u8 (ptr-read-u64 sb 24) 0) 58) 1 0)))
+                                          (if (= (ptr-read-u8 (ptr-read-u64 sb 24) 0) 58) 1 0)))
                                     (bf_keyword_raw name)))
                                 1)
                              0

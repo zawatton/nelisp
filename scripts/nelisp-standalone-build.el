@@ -26579,7 +26579,7 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= (logand sa 7) 6)
           (if (= (wf_bytecode_w_symobj_p sa) 0) 0
             (if (= (wf_bytecode_w_canon_p key) 0) 0
-              (let* ((p (heap-read-u64 (+ (- sa 6) 32) 0)) (r 0) (n 0) (c 0) (rest 0))
+              (let* ((p (ptr-read-u64 (- sa 6) 32)) (r 0) (n 0) (c 0) (rest 0))
                 (seq
                  (if (= p 0) (setq p 3) 0)
                  (while (= r 0)
