@@ -466,9 +466,10 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
     ;; for project.el and anything calling `hack-dir-local-variables'.
     "emacs-files-gnu.el"
-    ;; GNU minibuffer.el completion-table-dynamic (generated, verbatim) for
-    ;; elisp-mode.el, which calls it while loading.
-    "emacs-minibuffer-gnu.el"
+    ;; Genuine GNU minibuffer.el (the pinned unmodified copy): the Lisp-level
+    ;; completion API (styles, completion-in-region, completion tables).  It
+    ;; must load before elisp-mode.el, which calls `completion-table-dynamic'.
+    "staged-emacs-lisp/minibuffer.el"
     "emacs-project.el"
     "project.el"
     "emacs-shell.el"

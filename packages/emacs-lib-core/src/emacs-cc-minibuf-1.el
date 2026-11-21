@@ -113,5 +113,26 @@ Return list of symbols found."
                     (push symbol found))))
       (sort found #'string-lessp))))
 
+;; Variables GNU defines in minibuf.c (DEFVAR_*), read by the genuine GNU
+;; minibuffer.el.  Defaults match GNU Emacs 31.1.
+(defvar minibuffer-completing-file-name nil
+  "Non-nil means completing file names.")
+(defvar minibuffer-allow-text-properties nil
+  "Non-nil means `read-from-minibuffer' should not discard text properties.")
+(defvar minibuffer-help-form nil
+  "Value that `help-form' takes on inside the minibuffer.")
+(defvar history-add-new-input t
+  "Non-nil means to add new elements in history.")
+(defvar read-buffer-function nil
+  "If this is non-nil, `read-buffer' does its work by calling this function.")
+(defvar read-buffer-completion-ignore-case nil
+  "Non-nil means completion ignores case when reading a buffer name.")
+(defvar read-expression-history nil
+  "A history list for arguments that are Lisp expressions to evaluate.")
+(defvar minibuffer-follows-selected-frame t
+  "t means the active minibuffer always displays on the selected frame.")
+(defvar read-minibuffer-restore-windows t
+  "Non-nil means restore window configurations on exit from minibuffer.")
+
 (provide 'emacs-cc-minibuf-1)
 ;;; emacs-cc-minibuf-1.el ends here
