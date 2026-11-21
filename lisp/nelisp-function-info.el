@@ -160,6 +160,9 @@ chain is unbound or cyclic."
       (cons (append (car result) (list :source-kind source-kind)) nil)
     result))
 
+;; Provided by the NeLisp runtime only; callers guard with `fboundp'.
+(declare-function nelisp--closure-cons "nelisp-function-info" (function))
+
 (defun nelisp-function--decode-native-closure (function)
   "Decode FUNCTION, a runtime closure, from its backing form.
 The runtime `aref' is only a descriptive view: it projects lexical cells

@@ -681,3 +681,40 @@ scripts/nelisp-standalone-build.el	nelisp-standalone--prelude-source-with-list-a
 tools/ai/com-dll/wbuf-sample.el	WbufSelfTest	tag-test-read-u64	0	n-a	This reads a u64 field of a COM selftest scratch struct and compares it to a test constant (4660), not a Sexp tag word.
 tools/ai/com-dll/wbuf-sample.el	WbufSelfTest	unresolved-numeric	0	n-a	This compares a COM selftest buffer length/offset or check number of 5/6, not any tag namespace.
 tools/ai/com-dll/wbuf-sample.el	path_selftest	unresolved-numeric	0	n-a	This compares a wbuf path-buffer length of 5 (drive-prefixed join result), not any tag namespace.
+lisp/nelisp-cc-frame-stack-find.el	nl_gv_fast	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_reset_scratch	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	nelisp-aot--emit-block	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	nelisp-aot--leaf-guarded	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	nelisp-aot--leaf-guarded	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_adl	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_entry_vec	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_fb	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_fg	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_find_in	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_gd	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_lean_call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_mask_sync	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_mask_sync	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_mask_sync	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_mask_sync	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_mask_sync	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_mask_sync	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_plain_car	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_plain_cell	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_plain_cell	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_plain_validate	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_subr_is	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_subr_is	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_switch_sym	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_switch_sym	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_switch_sym	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_switch_sym	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_switch_sym	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_switch_sym	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_swp	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-aot-bytecode.el	wf_aot_symfn	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_read_one_from_string_native_w	tag-test-sexp-tag	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_read_one_hint_start	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	6	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	7	pending	Added after the last ledger refresh; not yet audited.

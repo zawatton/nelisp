@@ -720,6 +720,12 @@
 # (unstripped, exactly what the gate weighs): total 21,512,264 = code
 # 12,588,302 + payload 8,923,962.  `slack-pct' applies to each budget.
 # Lower either number whenever the gate says it is safe to.
-code-size 12588302
+# Raised 2026-11-21 (code-size 12588302 -> 13511961, +923659 bytes, +7.3%)
+# to the CI-measured .text of the perf/macroexpand-debian branch (CI run
+# 44862242742, Linux x86_64).  The growth is real and explained: the
+# macroexpand speed work (lanes A-S) added AOT-compiled rows and baked
+# more macroexpansion / reader / frame-stack code into the standalone
+# image.  payload-size is unchanged and still inside its slack.
+code-size 13511961
 payload-size 8923962
 slack-pct 2

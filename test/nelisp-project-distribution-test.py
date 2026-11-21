@@ -38,7 +38,14 @@ class ProjectDistribution(unittest.TestCase):
             self.assertEqual(live.stdout.read(8), b'nelisp> ')
             result = subprocess.run(
                 ["bash", "tools/build-standalone-tarball.sh", version, "linux-x86_64", "--project-cli"],
-                cwd=ROOT, capture_output=True, text=True, timeout=300)
+                # 600 s: the CI runner needed more than 300 s for this build
+                # on the macroexpand branch (run 44862242742 timed out at 300 s;
+                # the base's whole test took 480 s, run 44838464898).  Locally
+                # the build is 114 s on both the base and the branch with a warm
+                # unit cache, and the cold standalone reader build is 258 s
+                # (base) vs 281 s (branch), about 9% slower.  600 s is 2x the
+                # observed CI limit.
+                cwd=ROOT, capture_output=True, text=True, timeout=600)
             self.assertIsNone(live.poll(), 'release build preserves the live development process')
             self.assertEqual(hashlib.sha256(development_runtime.read_bytes()).hexdigest(), before)
         finally:
