@@ -13436,11 +13436,20 @@ You cannot count on them to still be there!"))
             "aarch64-unknown-linux-gnu"
           "x86_64-pc-linux-gnu")))))
 
+;; gnu562: the C predicates (`type-of', `bufferp', `buffer-live-p') never
+;; call a Lisp redefinition.  emacs-lib wraps `recordp' and `hash-table-p'
+;; (arity wrappers, about 0.45 us a call against 0.1 us), so they read the
+;; native predicates saved here.
+(unless (fboundp 'nelisp--native-recordp)
+  (fset 'nelisp--native-recordp (symbol-function 'recordp)))
+(unless (fboundp 'nelisp--native-hash-table-p)
+  (fset 'nelisp--native-hash-table-p (symbol-function 'hash-table-p)))
+
 (unless (fboundp 'bufferp)
   ;; Direct tag test: the generated predicate walks the struct ancestry on
   ;; every call, and `nelisp-buffer' has no children.
   (defun bufferp (obj)
-    (and (recordp obj) (eq (nelisp--record-type obj) 'nelisp-buffer))))
+    (and (nelisp--native-recordp obj) (eq (aref obj 0) 'nelisp-buffer))))
 ;; bufnative: `point', `point-min', `point-max', `goto-char', `buffer-size', `bobp'
 ;; and `eobp' are native (`nl_buf_leaf_run' in lisp/nelisp-cc-fx-call-primitives.el:
 ;; they read the current buffer's record slots directly and decline to these
@@ -13505,7 +13514,7 @@ You cannot count on them to still be there!"))
 carries no separate liveness flag), so a stale reference is live iff
 the registry still maps its name back to this exact object."
     ;; Slot 1 of the record is NAME (slot 0 is the type tag).
-    (and (recordp buffer) (eq (nelisp--record-type buffer) 'nelisp-buffer)
+    (and (nelisp--native-recordp buffer) (eq (aref buffer 0) 'nelisp-buffer)
          (eq buffer (gethash (aref buffer 1) nelisp-buffer--registry)))))
 (defun nelisp--buffer-arg (buffer-or-name)
   "Resolve BUFFER-OR-NAME to a buffer object, as GNU `Fget_buffer' + nsberror."
@@ -26953,15 +26962,6 @@ argument end extends over right padding (textprop.c:2123)."
                  (byte-code-function-p x))
             (and (fboundp 'subrp) (subrp x))
             (nelisp--native-functionp x)) t nil)))
-
-;; gnu562: `type-of' is one switch in GNU's C, which never calls a Lisp
-;; redefinition.  emacs-lib wraps `recordp' and `hash-table-p' (arity
-;; wrappers, about 0.45 us a call against 0.1 us), so `type-of' reads the
-;; native predicates saved here.
-(unless (fboundp 'nelisp--native-recordp)
-  (fset 'nelisp--native-recordp (symbol-function 'recordp)))
-(unless (fboundp 'nelisp--native-hash-table-p)
-  (fset 'nelisp--native-hash-table-p (symbol-function 'hash-table-p)))
 
 (unless (fboundp 'type-of)
   (defun type-of (x)

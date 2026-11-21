@@ -1853,7 +1853,9 @@ when no overlay carries PROP."
           (let ((s (emacs-buffer--tp-start cell))
                 (e (emacs-buffer--tp-end cell)))
             (when (and (<= s pos) (< pos e))
-              (throw 'found (copy-sequence (emacs-buffer--tp-plist cell))))))))))
+              ;; A plist is a list: `append' copies it as `copy-sequence'
+              ;; would, without the string-property advice on that.
+              (throw 'found (append (emacs-buffer--tp-plist cell) nil)))))))))
 
 ;;;###autoload
 (defun emacs-buffer-text-property-view (start end &optional properties buf)
