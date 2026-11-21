@@ -65,7 +65,7 @@ EVENTS are fed to the minibuffer key reader."
 (ert-deftest isearch-forward-finds-first-match ()
   (emacs-isearch-test--with-fresh-world
     (let ((buf (emacs-isearch-test--run
-                #'isearch-forward
+                #'emacs-isearch-forward
                 "foo bar foo baz"
                 1
                 "foo" 'return)))
@@ -77,7 +77,7 @@ EVENTS are fed to the minibuffer key reader."
 (ert-deftest isearch-forward-cycles-to-next-match ()
   (emacs-isearch-test--with-fresh-world
     (let ((buf (emacs-isearch-test--run
-                #'isearch-forward
+                #'emacs-isearch-forward
                 "foo bar foo baz foo"
                 1
                 "foo" ?\C-s 'return)))
@@ -86,7 +86,7 @@ EVENTS are fed to the minibuffer key reader."
 (ert-deftest isearch-backward-finds-prev-match ()
   (emacs-isearch-test--with-fresh-world
     (let ((buf (emacs-isearch-test--run
-                #'isearch-backward
+                #'emacs-isearch-backward
                 "foo bar foo baz foo"
                 20
                 "foo" 'return)))
@@ -95,7 +95,7 @@ EVENTS are fed to the minibuffer key reader."
 (ert-deftest isearch-abort-restores-point ()
   (emacs-isearch-test--with-fresh-world
     (let ((buf (emacs-isearch-test--run
-                #'isearch-forward
+                #'emacs-isearch-forward
                 "foo bar foo"
                 5
                 "foo" ?\C-g)))
@@ -104,7 +104,7 @@ EVENTS are fed to the minibuffer key reader."
 (ert-deftest isearch-RET-commits-point ()
   (emacs-isearch-test--with-fresh-world
     (let ((buf (emacs-isearch-test--run
-                #'isearch-forward
+                #'emacs-isearch-forward
                 "alpha beta beta"
                 1
                 "beta" 'return)))
@@ -128,7 +128,7 @@ EVENTS are fed to the minibuffer key reader."
       (cl-letf (((symbol-function 'message)
                  (lambda (fmt &rest args)
                    (setq captured-prompt (apply #'format fmt args)))))
-        (isearch-forward))
+        (emacs-isearch-forward))
       (should (eq 'isearch captured-face))
       (should (string-match-p "I-search: foo\\'" captured-prompt))
       (should (= 4 (emacs-isearch-test--point buf))))))

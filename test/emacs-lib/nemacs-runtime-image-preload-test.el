@@ -491,7 +491,6 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-module-command
                  nemacs-runtime-image-preload--install-elisp-core
                  nemacs-runtime-image-preload--install-ielm-core
-                 nemacs-runtime-image-preload--install-isearch-core
                  nemacs-runtime-image-preload--install-minibuffer-core
                  nemacs-runtime-image-preload--install-project-core
                  nemacs-runtime-image-preload--install-process-core
@@ -691,7 +690,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should (nemacs-runtime-image-preload--install-help-core))
     (should (nemacs-runtime-image-preload--install-elisp-core))
     (should (nemacs-runtime-image-preload--install-ielm-core))
-    (should (nemacs-runtime-image-preload--install-isearch-core))
     (should (nemacs-runtime-image-preload--install-minibuffer-core))
     (should (nemacs-runtime-image-preload--install-project-core))
     (should (nemacs-runtime-image-preload--install-process-core))

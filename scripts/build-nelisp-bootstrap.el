@@ -1306,7 +1306,6 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-shell.el" . "shell.el")
                     ("emacs-project.el" . "project.el")
                     ("emacs-ielm.el" . "ielm.el")
-                    ("emacs-isearch.el" . "isearch.el")
                     ("emacs-replace.el" . "replace.el")
                     ("emacs-comint.el" . "comint.el")
                     ("emacs-vc.el" . "vc.el")

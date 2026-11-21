@@ -10,7 +10,8 @@
 ;; `docs/design/02-v01-daily-driver.org' §3.2.1.
 ;;
 ;; This module provides a small interactive incremental-search layer:
-;; `isearch-forward' / `isearch-backward', echo-area prompt updates,
+;; `emacs-isearch-forward' / `emacs-isearch-backward' (GNU isearch.el owns the
+;; unprefixed `isearch-*' names), echo-area prompt updates,
 ;; current-match highlighting through a temporary `face' text property,
 ;; repeat with `C-s' / `C-r', `C-g' abort, `RET' commit, and `DEL'
 ;; query shrink.
@@ -34,7 +35,7 @@
 (define-error 'emacs-isearch-error "emacs-isearch error")
 
 (defvar emacs-isearch--active nil
-  "Non-nil while `isearch-forward' / `isearch-backward' is reading input.")
+  "Non-nil while `emacs-isearch-forward' / `emacs-isearch-backward' is reading input.")
 
 (defvar emacs-isearch--buffer nil
   "The `nelisp-ec-buffer' searched by the active session.")
@@ -75,7 +76,11 @@
                                :background "yellow")))
 
 (defun emacs-isearch--ensure-global-bindings ()
-  "Install `C-s' / `C-r' on the active global keymap."
+  "Install `C-s' / `C-r' for this module's own UI on the active global keymap.
+GNU isearch.el owns `isearch-forward'/`isearch-backward' and their default
+bindings; this helper is only for sessions that drive the in-house UI.
+It is no longer run at load time, so loading this file leaves GNU's
+bindings alone."
   (let ((map (or (and (fboundp 'current-global-map) (current-global-map))
                  (emacs-keymap-current-global-map)
                  (emacs-keymap-make-sparse-keymap))))
@@ -85,10 +90,10 @@
       (emacs-keymap-use-global-map map))
     (if (fboundp 'define-key)
         (progn
-          (define-key map (kbd "C-s") #'isearch-forward)
-          (define-key map (kbd "C-r") #'isearch-backward))
-      (emacs-keymap-define-key map (kbd "C-s") #'isearch-forward)
-      (emacs-keymap-define-key map (kbd "C-r") #'isearch-backward))))
+          (define-key map (kbd "C-s") #'emacs-isearch-forward)
+          (define-key map (kbd "C-r") #'emacs-isearch-backward))
+      (emacs-keymap-define-key map (kbd "C-s") #'emacs-isearch-forward)
+      (emacs-keymap-define-key map (kbd "C-r") #'emacs-isearch-backward))))
 
 (defun emacs-isearch--current-buffer ()
   "Return the current `nelisp-ec-buffer' or signal `user-error'."
@@ -439,7 +444,7 @@ Test-only helper."
         emacs-isearch--last-prompt ""))
 
 ;;;###autoload
-(defun isearch-forward (&optional regexp-p no-recursive-edit)
+(defun emacs-isearch-forward (&optional regexp-p no-recursive-edit)
   "Incrementally search forward from point.
 REGEXP-P and NO-RECURSIVE-EDIT are accepted for API compatibility and
 ignored by this literal-search MVP."
@@ -448,7 +453,7 @@ ignored by this literal-search MVP."
   (emacs-isearch--run 'forward))
 
 ;;;###autoload
-(defun isearch-backward (&optional regexp-p no-recursive-edit)
+(defun emacs-isearch-backward (&optional regexp-p no-recursive-edit)
   "Incrementally search backward from point.
 REGEXP-P and NO-RECURSIVE-EDIT are accepted for API compatibility and
 ignored by this literal-search MVP."
@@ -457,7 +462,6 @@ ignored by this literal-search MVP."
   (emacs-isearch--run 'backward))
 
 (emacs-isearch--ensure-face)
-(emacs-isearch--ensure-global-bindings)
 
 (provide 'emacs-isearch)
 

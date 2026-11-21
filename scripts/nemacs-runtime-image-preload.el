@@ -151,7 +151,6 @@ the default batch image while the vendor surface is still expanding."
   (nemacs-runtime-image-preload--install-help-core)
   (nemacs-runtime-image-preload--install-elisp-core)
   (nemacs-runtime-image-preload--install-ielm-core)
-  (nemacs-runtime-image-preload--install-isearch-core)
   (nemacs-runtime-image-preload--install-minibuffer-core)
   (nemacs-runtime-image-preload--install-project-core)
   (nemacs-runtime-image-preload--install-dev-nav-core)
@@ -313,21 +312,6 @@ skip, so the polyfill's ec-layer buffers leaked into the runtime."
     (nemacs-runtime-image-preload--install-module-command
      'ielm-send-input 'emacs-ielm 'ielm-input-handler)
     (provide 'ielm))
-  t)
-
-(defun nemacs-runtime-image-preload--install-isearch-core ()
-  "Install the minimal `isearch' daily-driver surface."
-  (unless (featurep 'isearch)
-    (nemacs-runtime-image-preload--install-module-command
-     'isearch-forward 'emacs-isearch 'isearch-forward)
-    (nemacs-runtime-image-preload--install-module-command
-     'isearch-backward 'emacs-isearch 'isearch-backward)
-    (unless (fboundp 'isearch-forward-regexp)
-      (fset 'isearch-forward-regexp
-            '(lambda (&optional no-recursive-edit)
-               (require 'emacs-isearch)
-               (isearch-forward t no-recursive-edit))))
-    (provide 'isearch))
   t)
 
 (defun nemacs-runtime-image-preload--install-minibuffer-core ()

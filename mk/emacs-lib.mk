@@ -800,6 +800,7 @@ TEST_FAST_FILES = \
 	$(NEMACS_TEST_DIR)/emacs-keymap-builtins-test.el \
 	$(NEMACS_TEST_DIR)/emacs-keymap-test.el \
 	$(NEMACS_TEST_DIR)/emacs-parity-core-vars-test.el \
+	$(NEMACS_TEST_DIR)/emacs-gnu-isearch-test.el \
 	$(NEMACS_TEST_DIR)/emacs-parity-shims-test.el \
 	$(NEMACS_TEST_DIR)/emacs-parity-macroexpand-test.el \
 	$(NEMACS_TEST_DIR)/emacs-minibuffer-builtins-test.el \
