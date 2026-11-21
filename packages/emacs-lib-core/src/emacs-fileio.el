@@ -385,7 +385,12 @@ policy through public window operations.  Buffer objects stay native."
            (selected (selected-window))
            window)
       (while (and functions (not window))
-        (setq window (funcall (pop functions) buffer alist)))
+        ;; GNU window.el action functions that this library does not
+        ;; provide (for example `display-buffer--maybe-same-window') are
+        ;; skipped, so the fallback policy below applies.
+        (let ((fn (pop functions)))
+          (when (and fn (fboundp fn))
+            (setq window (funcall fn buffer alist)))))
       (unless window
         (dolist (candidate (window-list))
           (when (and (not window) (eq buffer (window-buffer candidate))

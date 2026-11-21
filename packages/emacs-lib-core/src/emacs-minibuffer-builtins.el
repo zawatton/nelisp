@@ -251,6 +251,9 @@ and t.  Matching honors the standard completion variables."
     "Return the minibuffer window belonging to FRAME."
     (emacs-cc-census-display-b34window01--minibuffer-window frame)))
 
+(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-depth)
+  (defalias 'minibuffer-depth #'emacs-minibuffer-minibuffer-depth))
+
 (when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt)
   (defalias 'minibuffer-prompt #'emacs-minibuffer-minibuffer-prompt))
 

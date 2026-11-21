@@ -134,5 +134,11 @@ Return list of symbols found."
 (defvar read-minibuffer-restore-windows t
   "Non-nil means restore window configurations on exit from minibuffer.")
 
+;; keyboard.c DEFVARs read by `minibuffer-setup-on-screen-keyboard'.
+(defvar last-event-frame nil
+  "The frame on which the last input event was received.")
+(defvar last-event-device nil
+  "The name of the input device that generated the last event.")
+
 (provide 'emacs-cc-minibuf-1)
 ;;; emacs-cc-minibuf-1.el ends here
