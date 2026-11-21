@@ -38,6 +38,10 @@ this lazily creates the buffer's newline cache.  Keep point unchanged."
     (set-buffer (window-buffer (selected-window)))
     (while unread-command-events
       (set-buffer (window-buffer (selected-window)))
+      ;; GNU command_loop_1 clears the recorded keys before each command;
+      ;; without this `this-single-command-keys' (read by isearch's
+      ;; pre-command hook) accumulates every key of the macro.
+      (when (fboundp 'clear-this-command-keys) (clear-this-command-keys t))
       (let* ((keys (read-key-sequence-vector nil))
              (command (key-binding keys))
              (buffer (current-buffer))

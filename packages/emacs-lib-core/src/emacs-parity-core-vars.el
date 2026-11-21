@@ -303,6 +303,27 @@ if OBJECT does not identify a displayed buffer or a live window."
     "Headless no-op: fringe geometry is display-only in the batch substrate."
     nil))
 
+;; --- terminal speed (GNU dispnew.c) ---
+;; `isearch.el' reads `baud-rate' on every search step (the slow-terminal
+;; `search-slow-speed' check).  A batch Emacs 31.1 reports 0.
+(unless (boundp 'baud-rate)
+  (defvar baud-rate 0
+    "The output baud rate of the terminal (0 when there is no tty)."))
+
+;; GNU minibuffer.el `minibuffer-message-timeout' (default 2): isearch.el
+;; saves and rebinds it on every `isearch-mode' entry.  Guarded so that GNU's
+;; own defcustom owns the value once minibuffer.el is loaded.
+(unless (boundp 'minibuffer-message-timeout)
+  (defvar minibuffer-message-timeout 2
+    "How long to display an echo-area message when the minibuffer is active."))
+
+;; GNU keyboard.c `last-event-frame': the frame of the last input event
+;; (nil before any event, `macro' for keyboard-macro events).  isearch.el
+;; reads it to decide whether a search was typed on a text terminal.
+(unless (boundp 'last-event-frame)
+  (defvar last-event-frame nil
+    "The frame in which the most recently read event occurred."))
+
 (provide 'emacs-parity-core-vars)
 
 ;;; emacs-parity-core-vars.el ends here

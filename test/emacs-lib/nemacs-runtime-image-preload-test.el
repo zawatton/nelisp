@@ -45,9 +45,6 @@
     indent-sexp
     ielm
     ielm-send-input
-    isearch-forward
-    isearch-backward
-    isearch-forward-regexp
     completing-read
     minibuffer-complete
     minibuffer-complete-and-exit
@@ -394,7 +391,7 @@
   "Global variables installed directly into vendor-core images.")
 
 (defconst nemacs-runtime-image-preload-test--direct-install-features
-  '(files simple dired help-mode help-fns lisp-mode ielm isearch
+  '(files simple dired help-mode help-fns lisp-mode ielm
           minibuffer project subr-x seq map lisp case-table cdl range regi
           emacs-process emacs-process-builtins
           frame emacs-frame-builtins tab-bar tab-line
@@ -491,7 +488,6 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-module-command
                  nemacs-runtime-image-preload--install-elisp-core
                  nemacs-runtime-image-preload--install-ielm-core
-                 nemacs-runtime-image-preload--install-isearch-core
                  nemacs-runtime-image-preload--install-minibuffer-core
                  nemacs-runtime-image-preload--install-project-core
                  nemacs-runtime-image-preload--install-process-core
@@ -676,7 +672,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should-not (featurep 'help-fns))
     (should-not (featurep 'lisp-mode))
     (should-not (featurep 'ielm))
-    (should-not (featurep 'isearch))
     (should-not (featurep 'minibuffer))
     (should-not (featurep 'project))
     (should-not (featurep 'emacs-process))
@@ -691,7 +686,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should (nemacs-runtime-image-preload--install-help-core))
     (should (nemacs-runtime-image-preload--install-elisp-core))
     (should (nemacs-runtime-image-preload--install-ielm-core))
-    (should (nemacs-runtime-image-preload--install-isearch-core))
     (should (nemacs-runtime-image-preload--install-minibuffer-core))
     (should (nemacs-runtime-image-preload--install-project-core))
     (should (nemacs-runtime-image-preload--install-process-core))
@@ -708,7 +702,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should (featurep 'help-fns))
     (should (featurep 'lisp-mode))
     (should (featurep 'ielm))
-    (should (featurep 'isearch))
     (should (featurep 'minibuffer))
     (should (featurep 'project))
     (should (featurep 'emacs-process))
@@ -843,10 +836,6 @@ The preload installers only `require' it when it is not yet a feature."
                    '(lambda (&rest args)
                       (require 'emacs-ielm)
                       (apply 'ielm-input-handler args))))
-    (should (equal (symbol-function 'isearch-forward-regexp)
-                   '(lambda (&optional no-recursive-edit)
-                      (require 'emacs-isearch)
-                      (isearch-forward t no-recursive-edit))))
     (should (equal (symbol-function 'project-current)
                    '(lambda (&rest args)
                       (require 'emacs-project)

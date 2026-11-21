@@ -1265,6 +1265,11 @@ instead, matching GNU.")
 (defconst emacs-keymap--meta-modifier-bit #x8000000
   "GNU Emacs's Meta (`M-') modifier bit -- `(lsh 1 27)', 134217728.")
 
+(defvar emacs-keymap--standalone-key-strict nil
+  "Non-nil while `emacs-keymap--standalone-key-valid-p' parses a key string.
+Strict mode keeps bare words as function-key symbols so validity checks
+reject them the way GNU `key-valid-p' does.")
+
 (defun emacs-keymap--standalone-key-token (token)
   "Parse one kbd-style TOKEN for the standalone NeLisp fallback.
 Symbolic results (angle-bracket names and bare function-key names)
@@ -1326,6 +1331,15 @@ instead of `[C-M-up]')."
      ((equal token "ESC") (+ bits ?\e))
      ((equal token "SPC") (+ bits ?\s))
      ((equal token "DEL") (+ bits 127))
+     ;; GNU `key-parse' reads a modifier-free bare word such as "bar" or "f10"
+     ;; as its characters (host Emacs 31.1: (key-parse "f10") is [102 49 48]);
+     ;; only the strict `key-valid-p' check treats it as a function-key name.
+     ((and (> (length token) 1)
+           (not emacs-keymap--standalone-key-strict)
+           (= bits 0)
+           (equal prefix "")
+           (emacs-keymap--standalone-bare-function-key-p token))
+      (append token nil))
      ((and (> (length token) 1)
            (emacs-keymap--standalone-bare-function-key-p token))
       (intern (concat prefix token)))
@@ -1399,7 +1413,9 @@ separators in Emacs key syntax, not key events."
 (defun emacs-keymap--standalone-key-valid-p (keys)
   "Return non-nil when the standalone fallback can parse KEYS."
   (condition-case nil
-      (progn (emacs-keymap--standalone-key-parse keys) t)
+      (let ((emacs-keymap--standalone-key-strict t))
+        (emacs-keymap--standalone-key-parse keys)
+        t)
     (error nil)))
 
 (defun emacs-keymap--defvar-keymap-build (base parent suppress defs)

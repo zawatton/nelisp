@@ -1002,3 +1002,5 @@ emacs-lisp/vc/pcvs-info.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/pc
 emacs-lisp/vc/pcvs-parse.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/pcvs-parse.el.gz	sha256=5f89d1081f2eaa6eafbb5363b203a432f50142b85b2cf33c4bf9e65ed9a27e5d
 emacs-lisp/progmodes/elisp-mode.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/elisp-mode.el.gz	sha256=437417d146008c86e23390a08b31f67fe7377f567b0afc87b158b4b8b975bd98
 staged-emacs-lisp/minibuffer.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/minibuffer.el.gz	sha256=3700d9a36429442283dcb85b24427d41292d87d5ea0b951ce3d9993438dbd974
+staged-emacs-lisp/window.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/window.el.gz	sha256=74e8b48e91ce2eeeb5af48ce3a32fceab9740ea458305bd9dcdde446b2d6725c
+emacs-lisp/misearch.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/misearch.el	sha256=f40a45af7adb50ca3f21726595d6edc2307f571f50ff2e62920c3883d92c7d38

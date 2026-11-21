@@ -76,7 +76,6 @@ features remain behind `emacs-init' and its explicit loader functions.")
      :feature emacs-core
      :features ,emacs-core-features
      :lazy-features (emacs-buffer-ui
-                     emacs-isearch
                      emacs-dired-min
                      emacs-project
                      emacs-elisp-eval

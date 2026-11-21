@@ -702,7 +702,6 @@ NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES = \
 	nemacs-loaddefs \
 	emacs-dired-min \
 	files-standalone-buffer \
-	emacs-isearch \
 	emacs-replace \
 	emacs-shell-command \
 	emacs-vc \
@@ -807,6 +806,7 @@ TEST_FAST_FILES = \
 	$(NEMACS_TEST_DIR)/emacs-keymap-builtins-test.el \
 	$(NEMACS_TEST_DIR)/emacs-keymap-test.el \
 	$(NEMACS_TEST_DIR)/emacs-parity-core-vars-test.el \
+	$(NEMACS_TEST_DIR)/emacs-gnu-isearch-test.el \
 	$(NEMACS_TEST_DIR)/emacs-parity-shims-test.el \
 	$(NEMACS_TEST_DIR)/emacs-parity-macroexpand-test.el \
 	$(NEMACS_TEST_DIR)/emacs-minibuffer-builtins-test.el \
