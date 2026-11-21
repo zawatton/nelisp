@@ -606,7 +606,6 @@ src/emacs-comint.el	packages/nelisp-emacs-tools/src/emacs-comint.el
 src/emacs-command-loop-builtins.el	packages/nelisp-emacs-core/src/emacs-command-loop-builtins.el
 src/emacs-command-loop.el	packages/nelisp-emacs-core/src/emacs-command-loop.el
 src/emacs-compile.el	packages/nelisp-emacs-tools/src/emacs-compile.el
-src/emacs-completion-ui.el	packages/nelisp-emacs-tools/src/emacs-completion-ui.el
 src/emacs-core.el	packages/nelisp-emacs-core/src/emacs-core.el
 src/emacs-dired-min-gui.el	packages/nelisp-emacs-app-gui/src/emacs-dired-min-gui.el
 src/emacs-dired-min.el	packages/nelisp-emacs-core/src/emacs-dired-min.el
@@ -929,7 +928,6 @@ test/emacs-cl-macros-test.el	test/nelisp-emacs-lib/emacs-cl-macros-test.el
 test/emacs-comint-test.el	test/nelisp-emacs-lib/emacs-comint-test.el
 test/emacs-command-loop-builtins-test.el	test/nelisp-emacs-lib/emacs-command-loop-builtins-test.el
 test/emacs-compile-test.el	test/nelisp-emacs-lib/emacs-compile-test.el
-test/emacs-completion-ui-test.el	test/nelisp-emacs-lib/emacs-completion-ui-test.el
 test/emacs-core-test.el	test/nelisp-emacs-lib/emacs-core-test.el
 test/emacs-dired-min-test.el	test/nelisp-emacs-lib/emacs-dired-min-test.el
 test/emacs-dump-test.el	test/nelisp-emacs-lib/emacs-dump-test.el

@@ -53,7 +53,10 @@ subsystem, which the standalone lacks (project.el calls
 (defconst gen-dl--subr-names
   '(make-progress-reporter progress-reporter-text progress-reporter-context
     progress-reporter-force-update progress-reporter-echo-area
-    progress-reporter-do-update progress-reporter-update progress-reporter-done))
+    progress-reporter-do-update progress-reporter-update progress-reporter-done
+    ;; Event/position accessors `choose-completion' (GNU simple.el) calls.
+    event--posn-at-point event-start event-end posnp posn-window posn-area
+    posn-point event-click-count))
 
 ;; Preloaded GNU loaddefs.el entries for PCL-CVS: GNU's default
 ;; `find-directory-functions' starts with `cvs-dired-noselect', which

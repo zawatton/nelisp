@@ -404,6 +404,11 @@ policy through public window operations.  Buffer objects stay native."
               (setq window candidate)))
           (setq window (or window (split-window selected nil 'below)))
           (set-window-buffer window buffer)))
+      ;; window.el `window--display-buffer' runs the action alist's
+      ;; `body-function' once the buffer is shown (used for *Completions*).
+      (let ((body-function (cdr (assq 'body-function alist))))
+        (when (and window (functionp body-function))
+          (funcall body-function window)))
       window))
 
   (defun display-buffer (buffer-or-name &optional action frame)

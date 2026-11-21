@@ -2307,6 +2307,130 @@ message to that effect instead of signaling an error."
     ;; Simulate the message printed by `ls'.
     (insert (format "%s: No such file or directory\n" file))))
 
+(defun event--posn-at-point ()
+  ;; Use `window-point' for the case when the current buffer
+  ;; is temporarily switched to some other buffer (bug#50256)
+  (let* ((pos (window-point))
+         (posn (posn-at-point pos (if (minibufferp (current-buffer))
+                                      (minibuffer-window)))))
+    (cond ((null posn) ;; `pos' is "out of sight".
+           (setq posn (list (selected-window) pos '(0 . 0) 0)))
+          ;; If `pos' is inside a chunk of text hidden by an `invisible'
+          ;; or `display' property, `posn-at-point' returns the position
+          ;; that *is* visible, whereas `event--posn-at-point' is used
+          ;; when we have a keyboard event, whose position is `point' even
+          ;; if that position is invisible.
+          ((> (length posn) 5)
+           (setf (nth 5 posn) pos)))
+    posn))
+
+(defun event-start (event)
+  "Return the starting position of EVENT.
+EVENT should be a mouse click, drag, touch screen, or key press
+event.  If EVENT is nil, the value of `posn-at-point' is used
+instead.
+
+The following accessor functions are used to access the elements
+of the position:
+
+`posn-window': The window of the event end, or its frame if the
+event end point belongs to no window.
+`posn-area': A symbol identifying the area the event occurred in,
+or nil if the event occurred in the text area.
+`posn-point': The buffer position of the event.
+`posn-x-y': The pixel-based coordinates of the event.
+`posn-col-row': The estimated column and row corresponding to the
+position of the event.
+`posn-actual-col-row': The actual column and row corresponding to the
+position of the event.
+`posn-string': The string object of the event, which is either
+nil or (STRING . POSITION)'.
+`posn-image': The image object of the event, if any.
+`posn-object': The image or string object of the event, if any.
+`posn-timestamp': The time the event occurred, in milliseconds.
+
+For more information, see Info node `(elisp)Click Events'."
+  (declare (side-effect-free t))
+  (if (and (consp event)
+           (or (eq (car event) 'touchscreen-begin)
+               (eq (car event) 'touchscreen-end)))
+      ;; Touch screen begin and end events save their information in a
+      ;; different format, where the mouse position list is the cdr of
+      ;; (nth 1 event).
+      (cdadr event)
+    (or (and (consp event)
+             ;; Ignore touchscreen update events.  They store the posn
+             ;; in a different format, and can have multiple posns.
+             (not (eq (car event) 'touchscreen-update))
+             (nth 1 event))
+        (event--posn-at-point))))
+
+(defun event-end (event)
+  "Return the ending position of EVENT.
+EVENT should be a click, drag, touch screen, or key press event.
+
+See `event-start' for a description of the value returned."
+  (declare (side-effect-free t))
+  (if (and (consp event)
+           (or (eq (car event) 'touchscreen-begin)
+               (eq (car event) 'touchscreen-end)))
+      (cdadr event)
+    (or (and (consp event)
+             (not (eq (car event) 'touchscreen-update))
+             (nth (if (consp (nth 2 event)) 2 1) event))
+        (event--posn-at-point))))
+
+(defsubst event-click-count (event)
+  "Return the multi-click count of EVENT, a click or drag event.
+The return value is a positive integer."
+  (declare (side-effect-free t))
+  (if (and (consp event) (integerp (nth 2 event))) (nth 2 event) 1))
+
+(defun posnp (obj)
+  "Return non-nil if OBJ appears to be a valid `posn' object specifying a window.
+A `posn' object is returned from functions such as `event-start'.
+If OBJ is a valid `posn' object, but specifies a frame rather
+than a window, return nil."
+  (declare (side-effect-free error-free))
+  ;; FIXME: Correct the behavior of this function so that all valid
+  ;; `posn' objects are recognized, after updating other code that
+  ;; depends on its present behavior.
+  (and (windowp (car-safe obj))
+       (atom (car-safe (setq obj (cdr obj))))                ;AREA-OR-POS.
+       (integerp (car-safe (car-safe (setq obj (cdr obj))))) ;XOFFSET.
+       (integerp (car-safe (cdr obj)))))
+
+(defsubst posn-window (position)
+  "Return the window in POSITION.
+If POSITION is outside the frame where the event was initiated,
+return that frame instead.  POSITION should be a list of the form
+returned by the `event-start' and `event-end' functions."
+  (declare (side-effect-free t))
+  (nth 0 position))
+
+(defsubst posn-area (position)
+  "Return the window area recorded in POSITION, or nil for the text area.
+POSITION should be a list of the form returned by the `event-start'
+and `event-end' functions."
+  (declare (side-effect-free t))
+  (let ((area (if (consp (nth 1 position))
+		  (car (nth 1 position))
+		(nth 1 position))))
+    (and (symbolp area) area)))
+
+(defun posn-point (position)
+  "Return the buffer location in POSITION.
+POSITION should be a list of the form returned by the `event-start'
+and `event-end' functions.
+Returns nil if POSITION does not correspond to any buffer location (e.g.
+a click on a scroll bar)."
+  (declare (side-effect-free t))
+  (or (nth 5 position)
+      (let ((pt (nth 1 position)))
+        (or (car-safe pt)
+            ;; Apparently this can also be `vertical-scroll-bar' (bug#13979).
+            (if (integerp pt) pt)))))
+
 (defsubst progress-reporter-update (reporter &optional value update-text)
   "Report progress of an operation, by default, in the echo area.
 REPORTER should be the result of a call to `make-progress-reporter'.

@@ -175,7 +175,6 @@ avoiding broad renames, mass moves, or formatting-only changes.
 |------+----------------+-----------------+-------------------|
 | =emacs-command-loop-builtins.el= | CORE | unprefixed command-loop shim | keep explicit shim |
 | =emacs-command-loop.el= | CORE | command dispatch and GUI bridge context | separate adapter hooks later |
-| =emacs-completion-ui.el= | CORE/FEAT | completion UI runtime | keep shared |
 | =emacs-core.el= | CORE | reusable editor-core package-group loader | public loader entry |
 | =emacs-elisp-eval.el= | CORE/FEAT | eval-defun/eval-last-sexp style behavior | keep shared |
 | =emacs-elisp-mode.el= | CORE/FEAT | elisp mode setup | keep feature package |
