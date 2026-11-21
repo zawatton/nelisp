@@ -144,6 +144,10 @@ cell, default fixnum-coded 8), :bind-rc, :unbind-rc, :nconst, :env."
     (cl-loop for w in stack for i from 0 do (puthash (+ mem (* i 8)) w words))
     (puthash cell 1 words) (puthash (+ cell 8) (1+ (* 4 mem)) words)
     (puthash (+ foot 40) (or (plist-get opts :aux) (1+ (* 4 777))) words)
+    ;; 8cd4fa972: a frame without an aux block (foot +40 = 3) builds one in the
+    ;; loop when the frame state word (env +176) is non-zero.  0 here keeps the
+    ;; "no AUX yet" case on the declining path these tests assert.
+    (puthash (+ env 176) (or (plist-get opts :state-word) 0) words)
     (let ((before (copy-hash-table words)))
       (cl-letf (((symbol-function 'heap-read-u8)
                  (lambda (p o)

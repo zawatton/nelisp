@@ -310,11 +310,16 @@ Feed the header through the actual writer/read loops and both loader entries."
                 ((symbol-function 'ptr-write-u64)
                  (lambda (p off v) (push 'write events) (puthash (+ p off) v memory)))
                 ((symbol-function 'nl_os_reserve_chunk) (lambda (_) (push 'reserve events) 2000))
+                ;; 982ed65ac: the grow path rounds the request with the arena's helper.
+                ((symbol-function 'nl_align_up) (lambda (n a) (logand (+ n (- a 1)) (- 0 a))))
                 ((symbol-function 'nl_os_commit_range) (lambda (&rest _) (push 'commit events) commit))
                 ((symbol-function 'nl_os_free_chunk) (lambda (&rest _) (push 'free events) 1))
                 ((symbol-function 'nl_cold_realloc_chunk0) (lambda (&rest _) (push 'metadata events) 0)))
         (should (= (funcall function 32768) 0))
-        (should (equal events '(commit)))
+        ;; 982ed65ac: a successful commit also raises the descriptor's
+        ;; committed-end word (chunk base + 824) to the page-aligned request.
+        (should (equal (reverse events) '(commit write)))
+        (should (= (gethash 1824 memory) 32768))
         (setq events nil commit 0)
         (should (= (funcall function 32768) -1))
         (should (equal events '(commit)))

@@ -370,7 +370,13 @@
 # car word, the state epoch, the captured `autoload' word and the `macro' constant with
 # ptr-read-u8/u64 (measured on the base a2e9c24cd tree: 63 -> 69).
 # The unsafe-call total is raised by those 6 only (2646 -> 2652); the base tree's own +4 stays.
-unsafe-call 2652
+# 2026-11-21: unsafe-call 2652 -> 2656 (+4), all in scripts/nelisp-standalone-build.el, whose
+# `pinned-kernel-call' line (1978) already counts them; only this total was never raised.
+# +1 from 982ed65ac (`nl_chunk_try_alloc' writes the new committed-watermark word, the
+# 1972 -> 1973 excess noted above) and +3 from b00e9036e (the in-loop setcar/setcdr/nreverse/
+# nconc arms of `wf_bytecode_w_fast_run' and `wf_bytecode_w_get_fast', the 1972 -> 1975 entry
+# above).  Counts measured per commit with `make unsafe-inventory' (2581 -> 2582 -> 2585).
+unsafe-call 2656
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry

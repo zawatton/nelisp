@@ -1076,7 +1076,12 @@ ns-prefix-violation 2430
 # `nelisp-prelude-bytecode--opcodes', `--decode-opcodes' and `--nested-unsupported',
 # the same build-time pairing as its existing `--top-level-spans' use.  The base
 # tree's own excess (2446) is not raised here.
-ns-private-escape 2447
+# 2026-11-21: ns-private-escape 2447 -> 2449 (+2), both from lisp/nelisp-function-info.el
+# (982ed65ac): it reads the runtime-private `nelisp--closure-p' and `nelisp--closure-cons'
+# (owner scripts/nelisp-stdlib-prelude.el) to recover a closure's canonical backing form.
+# The calls are guarded by fboundp / `nelisp-function--test', and there is no public
+# accessor that preserves the captured-cell identity.
+ns-private-escape 2449
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
