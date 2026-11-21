@@ -105,7 +105,7 @@ def _data_extent(entry, data, unit_records, directory):
         unit = unit_records.get(entry["unit"])
         if not isinstance(unit, dict):
             raise ValueError("Numeric data unit has no active owner")
-        raw = _read(directory / unit["path"], 16 * 1024 * 1024)
+        raw = _read(directory / unit["path"], 32 * 1024 * 1024)
         if _digest(raw) != unit["unit-sha256"]:
             raise ValueError("Numeric data unit source changed")
         section = entry["section"].encode("ascii")

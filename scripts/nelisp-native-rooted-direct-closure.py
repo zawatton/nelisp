@@ -52,9 +52,9 @@ def unit_owners(metadata, directory):
         if path.resolve().parent != directory.resolve():
             raise ValueError("Unit source escapes its owner directory")
         total_unit_bytes += path.stat().st_size
-        if total_unit_bytes > 32 * 1024 * 1024:
+        if total_unit_bytes > 64 * 1024 * 1024:
             raise ValueError("Aggregate unit source input bound")
-        raw = bounded_read(path, 16 * 1024 * 1024)
+        raw = bounded_read(path, 32 * 1024 * 1024)
         if hashlib.sha256(raw).hexdigest() != unit["unit-sha256"]:
             raise ValueError("Unit source hash differs")
         match = re.search(rb"\(text :nelisp-cache-bytes-hex \"([0-9a-f]+)\"", raw)
