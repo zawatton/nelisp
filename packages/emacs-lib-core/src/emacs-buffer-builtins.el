@@ -2747,9 +2747,19 @@ Ignores narrowing (hashes the whole buffer)."
     (setq emacs-buffer-builtins--native-char-after (symbol-function 'char-after)))
   (unless emacs-buffer-builtins--native-char-before
     (setq emacs-buffer-builtins--native-char-before (symbol-function 'char-before)))
-  (defalias 'goto-char #'emacs-buffer-builtins-goto-char)
-  (defalias 'char-after #'emacs-buffer-builtins-char-after)
-  (defalias 'char-before #'emacs-buffer-builtins-char-before))
+  ;; GNU implements these in C and accepts markers itself.  The native subrs
+  ;; already validate integer-or-marker arguments, reject detached markers
+  ;; and return the same values, so a Lisp wrapper over them only adds
+  ;; ~2 us per call.  Wrap only a non-subr (Lisp fallback) implementation.
+  (if (subrp emacs-buffer-builtins--native-goto-char)
+      (defalias 'goto-char emacs-buffer-builtins--native-goto-char)
+    (defalias 'goto-char #'emacs-buffer-builtins-goto-char))
+  (if (subrp emacs-buffer-builtins--native-char-after)
+      (defalias 'char-after emacs-buffer-builtins--native-char-after)
+    (defalias 'char-after #'emacs-buffer-builtins-char-after))
+  (if (subrp emacs-buffer-builtins--native-char-before)
+      (defalias 'char-before emacs-buffer-builtins--native-char-before)
+    (defalias 'char-before #'emacs-buffer-builtins-char-before)))
 (when (emacs-buffer-builtins--standalone-p)
   (emacs-buffer-builtins--install-native-marker-position-bridges)
   ;; Standalone provide executes named feature callbacks. This also handles
