@@ -22,7 +22,40 @@
                nelisp--fxc-jump nelisp--fxc-unsupported nelisp--fxc-body nelisp--fxc-comp
                nelisp--fx-want-ir nelisp--fx-cap-arity nelisp--fx-cap-max nelisp--fx-arglist-shape
                nelisp--fx-simple-arg-p nelisp--fx-hopeless-heads nelisp--fx-hopeless-p
-               nelisp--fx-loopy-p nelisp--fx-ir-table nelisp--fx-macros-used)))
+               nelisp--fx-loopy-p nelisp--fx-ir-table nelisp--fx-macros-used
+               ;; 14bfa2a7f: the compiler reads this switch (a defvar, not a defun).
+               nelisp-fx-inline-local-lambdas
+               nelisp-fx-inline-inner-binders
+               nelisp--fx-ll--acc
+               nelisp--fx-ll--same
+               nelisp--fx-ll--occ
+               nelisp--fx-ll--syms-1
+               nelisp--fx-ll--syms
+               nelisp--fx-ll--okvar
+               nelisp--fx-ll--call-p
+               nelisp--fx-ll--calls
+               nelisp--fx-ll--rw-list
+               nelisp--fx-ll--rewrite
+               nelisp--fx-ll--user-binder-p
+               nelisp--fx-ll--bound-add
+               nelisp--fx-ll--bound-go
+               nelisp--fx-ll--bound
+               nelisp--fx-ll--lambda-of
+               nelisp--fx-ll--declared
+               nelisp--fx-ll--free-fail
+               nelisp--fx-ll--free-forms
+               nelisp--fx-ll--free-names
+               nelisp--fx-ll--free-params
+               nelisp--fx-ll--free-lambda
+               nelisp--fx-ll--free-code
+               nelisp--fx-ll--free
+               nelisp--fx-ll--params-ok-p
+               nelisp--fx-ll--any-memq
+               nelisp--fx-ll--admit-p
+               nelisp--fx-ll--node
+               nelisp--fx-ll--walk-list
+               nelisp--fx-ll--walk
+               nelisp--fx-inline-local-lambdas)))
   (with-temp-buffer
     (insert-file-contents
      (expand-file-name "../scripts/nelisp-stdlib-prelude.el"

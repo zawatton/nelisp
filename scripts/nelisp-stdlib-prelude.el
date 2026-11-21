@@ -1123,12 +1123,11 @@ records obsolescence via `make-obsolete-variable'; installs no warning."
       (fset function (list 'autoload file docstring interactive type)))
     function))
 
-(defun autoload-do-load (autoload &optional name macro-only)
-  "Load AUTOLOAD transactionally and return NAME's replacement function.
-Only explicit calls use this transaction path; ordinary `load' remains
-incremental and non-transactional."
-  (if (not (autoloadp autoload))
-      autoload
+(defun nelisp--autoload-do-load-1 (autoload name macro-only)
+  "Transactional body of `autoload-do-load' for a real AUTOLOAD object.
+Split out so the common non-autoload path of `autoload-do-load' is a small
+function the prelude byte-code adoption can compile."
+  (progn
     (let ((kind (nth 4 autoload)))
       (if (and (eq macro-only 'macro)
                (not (memq kind '(t macro))))
@@ -1154,6 +1153,14 @@ incremental and non-transactional."
                   (error "Autoloading file %s failed to define function %s"
                          (nth 1 autoload) name)
                 (symbol-function name)))))))))
+
+(defun autoload-do-load (autoload &optional name macro-only)
+  "Load AUTOLOAD transactionally and return NAME's replacement function.
+Only explicit calls use this transaction path; ordinary `load' remains
+incremental and non-transactional."
+  (if (not (autoloadp autoload))
+      autoload
+    (nelisp--autoload-do-load-1 autoload name macro-only)))
 
 (unless (fboundp 'cl-ldiff)
   (defun cl-ldiff (list sublist)
@@ -22591,6 +22598,12 @@ reader."
           (when (= depth 0) (setq res t))))))
     res))
 
+(defvar nelisp--rd-hint nil
+  "Reader cursor hint (STRING NCHARS HDR) for the last large buffer text read.
+HDR is (START CHAR . BYTE): the native reader takes it in place of START, and
+CHAR/BYTE is a char/byte position pair valid for STRING only (it is dropped
+whenever STRING is not `eq' to the memoized text).")
+
 (defun nelisp--read-buffer-form (buf start end lo)
   "Read one form from BUF's text between 0-based START and END.
 END nil means the end of the text; LO is the index where the accessible
@@ -22612,10 +22625,32 @@ are reported the way GNU does, and the rest takes `read-from-string'."
                                   (nelisp-buffer-tick buf)))
                    (cdr cached)
                  (nelisp-buffer-string buf)))
-         (end (or end (length full)))
+         ;; A large text read in full gets a char/byte cursor hint kept in a
+         ;; Lisp object (`nelisp--rd-hint'), because the native cursor cache
+         ;; is cleared by every collection and would rescan from byte 0.
+         (h (and (null end)
+                 (let ((c nelisp--rd-hint))
+                   (if (and c (eq (car c) full))
+                       c
+                     (let ((n (length full)))
+                       (and (>= n 2048)
+                            (setq nelisp--rd-hint
+                                  (cons full (cons n (cons 0 (cons 0 0)))))))))))
+         (end (if h (car (cdr h)) (or end (length full))))
          (r (and (not nelisp--rd-positioning) (<= start end)
                  (fboundp 'nelisp--read-all-from-string-native)
-                 (nelisp--read-all-from-string-native full start end))))
+                 (nelisp--read-all-from-string-native
+                  full
+                  (if h
+                      (let ((hdr (cdr (cdr h))))
+                        ;; Backward seek: restart the cursor from the top.
+                        (when (< start (car (cdr hdr)))
+                          (setcar (cdr hdr) 0)
+                          (setcdr (cdr hdr) 0))
+                        (setcar hdr start)
+                        hdr)
+                    start)
+                  end))))
     (or r
         (let ((kind (nelisp--read-buffer-scan full start end)))
           (cond
@@ -24316,6 +24351,65 @@ Windows drive path keeps `C:', and a relative path stays relative."
                 (list "Renaming" "No such file or directory"
                       (expand-file-name file) (expand-file-name newname)))))
     nil))
+(unless (fboundp 'copy-file)
+  (defun copy-file (file newname &optional ok-if-already-exists keep-time
+                         preserve-uid-gid preserve-permissions)
+    "Copy FILE to NEWNAME byte for byte; return nil.
+A NEWNAME ending in a directory separator names a directory to copy
+into, under FILE's own base name.  Without OK-IF-ALREADY-EXISTS an
+existing NEWNAME signals `file-already-exists'; an existing directory
+NEWNAME is never replaced.  Copying a file onto itself signals
+`file-error' before anything is written.
+Unsupported options are refused with a plain `error' before anything
+is read or written, never ignored: a non-nil KEEP-TIME (no
+`set-file-times'), PRESERVE-UID-GID (no chown) or PRESERVE-PERMISSIONS
+(`set-file-modes' fails on the Windows standalone binary, and probing it
+would chmod FILE).  An integer
+OK-IF-ALREADY-EXISTS asks GNU to prompt, which has no answerer in this
+headless runtime, and is refused the same way.  Contents travel
+through an undecoded unibyte buffer, so every byte value survives.
+
+(fn FILE NEWNAME &optional OK-IF-ALREADY-EXISTS KEEP-TIME PRESERVE-UID-GID PRESERVE-PERMISSIONS)"
+    (nelisp--check-string file)
+    (nelisp--check-string newname)
+    (when (integerp ok-if-already-exists)
+      (error "copy-file: integer OK-IF-ALREADY-EXISTS (interactive confirmation) is not supported"))
+    (when keep-time
+      (error "copy-file: KEEP-TIME is not supported (no set-file-times primitive)"))
+    (when preserve-uid-gid
+      (error "copy-file: PRESERVE-UID-GID is not supported (no chown primitive)"))
+    (when preserve-permissions
+      (error "copy-file: PRESERVE-PERMISSIONS is not supported (no reliable chmod primitive)"))
+    (let* ((src (expand-file-name file))
+           (dst (let ((n (length newname)))
+                  (if (and (> n 0)
+                           (let ((c (aref newname (1- n))))
+                             (or (= c 47)
+                                 (and (= c 92) (nelisp--windows-paths-p)))))
+                      (expand-file-name (file-name-nondirectory file) newname)
+                    (expand-file-name newname)))))
+      (when (file-directory-p dst)
+        (signal 'file-error (list "File is a directory" dst)))
+      (when (and (not ok-if-already-exists) (file-exists-p dst))
+        (signal 'file-already-exists (list "File already exists" dst)))
+      (unless (file-exists-p src)
+        (signal 'file-missing
+                (list "Copying file" "No such file or directory" src dst)))
+      (when (file-directory-p src)
+        (signal 'file-error (list "Copying file" "Is a directory" src dst)))
+      (when (or (string= src dst)
+                (and (file-exists-p dst) (file-equal-p src dst)))
+        (signal 'file-error (list "Input and output files are the same" src dst)))
+      (let ((dir (file-name-directory dst)))
+        (when (and dir (not (file-directory-p dir)))
+          (signal 'file-missing
+                  (list "Copying file" "No such file or directory" src dst))))
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert-file-contents-literally src)
+        (let ((coding-system-for-write 'no-conversion))
+          (write-region (point-min) (point-max) dst nil 'silent)))
+      nil)))
 (unless (fboundp 'make-symbolic-link)
   (defun make-symbolic-link (target linkname &optional ok-if-already-exists)
     (nelisp--check-string target)
@@ -29232,6 +29326,37 @@ no-op function, without wiring a real menu-bar item into MAPS."
 ;;; runtime (generator-embedded source or macro-generated definitions).
 ;;; Appended last so they replace those definitions when the prelude loads.
 
+;; GNU Emacs 31.1 subr.el definitions of `with-current-buffer' and
+;; `with-temp-buffer'.  They are appended here, not earlier, because
+;; `save-current-buffer' only receives its special-form implementation
+;; later in this file, and bootstrap code before that point relies on the
+;; NeLisp definitions of these macros.  Redefining them now makes their
+;; macroexpansion identical to GNU's.
+(defmacro with-current-buffer (buffer-or-name &rest body)
+  "Execute the forms in BODY with BUFFER-OR-NAME temporarily current.
+BUFFER-OR-NAME must be a buffer or the name of an existing buffer.
+The value returned is the value of the last form in BODY.  See
+also `with-temp-buffer'."
+  (declare (indent 1) (debug t))
+  `(save-current-buffer
+     (set-buffer ,buffer-or-name)
+     ,@body))
+
+(defmacro with-temp-buffer (&rest body)
+  "Create a temporary buffer, and evaluate BODY there like `progn'.
+The buffer does not run the hooks `kill-buffer-hook',
+`kill-buffer-query-functions', and `buffer-list-update-hook'.
+See also `with-temp-file' and `with-output-to-string'."
+  (declare (indent 0) (debug t))
+  (let ((temp-buffer (make-symbol "temp-buffer")))
+    `(let ((,temp-buffer (generate-new-buffer " *temp*" t)))
+       ;; `kill-buffer' can change current-buffer in some odd cases.
+       (with-current-buffer ,temp-buffer
+         (unwind-protect
+             (progn ,@body)
+           (and (buffer-name ,temp-buffer)
+                (kill-buffer ,temp-buffer)))))))
+
 ;; JSON fast paths for every option combination.  The parser scans the string by
 ;; index with local variables, takes a string between quotes with one `string-search',
 ;; and memoises object keys; the encoder collects its output as a flat piece list and
@@ -31216,6 +31341,374 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
         (nelisp--fxc-unsupported x))
        (t (nelisp--fxc-unsupported x)))))))
 
+;; BEGIN nelisp--fx-inline-local-lambdas
+;; Local-lambda inlining for the fx compiler.  The compiler rejects a lambda
+;; that captures a mutated variable (copy capture would be unsound), so
+;; instead of closing over the variable this pass removes the closure:
+;; (let ((B #'(lambda (P...) . BODY))) ... (funcall B E...) ...) becomes
+;; (let ((B nil)) ... (let ((P E)...) . BODY) ...) when B provably never
+;; escapes and no call site can capture or shadow a free variable of BODY.
+;; Reasoning and the admission proof sketch: target/ai/local-lambda-inline/
+;; design.md.  The pass is pure, never copies BODY (quoted literals stay `eq'
+;; across call sites), and is only ever fed to the fx compiler, which
+;; classifies every binder lexical/special at compile time.
+;; This block deliberately uses no CL library and no closures (this file is
+;; dynamically scoped), only plain loops and explicit recursion.
+
+(defvar nelisp-fx-inline-local-lambdas t
+  "When non-nil, `nelisp--fx-compile' inlines non-escaping local lambdas.
+Nil disables the transform (negative control for tests and benchmarks).")
+
+(defvar nelisp-fx-inline-inner-binders t
+  "When non-nil, allow inlining lambdas whose body has its own binders.
+Binders inside an inlined body are then classified lexical or special at the
+outer compile time, as the GNU byte compiler does; the trade-off is that a
+mid-invocation special declaration cannot change them afterwards.  Nil
+declines such lambdas, which is stricter.  The inlined `funcall' becomes a
+fixed opcode, like `+' and `<', so redefining `funcall' is not honoured, as in
+GNU byte code.")
+
+(defvar nelisp--fx-ll--acc nil
+  "Accumulator used by the free-variable and binder walks of the inliner.")
+
+(defun nelisp--fx-ll--same (a b)
+  "Return non-nil when lists A and B hold `eq' elements and tails."
+  (while (and (consp a) (consp b) (eq (car a) (car b)))
+    (setq a (cdr a) b (cdr b)))
+  (eq a b))
+
+(defun nelisp--fx-ll--occ (sym tree)
+  "Count occurrences of SYM anywhere in TREE, quoted data included."
+  (let ((n 0))
+    (while (consp tree)
+      (setq n (+ n (nelisp--fx-ll--occ sym (car tree))) tree (cdr tree)))
+    (if (eq tree sym) (1+ n) n)))
+
+(defun nelisp--fx-ll--syms-1 (x acc)
+  "Return ACC extended with every distinct symbol occurring in X."
+  (while (consp x)
+    (setq acc (nelisp--fx-ll--syms-1 (car x) acc) x (cdr x)))
+  (if (and x (symbolp x) (not (memq x acc))) (cons x acc) acc))
+
+(defun nelisp--fx-ll--syms (tree)
+  "Return every distinct symbol occurring in TREE."
+  (nelisp--fx-ll--syms-1 tree nil))
+
+(defun nelisp--fx-ll--okvar (s)
+  "Return non-nil when S may serve as a lexical variable name."
+  (and (symbolp s) s (not (eq s t)) (not (keywordp s))
+       (not (special-variable-p s))))
+
+(defun nelisp--fx-ll--call-p (b n x)
+  "Return non-nil when X is (funcall B E1..En) with B absent from the Ei."
+  (and (eq (car-safe x) 'funcall) (eq (car-safe (cdr x)) b)
+       (proper-list-p x) (= (length x) (+ n 2))
+       (zerop (nelisp--fx-ll--occ b (cddr x)))))
+
+(defun nelisp--fx-ll--calls (b n x)
+  "Count valid (funcall B ...) call forms reachable as code in X."
+  (cond ((atom x) 0)
+        ((eq (car x) 'quote) 0)
+        ((nelisp--fx-ll--call-p b n x) 1)
+        (t (let ((k 0))
+             (while (consp x)
+               (setq k (+ k (nelisp--fx-ll--calls b n (car x))) x (cdr x)))
+             k))))
+
+(defun nelisp--fx-ll--rw-list (b params lbody list made)
+  "Return a fresh copy of LIST with `nelisp--fx-ll--rewrite' applied to each element."
+  (let (acc)
+    (while (consp list)
+      (push (nelisp--fx-ll--rewrite b params lbody (car list) made) acc)
+      (setq list (cdr list)))
+    (nconc (nreverse acc) list)))
+
+(defun nelisp--fx-ll--rewrite (b params lbody x made)
+  "Replace each valid (funcall B ...) in X by a `let' over LBODY.
+Every produced `let' (and every rebuilt copy of one) is recorded in MADE."
+  (cond ((atom x) x)
+        ((eq (car x) 'quote) x)
+        ((nelisp--fx-ll--call-p b (length params) x)
+         (let ((pairs nil) (ps params) (as (cddr x)))
+           (while (and ps as)
+             (push (list (car ps) (car as)) pairs)
+             (setq ps (cdr ps) as (cdr as)))
+           (let ((new (cons 'let (cons (nreverse pairs) lbody))))
+             (puthash new t made)
+             new)))
+        (t (let ((new (nelisp--fx-ll--rw-list b params lbody x made)))
+             (when (gethash x made) (puthash new t made))
+             new))))
+
+(defun nelisp--fx-ll--user-binder-p (x made)
+  "Return non-nil when code in X (outside quotes) has a user binding construct.
+`let' forms recorded in MADE only bind closure parameters, which are always
+lexical, so they do not count (their subforms are still scanned)."
+  (cond ((atom x) nil)
+        ((eq (car x) 'quote) nil)
+        ((and (memq (car x) '(let let*)) (not (gethash x made))) t)
+        ((and (eq (car x) 'condition-case) (car-safe (cdr x))) t)
+        ((and (eq (car x) 'lambda) (car-safe (cdr x))) t)
+        (t (let (hit)
+             (while (and (consp x) (not hit))
+               (setq hit (nelisp--fx-ll--user-binder-p (car x) made) x (cdr x)))
+             hit))))
+
+(defun nelisp--fx-ll--bound-add (s)
+  "Record symbol S (when non-nil) in `nelisp--fx-ll--acc'."
+  (when (and s (symbolp s) (not (memq s nelisp--fx-ll--acc)))
+    (push s nelisp--fx-ll--acc)))
+
+(defun nelisp--fx-ll--bound-go (x)
+  "Walk X, recording bound symbols in `nelisp--fx-ll--acc'."
+  (while (consp x)
+    (let ((h (car x)) (a (car-safe (cdr x))))
+      (cond ((and (memq h '(let let*)) (listp a))
+             (dolist (e (if (proper-list-p a) a))
+               (nelisp--fx-ll--bound-add (if (consp e) (car e) e))))
+            ((and (eq h 'condition-case) (symbolp a))
+             (nelisp--fx-ll--bound-add a)
+             ;; A handler clause naming `funcall' mimics a call shape.
+             (dolist (c (if (proper-list-p x) (cdddr x)))
+               (when (or (eq (car-safe c) 'funcall)
+                         (and (consp (car-safe c)) (memq 'funcall (car c))))
+                 (nelisp--fx-ll--bound-add 'funcall))))
+            ((and (eq h 'lambda) (listp a))
+             (dolist (s (nelisp--fx-ll--syms a))
+               (nelisp--fx-ll--bound-add s)))))
+    (nelisp--fx-ll--bound-go (car x))
+    (setq x (cdr x))))
+
+(defun nelisp--fx-ll--bound (tree)
+  "Return symbols bound anywhere in TREE (over-approximation, quotes included)."
+  (let ((nelisp--fx-ll--acc nil))
+    (nelisp--fx-ll--bound-go tree)
+    nelisp--fx-ll--acc))
+
+(defun nelisp--fx-ll--lambda-of (entry)
+  "Return the lambda form of binding ENTRY, or nil.
+ENTRY is (B (function (lambda ...))) or the bare (B (lambda ...))."
+  (let* ((f (car-safe (cdr-safe entry)))
+         (lam (if (eq (car-safe f) 'function)
+                  (and (proper-list-p f) (= (length f) 2) (cadr f))
+                f)))
+    (and (proper-list-p entry) (= (length entry) 2) (symbolp (car entry))
+         (eq (car-safe lam) 'lambda) (proper-list-p lam)
+         (>= (length lam) 2) lam)))
+
+(defun nelisp--fx-ll--declared (x acc)
+  "Return ACC extended with every X of a code-level (defvar X)/(defconst X)."
+  (cond ((atom x) acc)
+        ((eq (car x) 'quote) acc)
+        (t (when (and (memq (car x) '(defvar defconst)) (consp (cdr x))
+                      (symbolp (cadr x)))
+             (push (cadr x) acc))
+           (while (consp x)
+             (setq acc (nelisp--fx-ll--declared (car x) acc) x (cdr x)))
+           acc)))
+
+(defun nelisp--fx-ll--free-fail ()
+  "Abort the free-variable walk: a form it does not model."
+  (throw 'nelisp--fx-ll--unknown :unknown))
+
+(defun nelisp--fx-ll--free-forms (l env)
+  "Walk each form of list L under ENV."
+  (while (consp l)
+    (nelisp--fx-ll--free-code (car l) env)
+    (setq l (cdr l))))
+
+(defun nelisp--fx-ll--free-names (l)
+  "Return the variable names bound by the let binding list L."
+  (let (r)
+    (while (consp l)
+      (push (if (consp (car l)) (car (car l)) (car l)) r)
+      (setq l (cdr l)))
+    r))
+
+(defun nelisp--fx-ll--free-params (l)
+  "Return the symbols of parameter list L that are not `&' markers."
+  (let (r)
+    (unless (listp l) (nelisp--fx-ll--free-fail))
+    (while (consp l)
+      (when (and (symbolp (car l))
+                 (not (string-prefix-p "&" (symbol-name (car l)))))
+        (push (car l) r))
+      (setq l (cdr l)))
+    (nreverse r)))
+
+(defun nelisp--fx-ll--free-lambda (x env)
+  "Walk the lambda form X under ENV."
+  (nelisp--fx-ll--free-forms
+   (cddr x) (append (nelisp--fx-ll--free-params (cadr x)) env)))
+
+(defun nelisp--fx-ll--free-code (x env)
+  "Record free variable references of code X under ENV in `nelisp--fx-ll--acc'."
+  (cond
+   ((symbolp x)
+    (when (and x (not (eq x t)) (not (keywordp x)) (not (memq x env))
+               (not (memq x nelisp--fx-ll--acc)))
+      (push x nelisp--fx-ll--acc)))
+   ((atom x) nil)
+   (t (let ((h (car x)))
+        (cond
+         ((eq h 'quote) nil)
+         ((eq h 'function)
+          (cond ((symbolp (cadr x)) nil)
+                ((eq (car-safe (cadr x)) 'lambda)
+                 (nelisp--fx-ll--free-lambda (cadr x) env))
+                (t (nelisp--fx-ll--free-fail))))
+         ((eq h 'lambda) (nelisp--fx-ll--free-lambda x env))
+         ((eq h 'let)
+          (dolist (e (cadr x))
+            (when (consp e) (nelisp--fx-ll--free-forms (cdr e) env)))
+          (nelisp--fx-ll--free-forms
+           (cddr x) (append (nelisp--fx-ll--free-names (cadr x)) env)))
+         ((eq h 'let*)
+          (dolist (e (cadr x))
+            (when (consp e) (nelisp--fx-ll--free-forms (cdr e) env))
+            (push (if (consp e) (car e) e) env))
+          (nelisp--fx-ll--free-forms (cddr x) env))
+         ((eq h 'condition-case)
+          (let ((v (cadr x)))
+            (nelisp--fx-ll--free-code (nth 2 x) env)
+            (dolist (c (nthcdr 3 x))
+              (nelisp--fx-ll--free-forms (cdr-safe c) (if v (cons v env) env)))))
+         ((eq h 'cond)
+          (dolist (c (cdr x)) (nelisp--fx-ll--free-forms c env)))
+         ((memq h '(progn prog1 prog2 if and or while unwind-protect
+                    save-excursion save-restriction save-current-buffer
+                    catch setq-default interactive setq))
+          (nelisp--fx-ll--free-forms (cdr x) env))
+         ((memq h '(defvar defconst))
+          (nelisp--fx-ll--free-code (nth 2 x) env))
+         ((symbolp h)
+          (if (special-form-p h)
+              (nelisp--fx-ll--free-fail)
+            (nelisp--fx-ll--free-forms (cdr x) env)))
+         ((eq (car-safe h) 'lambda)
+          (nelisp--fx-ll--free-lambda h env)
+          (nelisp--fx-ll--free-forms (cdr x) env))
+         (t (nelisp--fx-ll--free-fail)))))))
+
+(defun nelisp--fx-ll--free (lam)
+  "Return the free variable references of lambda form LAM, or :unknown.
+Binding-aware walk over macroexpanded core forms; any special form or head it
+does not model yields :unknown so the caller declines."
+  (let ((nelisp--fx-ll--acc nil))
+    (let ((r (catch 'nelisp--fx-ll--unknown
+               (nelisp--fx-ll--free-lambda lam nil)
+               nil)))
+      (or r nelisp--fx-ll--acc))))
+
+(defun nelisp--fx-ll--params-ok-p (args)
+  "Return non-nil when ARGS are distinct plain lexical parameter names."
+  (let ((ok t) (l args))
+    (while (and ok (consp l))
+      (when (or (not (nelisp--fx-ll--okvar (car l)))
+                (string-prefix-p "&" (symbol-name (car l)))
+                (memq (car l) (cdr l)))
+        (setq ok nil))
+      (setq l (cdr l)))
+    ok))
+
+(defun nelisp--fx-ll--any-memq (syms list)
+  "Return non-nil when any element of SYMS is a member of LIST."
+  (let ((hit nil))
+    (while (and syms (not hit))
+      (when (memq (car syms) list) (setq hit t))
+      (setq syms (cdr syms)))
+    hit))
+
+(defun nelisp--fx-ll--admit-p (b lam scope extra decl made)
+  "Return non-nil when binder B bound to LAM may be inlined across SCOPE.
+EXTRA lists further names bound beside B in the same `let'.
+DECL lists names that may be locally special; MADE records inserted `let's."
+  (let ((args (cadr lam)) (lbody (cddr lam)))
+    (and (nelisp--fx-ll--okvar b)
+         (proper-list-p args)
+         (nelisp--fx-ll--params-ok-p args)
+         (zerop (nelisp--fx-ll--occ b (cdr lam)))
+         ;; DECL covers preceding, enclosing, sibling and later declarations.
+         ;; (a) GNU binds closure parameters lexically even under a local
+         ;; declaration, but an inserted `let' would honour it; (b) a declared
+         ;; B would make (B nil) observable through `symbol-value'.
+         (not (memq b decl))
+         (not (nelisp--fx-ll--any-memq (nelisp--fx-ll--syms (cdr lam)) decl))
+         ;; A binder written inside LBODY would be classified lexical/special
+         ;; at the outer compile time once inlined, but later when left in the
+         ;; closure; policy A (`nelisp-fx-inline-inner-binders') accepts that.
+         (or nelisp-fx-inline-inner-binders
+             (not (nelisp--fx-ll--user-binder-p lbody made)))
+         ;; An oclosure :documentation form must not run at call sites.
+         (not (eq (car-safe (car-safe lbody)) :documentation))
+         (let ((ok (nelisp--fx-ll--calls b (length args) scope)))
+           (and (> ok 0) (= ok (nelisp--fx-ll--occ b scope))))
+         (let ((bound (append extra (nelisp--fx-ll--bound scope))))
+           ;; Binding a name `funcall' makes (funcall B) a non-call shape.
+           (and (not (memq 'funcall bound))
+                (let ((free (nelisp--fx-ll--free lam)))
+                  (and (listp free)
+                       (not (nelisp--fx-ll--any-memq free bound)))))))))
+
+(defun nelisp--fx-ll--node (x decl made)
+  "Inline admissible local lambdas of the let/let* form X; return X if none."
+  (let* ((star (eq (car x) 'let*)) (binds (cadr x)) (body (cddr x))
+         (i 0) (changed nil))
+    (when (proper-list-p binds)
+      (while (< i (length binds))
+        (let* ((e (nth i binds)) (lam (nelisp--fx-ll--lambda-of e)))
+          (when lam
+            (let* ((b (car e)) (later (nthcdr (1+ i) binds))
+                   (scope (append (if star later) body))
+                   (extra nil))
+              (dolist (d (if star later binds))
+                (push (if (consp d) (car d) d) extra))
+              (setq extra (nreverse extra))
+              (when (nelisp--fx-ll--admit-p b lam scope extra decl made)
+                (let ((head nil) (k 0) (l binds))
+                  (while (< k i)
+                    (push (car l) head)
+                    (setq l (cdr l) k (1+ k)))
+                  (setq binds (append (nreverse head) (list (list b nil))
+                                      (if star
+                                          (nelisp--fx-ll--rw-list
+                                           b (cadr lam) (cddr lam) later made)
+                                        later))
+                        body (nelisp--fx-ll--rw-list
+                              b (cadr lam) (cddr lam) body made)
+                        changed t))))))
+        (setq i (1+ i))))
+    (if changed (cons (car x) (cons binds body)) x)))
+
+(defun nelisp--fx-ll--walk-list (x decl made)
+  "Return a fresh copy of list X with `nelisp--fx-ll--walk' applied to each element."
+  (let (acc)
+    (while (consp x)
+      (push (nelisp--fx-ll--walk (car x) decl made) acc)
+      (setq x (cdr x)))
+    (nconc (nreverse acc) x)))
+
+(defun nelisp--fx-ll--walk (x decl made)
+  "Transform X bottom-up, sharing structure with X when nothing changes."
+  (if (or (atom x) (eq (car x) 'quote)) x
+    (let* ((new (nelisp--fx-ll--walk-list x decl made))
+           (y (if (nelisp--fx-ll--same new x) x new)))
+      (if (and (memq (car y) '(let let*)) (consp (cdr y)))
+          (nelisp--fx-ll--node y decl made)
+        y))))
+
+(defun nelisp--fx-inline-local-lambdas (form &optional declared)
+  "Inline non-escaping local lambdas in macroexpanded FORM.
+DECLARED lists names already locally special in the outer environment.
+Return (NEW . DEPS); DEPS is (funcall) when anything was inlined, and NEW
+is `eq' to FORM otherwise.  The caller does not push DEPS: `funcall' is a
+fixed opcode by policy (see `nelisp-fx-inline-inner-binders')."
+  (let ((new (nelisp--fx-ll--walk
+              form (nelisp--fx-ll--declared form (copy-sequence declared))
+              (make-hash-table :test 'eq))))
+    (cons new (unless (eq new form) (list 'funcall)))))
+;; END nelisp--fx-inline-local-lambdas
+
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller.
@@ -31240,9 +31733,15 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
     (when (eq (catch 'nelisp--fx-unsupported
                 ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
                 (nelisp--fxc-emit 17 nil)
-                (let ((expanded (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
-                                    (macroexpand-all form nelisp--fx-native-macro-environment)
-                                  form)))
+                (let ((expanded (let ((e (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
+                                             (macroexpand-all form nelisp--fx-native-macro-environment)
+                                           form)))
+                                  ;; Remove non-escaping local closures so a
+                                  ;; mutated captured variable needs no copy.
+                                  (if nelisp-fx-inline-local-lambdas
+                                      (car (nelisp--fx-inline-local-lambdas
+                                            e nelisp--fx-declared))
+                                    e))))
                   (setq nelisp--fxc-mutated (nelisp--fx-setq-targets expanded))
                   ;; S4d: a captured name is read at entry, so a setq of it
                   ;; (also through a macro) leaves the body interpreted.

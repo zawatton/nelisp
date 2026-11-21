@@ -1,0 +1,62 @@
+#+TITLE: Fast `load' of large Elisp source and GNU .elc files
+
+# 2026-11-16: reviewed Windows commit batching and the shared function-info /
+# structured FXIR analysis sources are now integrated into this owner tree.
+# The original five criteria and their source-load thresholds are unchanged.
+# The complete tested Windows binary remains in the dedicated sibling tree:
+# ../nelisp-wincommit-wt-20261115/target/ai/windows-commit-cache/nelisp.exe
+# sha256=248af2e0faa1f627d9b916aaca58916b2333fb9aff5da12941e734f39fab28f8
+# This owner's target/nelisp.exe is still the original comparison baseline.
+# target/ai/windows-commit-cache here contains small evidence mirrors, not
+# a deployable bundle. Keep the complete sibling EXE/cold/startup/runtime set.
+# Supplemental ledgers are windows-commit-progress.org (5/6),
+# function-info-progress.org (2/3; GNU FXIR provider remains red), and
+# macroexp-native-progress.org (2/6; Win64 native execution is unproven).
+# Full fresh macro pairs pass for both corpora; compiled-runtime gate is 3.0s
+# with nine GNU-identical scenarios. No source-load threshold is inferred.
+
+# `load' of a large source file is 3-14x slower than reading the same file
+# into a buffer and evaluating its forms with `read' + `eval' in the same
+# binary (measured 2026-11-15 on Windows, origin/main 002d52fba, newDTW game
+# data: gamedata-conditional.el 9 MB 15.2 s vs 5.0 s; gamedata-state.el
+# 0.5 MB 2.2 s vs 0.16 s), and `load' of a GNU-compiled .elc that `read'
+# parses fine fails with invalid-read-syntax.
+# Run from the repository root after building target/nelisp(.exe):
+#   bin/progress-meter.sh --ledger tools/ai/load-speed-progress.org
+# Probes live in tools/ai/load-speed-probe.sh (MODE as the first argument).
+# NDTW_ROOT points at a newDTW checkout for the end-to-end criteria.
+# The 2026-11-15 AUX-link slice was validated in the dedicated macrovm worktree:
+# ../nelisp-macrovm-wt-20261115/target/ai/bytecode-aux-rootlink/nelisp.exe
+# (sha256 9250d4ba0515800c80eb724470248b231eb4a7e28fd19241ad94da2cc6b406c3).
+# State macro expansion improved from 1.114264s to 0.568547s in seven checked
+# pairs. Conditional expansion did not meet the improvement gate. These
+# diagnostics do not complete any of the five original acceptance criteria.
+
+* S1 Speed on a vendored corpus
+
+** S1.1 `load' of the largest vendored .el is at most 1.2x the read+eval loop on the same file in the same binary (median of 3)
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh vendor-ratio
+
+* S2 Semantics
+
+** S2.1 load keeps GNU semantics: load-file-name, lexical-binding cookie, NOERROR on a missing file, nested load, eval-when-compile, load-history entry, after-load hooks; checked against GNU Emacs
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh semantics
+
+** S2.2 A GNU 31.1 byte-compiled .elc with bytecode functions loads and its functions return the same values as in GNU Emacs
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh elc
+
+* S3 End to end on newDTW
+
+** S3.1 newDTW game data: load is at most 1.2x the read+eval loop for gamedata-conditional.el and gamedata-state.el
+#+REQUIRES: NDTW_ROOT
+#+NOTE: Retain the measured times so the meter's status-only cache does not discard diagnostics.
+#+TIMEOUT: 600
+cmd: mkdir -p target/ai && sh tools/ai/load-speed-probe.sh ndtw-ratio > target/ai/load-speed-ndtw-ratio.log 2>&1
+
+** S3.2 newDTW owner-check headless scenarios on this binary give frame records identical to GNU Emacs, and the runtime loads in at most 8 s
+#+REQUIRES: NDTW_ROOT
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh ndtw-scenarios

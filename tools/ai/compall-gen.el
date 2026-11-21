@@ -42,11 +42,18 @@
   (let ((names nil))
     (mapatoms (lambda (s) (when (and (fboundp s)
                                      (or (eq (car-safe (symbol-function s)) 'closure)
+                                         ;; Capture source objects before the
+                                         ;; shared provider loads its own defs.
+                                         (and (fboundp 'interpreted-function-p)
+                                              (interpreted-function-p (symbol-function s)))
                                          (byte-code-function-p (symbol-function s))))
                             (push s names))))
     names)
   "The image's closures and byte-code functions before this tool loads anything (the tool's own are not rows).")
 (load (expand-file-name "test/nelisp-fxir-eval.el") nil t)
+;; Shared function-information provider, resolved like the load above.
+(unless (fboundp 'nelisp-function--source-parts)
+  (load (expand-file-name "lisp/nelisp-function-info.el") nil t))
 
 (defconst compall-gen-id-base 4096
   "First generated row id: above the fx corpus rows (1000-2135,
@@ -125,20 +132,29 @@ bytes) plus about 100 per call node (the call-out's relocations).  Fitted on a
     tbl))
 (defun compall-gen--closure-of (form &optional probe)
   "The closure source defun FORM defines, as `defun' installs it, under a probe
-name PROBE (the real name keeps its image definition); nil if not a closure."
+name PROBE (the real name keeps its image definition); nil if not a closure.
+The function object is returned unchanged; only validated source
+representations are admitted (never byte code or malformed objects)."
   (let ((probe (or probe (make-symbol "compall-gen-probe"))))
     (condition-case nil
         (progn (eval (cons 'defun (cons probe (nthcdr 2 form))) t)
-               (let ((fn (symbol-function probe)))
-                 (and (eq (car-safe fn) 'closure) fn)))
+               (let* ((fn (symbol-function probe))
+                      (parts (nelisp-function--source-parts fn)))
+                 (and parts
+                      (memq (plist-get parts :representation)
+                            '(legacy-closure interpreted-function))
+                      fn)))
       (error nil))))
+(defun compall-gen--fn-part (fn key)
+  "KEY (:arglist or :body) of FN's validated source parts, or nil."
+  (plist-get (nelisp-function--source-parts fn) key))
 (defun compall-gen--source-same-p (forms ir code args)
   "Non-nil when one of FORMS compiles to IR and CODE with arglist ARGS."
   (let ((ok nil))
     (dolist (f forms)
       (unless ok
         (let* ((fn (compall-gen--closure-of f))
-               (c (and fn (equal (nth 2 fn) args) (ignore-errors (nelisp-fxir-recompile fn)))))
+               (c (and fn (equal (compall-gen--fn-part fn :arglist) args) (ignore-errors (nelisp-fxir-recompile fn)))))
           (when (and c (equal (nth 2 c) ir) (nelisp-fxir-code-same-p (car c) code))
             (setq ok t)))))
     ok))
@@ -264,7 +280,7 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
                  (symbol-function name)))
            (rec (and fn (progn (if probe (ignore-errors (nelisp--fx-register-fn probe fn))
                                  (ignore-errors (nelisp--fx-register name)))
-                               (gethash (nthcdr 3 fn) nelisp--fx-table))))
+                               (gethash (compall-gen--fn-part fn :body) nelisp--fx-table))))
            (c (and (vectorp rec) (not (memq (aref rec 1) '(-1 -2)))
                    (ignore-errors (nelisp-fxir-recompile fn))))
            (irlen (and c (nth 2 c) (length (prin1-to-string (nth 2 c)))))
@@ -284,7 +300,7 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
                   ((string-prefix-p "nelisp--fx-" (symbol-name name)) "fx-compiler")
                   ((gethash name jit) "bytecode-jit")
                   ((and (gethash name src) (not bc)
-                        (not (compall-gen--source-same-p (gethash name src) (nth 2 c) (car c) (nth 2 fn))))
+                        (not (compall-gen--source-same-p (gethash name src) (nth 2 c) (car c) (compall-gen--fn-part fn :arglist))))
                    "source-differs"))))
       (if reason
           (progn (setq skipped (1+ skipped)) (princ (format "GEN %s skip %s\n" name reason)))

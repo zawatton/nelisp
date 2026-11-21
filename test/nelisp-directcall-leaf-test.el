@@ -9,7 +9,7 @@
 (require 'nelisp-directcall-test)
 (require 'nelisp-hashfast-test)
 
-(defconst ndl--leaf-ids '(1 10 -16 -15 27 101 102 103 104 105 106 107 108 109 110 111))
+(defconst ndl--leaf-ids '(1 10 -16 -15 27 90 91 92 93 94 101 102 103 104 105 106 107 108 109 110 111))
 
 (defun ndl--mem (depth)
   "A memory model: env 1000, activation state at 3000 holding DEPTH, policy 0."
@@ -177,13 +177,17 @@
   (let ((ids (mapcar #'cadr '(("car" 1) ("nth" 10) ("length" -16) ("aset" -15) ("logand" 27)
                               ("gethash" 101) ("puthash" 102) ("remhash" 103)
                               ("hash-table-count" 104) ("1+" 105) ("1-" 106) ("+" 107)
-                              ("-" 108) ("cdr" 109) ("identity" 110) ("cons" 111)))))
+                              ("-" 108) ("cdr" 109) ("identity" 110) ("cons" 111)
+                              ("symbol-with-pos-p" 90) ("atom" 91) ("vectorp" 92) ("floatp" 93) ("fboundp" 94)))))
     (should (equal (sort (copy-sequence ids) #'<) (sort (copy-sequence ndl--leaf-ids) #'<)))
     (should-not (memq 13 ids)))
   (with-temp-buffer
     (insert-file-contents (expand-file-name "scripts/nelisp-standalone-build.el" ndl--root))
     ;; The generator's own table is the source of the ids the guard assumes.
-    (should (search-forward "(defconst nelisp-standalone--directcall-specs\n  '((\"car\" 1) (\"nth\" 10) (\"length\" -16) (\"aset\" -15) (\"logand\" 27)" nil t)))
+    (should (search-forward "(defconst nelisp-standalone--directcall-specs\n  '((\"car\" 1) (\"nth\" 10) (\"length\" -16) (\"aset\" -15) (\"logand\" 27)" nil t))
+    ;; stage 2b: the tag predicates keep their leaf ids 90-93.
+    (should (search-forward "(\"symbol-with-pos-p\" 90) (\"atom\" 91) (\"vectorp\" 92) (\"floatp\" 93)" nil t))
+    (should (search-forward "(\"fboundp\" 94)" nil t)))
   (let ((seen (ndl--reach '(nl_directcall_fast_run nl_directcall_callback_run
                             nl_directcall_hash_run nl_directcall_run m5_fx_primitive_run
                             nl_directcall_hash_rem nl_ht_rem_synced_w)
