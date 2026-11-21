@@ -225,11 +225,17 @@ done (relative, `~', or containing `.'/`..'/`//')."
   (let ((key (files--buffer-key buffer)))
     (and key (assq key (symbol-value alist)))))
 
+;; gnu562: the hot point wrappers expand the test in place; the call
+;; cost about 0.33 us of a 0.74 us `point-min'.
+(defmacro files--host-buffer-available ()
+  "Non-nil when captured host buffer primitives can be used."
+  '(and files--native-buffer-string
+        (fboundp 'current-buffer)
+        (current-buffer)))
+
 (defun files--host-buffer-available-p ()
   "Return non-nil when captured host buffer primitives can be used."
-  (and files--native-buffer-string
-       (fboundp 'current-buffer)
-       (current-buffer)))
+  (files--host-buffer-available))
 
 (defun files--with-host-buffer (buffer thunk)
   "Call THUNK with BUFFER current when host buffer primitives exist."
@@ -300,7 +306,7 @@ done (relative, `~', or containing `.'/`..'/`//')."
 
 (defun files--buffer-point-value (&optional buffer)
   "Return BUFFER's fallback point."
-  (if (and files--native-point (files--host-buffer-available-p))
+  (if (and files--native-point (files--host-buffer-available))
       ;; gnu562: without BUFFER, call the native directly; the thunk was a
       ;; fresh closure built through `eval' on every call (`point' 15 us).
       (if buffer
@@ -314,7 +320,7 @@ done (relative, `~', or containing `.'/`..'/`//')."
 
 (defun files--set-buffer-point-value (point &optional buffer)
   "Set BUFFER's fallback point to POINT."
-  (if (and files--native-goto-char (files--host-buffer-available-p))
+  (if (and files--native-goto-char (files--host-buffer-available))
       ;; gnu562: without BUFFER, call the native directly; the thunk was a
       ;; fresh closure built through `eval' on every call (`point' 15 us).
       (if buffer
@@ -530,14 +536,14 @@ START and END may be integers or markers and are order-independent."
 (when (files--install-fallback-function-p 'point-min)
   (defun point-min ()
     "Return the first valid fallback buffer position."
-    (if (and files--native-point-min (files--host-buffer-available-p))
+    (if (and files--native-point-min (files--host-buffer-available))
         (files--native-point-min-fn)
       1)))
 
 (when (files--install-fallback-function-p 'point-max)
   (defun point-max ()
     "Return one past the last fallback buffer position."
-    (if (and files--native-point-max (files--host-buffer-available-p))
+    (if (and files--native-point-max (files--host-buffer-available))
         (files--native-point-max-fn)
       (1+ (files--string-length (files--buffer-string-value))))))
 

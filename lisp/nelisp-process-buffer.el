@@ -194,9 +194,13 @@ NAME is the owning process name; GNU calls a stderr buffer's channel
 
 (when (fboundp 'nl-ffi-call)
   ;; Use the runtime's existing marker representation and edit tracking.
+  ;; gnu562: the captured native is called by name; `funcall' of the
+  ;; variable cost about 0.3 us of a 0.75 us `markerp'.
+  (defalias 'nelisp-process-buffer--original-markerp-fn
+    nelisp-process-buffer--original-markerp)
   (defun markerp (object)
     (or (nelisp-marker-p object)
-        (funcall nelisp-process-buffer--original-markerp object)))
+        (nelisp-process-buffer--original-markerp-fn object)))
   (defun marker-position (marker)
       (unless (nelisp-marker-p marker)
         (signal 'wrong-type-argument (list 'markerp marker)))

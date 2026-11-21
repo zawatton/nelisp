@@ -2710,8 +2710,10 @@ Ignores narrowing (hashes the whole buffer)."
 (defvar emacs-buffer-builtins--native-goto-char nil)
 (defun emacs-buffer-builtins-goto-char (position)
   "Move native point to integer or marker POSITION, returning POSITION."
-  (funcall emacs-buffer-builtins--native-goto-char
-           (emacs-buffer-builtins--checked-position position))
+  ;; gnu562: by name (see the bridge installer); `funcall' of the variable
+  ;; cost about 0.5 us of a 2 us `goto-char'.
+  (emacs-buffer-builtins--native-goto-char-fn
+   (emacs-buffer-builtins--checked-position position))
   position)
 (defvar emacs-buffer-builtins--native-char-after nil)
 (defvar emacs-buffer-builtins--native-char-before nil)
@@ -2743,6 +2745,8 @@ Ignores narrowing (hashes the whole buffer)."
   ;; its replacement later would form a cycle through that adapter.
   (unless emacs-buffer-builtins--native-goto-char
     (setq emacs-buffer-builtins--native-goto-char (symbol-function 'goto-char)))
+  (defalias 'emacs-buffer-builtins--native-goto-char-fn
+    emacs-buffer-builtins--native-goto-char)
   (unless emacs-buffer-builtins--native-char-after
     (setq emacs-buffer-builtins--native-char-after (symbol-function 'char-after)))
   (unless emacs-buffer-builtins--native-char-before
