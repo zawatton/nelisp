@@ -670,9 +670,8 @@ These are existing vendor implementations, not local reimplementations.")
     ;; too much wall time -- measured on this box with the 35s baseline):
     ;; dired.el (+6.5s, needs an `easy-menu-define' keep-rule for woman's
     ;; `[menu-bar immediate]' lookup) and calc/calc.el (+11.5s, ~7s of it
-    ;; live `calc-macs'/`rect'/`calc-loaddefs' loads).  isearch.el is not
-    ;; added: it needs `search-map' (a bindings.el keymap) and was not
-    ;; probed further.  woman.el's eager `woman-dired-define-keys' call is
+    ;; live `calc-macs'/`rect'/`calc-loaddefs' loads).  isearch.el is
+    ;; bundled below (search-map comes from the keymap substrate).  woman.el's eager `woman-dired-define-keys' call is
     ;; rewritten to the deferred `dired-mode-hook' branch in
     ;; standalone-source-normalize.el.
     "emacs-lisp/progmodes/compile.el"
@@ -1281,11 +1280,7 @@ concatenated bootstrap bundle must make the order explicit."
           (setq out (nelisp-bootstrap--insert-before runtime anchor-file out)))))
     ;; App-facing shims such as isearch/shell/man/help-gui can execute top-level
     ;; code that expects these core owners/bridges to exist already.
-    (dolist (pair '(("emacs-faces.el" . "emacs-isearch.el")
-                    ("emacs-faces-builtins.el" . "emacs-isearch.el")
-                    ("emacs-minibuffer.el" . "emacs-isearch.el")
-                    ("emacs-minibuffer-builtins.el" . "emacs-isearch.el")
-                    ("emacs-process.el" . "emacs-man.el")
+    (dolist (pair '(("emacs-process.el" . "emacs-man.el")
                     ("emacs-process-builtins.el" . "emacs-man.el")
                     ("emacs-comint.el" . "emacs-shell.el")
                     ("emacs-keymap-builtins.el" . "emacs-help-gui.el")

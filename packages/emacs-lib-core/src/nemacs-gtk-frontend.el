@@ -36,7 +36,6 @@
 (require 'emacs-dired-min-gui)
 (require 'emacs-edit-builtins)
 (require 'emacs-help)
-(require 'emacs-isearch)
 (require 'emacs-minibuffer)
 (require 'emacs-replace)
 (require 'emacs-shell-command)
@@ -3140,112 +3139,17 @@ change so the echo-area painter doesn't re-run the completion fn.")
 ;;;; --- isearch (Phase 2.N — C-s incremental forward search) ----------------
 
 (defun nemacs-gtk-isearch-forward ()
-  "Bound to `C-s' — start an incremental forward search.  Saves
-the current point on `--isearch-start-pos' so C-g can restore it.
-While active, every printable key extends the query and re-searches
-from the saved start; another C-s jumps to the next match starting
-after the current point; C-r toggles to backward search; backspace
-shrinks the query; Return / Escape exit at the current match; C-g
-cancels and restores point."
+  "Bound to `C-s' — run GNU `isearch-forward' as a plain command.
+GNU isearch.el owns the search semantics; this frontend no longer keeps
+its own incremental-search state machine (FOLLOW-UP: drive `isearch-mode'
+from the GTK input loop, see state-isearch.md)."
   (interactive)
-  (with-current-buffer (nemacs-gtk--active-buffer)
-    (setq nemacs-gtk--isearch-start-pos (nelisp-ec-point)))
-  (setq nemacs-gtk--isearch-active    t)
-  (setq nemacs-gtk--isearch-query     "")
-  (setq nemacs-gtk--isearch-failing   nil)
-  (setq nemacs-gtk--isearch-direction 'forward))
+  (isearch-forward))
 
 (defun nemacs-gtk-isearch-backward ()
-  "Bound to `C-r' — start an incremental backward search.  Symmetric
-counterpart to `nemacs-gtk-isearch-forward' (Phase 2.W).  Inside an
-already-active forward isearch, C-r toggles direction instead of
-starting fresh."
+  "Bound to `C-r' — run GNU `isearch-backward' as a plain command."
   (interactive)
-  (with-current-buffer (nemacs-gtk--active-buffer)
-    (setq nemacs-gtk--isearch-start-pos (nelisp-ec-point)))
-  (setq nemacs-gtk--isearch-active    t)
-  (setq nemacs-gtk--isearch-query     "")
-  (setq nemacs-gtk--isearch-failing   nil)
-  (setq nemacs-gtk--isearch-direction 'backward))
-
-(defun nemacs-gtk--isearch-search-from-start ()
-  "Reset point to start-pos + search for the current query in the
-direction `--isearch-direction'.  Updates `--isearch-failing' on
-success / failure."
-  (with-current-buffer (nemacs-gtk--active-buffer)
-    (let ((result (emacs-isearch-search-from-start-direct
-                   nemacs-gtk--isearch-query
-                   nemacs-gtk--isearch-direction
-                   nemacs-gtk--isearch-start-pos)))
-      (setq nemacs-gtk--isearch-failing
-            (plist-get result :failing))
-      result)))
-
-(defun nemacs-gtk--isearch-handle-key (event)
-  "Consume one event during isearch.  Returns t when handled."
-  (cond
-   ((eq event 'return)
-    (setq nemacs-gtk--isearch-active nil)
-    (setq nemacs-gtk--last-key-text
-          (format "isearch: %s" nemacs-gtk--isearch-query))
-    t)
-   ;; C-g (= byte 7) — cancel + restore point.
-   ((eq event 7)
-    (with-current-buffer (nemacs-gtk--active-buffer)
-      (emacs-isearch-restore-start-direct
-       nemacs-gtk--isearch-start-pos))
-    (setq nemacs-gtk--isearch-active nil)
-    (setq nemacs-gtk--last-key-text "isearch cancelled")
-    t)
-   ((eq event 27) ; Escape — accept at current match.
-    (setq nemacs-gtk--isearch-active nil)
-    (setq nemacs-gtk--last-key-text "isearch ended")
-    t)
-   ;; C-s (= byte 19) during isearch:
-   ;;   - if currently forward → jump to NEXT forward match
-   ;;   - if currently backward → flip to forward + search-from-start
-   ;;     (= "switch direction" gesture)
-   ((eq event 19)
-    (cond
-     ((eq nemacs-gtk--isearch-direction 'backward)
-      (setq nemacs-gtk--isearch-direction 'forward)
-      (nemacs-gtk--isearch-search-from-start))
-     (t
-      (when (> (length nemacs-gtk--isearch-query) 0)
-        (with-current-buffer (nemacs-gtk--active-buffer)
-          (let ((result (emacs-isearch-repeat-direct
-                         nemacs-gtk--isearch-query 'forward)))
-            (setq nemacs-gtk--isearch-failing
-                  (plist-get result :failing)))))))
-    t)
-   ;; C-r (= byte 18) during isearch — symmetric to C-s.
-   ((eq event 18)
-    (cond
-     ((eq nemacs-gtk--isearch-direction 'forward)
-      (setq nemacs-gtk--isearch-direction 'backward)
-      (nemacs-gtk--isearch-search-from-start))
-     (t
-      (when (> (length nemacs-gtk--isearch-query) 0)
-        (with-current-buffer (nemacs-gtk--active-buffer)
-          (let ((result (emacs-isearch-repeat-direct
-                         nemacs-gtk--isearch-query 'backward)))
-            (setq nemacs-gtk--isearch-failing
-                  (plist-get result :failing)))))))
-    t)
-   ((eq event 'backspace)
-    (when (> (length nemacs-gtk--isearch-query) 0)
-      (setq nemacs-gtk--isearch-query
-            (substring nemacs-gtk--isearch-query 0
-                       (1- (length nemacs-gtk--isearch-query))))
-      (nemacs-gtk--isearch-search-from-start))
-    t)
-   ((and (integerp event) (>= event 32) (< event 127))
-    (setq nemacs-gtk--isearch-query
-          (concat nemacs-gtk--isearch-query (char-to-string event)))
-    (nemacs-gtk--isearch-search-from-start)
-    t)
-   ;; Anything else (= arrows, mouse, function keys) ignored.
-   (t t)))
+  (isearch-backward))
 
 
 (defconst nemacs-gtk--m-x-commands
@@ -4834,13 +4738,6 @@ viewport."
               (when (plist-member plan :message)
                 (setq nemacs-gtk--last-key-text
                       (plist-get plan :message)))))))
-         ((eq lane 'isearch)
-          ;; Same: isearch eats one event at a time, Alt-prefix
-          ;; dropped (= a literal letter is what the user wants
-          ;; mid-search).  Auto-scroll to whatever match-row point
-          ;; landed on so the cursor stays visible.
-          (nemacs-gtk--isearch-handle-key event)
-          (nemacs-gtk--ensure-cursor-visible))
          ((eq lane 'query-replace)
           ;; Phase 2.AK: y/n/!/q answer for the active query-replace.
           (setq nemacs-gtk--query-replace-state

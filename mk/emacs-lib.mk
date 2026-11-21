@@ -695,7 +695,6 @@ NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES = \
 	nemacs-loaddefs \
 	emacs-dired-min \
 	files-standalone-buffer \
-	emacs-isearch \
 	emacs-replace \
 	emacs-shell-command \
 	emacs-vc \

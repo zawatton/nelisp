@@ -1207,7 +1207,6 @@ process (an earlier file may legitimately load a lazy feature)."
                    emacs-vc)))
   (should (equal (nelisp-emacs-library-package-lazy-features 'core)
                  '(emacs-buffer-ui
-                   emacs-isearch
                    emacs-dired-min
                    emacs-project
                    emacs-elisp-eval
