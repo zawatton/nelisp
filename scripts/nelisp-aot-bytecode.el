@@ -1569,10 +1569,62 @@ See `wf_aot_swp' and `wf_aot_fb'."
               (if (= word -1) 0
                 (if (/= word 0) word
                   (if (= (wf_bytecode_w_nilp cur) 1) 3 0)))))))
+       (defun wf_aot_switch_sym (a b codelen)
+         ;; Fast path of `wf_aot_switch' for the common shape: a symbol-object key
+         ;; and a direct eq/eql hash table whose identity index is current.  Same
+         ;; probe as `wf_bytecode_switch_find' with every check fused and no
+         ;; nested calls except the symbol hash; -4 when any precondition fails
+         ;; (the caller then takes the general path), else the arm's answer.
+         (if (if (= (logand a 7) 6) (= (logand (ptr-read-u64 (- a 6) 0) 63) 4) 0)
+             (if (if (= (logand b 7) 6) (= (logand (ptr-read-u64 (- b 6) 0) 63) 22) 0)
+                 (let* ((fm (ptr-read-u64 (- b 6) 8)))
+                   (if (= (logand fm 7) 6)
+                       (let* ((fh (- fm 6)) (fc (sar (ptr-read-u64 fh 48) 2)))
+                         (if (if (>= (sar (ptr-read-u64 fh 0) 8) 15)
+                                 (if (if (= fc -102) 1 (= fc -103))
+                                     (if (= (sar (ptr-read-u64 fh 56) 2) (ptr-read-u64 268436376 0))
+                                         (= (sar (ptr-read-u64 fh 64) 2) fh)
+                                       0)
+                                   0)
+                               0)
+                             (let* ((mb (+ fm 2))
+                                    (pairs (ptr-read-u64 mb 88))
+                                    (index (ptr-read-u64 (- b 6) 16)))
+                               (if (if (= (logand pairs 7) 6) (= (logand index 7) 6) 0)
+                                   (let* ((pb (+ pairs 2)) (ib (+ index 2))
+                                          (hash (logand (nl_ht_symbol_hash a) 1073741823))
+                                          (i (sar (ptr-read-u64 ib (* 8 (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))) 2))
+                                          (nb 0) (entry 0) (bad 0))
+                                     (seq
+                                      (while (if (>= i 0) (if (= entry 0) (= bad 0) 0) 0)
+                                        (let ((other (ptr-read-u64 pb (* 16 i))))
+                                          (if (= a other) (setq entry (+ i 1))
+                                            (if (= (nl_so_p other) 1)
+                                                (seq
+                                                 (if (= nb 0)
+                                                     (let* ((nw (ptr-read-u64 mb 112)))
+                                                       (if (= (logand nw 7) 6) (setq nb (+ nw 2)) (setq bad 1)))
+                                                   0)
+                                                 (if (= bad 0) (setq i (sar (ptr-read-u64 nb (* 8 i)) 2)) 0))
+                                              (setq bad 1)))))
+                                      (if (= bad 1) -4
+                                        (if (= entry 0) -1
+                                          (let* ((word (ptr-read-u64 pb (+ (* 16 (- entry 1)) 8))))
+                                            (if (= (logand word 3) 1)
+                                                (let* ((off (sar word 2)))
+                                                  (if (if (< off 0) 1 (>= off codelen)) -3 off))
+                                              -3))))))
+                                 -4))
+                           -4))
+                     -4))
+               -4)
+           -4))
        (defun wf_aot_switch (a b codelen)
          ;; The VM fast loop's switch arm (raw 183) on words, no view scratch: the
          ;; absolute target offset, -1 for a miss, -3 when this arm declines (the
          ;; caller then takes `wf_bytecode_switch').
+         (let* ((fr (wf_aot_switch_sym a b codelen)))
+          (if (/= fr -4) fr
          (if (if (= (wf_bytecode_w_tag a) 19) 1 (= (logand b 1) 1)) -3
            (if (/= (bf_hash_table_p_raw b) 1) -3
              (let* ((mode (nl_ht_test_mode b)))
@@ -1582,7 +1634,7 @@ See `wf_aot_swp' and `wf_aot_fb'."
                      (let* ((word (nl_ht_entry_value b ref)))
                        (if (/= (wf_bytecode_w_tag word) 2) -3
                          (let* ((off (wf_bytecode_w_int word)))
-                           (if (if (< off 0) 1 (>= off codelen)) -3 off)))))))))))
+                           (if (if (< off 0) 1 (>= off codelen)) -3 off)))))))))))))
        (defun wf_aot_find (func env)
          ;; No VM arm.  1 + the installed id of the callee word FUNC, else 0; used
          ;; by the VM call arms to decline the lean entry for AOT-installed targets.
