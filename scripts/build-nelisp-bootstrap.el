@@ -459,8 +459,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "comint.el"
     "emacs-replace.el"
     "replace.el"
-    "emacs-isearch.el"
-    "isearch.el"
     "emacs-ielm.el"
     "ielm.el"
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
@@ -469,6 +467,9 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU minibuffer.el completion-table-dynamic (generated, verbatim) for
     ;; elisp-mode.el, which calls it while loading.
     "emacs-minibuffer-gnu.el"
+    ;; GNU window.el window-group functions (generated, verbatim) for
+    ;; isearch.el, which reads the window-group start on every search step.
+    "emacs-window-gnu.el"
     "emacs-project.el"
     "project.el"
     "emacs-shell.el"
@@ -681,7 +682,13 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/term.el"
     "emacs-lisp/woman.el"
     "emacs-lisp-31.1/progmodes/project.el"
+    ;; GNU's loaddefs.el defines `cursor-sensor-inhibit' at dump time (an
+    ;; autoloaded defvar); isearch.el pushes onto it on every entry.
+    "emacs-lisp/emacs-lisp/cursor-sensor.el"
     "emacs-lisp/isearch.el"
+    ;; GNU loaddefs.el defines the `multi-isearch-*' variables at dump time
+    ;; (autoloaded defvars); isearch.el reads them on every search step.
+    "emacs-lisp/misearch.el"
     ;; S2 coverage batch 7 (2026-09-29): real GNU 31.1 json.el, imenu.el, ielm.el
     ;; and url/url-vars.el replace the partial src facades' coverage (json 12/75,
     ;; imenu 3/59, ielm 5/42, url-vars 5/51).  pp.el was tried and left out:
@@ -726,8 +733,7 @@ self-healing replay phase has completed.")
 (defconst nelisp-bootstrap-runtime-lazy-vendor-files
   '("emacs-lisp/emacs-lisp/cl-macs.el"
     "emacs-lisp/man.el"
-    "emacs-lisp/woman.el"
-    "emacs-lisp/isearch.el")
+    "emacs-lisp/woman.el")
   "Vendor sources omitted from the eager .el boot and resolved on first require.
 
 The full .repl manifest retains these files for feature-coverage measurement.
@@ -1535,7 +1541,6 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/term.el"
     "vendor/emacs-lisp/woman.el"
     "vendor/emacs-lisp/progmodes/project.el"
-    "vendor/emacs-lisp/isearch.el"
     "vendor/emacs-lisp/imenu.el"
     "vendor/emacs-lisp/json.el"
     "vendor/emacs-lisp/ielm.el"
