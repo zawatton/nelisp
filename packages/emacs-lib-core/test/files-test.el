@@ -788,6 +788,36 @@ runaway forms rather than the editing-shim limit."
       (while (< i n) (point) (point-min) (point-max) (following-char) (setq i (1+ i)))
       (should (< (/ (* 1e6 (- (float-time) t0)) n) 20.0)))))
 
+(ert-deftest files-test/buffer-substring-fast-path-keeps-properties ()
+  ;; A buffer whose property sidecar is empty takes the native buffer-substring
+  ;; directly (~55 us through the Lisp advice body); once properties exist
+  ;; the sidecar copy still runs.
+  (skip-unless (and files--standalone-runtime-p (fboundp 'nelisp--repr)))
+  (with-temp-buffer
+    (insert "hello world")
+    (should (equal (buffer-substring 1 6) "hello"))
+    (should (equal (buffer-substring 6 1) "hello"))
+    (should-error (buffer-substring 1 100) :type 'args-out-of-range)
+    (should-error (buffer-substring (make-marker) 5) :type 'error)
+    ;; Relative speed: the advised call must beat the full property-copy body
+    ;; run in the same process (a fixed microsecond bound is machine-noisy).
+    (should (fboundp 'emacs-buffer--native-buffer-substring-slow))
+    (let* ((n 400) (orig (lambda (a b) (ignore a b) "hello"))
+           (time (lambda (thunk)
+                   (let ((i 0) (t0 (float-time)))
+                     (while (< i n) (funcall thunk) (setq i (1+ i)))
+                     (- (float-time) t0))))
+           (fast (funcall time (lambda () (buffer-substring 1 6))))
+           (slow (funcall time
+                          (lambda ()
+                            (emacs-buffer--native-buffer-substring-slow
+                             orig 1 6 nil)))))
+      (should (< fast (* 0.7 slow))))
+    (put-text-property 2 5 'face 'bold)
+    (should (eq (get-text-property 0 'face (buffer-substring 1 6)) nil))
+    (should (eq (get-text-property 1 'face (buffer-substring 1 6)) 'bold))
+    (should (eq (get-text-property 0 'face (buffer-substring 2 3)) 'bold))))
+
 (provide 'files-test)
 
 ;;; files-test.el ends here

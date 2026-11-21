@@ -2228,6 +2228,16 @@ Checks read-only text and shifts/expands text-property intervals."
 
 (defun emacs-buffer--native-buffer-substring-around (orig start end &rest args)
   "Preserve sidecar text properties returned by native `buffer-substring'."
+  ;; Fast path: integer bounds in a buffer whose sidecar holds no properties
+  ;; have nothing to copy, and the native subr validates the range itself.
+  (if (and (integerp start) (integerp end) (null args)
+           (let ((ext (gethash (current-buffer) emacs-buffer--state)))
+             (or (null ext) (null (emacs-buffer--ext-text-props ext)))))
+      (funcall orig start end)
+    (emacs-buffer--native-buffer-substring-slow orig start end args)))
+
+(defun emacs-buffer--native-buffer-substring-slow (orig start end args)
+  "Copy sidecar properties onto native `buffer-substring' output."
   ;; Validate each endpoint before examining the next one.
   ;; Detached markers signal even when the other endpoint has a bad type.
   (dolist (position (list start end))
