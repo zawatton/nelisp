@@ -817,9 +817,13 @@ value cells become the keymap) is exercised by the standalone boot."
   (should (equal [32] (emacs-keymap--standalone-key-parse "SPC")))
   (should (equal [127] (emacs-keymap--standalone-key-parse "DEL")))
   (should (equal [left] (emacs-keymap--standalone-key-parse "<left>")))
-  (should (equal [f10] (emacs-keymap--standalone-key-parse "f10")))
-  (should (equal (emacs-keymap--standalone-key-parse "f10")
-                 (emacs-keymap--standalone-key-parse "<f10>")))
+  ;; Host Emacs 31.1: (key-parse "f10") is [102 49 48]; only "<f10>" is the
+  ;; function key.  A bare word is its characters.
+  (should (equal [?f ?1 ?0] (emacs-keymap--standalone-key-parse "f10")))
+  (should (equal [f10] (emacs-keymap--standalone-key-parse "<f10>")))
+  (should (equal [?b ?a ?r] (emacs-keymap--standalone-key-parse "bar")))
+  (should (equal [19 ?b ?a ?r 13]
+                 (emacs-keymap--standalone-key-parse "C-s bar RET")))
   (should (emacs-keymap--standalone-key-valid-p "S-SPC"))
   (should-not (emacs-keymap--standalone-key-valid-p "9bad-token")))
 

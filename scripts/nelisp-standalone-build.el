@@ -32129,7 +32129,8 @@ bytes are written into a fresh 8-byte buffer instead."
                                    stk sp (- argc 1) resw env xw)
                                 ;; callpath2: `apply' on the words (Lisp re-entry, so
                                 ;; not one of `m5_fx_primitive_run''s leaf bodies).
-                                (if (= kind 14) (m5_fx_apply_run stk sp argc resw env)
+                                (if (= kind 14)
+                                    (m5_fx_apply_run stk sp argc resw env cache)
                                   (m5_fx_primitive_run kind stk sp argc resw env xw))))))
                   (rec (if (= direct -3) (m5_fx_site_rec cache fn argc env) 0))
                   (st (if (/= direct -3) direct
@@ -42858,13 +42859,116 @@ never has one."
       ;; applyfn2: a symbol whose function cell holds a Subr object with a word
       ;; entry takes GNU Fapply's own shape first (`m5_fx_apply_subr'): one
       ;; list measure, one spread, funcall_subr on the spread words.
-      (defun m5_fx_apply_run (stk sp argc resw env)
+      ;; gnu562: DEF is a direct (closure ...) cons, or a kind-23 object holding
+      ;; one: the interpreter's own test for a closure in a function cell
+      ;; (`nl_eic_symbol_call_w'), on the head's static symbol id.  A legacy
+      ;; cons view answers 0 and keeps the ordinary path.
+      (defun m5_fx_closure_def_p (def)
+        (let* ((u (nl_cl_unwrap def)))
+          (if (= (logand u 7) 2)
+              (if (< u 4096) 0
+                (if (= (nl_sym_sid (ptr-read-u64 (- u 2) 0)) (nl_sid_closure)) 1 0))
+            0)))
+      ;; gnu562: the site cache's record for the closure DEF, as `m5_fx_site_rec'.
+      ;; A closure that can never be covered (`m5_fx_uncoverable_p') leaves a
+      ;; negative entry -- slot 3 DEF, slot 4 the cache vector itself, which no
+      ;; reader takes for a record (shorter than 8) -- so the next call at this
+      ;; site skips the captured-environment walk and the table lookup that the
+      ;; word apply's lambda path repeats anyway.  Slot 4 is written first, as
+      ;; `m5_fx_funcall_site_fill' orders its pair.
+      (defun m5_fx_site_rec_neg (cache def argc env)
+        (if (if (= cache 0) 0
+              (if (< (nl_vector_length cache) 5) 0
+                (if (= (nl_vector_slot_word cache 3) def) (= (nl_vector_slot_word cache 4) cache) 0)))
+            0
+          (let* ((rec (m5_fx_site_rec cache def argc env)))
+            (seq (if (if (= rec 0) (if (= cache 0) 0 (if (< (nl_vector_length cache) 5) 0 (m5_fx_uncoverable_p def env))) 0)
+                     (seq (wf_dirty)
+                          (ptr-write-u64 (+ (nl_word_payload cache) 40) 0 cache)
+                          (ptr-write-u64 (+ (nl_word_payload cache) 32) 0 def))
+                   0)
+                 rec))))
+      ;; gnu562: 1 only when DEF (a closure, `m5_fx_closure_def_p') is never
+      ;; covered whatever happens later: its captured environment binds a
+      ;; variable (`m5_fx_env_ok', a property of the closure object), or the
+      ;; table maps its body to a non-record (`m5_fx_body_refused_p').  An
+      ;; absent body or an anonymous lambda's countdown answers 0, so the
+      ;; countdown keeps running on later calls; so do a worker, the
+      ;; dynamic-binding mode and a disabled VM.
+      (defun m5_fx_uncoverable_p (def env)
+        (if (= (nl_sb_worker_p env) 1) 0
+          (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 0
+            (if (= (nl_fx_disabled) 1) 0
+              (let* ((c1 (nl_cons_cdr_word (nl_cl_unwrap def))))
+                (if (/= (m5_fx_word_cons_p c1 0) 1) 0
+                  (if (/= (m5_fx_env_ok (nl_cons_car_word c1) 0) 1) 1
+                    (let* ((c2 (nl_cons_cdr_word c1)))
+                      (if (/= (m5_fx_word_cons_p c2 0) 1) 0
+                        (m5_fx_body_refused_p (nl_cons_cdr_word c2) env))))))))))
+      ;; gnu562: 1 when `nelisp--fx-table' maps BODY to a non-record heap value
+      ;; (the compiler's refusal), read without `nl_fx_lookup_in''s countdown.
+      (defun m5_fx_body_refused_p (body env)
+        (let* ((tbl (nl_fx_table_word env 0)))
+          (if (= tbl 0) 0
+            (seq
+             (nl_ht_identity_sync tbl)
+             (let* ((entry (nl_ht_find_in tbl body)))
+               (if (= entry 0) 0
+                 (let* ((w (nl_ht_entry_value tbl entry)))
+                   (if (= (logand w 1) 1) 0
+                     (if (= (heap-sexp-tag-word w) 8) 0 1)))))))))
+      ;; gnu562: CACHE is the call site's cache vector, or 0: a closure FUNCTION
+      ;; runs its record from the cache's slots 3 and 4 (`m5_fx_apply_closure')
+      ;; before the word apply.  A worker passes its cache too: `m5_fx_site_rec'
+      ;; neither reads nor fills it there.
+      (defun m5_fx_apply_run (stk sp argc resw env cache)
         (let* ((fw (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)))
           (if (= (m5_fx_apply_no_word_subr fw) 1) -3
             (let* ((st (if (= (m5_fx_apply_word_subr fw) 1)
                            (m5_fx_apply_subr stk sp argc resw env)
-                         -3)))
+                         (m5_fx_apply_closure cache stk sp argc resw env))))
               (if (/= st -3) st (m5_fx_apply_words_run stk sp argc resw env))))))
+      ;; gnu562: GNU Fapply (eval.c:2803-2870) for a closure FUNCTION (a symbol
+      ;; whose cell holds one, or the closure itself) that the VM covers: the
+      ;; spread list measured once, the leading arguments and its elements
+      ;; copied into one rooted argument array, and the closure's record run on
+      ;; those words as `funcall' runs it (`m5_fx_funcall_def', the backtrace
+      ;; naming FUNCTION).  The record comes from the site cache
+      ;; (`m5_fx_site_rec'), so a site that keeps applying one closure skips
+      ;; the `nelisp--fx-table' lookup the word apply's lambda path does on
+      ;; every call.  -3: nothing happened (no cache, not a closure, an
+      ;; improper list, more than 255 arguments, an uncovered closure, an
+      ;; autoload or alias cell): the word apply runs as before.
+      (defun m5_fx_apply_closure (cache stk sp argc resw env)
+        (if (= cache 0) -3
+          (let* ((base (+ stk (* (- sp argc) 8)))
+                 (fw (heap-read-u64 base 0))
+                 (tag (nl_word_tag64 fw))
+                 (def (if (or (= tag 4) (= tag 16))
+                          (if (= (m5_fx_sym_cell_maybe_closure fw) 0) 0
+                            (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fw 0))
+                        fw)))
+            (if (= (m5_fx_closure_def_p def) 0) -3
+              (let* ((last (heap-read-u64 base (* (- argc 1) 8)))
+                     (n (m5_fx_apply_list_len last)))
+                (if (< n 0) -3
+                  (let* ((total (+ (- argc 2) n)))
+                    (if (> total 255) -3
+                      (let* ((rec (m5_fx_site_rec_neg cache def total env)))
+                        (if (= rec 0) -3
+                          (let* ((mark (nl_root_mark env)) (mem (nl_root_frame env (+ total 1))))
+                            (if (= mem 0) (seq (nl_root_release env mark) -3)
+                              (let* ((k 0) (l last))
+                                (seq
+                                 (while (< k (- argc 2))
+                                   (seq (ptr-write-u64 mem (* k 8) (heap-read-u64 base (* (+ k 1) 8)))
+                                        (setq k (+ k 1))))
+                                 (while (= (nl_val_tag l) 7)
+                                   (seq (ptr-write-u64 mem (* k 8) (nl_word_canon (nl_cons_car_word l)))
+                                        (setq k (+ k 1))
+                                        (setq l (nl_cons_cdr_word l))))
+                                 (let* ((st (m5_fx_call_words rec fw mem total env 0 resw 0)))
+                                   (seq (nl_root_release env mark) st))))))))))))))))
       ;; applyfn2: 1 when FW is a symbol object whose cell holds a Subr object
       ;; that `m5_fx_call_subr_any' runs on argument words: an argument-array
       ;; word (+16) or an interpreter primitive descriptor (header bits 33+).
@@ -47670,10 +47774,15 @@ NELISP_LINK_HOT_ORDER=FILE overrides it; NELISP_LINK_HOT=0 turns the layout off.
   "Absolute address of the linked text for this target, or nil when unknown."
   (pcase (nelisp-standalone-arena-rewrite-target)
     ('linux-x86_64
-     (when (getenv "NELISP_READER_DYNAMIC")
-       (plist-get (nelisp-elf--dynamic-layout
-                   0 nelisp-standalone--reader-extern-imports nil 0 0 0)
-                  :text-vaddr)))
+     (if (getenv "NELISP_READER_DYNAMIC")
+         (plist-get (nelisp-elf--dynamic-layout
+                     0 nelisp-standalone--reader-extern-imports nil 0 0 0)
+                    :text-vaddr)
+       ;; gnu562: opt-in hot layout for the static reader, whose text starts
+       ;; at a fixed address (#x4000c0 on the current writer).  Unset keeps
+       ;; the static build's historical layout (none).
+       (let ((b (getenv "NELISP_LINK_HOT_STATIC_BASE")))
+         (and b (not (string-empty-p b)) (string-to-number b 16)))))
     ('windows-x86_64
      (require 'nelisp-pe-write)
      (+ nelisp-link--pe-image-base nelisp-pe--section-alignment))
@@ -67123,6 +67232,7 @@ two flag bits 20 and 21."
       ;; The static symbol id of a symbol WORD or view, 0 for none.
       (defun nl_sym_sid (w) ,(nelisp-standalone--sid-read-form 'w))
       (defun nl_sid_eq () ,(nelisp-standalone--sid "eq"))
+      (defun nl_sid_closure () ,(nelisp-standalone--sid "closure"))
       (defun nl_sid_equal () ,(nelisp-standalone--sid "equal"))
       ;; list_length of the unevaluated arguments (eval.c:2640): the number of
       ;; conses, -1 when the list ends in anything but nil.

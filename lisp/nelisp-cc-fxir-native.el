@@ -1372,7 +1372,7 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
                           (if (> kind 20) (m5_fx_globals_run kind stk argc argc resw env oslot)
                             (if (= kind 13) (nc_funcall env site stk argc resw)
                               ;; callpath2: `apply' on the staged words.
-                              (if (= kind 14) (m5_fx_apply_run stk argc argc resw env)
+                              (if (= kind 14) (m5_fx_apply_run stk argc argc resw env (if (= (nl_word_tag64 site) 8) site 0))
                                 (m5_fx_primitive_run kind stk argc argc resw env (+ resw 8))))))))
             (if (= st -3) (nc_list_call env sym fn stk argc resw oslot) st)))))
     ;; `funcall' with the site's callee cache (`m5_fx_callout' kind 13).

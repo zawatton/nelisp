@@ -4815,14 +4815,6 @@ Functions:
     ;; and nil dies as `emacs-keymap-not-keymap' (measured on part 15 with
     ;; a nil `minibuffer-local-completion-map' placeholder, 2026-08-14).
     (defvar vc-git-log-view-mode-map (make-sparse-keymap)))
-  (unless (boundp 'minibuffer-local-completion-map)
-    (defvar minibuffer-local-completion-map (make-sparse-keymap)))
-  ;; Siblings from the same minibuffer.el keymap family: the magit-status
-  ;; smoke's EXECUTION phase (first phase past load-time) died on
-  ;; `minibuffer-local-must-match-map' (measured 2026-08-15); provide the
-  ;; base map too, the read paths chain through both.
-  (unless (boundp 'minibuffer-local-must-match-map)
-    (defvar minibuffer-local-must-match-map (make-sparse-keymap)))
   (unless (boundp 'minibuffer-local-map)
     (defvar minibuffer-local-map (make-sparse-keymap)))
   ;; Batch closure of the same class (static sweep of all 20 bundle
@@ -4856,8 +4848,6 @@ Functions:
     (defvar read-expression-map (make-sparse-keymap)))
   (unless (boundp 'y-or-n-p-map)
     (defvar y-or-n-p-map (make-sparse-keymap)))
-  (unless (boundp 'minibuffer-visible-completions-map)
-    (defvar minibuffer-visible-completions-map (make-sparse-keymap)))
   (unless (boundp 'vc-log-mode-map)
     (defvar vc-log-mode-map (make-sparse-keymap)))
   (unless (boundp 'vc-dir-filename-mouse-map)
@@ -4872,13 +4862,6 @@ Functions:
     (defvar mode-line-misc-info nil))
   (unless (boundp 'idle-update-delay)
     (defvar idle-update-delay 0.5))
-  (unless (boundp 'completion-styles)
-    ;; Real Emacs defaults to (basic partial-completion emacs22); `basic'
-    ;; alone is the conservative subset whose style functions the
-    ;; substrate is known to carry.
-    (defvar completion-styles (list 'basic)))
-  (unless (boundp 'completion-category-defaults)
-    (defvar completion-category-defaults nil))
   (unless (fboundp 'file-chase-links)
     (defun file-chase-links (filename &optional limit)
       "Chase links in FILENAME until a name that is not a link.

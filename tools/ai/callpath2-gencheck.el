@@ -71,9 +71,10 @@
   (cp2-check "apply" (and ap apw kind prun (cp2-has 'nl_eic_apply_words apw) (cp2-has 'nl_root_release apw)
                           (cp2-has 'm5_fx_apply_words_run ap)
                           (not (cp2-has 'm5_fx_apply_run prun))
-                          (cp2-has '(m5_fx_apply_run stk sp argc resw env)
+                          ;; gnu562: the call site's cache rides along.
+                          (cp2-has '(m5_fx_apply_run stk sp argc resw env cache)
                                    (cp2-find 'm5_fx_callout helpers))
-                          (string-match-p "(m5_fx_apply_run stk argc argc resw env)"
+                          (string-match-p "(m5_fx_apply_run stk argc argc resw env (if (= (nl_word_tag64 site) 8)"
                                           (prin1-to-string (nelisp-cc-fxir-native-source)))
                           (cp2-has "apply" kind) (equal (nthcdr 3 stub-ap) '(-3))
                           (cp2-parse ap) (cp2-parse kind) (cp2-parse prun)))

@@ -25,13 +25,21 @@ A snapshot contains the modification tick, accessible bounds and positions.")
   "Record newline cache creation or removal after successful line motion."
   (let ((enabled cache-long-scans)
         (indirect (buffer-base-buffer)))
-    (with-current-buffer (emacs-cc-search-1--cache-buffer)
-      ;; An indirect buffer cannot toggle a cache against its base policy.
-      (when (or (not indirect) (eq (not enabled) (not cache-long-scans)))
+    (if (not indirect)
+        ;; gnu562: a base buffer owns its cache (`--cache-buffer' is the
+        ;; current buffer), so update it without the buffer switch, which
+        ;; cost every line motion about 4 us.
         (if enabled
             (unless emacs-cc-search-1--newline-cache
               (setq emacs-cc-search-1--newline-cache t))
-          (setq emacs-cc-search-1--newline-cache nil))))))
+          (setq emacs-cc-search-1--newline-cache nil))
+      (with-current-buffer (emacs-cc-search-1--cache-buffer)
+        ;; An indirect buffer cannot toggle a cache against its base policy.
+        (when (or (not indirect) (eq (not enabled) (not cache-long-scans)))
+          (if enabled
+              (unless emacs-cc-search-1--newline-cache
+                (setq emacs-cc-search-1--newline-cache t))
+            (setq emacs-cc-search-1--newline-cache nil)))))))
 
 (defun emacs-cc-search-1--newline-positions ()
   "Scan accessible text for newline character positions without line motion."

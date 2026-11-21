@@ -35,6 +35,11 @@
         (when found
           (cons cost (append positions nil)))))))
 
+;; minibuf.c DEFVAR_LISP: GNU `read-passwd' (auth-source.el) binds it.
+(unless (boundp 'read-hide-char)
+  (defvar read-hide-char nil
+    "Whether to hide input characters in noninteractive mode."))
+
 (unless (fboundp 'abort-minibuffers)
   (defun abort-minibuffers ()
     "Abort the current minibuffer."
@@ -47,13 +52,20 @@
     "Compute cost of PAT matching STR using modified Gotoh algorithm."
     (emacs-cc-minibuf-1--flex-match pat str)))
 
+(defun emacs-cc-minibuf-1--innermost-p (buffer)
+  "Return t if BUFFER (default current) is the most nested active minibuffer.
+This is minibuf.c's notion: the minibuffer stack lives in
+`emacs-minibuffer--buffers', innermost first."
+  (let ((target (or buffer (current-buffer))))
+    (and (bufferp target)
+         (boundp 'emacs-minibuffer--buffers)
+         (eq target (car emacs-minibuffer--buffers))
+         t)))
+
 (unless (fboundp 'innermost-minibuffer-p)
   (defun innermost-minibuffer-p (&optional buffer)
     "Return t if BUFFER is the most nested active minibuffer."
-    (let ((target (or buffer (current-buffer))))
-      (condition-case nil
-          (and (minibufferp target) (eq target (current-buffer)) t)
-        (error nil)))))
+    (emacs-cc-minibuf-1--innermost-p buffer)))
 
 (unless (fboundp 'internal-complete-buffer)
   (defun internal-complete-buffer (string predicate flag)
@@ -70,9 +82,10 @@
 
 (unless (fboundp 'minibuffer-innermost-command-loop-p)
   (defun minibuffer-innermost-command-loop-p (&optional buffer)
-    "Return t if BUFFER is a minibuffer at the current command loop level."
-    (let ((target (or buffer (current-buffer))))
-      nil)))
+    "Return t if BUFFER is a minibuffer at the current command loop level.
+Minibuffers here never start a nested command loop, so this is the
+innermost-minibuffer test."
+    (emacs-cc-minibuf-1--innermost-p buffer)))
 
 (unless (fboundp 'read-variable)
   (defun read-variable (prompt &optional default-value)
@@ -112,6 +125,33 @@ Return list of symbols found."
                              (or (null predicate) (funcall predicate symbol)))
                     (push symbol found))))
       (sort found #'string-lessp))))
+
+;; Variables GNU defines in minibuf.c (DEFVAR_*), read by the genuine GNU
+;; minibuffer.el.  Defaults match GNU Emacs 31.1.
+(defvar minibuffer-completing-file-name nil
+  "Non-nil means completing file names.")
+(defvar minibuffer-allow-text-properties nil
+  "Non-nil means `read-from-minibuffer' should not discard text properties.")
+(defvar minibuffer-help-form nil
+  "Value that `help-form' takes on inside the minibuffer.")
+(defvar history-add-new-input t
+  "Non-nil means to add new elements in history.")
+(defvar read-buffer-function nil
+  "If this is non-nil, `read-buffer' does its work by calling this function.")
+(defvar read-buffer-completion-ignore-case nil
+  "Non-nil means completion ignores case when reading a buffer name.")
+(defvar read-expression-history nil
+  "A history list for arguments that are Lisp expressions to evaluate.")
+(defvar minibuffer-follows-selected-frame t
+  "t means the active minibuffer always displays on the selected frame.")
+(defvar read-minibuffer-restore-windows t
+  "Non-nil means restore window configurations on exit from minibuffer.")
+
+;; keyboard.c DEFVARs read by `minibuffer-setup-on-screen-keyboard'.
+(defvar last-event-frame nil
+  "The frame on which the last input event was received.")
+(defvar last-event-device nil
+  "The name of the input device that generated the last event.")
 
 (provide 'emacs-cc-minibuf-1)
 ;;; emacs-cc-minibuf-1.el ends here

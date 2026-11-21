@@ -13436,11 +13436,20 @@ You cannot count on them to still be there!"))
             "aarch64-unknown-linux-gnu"
           "x86_64-pc-linux-gnu")))))
 
+;; gnu562: the C predicates (`type-of', `bufferp', `buffer-live-p') never
+;; call a Lisp redefinition.  emacs-lib wraps `recordp' and `hash-table-p'
+;; (arity wrappers, about 0.45 us a call against 0.1 us), so they read the
+;; native predicates saved here.
+(unless (fboundp 'nelisp--native-recordp)
+  (fset 'nelisp--native-recordp (symbol-function 'recordp)))
+(unless (fboundp 'nelisp--native-hash-table-p)
+  (fset 'nelisp--native-hash-table-p (symbol-function 'hash-table-p)))
+
 (unless (fboundp 'bufferp)
   ;; Direct tag test: the generated predicate walks the struct ancestry on
   ;; every call, and `nelisp-buffer' has no children.
   (defun bufferp (obj)
-    (and (recordp obj) (eq (nelisp--record-type obj) 'nelisp-buffer))))
+    (and (nelisp--native-recordp obj) (eq (aref obj 0) 'nelisp-buffer))))
 ;; bufnative: `point', `point-min', `point-max', `goto-char', `buffer-size', `bobp'
 ;; and `eobp' are native (`nl_buf_leaf_run' in lisp/nelisp-cc-fx-call-primitives.el:
 ;; they read the current buffer's record slots directly and decline to these
@@ -13505,7 +13514,7 @@ You cannot count on them to still be there!"))
 carries no separate liveness flag), so a stale reference is live iff
 the registry still maps its name back to this exact object."
     ;; Slot 1 of the record is NAME (slot 0 is the type tag).
-    (and (recordp buffer) (eq (nelisp--record-type buffer) 'nelisp-buffer)
+    (and (nelisp--native-recordp buffer) (eq (aref buffer 0) 'nelisp-buffer)
          (eq buffer (gethash (aref buffer 1) nelisp-buffer--registry)))))
 (defun nelisp--buffer-arg (buffer-or-name)
   "Resolve BUFFER-OR-NAME to a buffer object, as GNU `Fget_buffer' + nsberror."
@@ -20982,36 +20991,46 @@ without the `charset' property, `plain' to print the string without intervals."
 ;; buffer's in its `text-properties' slot).  The public names below are the
 ;; textprop.c functions over it.
 
+;; textprop.c's `get-text-property' calls Ftext_properties_at directly, so an
+;; advice on `text-properties-at' (emacs-lib adds one for its sidecar
+;; properties) must not run inside it.  Both expand the lookup in place: the
+;; expansion in `text-properties-at' is the body its native row was compiled
+;; from, so that row stays current.
+(defmacro nelisp--tp-at-form (position object)
+  "The properties of OBJECT (nil: the current buffer) at POSITION.
+POSITION and OBJECT must be variables; OBJECT is rebound."
+  `(let* ((,object (or ,object nelisp--current-buffer)) (root nil) (p 0))
+     ;; The common call: an integer inside the object, whose tree already
+     ;; covers it; everything else takes the full validation.
+     (when (integerp ,position)
+       (if (stringp ,object)
+           (when (and (>= ,position 0) (<= ,position (length ,object)))
+             (let ((r (gethash ,object nelisp--tp-string-properties)))
+               (when (and r (= (aref r 4) (length ,object)))
+                 (setq root r p ,position))))
+         (when (nelisp--tp-bufp ,object)
+           (let ((r (nelisp--tp-broot ,object)) (lo (nelisp--tp-bmin ,object))
+                 (hi (nelisp--tp-bmax ,object)))
+             (when (and r (>= ,position lo) (<= ,position hi) (< lo hi)
+                        (= (aref r 4) (nelisp--tp-blen ,object)))
+               (setq root r p (1- ,position)))))))
+     (if root
+         (let ((n nil) (fs 0))
+           (nelisp--tp-locate root p n fs)
+           (if (= p (+ fs (aref n 2))) nil (aref n 3)))
+       (setq root (nelisp--tp-validate ,object ,position ,position t nil))
+       (when root
+         (let ((n nil) (fs 0) (vs nelisp--tp-vs))
+           (nelisp--tp-locate root vs n fs)
+           (if (= vs (+ fs (aref n 2))) nil (aref n 3)))))))
+
 (unless (fboundp 'get-text-property)
   (defun get-text-property (position prop &optional object)
-    (nelisp--tp-textget (text-properties-at position object) prop)))
+    (nelisp--tp-textget (nelisp--tp-at-form position object) prop)))
 
 (unless (fboundp 'text-properties-at)
   (defun text-properties-at (position &optional object)
-    (let* ((object (or object nelisp--current-buffer)) (root nil) (p 0))
-      ;; The common call: an integer inside the object, whose tree already
-      ;; covers it; everything else takes the full validation.
-      (when (integerp position)
-        (if (stringp object)
-            (when (and (>= position 0) (<= position (length object)))
-              (let ((r (gethash object nelisp--tp-string-properties)))
-                (when (and r (= (aref r 4) (length object)))
-                  (setq root r p position))))
-          (when (nelisp--tp-bufp object)
-            (let ((r (nelisp--tp-broot object)) (lo (nelisp--tp-bmin object))
-                  (hi (nelisp--tp-bmax object)))
-              (when (and r (>= position lo) (<= position hi) (< lo hi)
-                         (= (aref r 4) (nelisp--tp-blen object)))
-                (setq root r p (1- position)))))))
-      (if root
-          (let ((n nil) (fs 0))
-            (nelisp--tp-locate root p n fs)
-            (if (= p (+ fs (aref n 2))) nil (aref n 3)))
-        (setq root (nelisp--tp-validate object position position t nil))
-        (when root
-          (let ((n nil) (fs 0) (vs nelisp--tp-vs))
-            (nelisp--tp-locate root vs n fs)
-            (if (= vs (+ fs (aref n 2))) nil (aref n 3))))))))
+    (nelisp--tp-at-form position object)))
 
 (unless (fboundp 'propertize)
   (defun propertize (string &rest properties)
@@ -26980,13 +26999,23 @@ nil), so there is nothing else to update for that name."
      ((integerp x) 'integer)
      ;; As below: `symbolp' is nil for a symbol with position.
      ((symbolp x) 'symbol)
-     ((char-table-p x) 'char-table)
+     ;; gnu562: records before the char-table tests.  Every struct predicate
+     ;; and accessor asks `type-of' of a record, and `char-table-p' is a
+     ;; library call (about 3 us of the former 4.8 us for a buffer).  The
+     ;; only record char-table is the bootstrap syntax table, and a record
+     ;; is never a native sub-char-table.
+     ((nelisp--native-recordp x)
+      (let ((ty (aref x 0)))
+        (cond ((and (eq ty 'nelisp--syntax-table) (char-table-p x)) 'char-table)
+              ((and (nelisp--native-recordp ty) (> (length ty) 1)) (aref ty 1))
+              (t ty))))
+     ;; No char-table is a cons or a float (a library char-table is a
+     ;; vector, a native one an opaque object); `char-table-p' is a library
+     ;; call (about 1.5 us).
+     ((and (not (consp x)) (not (floatp x)) (char-table-p x)) 'char-table)
      ((and (fboundp 'nelisp--native-sub-char-table-p)
            (nelisp--native-sub-char-table-p x)) 'sub-char-table)
-     ((recordp x)
-      (let ((ty (aref x 0)))
-        (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty)))
-     ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
+     ((nelisp--native-hash-table-p x) 'hash-table)
      ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
      ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'
      ;; object; a bare `(lambda ...)' list is just a cons.

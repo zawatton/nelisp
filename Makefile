@@ -592,6 +592,7 @@ standalone-eval-clean:
 #   make standalone-reader-test   # build, run, assert exit == eval(NELISP_SRC)
 # Embedded source via NELISP_SRC (default "(+ 40 2)" -> 42; + - * only for now).
 standalone-reader:
+	@mkdir -p target
 	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader

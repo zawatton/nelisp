@@ -150,6 +150,16 @@ smoke).")
 See `files--native-buffer-modified-p' for why the `emacs-stub-bulk'
 placeholder must not be captured as \"native\" here either.")
 
+;; gnu562: the hot natives also get a function name.  Calling a function
+;; value through `funcall' took about 0.7 us against 0.15 us for a call by
+;; name; the variables stay the switch that says whether the native exists.
+(dolist (entry '((files--native-point . files--native-point-fn)
+                 (files--native-goto-char . files--native-goto-char-fn)
+                 (files--native-point-min . files--native-point-min-fn)
+                 (files--native-point-max . files--native-point-max-fn)))
+  (when (symbol-value (car entry))
+    (defalias (cdr entry) (symbol-value (car entry)))))
+
 (defun files--absolute-clean-p (path)
   "Return non-nil when PATH is an absolute POSIX path with no `//', `/./',
 or `/../' component and does not end in a bare `.'/`..' component -- i.e.
@@ -272,10 +282,14 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--buffer-string-value (&optional buffer)
   "Return BUFFER's fallback text."
   (if (and files--native-buffer-string (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-buffer-string)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-buffer-string)))
+        (funcall files--native-buffer-string))
     (let ((cell (files--buffer-state-cell 'files--buffer-strings buffer)))
       (if cell (cdr cell) files--buffer-string))))
 
@@ -287,20 +301,28 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--buffer-point-value (&optional buffer)
   "Return BUFFER's fallback point."
   (if (and files--native-point (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-point)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-point)))
+        (files--native-point-fn))
     (let ((cell (files--buffer-state-cell 'files--buffer-points buffer)))
       (if cell (cdr cell) files--point))))
 
 (defun files--set-buffer-point-value (point &optional buffer)
   "Set BUFFER's fallback point to POINT."
   (if (and files--native-goto-char (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-goto-char point)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-goto-char point)))
+        (files--native-goto-char-fn point))
     (setq files--point point)
     (files--set-buffer-state-cell 'files--buffer-points point buffer)))
 
@@ -325,10 +347,14 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--buffer-modified-value (&optional buffer)
   "Return BUFFER's fallback modified flag."
   (if (and files--native-buffer-modified-p (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-buffer-modified-p)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-buffer-modified-p)))
+        (funcall files--native-buffer-modified-p))
     (if (files--buffer-tick-mode-p buffer)
         (< (files--buffer-save-tick buffer)
            (buffer-modified-tick (files--buffer-key buffer)))
@@ -339,10 +365,14 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--set-buffer-modified-value (flag &optional buffer)
   "Set BUFFER's fallback modified flag to FLAG."
   (if (and files--native-set-buffer-modified-p (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-set-buffer-modified-p flag)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-set-buffer-modified-p flag)))
+        (funcall files--native-set-buffer-modified-p flag))
     (when (files--buffer-tick-mode-p buffer)
       (let ((tick (buffer-modified-tick (files--buffer-key buffer))))
         (cond
@@ -517,14 +547,14 @@ overhead, so the fallback is skipped while the native subr is in place.")
   (defun point-min ()
     "Return the first valid fallback buffer position."
     (if (and files--native-point-min (files--host-buffer-available-p))
-        (funcall files--native-point-min)
+        (files--native-point-min-fn)
       1)))
 
 (when (files--install-fallback-function-p 'point-max)
   (defun point-max ()
     "Return one past the last fallback buffer position."
     (if (and files--native-point-max (files--host-buffer-available-p))
-        (funcall files--native-point-max)
+        (files--native-point-max-fn)
       (1+ (files--string-length (files--buffer-string-value))))))
 
 (when (files--install-fallback-function-p 'point)

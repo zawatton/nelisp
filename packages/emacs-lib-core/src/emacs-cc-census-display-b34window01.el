@@ -13,6 +13,15 @@
          (entry (and (emacs-frame-p target)
                      (assq 'minibuffer-window (emacs-frame-parameters target))))
          (window (cdr entry)))
+    ;; The frame object may not carry parameters (stub frames), so the
+    ;; selected frame's window is also cached in `emacs-minibuffer--window'.
+    ;; GNU has exactly one minibuffer window per frame.
+    (when (and (not (and window (window-valid-p window)))
+               (eq target (selected-frame))
+               (boundp 'emacs-minibuffer--window)
+               (emacs-window-p emacs-minibuffer--window)
+               (window-valid-p emacs-minibuffer--window))
+      (setq window emacs-minibuffer--window))
     (unless (and window (window-valid-p window))
       (let ((root (or (and (emacs-frame-p target)
                            (emacs-frame-root-window target))

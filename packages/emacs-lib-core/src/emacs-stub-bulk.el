@@ -281,12 +281,12 @@ Forwarder to `forward-char' with negated count."
     copy-marker copy-sequence ctl-x-4-prefix ctl-x-5-prefix current-buffer current-case-table current-column current-global-map
     current-local-map current-window-configuration cursor-intangible-mode cursor-sensor-mode debug defalias
     default-boundp default-value define-button-type define-key defvaralias delete
-    delete-backward-char delete-char delete-minibuffer-contents delete-region delq describe-bindings describe-function
+    delete-backward-char delete-char delete-region delq describe-bindings describe-function
     describe-key describe-symbol describe-variable directory-file-name display-buffer display-graphic-p
     display-popup-menus-p display-warning downcase drop
     elt emacs-pid emacs-version end-of-line enlarge-window eobp eq eql
     equal erase-buffer error-message-string eval eval-after-load event-convert-list exec-path
-    execute-extended-command-for-buffer exit-minibuffer exp expand-file-name face-background-pixmap face-stipple face-underline-p
+    execute-extended-command-for-buffer exp expand-file-name face-background-pixmap face-stipple face-underline-p
     fboundp featurep fetch-bytecode file-exists-p file-modes file-name-extension file-name-nondirectory file-name-sans-extension find-function-search-for-symbol
     find-lisp-object-file-name flatten-list floatp float-time fmakunbound format
     format-message format-spec forward-char forward-line forward-sexp forward-word
@@ -310,8 +310,8 @@ Forwarder to `forward-char' with negated count."
     make-string make-symbol make-text-button make-variable-buffer-local make-vector mapatoms mapbacktrace mapc
     mapcar mapconcat maphash map-keymap mark markerp marker-position
     mark-marker match-beginning match-data match-end max member memq
-    message min minibuffer-message minibufferp minibuffer-prompt minibuffer-prompt-end minibuffer-recenter-top-bottom
-    minibuffer-scroll-down-command minibuffer-scroll-other-window minibuffer-scroll-other-window-down minibuffer-scroll-up-command mkdir mod modify-frame-parameters
+    message min minibufferp minibuffer-prompt minibuffer-prompt-end 
+    mkdir mod modify-frame-parameters
     move-marker move-to-column narrow-to-region 
     native-comp-function-p natnump nconc newline next-property-change next-single-property-change
     next-window nlistp normal-mode nreverse nth nthcdr null number-at-point
@@ -386,7 +386,7 @@ Forwarder to `forward-char' with negated count."
     inhibit-read-only input-decode-map input-method-function jka-compr-load-suffixes keyboard-translate-table kill-buffer-hook kill-buffer-query-functions lexical-binding
     line-spacing load-dangerous-libraries load-file-name load-file-rep-suffixes load-history load-path load-suffixes macro-declarations-alist
     macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended menu-prompting
-    messages-buffer-max-lines minibuffer-auto-raise minibuffer-default-prompt-format minibuffer-local-map minibuffer-scroll-window minor-mode-alist minor-mode-map-alist mode-line-mode-menu
+    messages-buffer-max-lines minibuffer-auto-raise minibuffer-local-map minibuffer-scroll-window minor-mode-alist minor-mode-map-alist mode-line-mode-menu
     most-negative-fixnum most-positive-fixnum native-comp-deferred-compilation native-comp-enable-subr-trampolines native-comp-jit-compilation needed noninteractive obarray
     operating-system-release output overriding-local-map overriding-terminal-local-map parse-sexp-lookup-properties pending-undo-list post-self-insert-hook print-escape-newlines
     print-gensym print-quoted print-unreadable-function purify-flag query-replace-map redisplay-dont-pause s set-variable-value-history
@@ -412,7 +412,13 @@ Forwarder to `forward-char' with negated count."
       ;; the buffer read-only check still sees the global nil --
       ;; exactly the `default-process-coding-system' defect class the
       ;; magit bridge documented, recurring here for every name below.
-      (eval (list 'defvar --s-- nil) t))))
+      ;; gnu562: `s', `sym', `needed' and `output' only get a global value.
+      ;; Declaring them special made every later `(lambda (s) ...)' and
+      ;; `(let ((s ...)))' bind dynamically, unlike GNU, and kept each such
+      ;; body off the VM.  A free reference still reads the nil value.
+      (if (memq --s-- '(s sym needed output))
+          (set --s-- nil)
+        (eval (list 'defvar --s-- nil) t)))))
 
 ;; These runtime limits are read arithmetically by vendored libraries such as
 ;; cc-defs.el.  They need real Emacs defaults rather than the nil placeholder

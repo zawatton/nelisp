@@ -6,13 +6,31 @@
     (signal 'wrong-number-of-arguments (list name (length arguments))))
   (apply (get name 'emacs-aggregate-original) arguments))
 
+;; gnu562: only `char-table-p', whose definition is the library's Lisp
+;; `emacs-char-table-p', needs the wrapper.  The native `bool-vector-p',
+;; `hash-table-p' and `recordp' already signal GNU's data: the called
+;; symbol for a direct call and the subr for `funcall'/`apply' (GNU 31.1
+;; gives (wrong-number-of-arguments #<subr recordp> 0) there, which the
+;; wrapper turned into the symbol).  Their wrapper cost 0.44 us a call
+;; against 0.1 us.
 (when (fboundp 'nelisp--repr)
-  (dolist (name '(bool-vector-p char-table-p hash-table-p recordp))
+  (dolist (name '(char-table-p))
     (unless (get name 'emacs-aggregate-original)
       (put name 'emacs-aggregate-original (symbol-function name))
-      (fset name
-            (list 'lambda '(&rest arguments)
-                  (list 'emacs-aggregate--call (list 'quote name) 'arguments))))))
+      ;; gnu562: a lexical closure, which the fx VM compiles, rather than a
+      ;; raw (lambda ...) list, which every call interpreted: `recordp' on a
+      ;; string cost 13 us and `emacs-char-table-p' 29 us through it.  The
+      ;; one-argument call goes straight to an alias of the original, not
+      ;; through `get' and `funcall' (recordp 1.7 -> 0.7 us).  The arity
+      ;; check and its error data are unchanged.
+      (let ((alias (intern (format "emacs-aggregate--%s-original" name))))
+        (defalias alias (symbol-function name))
+        (fset name
+              (eval `(lambda (&rest arguments)
+                       (if (and (consp arguments) (null (cdr arguments)))
+                           (,alias (car arguments))
+                         (emacs-aggregate--call ',name arguments)))
+                    t))))))
 
 (provide 'emacs-cc-aggregate-arity-1)
 ;;; emacs-cc-aggregate-arity-1.el ends here

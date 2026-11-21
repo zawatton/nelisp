@@ -763,14 +763,7 @@
     emacs-minibuffer-gui-start-purpose-read
     emacs-minibuffer-read-from-minibuffer
     emacs-minibuffer-read-string
-    emacs-minibuffer-read-no-blanks-input
-    emacs-minibuffer-read-key
     emacs-minibuffer-read-buffer
-    emacs-minibuffer-read-file-name
-    emacs-minibuffer-read-directory-name
-    emacs-minibuffer-read-passwd
-    emacs-minibuffer-read-number
-    emacs-minibuffer-y-or-n-p
     emacs-minibuffer-yes-or-no-p
     emacs-minibuffer-completing-read
     emacs-minibuffer-try-completion
@@ -782,10 +775,7 @@
     emacs-minibuffer-minibuffer-prompt
     emacs-minibuffer-minibuffer-contents
     emacs-minibuffer-minibuffer-prompt-end
-    emacs-minibuffer-minibuffer-prompt-width
-    emacs-minibuffer-exit-minibuffer
     emacs-minibuffer-abort-recursive-edit
-    emacs-minibuffer-minibuffer-message
     emacs-minibuffer-feed-input
     emacs-minibuffer-reset
     emacs-command-loop-gui-backend
@@ -1207,7 +1197,6 @@ process (an earlier file may legitimately load a lazy feature)."
                    emacs-vc)))
   (should (equal (nelisp-emacs-library-package-lazy-features 'core)
                  '(emacs-buffer-ui
-                   emacs-isearch
                    emacs-dired-min
                    emacs-project
                    emacs-elisp-eval

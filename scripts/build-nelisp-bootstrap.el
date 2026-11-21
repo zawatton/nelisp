@@ -459,16 +459,14 @@ is relative to `nelisp-bootstrap-repo-root'."
     "comint.el"
     "emacs-replace.el"
     "replace.el"
-    "emacs-isearch.el"
-    "isearch.el"
     "emacs-ielm.el"
     "ielm.el"
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
     ;; for project.el and anything calling `hack-dir-local-variables'.
     "emacs-files-gnu.el"
-    ;; GNU minibuffer.el completion-table-dynamic (generated, verbatim) for
-    ;; elisp-mode.el, which calls it while loading.
-    "emacs-minibuffer-gnu.el"
+    ;; GNU window.el window-group functions (generated, verbatim) for
+    ;; isearch.el, which reads the window-group start on every search step.
+    "emacs-window-gnu.el"
     "emacs-project.el"
     "project.el"
     "emacs-shell.el"
@@ -592,6 +590,11 @@ These are existing vendor implementations, not local reimplementations.")
     ;; `enable-theme' / `disable-theme' all run and behave correctly against
     ;; a real `defcustom'.
     "emacs-lisp/custom.el"
+    ;; Genuine GNU minibuffer.el (the pinned unmodified copy): the Lisp-level
+    ;; completion API (styles, completion-in-region, completion tables).  It
+    ;; needs the real `defcustom' (:set/:initialize) from custom.el above and must
+    ;; load before elisp-mode.el, which calls `completion-table-dynamic'.
+    "staged-emacs-lisp/minibuffer.el"
     ;; S2 coverage batch 5 (2026-09-28): eight more GNU Emacs 31.1 vendor
     ;; files, verified via a raw standalone `load' probe against the batch-4
     ;; bundle before being added here -- each of these loads with zero
@@ -669,9 +672,8 @@ These are existing vendor implementations, not local reimplementations.")
     ;; too much wall time -- measured on this box with the 35s baseline):
     ;; dired.el (+6.5s, needs an `easy-menu-define' keep-rule for woman's
     ;; `[menu-bar immediate]' lookup) and calc/calc.el (+11.5s, ~7s of it
-    ;; live `calc-macs'/`rect'/`calc-loaddefs' loads).  isearch.el is not
-    ;; added: it needs `search-map' (a bindings.el keymap) and was not
-    ;; probed further.  woman.el's eager `woman-dired-define-keys' call is
+    ;; live `calc-macs'/`rect'/`calc-loaddefs' loads).  isearch.el is
+    ;; bundled below (search-map comes from the keymap substrate).  woman.el's eager `woman-dired-define-keys' call is
     ;; rewritten to the deferred `dired-mode-hook' branch in
     ;; standalone-source-normalize.el.
     "emacs-lisp/progmodes/compile.el"
@@ -681,7 +683,13 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/term.el"
     "emacs-lisp/woman.el"
     "emacs-lisp-31.1/progmodes/project.el"
+    ;; GNU's loaddefs.el defines `cursor-sensor-inhibit' at dump time (an
+    ;; autoloaded defvar); isearch.el pushes onto it on every entry.
+    "emacs-lisp/emacs-lisp/cursor-sensor.el"
     "emacs-lisp/isearch.el"
+    ;; GNU loaddefs.el defines the `multi-isearch-*' variables at dump time
+    ;; (autoloaded defvars); isearch.el reads them on every search step.
+    "emacs-lisp/misearch.el"
     ;; S2 coverage batch 7 (2026-09-29): real GNU 31.1 json.el, imenu.el, ielm.el
     ;; and url/url-vars.el replace the partial src facades' coverage (json 12/75,
     ;; imenu 3/59, ielm 5/42, url-vars 5/51).  pp.el was tried and left out:
@@ -726,8 +734,7 @@ self-healing replay phase has completed.")
 (defconst nelisp-bootstrap-runtime-lazy-vendor-files
   '("emacs-lisp/emacs-lisp/cl-macs.el"
     "emacs-lisp/man.el"
-    "emacs-lisp/woman.el"
-    "emacs-lisp/isearch.el")
+    "emacs-lisp/woman.el")
   "Vendor sources omitted from the eager .el boot and resolved on first require.
 
 The full .repl manifest retains these files for feature-coverage measurement.
@@ -1275,11 +1282,7 @@ concatenated bootstrap bundle must make the order explicit."
           (setq out (nelisp-bootstrap--insert-before runtime anchor-file out)))))
     ;; App-facing shims such as isearch/shell/man/help-gui can execute top-level
     ;; code that expects these core owners/bridges to exist already.
-    (dolist (pair '(("emacs-faces.el" . "emacs-isearch.el")
-                    ("emacs-faces-builtins.el" . "emacs-isearch.el")
-                    ("emacs-minibuffer.el" . "emacs-isearch.el")
-                    ("emacs-minibuffer-builtins.el" . "emacs-isearch.el")
-                    ("emacs-process.el" . "emacs-man.el")
+    (dolist (pair '(("emacs-process.el" . "emacs-man.el")
                     ("emacs-process-builtins.el" . "emacs-man.el")
                     ("emacs-comint.el" . "emacs-shell.el")
                     ("emacs-keymap-builtins.el" . "emacs-help-gui.el")
@@ -1300,7 +1303,6 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-shell.el" . "shell.el")
                     ("emacs-project.el" . "project.el")
                     ("emacs-ielm.el" . "ielm.el")
-                    ("emacs-isearch.el" . "isearch.el")
                     ("emacs-replace.el" . "replace.el")
                     ("emacs-comint.el" . "comint.el")
                     ("emacs-vc.el" . "vc.el")
@@ -1535,7 +1537,6 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/term.el"
     "vendor/emacs-lisp/woman.el"
     "vendor/emacs-lisp/progmodes/project.el"
-    "vendor/emacs-lisp/isearch.el"
     "vendor/emacs-lisp/imenu.el"
     "vendor/emacs-lisp/json.el"
     "vendor/emacs-lisp/ielm.el"

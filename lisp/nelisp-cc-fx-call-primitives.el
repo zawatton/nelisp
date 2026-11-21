@@ -1836,7 +1836,7 @@
                            ;; symbol again) keeps the generic apply, which follows
                            ;; the chain and detects a cycle.
                            (if (or (= (nl_word_tag64 def) 4) (= (nl_word_tag64 def) 16)) -3
-                             (m5_fx_funcall_value fn fn def stk sp argc resw env))))))))
+                             (m5_fx_funcall_def cache fn def stk sp argc resw env))))))))
             (let* ((st (m5_fx_primitive fn stk sp argc resw env ws)))
               (if (/= st -3) st
                 (let* ((rec (m5_fx_covered fn argc env 0)))
@@ -1854,13 +1854,54 @@
     ;; no covered closure (a Subr object, a byte-code function); the reader's
     ;; definition is generated (`nelisp-standalone--argframe-m5-helpers').
     (defun m5_fx_funcall_value (opr sym def stk sp argc resw env) -3)
+    ;; gnu562: 1 when DEF (a function cell's value, possibly a kind-23 closure
+    ;; object) is a (closure ...) cons, else 0.  Such a definition is neither a
+    ;; builtin list nor a Subr object nor a byte-code function, so
+    ;; `m5_fx_funcall_value' would only run its covered record or answer -3.
+    ;; The reader's definition compares the head's static symbol id
+    ;; (`nelisp-standalone--callpath2-m5-defs'); other link sets answer 0 and
+    ;; keep the ordinary paths.
+    (defun m5_fx_closure_def_p (def) 0)
+    ;; gnu562: 0 when FW is a symbol object whose function cell holds no
+    ;; closure, else 1.  Only a prefilter that spares the function lookup for
+    ;; a byte-code function or a Subr: a 1 still goes through the
+    ;; authoritative `nelisp_env_lookup_function_w', and a 0 keeps the
+    ;; ordinary apply, so a disagreement only costs speed.
+    (defun m5_fx_sym_cell_maybe_closure (fw)
+      (if (if (= (logand fw 7) 6) (>= fw 4096) 0)
+          (if (= (logand (ptr-read-u64 (- fw 6) 0) 63) 4)
+              (m5_fx_closure_def_p (ptr-read-u64 (- fw 6) 24))
+            1)
+        1))
+    ;; gnu562: `funcall' of a symbol whose definition DEF is a closure keeps
+    ;; DEF's record in the site cache's slots 3 and 4 (`m5_fx_site_rec', the
+    ;; direct call site's cache: keyed by the definition, so FSET, advice and
+    ;; redefinition miss it; a retired record, a wrong arity, a worker and the
+    ;; dynamic-binding mode fall back to `m5_fx_covered').  Was: the
+    ;; `nelisp--fx-table' lookup on every call, as the cache held only closure
+    ;; values passed directly.  Any other definition: `m5_fx_funcall_value'.
+    (defun m5_fx_funcall_def (cache fn def stk sp argc resw env)
+      (if (= (m5_fx_closure_def_p def) 0)
+          (m5_fx_funcall_value fn fn def stk sp argc resw env)
+        (let* ((rec (m5_fx_site_rec_neg cache def argc env)))
+          (if (= rec 0) -3
+            (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc env 0 resw 0)))))
+    ;; gnu562: `m5_fx_site_rec' plus a negative entry for a closure that can
+    ;; never be covered; the reader's definition is generated
+    ;; (`nelisp-standalone--callpath2-m5-defs').  Other link sets: no entry.
+    (defun m5_fx_site_rec_neg (cache def argc env) (m5_fx_site_rec cache def argc env))
+    (defun m5_fx_uncoverable_p (def env) 0)
+    (defun m5_fx_body_refused_p (body env) 0)
     ;; callpath2: a builtin value's arity from its Subr object, for the
     ;; `nelisp--native-subr-arity' arm; 0 (none) outside the reader, whose
     ;; definition is generated (`nelisp-standalone--argframe-m5-helpers').
     (defun bf_builtin_subr_arity_w (fnw env) 0)
     ;; callpath2: `apply' on the operand words (call-out kind 14); the reader's
     ;; definition is generated (`nelisp-standalone--argframe-m5-helpers').
-    (defun m5_fx_apply_run (stk sp argc resw env) -3)
+    (defun m5_fx_apply_run (stk sp argc resw env cache) -3)
+    ;; gnu562: `apply' of a covered closure through the site cache; the reader's
+    ;; definition is generated with `m5_fx_apply_run' (`nelisp-standalone--callpath2-m5-defs').
+    (defun m5_fx_apply_closure (cache stk sp argc resw env) -3)
     (defun m5_fx_apply_spread (base argc resw env) -3)
     (defun m5_fx_apply_no_word_subr (fw) 0)
     ;; applyfn2: GNU Fapply's spread for a builtin (reader definitions generated
