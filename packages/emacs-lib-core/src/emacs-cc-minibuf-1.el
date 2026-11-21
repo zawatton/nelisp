@@ -35,6 +35,11 @@
         (when found
           (cons cost (append positions nil)))))))
 
+;; minibuf.c DEFVAR_LISP: GNU `read-passwd' (auth-source.el) binds it.
+(unless (boundp 'read-hide-char)
+  (defvar read-hide-char nil
+    "Whether to hide input characters in noninteractive mode."))
+
 (unless (fboundp 'abort-minibuffers)
   (defun abort-minibuffers ()
     "Abort the current minibuffer."

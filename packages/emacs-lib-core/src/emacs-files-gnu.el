@@ -122,6 +122,45 @@ using \\[read-only-mode]."
   :type 'boolean
   :group 'view)
 
+(defun read-directory-name (prompt &optional dir default-dirname mustmatch initial predicate)
+  "Read directory name, prompting with PROMPT and completing in directory DIR.
+The return value is not expanded---you must call `expand-file-name'
+yourself.
+
+DIR is the directory to use for completing relative file names.
+It should be an absolute directory name, or nil (which means the
+current buffer's value of `default-directory').
+
+DEFAULT-DIRNAME specifies the default directory name to return if user
+exits with the same non-empty string that was inserted by this function.
+ (If DEFAULT-DIRNAME is omitted, DIR combined with INITIAL is used,
+  or just DIR if INITIAL is nil.)
+Return the directory as a string.
+
+If the user exits with an empty minibuffer, return an empty
+string.  (This can happen only if the user erased the pre-inserted
+contents or if `insert-default-directory' is nil.)
+
+Fourth arg MUSTMATCH, is like for `read-file-name', which see.
+
+Fifth arg INITIAL specifies text to start with.
+
+Sixth arg PREDICATE, if non-nil, should be a function of one
+argument; then a directory is considered an acceptable completion
+alternative only if PREDICATE returns non-nil with the file name
+as its argument."
+  (unless dir
+    (setq dir default-directory))
+  (read-file-name prompt dir (or default-dirname
+				 (if initial (expand-file-name initial dir)
+				   dir))
+		  mustmatch initial
+                  (if predicate
+                      (lambda (filename)
+                        (and (file-directory-p filename)
+                             (funcall predicate filename)))
+                    #'file-directory-p)))
+
 (defvar cd-path nil
   "Value of the CDPATH environment variable, as a list.
 Not actually set up until the first time you use it.")
@@ -2430,6 +2469,403 @@ a click on a scroll bar)."
         (or (car-safe pt)
             ;; Apparently this can also be `vertical-scroll-bar' (bug#13979).
             (if (integerp pt) pt)))))
+
+(defun add-to-history (history-var newelt &optional maxelt keep-all)
+  "Add NEWELT to the history list stored in the variable HISTORY-VAR.
+Return the new history list.
+If MAXELT is non-nil, it specifies the maximum length of the history.
+Otherwise, the maximum history length is the value of the `history-length'
+property on symbol HISTORY-VAR, if set, or the value of the `history-length'
+variable.  The possible values of maximum length have the same meaning as
+the values of `history-length'.
+Remove duplicates of NEWELT if `history-delete-duplicates' is non-nil.
+If optional fourth arg KEEP-ALL is non-nil, add NEWELT to history even
+if it is empty or duplicates the most recent entry in the history.
+HISTORY-VAR cannot refer to a lexical variable."
+  (unless maxelt
+    (setq maxelt (or (get history-var 'history-length)
+		     history-length)))
+  (let ((history (symbol-value history-var))
+	tail)
+    (when (and (listp history)
+	       (or keep-all
+		   (not (stringp newelt))
+		   (plusp (length newelt)))
+	       (or keep-all
+		   (not (equal (car history) newelt))))
+      (if history-delete-duplicates
+	  (setq history (delete newelt history)))
+      (setq history (cons newelt history))
+      (when (integerp maxelt)
+        (if (>= 0 maxelt)
+	    (setq history nil)
+	  (setq tail (nthcdr (1- maxelt) history))
+	  (when (consp tail)
+            (setcdr tail nil))))
+      (set history-var history))))
+
+(defconst read-key-empty-map (make-sparse-keymap)
+  "Used internally by `read-key'.")
+
+(defconst read-key-full-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [t] #'ignore)       ;Dummy binding.
+
+    ;; ESC needs to be unbound so that escape sequences in
+    ;; `input-decode-map' are still processed by `read-key-sequence'.
+    (define-key map [?\e] nil)
+    map)
+  "Used internally by `read-key'.")
+
+(defvar read-key-delay 0.01)
+
+(defun read-key (&optional prompt disable-fallbacks)
+  "Read a key from the keyboard, return the event thus read.
+Contrary to `read-event' this will not return a raw event but instead will
+obey the input decoding and translations usually done by `read-key-sequence'.
+So escape sequences and keyboard encoding are taken into account.
+When there's an ambiguity because the key looks like the prefix of
+some sort of escape sequence, the ambiguity is resolved via `read-key-delay'.
+
+Also in contrast to `read-event', input method text conversion
+will be disabled while the key sequence is read, so that
+character input events will always be generated for keyboard
+input.
+
+If the optional argument PROMPT is non-nil, display that as a
+prompt.
+
+If the optional argument DISABLE-FALLBACKS is non-nil, all
+unbound fallbacks usually done by `read-key-sequence' are
+disabled such as discarding mouse down events.  This is generally
+what you want as `read-key' temporarily removes all bindings
+while calling `read-key-sequence'.  If nil or unspecified, the
+only unbound fallback disabled is downcasing of the last event."
+  ;; This overriding-terminal-local-map binding also happens to
+  ;; disable quail's input methods, so although read-key-sequence
+  ;; always inherits the input method, in practice read-key does not
+  ;; inherit the input method (at least not if it's based on quail).
+  (let ((overriding-terminal-local-map nil)
+	(overriding-local-map
+         ;; FIXME: Audit existing uses of `read-key' to see if they
+         ;; should always specify disable-fallbacks to be more in line
+         ;; with `read-event'.
+         (if disable-fallbacks read-key-full-map read-key-empty-map))
+        (echo-keystrokes 0)
+	(old-global-map (current-global-map))
+        (timer (run-with-idle-timer
+                ;; Wait long enough that Emacs has the time to receive and
+                ;; process all the raw events associated with the single-key.
+                ;; But don't wait too long, or the user may find the delay
+                ;; annoying (or keep hitting more keys, which may then get
+                ;; lost or misinterpreted).
+                ;; This is relevant only for keys that Emacs perceives as
+                ;; "prefixes", such as C-x (because of the C-x 8 map in
+                ;; key-translate-table and the C-x @ map in function-key-map)
+                ;; or ESC (because of terminal escape sequences in
+                ;; input-decode-map).
+                read-key-delay t
+                (lambda ()
+                  (let ((keys (this-command-keys-vector)))
+                    (unless (zerop (length keys))
+                      ;; `keys' is non-empty, so the user has hit at least
+                      ;; one key; there's no point waiting any longer, even
+                      ;; though read-key-sequence thinks we should wait
+                      ;; for more input to decide how to interpret the
+                      ;; current input.
+		      ;;
+		      ;; As this treatment will completely defeat the
+		      ;; purpose of touch screen event conversion,
+		      ;; dispense with this timeout when the first
+		      ;; event in this vector is a touch-screen event.
+		      (unless (memq (car-safe (aref keys 0)) '(touchscreen-begin
+							       touchscreen-update
+							       touchscreen-end))
+			(throw 'read-key keys))))))))
+    (unwind-protect
+        (progn
+	  (use-global-map
+           (let ((map (make-sparse-keymap)))
+             ;; Don't hide the menu-bar, tab-bar and tool-bar entries.
+             (define-key map [menu-bar] (lookup-key global-map [menu-bar]))
+             (define-key map [tab-bar]
+	       ;; This hack avoids evaluating the :filter (Bug#9922).
+	       (or (cdr (assq 'tab-bar global-map))
+		   (lookup-key global-map [tab-bar])))
+             (define-key map [tool-bar]
+	       ;; This hack avoids evaluating the :filter (Bug#9922).
+	       (or (cdr (assq 'tool-bar global-map))
+		   (lookup-key global-map [tool-bar])))
+             map))
+          (let* ((keys
+                  (catch 'read-key (read-key-sequence-vector prompt nil t
+                                                             nil nil t)))
+                 (key (aref keys 0)))
+            (if (and (> (length keys) 1)
+                     (memq key '(mode-line header-line tab-line
+                                 left-fringe right-fringe)))
+                (aref keys 1)
+              key)))
+      (cancel-timer timer)
+      ;; For some reason, `read-key(-sequence)' leaves the prompt in the echo
+      ;; area, whereas `read-event' seems to empty it just before returning
+      ;; (bug#22714).  So, let's mimic the behavior of `read-event'.
+      (message nil)
+      (use-global-map old-global-map))))
+
+(defvar read-number-history nil
+  "The default history for the `read-number' function.")
+
+(defun read-number (prompt &optional default hist)
+  "Read from the minibuffer and return a numeric value, prompting with PROMPT.
+DEFAULT specifies a default value to return if the user just types RET.
+For historical reasons, the value of DEFAULT is always inserted into
+PROMPT, so it's recommended to use `format' instead of `format-prompt'
+to generate PROMPT.  HIST specifies a history list variable.  See
+`read-from-minibuffer' for details of the HIST argument.
+
+This function is used by the `interactive' code letter \"n\"."
+  (let ((n nil)
+	(default1 (if (consp default) (car default) default)))
+    (when default1
+      (setq prompt
+	    (if (string-match "\\(\\):[ \t]*\\'" prompt)
+		(replace-match (format minibuffer-default-prompt-format default1) t t prompt 1)
+	      (replace-regexp-in-string "[ \t]*\\'"
+					(format minibuffer-default-prompt-format default1)
+					prompt t t))))
+    (while
+	(progn
+	  (let ((str (read-from-minibuffer
+		      prompt nil nil nil (or hist 'read-number-history)
+		      (when default
+			(if (consp default)
+			    (mapcar #'number-to-string (delq nil default))
+			  (number-to-string default))))))
+	    (condition-case nil
+		(setq n (cond
+			 ((zerop (length str)) default1)
+			 ((stringp str) (read str))))
+	      (error nil)))
+	  (unless (numberp n)
+	    (message "Please enter a number.")
+	    (sit-for 1)
+	    t)))
+    n))
+
+(defvar y-or-n-p-history-variable nil
+  "History list symbol to add `y-or-n-p' answers to.")
+
+(defvar y-or-n-p-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map minibuffer-local-map)
+
+    (dolist (symbol '(act act-and-show act-and-exit automatic))
+      (define-key map (vector 'remap symbol) #'y-or-n-p-insert-y))
+
+    (define-key map [remap skip] #'y-or-n-p-insert-n)
+
+    (dolist (symbol '(backup undo undo-all edit edit-replacement
+                      delete-and-edit ignore self-insert-command))
+      (define-key map (vector 'remap symbol) #'y-or-n-p-insert-other))
+
+    (define-key map [remap recenter] #'minibuffer-recenter-top-bottom)
+    (define-key map [remap scroll-up] #'minibuffer-scroll-up-command)
+    (define-key map [remap scroll-down] #'minibuffer-scroll-down-command)
+    (define-key map [remap scroll-other-window] #'minibuffer-scroll-other-window)
+    (define-key map [remap scroll-other-window-down] #'minibuffer-scroll-other-window-down)
+
+    (define-key map [remap exit] #'y-or-n-p-insert-other)
+    (dolist (symbol '(exit-prefix quit))
+      (define-key map (vector 'remap symbol) #'abort-recursive-edit))
+    (define-key map [escape] #'abort-recursive-edit)
+
+    ;; FIXME: try catch-all instead of explicit bindings:
+    ;; (define-key map [remap t] #'y-or-n-p-insert-other)
+
+    map)
+  "Keymap that defines additional bindings for `y-or-n-p' answers.")
+
+(defun y-or-n-p-insert-y ()
+  "Insert the answer \"y\" and exit the minibuffer of `y-or-n-p'.
+Discard all previous input before inserting and exiting the minibuffer."
+  (interactive)
+  (when (minibufferp)
+    (delete-minibuffer-contents)
+    (insert "y")
+    (exit-minibuffer)))
+
+(defun y-or-n-p-insert-n ()
+  "Insert the answer \"n\" and exit the minibuffer of `y-or-n-p'.
+Discard all previous input before inserting and exiting the minibuffer."
+  (interactive)
+  (when (minibufferp)
+    (delete-minibuffer-contents)
+    (insert "n")
+    (exit-minibuffer)))
+
+(defun y-or-n-p-insert-other ()
+  "Handle inserting of other answers in the minibuffer of `y-or-n-p'.
+Display an error on trying to insert a disallowed character.
+Also discard all previous input in the minibuffer."
+  (interactive)
+  (when (minibufferp)
+    (delete-minibuffer-contents)
+    (ding)
+    (discard-input)
+    (minibuffer-message "Please answer y or n")
+    (sit-for 2)))
+
+(defvar y-or-n-p-use-read-key nil
+  "Use `read-key' when reading answers to \"y or n\" questions by `y-or-n-p'.
+Otherwise, use the `read-from-minibuffer' to read the answers.
+
+When reading via the minibuffer, you can use the normal commands
+available in the minibuffer, and can, for instance, temporarily
+switch to another buffer, do things there, and then switch back
+to the minibuffer before entering the character.  This is not
+possible when using `read-key', but using `read-key' may be less
+confusing to some users.")
+
+(defun y-or-n-p (prompt)
+  "Ask user a \"y or n\" question.
+Return t if answer is \"y\" and nil if it is \"n\".
+
+PROMPT is the string to display to ask the question; `y-or-n-p'
+adds \"(y or n) \" to it.  If PROMPT is a non-empty string, and
+it ends with a non-space character, a space character will be
+appended to it.
+
+If you bind the variable `help-form' to a non-nil value
+while calling this function, then pressing `help-char'
+causes it to evaluate `help-form' and display the result.
+PROMPT is also updated to show `help-char' like \"(y, n or C-h) \",
+where `help-char' is automatically bound to `help-form-show'.
+
+No confirmation of the answer is requested; a single character is
+enough.  SPC also means yes, and DEL means no.
+
+To be precise, this function translates user input into responses
+by consulting the bindings in `query-replace-map'; see the
+documentation of that variable for more information.  In this
+case, the useful bindings are `act', `skip', `recenter',
+`scroll-up', `scroll-down', and `quit'.
+An `act' response means yes, and a `skip' response means no.
+A `quit' response means to invoke `abort-recursive-edit'.
+If the user enters `recenter', `scroll-up', or `scroll-down'
+responses, perform the requested window recentering or scrolling
+and ask again.
+
+If dialog boxes are supported, this function will use a dialog box
+if `use-dialog-box' is non-nil and the last input event was produced
+by a mouse, or by some window-system gesture, or via a menu.
+
+By default, this function uses the minibuffer to read the key.
+If `y-or-n-p-use-read-key' is non-nil, `read-key' is used
+instead (which means that the user can't change buffers (and the
+like) while `y-or-n-p' is running)."
+  (let ((answer 'recenter)
+	(padded (lambda (prompt &optional dialog)
+		  (let ((l (length prompt)))
+		    (concat prompt
+			    (if (or (zerop l) (eq ?\s (aref prompt (1- l))))
+				"" " ")
+			    (if dialog ""
+                              ;; Don't clobber caller's match data.
+                              (save-match-data
+                                (substitute-command-keys
+                                 (if help-form
+                                     (format "(\\`y', \\`n' or \\`%s') "
+                                             (key-description
+                                              (vector help-char)))
+                                   "(\\`y' or \\`n') "))))))))
+        ;; Preserve the actual command that eventually called
+        ;; `y-or-n-p' (otherwise `repeat' will be repeating
+        ;; `exit-minibuffer').
+        (real-this-command real-this-command))
+    (cond
+     (noninteractive
+      (setq prompt (funcall padded prompt))
+      (let ((temp-prompt prompt))
+	(while (not (memq answer '(act skip)))
+	  (let ((str (read-string temp-prompt)))
+	    (cond ((member str '("y" "Y")) (setq answer 'act))
+		  ((member str '("n" "N")) (setq answer 'skip))
+		  ((and (member str '("h" "H")) help-form) (print help-form))
+		  (t (setq temp-prompt (concat "Please answer y or n.  "
+					       prompt))))))))
+     ((use-dialog-box-p)
+      (setq prompt (funcall padded prompt t)
+	    answer (x-popup-dialog t `(,prompt ("Yes" . act) ("No" . skip)))))
+     (y-or-n-p-use-read-key
+      ;; ¡Beware! when I tried to edebug this code, Emacs got into a weird state
+      ;; where all the keys were unbound (i.e. it somehow got triggered
+      ;; within read-key, apparently).  I had to kill it.
+      (setq prompt (funcall padded prompt))
+      (while
+          (let* ((scroll-actions '(recenter scroll-up scroll-down
+                                            scroll-other-window scroll-other-window-down))
+                 (key
+                  (let ((cursor-in-echo-area t))
+                    (when minibuffer-auto-raise
+                      (raise-frame (window-frame (minibuffer-window))))
+                    (read-key (propertize (if (memq answer scroll-actions)
+                                              prompt
+                                            (concat "Please answer y or n.  "
+                                                    prompt))
+                                          'face 'minibuffer-prompt)))))
+            (setq answer (lookup-key query-replace-map (vector key) t))
+            (cond
+             ((memq answer '(skip act)) nil)
+             ((eq answer 'recenter)
+              (recenter) t)
+             ((eq answer 'scroll-up)
+              (ignore-errors (scroll-up-command)) t)
+             ((eq answer 'scroll-down)
+              (ignore-errors (scroll-down-command)) t)
+             ((eq answer 'scroll-other-window)
+              (ignore-errors (scroll-other-window)) t)
+             ((eq answer 'scroll-other-window-down)
+              (ignore-errors (scroll-other-window-down)) t)
+             ((or (memq answer '(exit-prefix quit)) (eq key ?\e))
+              (signal 'quit nil) t)
+             (t t)))
+        (ding)
+        (discard-input)))
+     (t
+      (setq prompt (funcall padded prompt))
+      (let* ((enable-recursive-minibuffers t)
+             (msg help-form)
+             ;; Disable text conversion so that real Y or N events are
+             ;; sent.
+             (overriding-text-conversion-style nil)
+             (keymap (let ((map (make-composed-keymap
+                                 y-or-n-p-map query-replace-map)))
+                       (when help-form
+                         ;; Create a new map before modifying
+                         (setq map (copy-keymap map))
+                         (define-key map (vector help-char)
+                           (lambda ()
+                             (interactive)
+                             (let ((help-form msg)) ; lexically bound msg
+                               (help-form-show)))))
+                       map))
+             ;; Protect this-command when called from pre-command-hook (bug#45029)
+             (this-command this-command)
+             (str (progn
+                    ;; If the minibuffer is already active, the
+                    ;; selected window might not change.  Disable
+                    ;; text conversion by hand.
+                    (when (fboundp 'set-text-conversion-style)
+                      (set-text-conversion-style text-conversion-style))
+                    (read-from-minibuffer
+                     prompt nil keymap nil
+                     (or y-or-n-p-history-variable t)))))
+        (setq answer (if (member str '("y" "Y")) 'act 'skip)))))
+    (let ((ret (eq answer 'act)))
+      (unless noninteractive
+        (message "%s%c" prompt (if ret ?y ?n)))
+      ret)))
 
 (defsubst progress-reporter-update (reporter &optional value update-text)
   "Report progress of an operation, by default, in the echo area.

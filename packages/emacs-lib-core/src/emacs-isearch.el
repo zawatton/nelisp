@@ -125,7 +125,7 @@
 (defun emacs-isearch--display-prompt ()
   "Render the current prompt in the minibuffer/echo area."
   (setq emacs-isearch--last-prompt (emacs-isearch--prompt-string))
-  (emacs-minibuffer-minibuffer-message "%s" emacs-isearch--last-prompt))
+  (minibuffer-message "%s" emacs-isearch--last-prompt))
 
 (defun emacs-isearch--snapshot-face-runs (beg end buffer)
   "Return saved face runs for [BEG, END) in BUFFER."
@@ -397,7 +397,7 @@ Return `commit', `abort', or `continue'."
           emacs-isearch--query ""
           emacs-isearch--start-point nil
           emacs-isearch--failing nil)
-    (emacs-minibuffer-minibuffer-message
+    (minibuffer-message
      "%s"
      (if (eq result 'abort)
          "I-search aborted"
@@ -419,7 +419,7 @@ Return `commit', `abort', or `continue'."
     (while emacs-isearch--active
       (emacs-isearch--display-prompt)
       (let ((event (condition-case nil
-                       (emacs-minibuffer-read-key emacs-isearch--last-prompt)
+                       (read-key emacs-isearch--last-prompt)
                      (quit ?\C-g))))
         (pcase (emacs-isearch--dispatch-event event)
           ('commit (throw 'done (emacs-isearch--finish 'commit)))

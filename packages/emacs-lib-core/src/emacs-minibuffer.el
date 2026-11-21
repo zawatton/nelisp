@@ -322,7 +322,8 @@ informational.  Empty VALUE strings are NOT added (= matches Emacs)."
               ((symbolp hist) hist)
               ((and (consp hist) (symbolp (car hist))) (car hist))
               (t emacs-minibuffer-default-history-symbol))))
-    (when (and (stringp value) (not (string-empty-p value)))
+    ;; HIST = t means "no history" (GNU `read-string', e.g. `read-passwd').
+    (when (and (not (eq hist t)) (stringp value) (not (string-empty-p value)))
       (unless (boundp sym) (set sym nil))
       (set sym (cons value (symbol-value sym))))))
 
@@ -1604,43 +1605,7 @@ that always returns a string and never `read's it back."
   (emacs-minibuffer-read-from-minibuffer
    prompt initial nil nil hist default))
 
-;;;###autoload
-(defun emacs-minibuffer-read-no-blanks-input (prompt &optional initial
-                                                     _inherit-input-method)
-  "Read a string with no whitespace allowed.
-Whitespace is rejected by signalling `emacs-minibuffer-error'."
-  (let ((s (emacs-minibuffer-read-from-minibuffer prompt initial)))
-    (when (string-match-p "[ \t\n\r]" s)
-      (signal 'emacs-minibuffer-error
-              (list "Whitespace not allowed in input" s)))
-    s))
 
-;;;###autoload
-(defun emacs-minibuffer-read-key (&optional prompt)
-  "Read one event (= integer or symbol) and return it.
-Routes through `emacs-minibuffer--key-fn' if non-nil; otherwise drains
-`emacs-minibuffer--input-queue'.  Strings in the queue are interpreted
-as a sequence of characters and the first char is returned (with the
-remainder pushed back as one string)."
-  (let ((fn emacs-minibuffer--key-fn))
-    (cond
-     (fn (funcall fn prompt))
-     (t
-      (when (null emacs-minibuffer--input-queue)
-        (signal 'emacs-minibuffer-no-input (list prompt)))
-      (let ((next (pop emacs-minibuffer--input-queue)))
-        (cond
-         ((eq next :abort) (signal 'quit nil))
-         ((integerp next) next)
-         ((symbolp next)  next)
-         ((and (stringp next) (> (length next) 0))
-          (let ((ev (aref next 0))
-                (rest (substring next 1)))
-            (when (> (length rest) 0)
-              (push rest emacs-minibuffer--input-queue))
-            ev))
-         (t (signal 'emacs-minibuffer-error
-                    (list "unrecognized event" next)))))))))
 
 ;;; B. typed readers
 
@@ -1662,75 +1627,9 @@ when `require-match' is non-nil (Phase 1 best-effort)."
               prompt nil nil nil nil default-str)))
       s)))
 
-;;;###autoload
-(defun emacs-minibuffer-read-file-name (prompt &optional dir default
-                                               _mustmatch _initial _predicate)
-  "Read a file name with prompt PROMPT.
-DIR (string or nil) provides the implicit base directory; DEFAULT is
-the fallback if the user enters an empty string.  MUSTMATCH / PREDICATE
-are accepted for arity compatibility but are no-ops in Phase 1."
-  (let* ((default-str
-          (cond
-           ((null default) nil)
-           ((stringp default) default)
-           (t (signal 'emacs-minibuffer-bad-default (list default)))))
-         (s (emacs-minibuffer-read-from-minibuffer
-             prompt nil nil nil nil default-str)))
-    (if (and dir (not (string-match-p "\\`/" s)))
-        (concat (file-name-as-directory dir) s)
-      s)))
 
-;;;###autoload
-(defun emacs-minibuffer-read-directory-name (prompt &optional dir default
-                                                    _mustmatch _initial)
-  "Read a directory name.
-Same shape as `emacs-minibuffer-read-file-name', but the returned path
-always ends in a slash (= matches Emacs)."
-  (let ((s (emacs-minibuffer-read-file-name prompt dir default)))
-    (file-name-as-directory s)))
 
-;;;###autoload
-(defun emacs-minibuffer-read-passwd (prompt &optional confirm default)
-  "Read a password (= a string) without echoing.
-If CONFIRM is non-nil, the user is asked twice and the two entries
-must match; mismatch signals `emacs-minibuffer-error'.  DEFAULT, when
-non-nil, is returned for an empty input."
-  (let* ((s1 (emacs-minibuffer-read-from-minibuffer prompt nil nil nil nil
-                                                    default))
-         (s2 (and confirm
-                  (emacs-minibuffer-read-from-minibuffer
-                   (concat prompt " (confirm) ") nil nil nil nil default))))
-    (when (and confirm (not (string-equal s1 s2)))
-      (signal 'emacs-minibuffer-error (list "Passwords do not match")))
-    (cond
-     ((and (string-empty-p s1) default) default)
-     (t s1))))
 
-;;;###autoload
-(defun emacs-minibuffer-read-number (prompt &optional default _hist)
-  "Read a number from the minibuffer.
-DEFAULT, if non-nil, is returned for an empty input.  Non-numeric input
-re-prompts up to `emacs-minibuffer--read-number-max-tries' times and
-then signals `emacs-minibuffer-error'."
-  (let ((tries 5)
-        result)
-    (catch 'done
-      (while (> tries 0)
-        (let* ((default-str (cond
-                             ((numberp default) (number-to-string default))
-                             ((stringp default) default)
-                             (t nil)))
-               (s (emacs-minibuffer-read-from-minibuffer
-                   prompt nil nil nil nil default-str)))
-          (cond
-           ((and (string-empty-p s) (numberp default))
-            (setq result default) (throw 'done nil))
-           ((string-match-p "\\`-?[0-9]+\\(?:\\.[0-9]+\\)?\\'" s)
-            (setq result (string-to-number s)) (throw 'done nil))
-           (t
-            (cl-decf tries)))))
-      (signal 'emacs-minibuffer-error (list "Not a number" prompt)))
-    result))
 
 ;;; C. confirmation
 
@@ -1754,13 +1653,6 @@ symbol `n' / `no' as nil.  Anything else signals
      (t (signal 'emacs-minibuffer-error
                 (list "Bad confirmation answer" canon))))))
 
-;;;###autoload
-(defun emacs-minibuffer-y-or-n-p (prompt)
-  "Ask user a y-or-n question.  Return t or nil.
-Routes through `emacs-minibuffer--y-or-n-fn' if non-nil."
-  (let ((fn (or emacs-minibuffer--y-or-n-fn
-                #'emacs-minibuffer--y-or-n-default)))
-    (funcall fn prompt)))
 
 ;;;###autoload
 (defun emacs-minibuffer-yes-or-no-p (prompt)
@@ -1913,12 +1805,6 @@ INITIAL-INPUT, HIST, DEF behave as in `read-from-minibuffer'."
           (signal 'emacs-minibuffer-error (list "Match required" s)))
         s))))
 
-;;;###autoload
-(defalias 'emacs-minibuffer-completing-read-default
-  #'emacs-minibuffer-completing-read
-  "Alias for `emacs-minibuffer-completing-read'.
-Matches the host Emacs entry-point name used by libraries that bind
-`completing-read-function' explicitly.")
 
 ;;;###autoload
 (defun emacs-minibuffer-try-completion (string collection &optional predicate)
@@ -2061,28 +1947,7 @@ string if no read is in progress."
   "Return the prompt-end position of the active minibuffer, or 1 if none."
   (or (emacs-minibuffer--current-prompt-end) 1))
 
-;;;###autoload
-(defun emacs-minibuffer-minibuffer-prompt-width ()
-  "Return the width (in columns) of the active prompt, or 0 if none.
-Phase 1 is character-count (= no display-width / multi-byte adjust)."
-  (let ((p (emacs-minibuffer-minibuffer-prompt)))
-    (if (stringp p) (length p) 0)))
 
-;;;###autoload
-(defun emacs-minibuffer-exit-minibuffer ()
-  "Exit the active minibuffer reader normally.
-Implementation: queues a sentinel `:exit' onto the input queue, so the
-nearest pending built-in reader returns the empty string.  When the
-plug-in `emacs-minibuffer--read-fn' is in use this signals
-`emacs-minibuffer-error' (= caller is responsible)."
-  (cond
-   (emacs-minibuffer--read-fn
-    (signal 'emacs-minibuffer-error
-            '("exit-minibuffer requires the built-in reader"
-              "or a plug-in that honours :exit")))
-   (t
-    (push :exit emacs-minibuffer--input-queue)
-    nil)))
 
 ;;;###autoload
 (defun emacs-minibuffer-abort-recursive-edit ()
@@ -2096,14 +1961,6 @@ signals `quit' immediately."
     (push :abort emacs-minibuffer--input-queue)
     nil)))
 
-;;;###autoload
-(defun emacs-minibuffer-minibuffer-message (format-string &rest args)
-  "Display a transient message in the minibuffer area.
-Phase 1 — emit to `*Messages*' equivalent (= `message') and return nil.
-ARGS are passed through to `format'."
-  (let ((msg (apply #'format format-string args)))
-    (message "%s" msg)
-    nil))
 
 ;;; F. ERT helpers (not part of the public Emacs API)
 

@@ -39,7 +39,7 @@
     view-read-only auto-save-default buffer-file-read-only find-file-literally backup-enable-predicate normal-backup-enable-predicate
     out-of-memory-warning-percentage abort-if-file-too-large warn-maybe-out-of-memory files--message
     find-file-noselect find-file-noselect-1 after-find-file
-    find-directory-functions)
+    find-directory-functions read-directory-name)
   "GNU files.el names this file copies: the directory-local-variables
 subsystem, which the standalone lacks (project.el calls
 `hack-dir-local-variables').")
@@ -56,7 +56,12 @@ subsystem, which the standalone lacks (project.el calls
     progress-reporter-do-update progress-reporter-update progress-reporter-done
     ;; Event/position accessors `choose-completion' (GNU simple.el) calls.
     event--posn-at-point event-start event-end posnp posn-window posn-area
-    posn-point event-click-count))
+    posn-point event-click-count
+    ;; Minibuffer input helpers (GNU subr.el) that were in-house copies.
+    add-to-history read-key-empty-map read-key-full-map read-key-delay read-key
+    read-number-history read-number
+    y-or-n-p-history-variable y-or-n-p-map y-or-n-p-insert-y y-or-n-p-insert-n
+    y-or-n-p-insert-other y-or-n-p-use-read-key y-or-n-p))
 
 ;; Preloaded GNU loaddefs.el entries for PCL-CVS: GNU's default
 ;; `find-directory-functions' starts with `cvs-dired-noselect', which

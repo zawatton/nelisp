@@ -63,27 +63,12 @@ primitive to distinguish standalone execution from host Emacs."
 (when (emacs-minibuffer-builtins--install-function-p 'read-string)
   (defalias 'read-string #'emacs-minibuffer-read-string))
 
-(when (emacs-minibuffer-builtins--install-function-p 'read-key)
-  (defalias 'read-key #'emacs-minibuffer-read-key))
-
 ;;;; --- typed readers ---------------------------------------------------
 
 (when (emacs-minibuffer-builtins--install-function-p 'read-buffer)
   (defalias 'read-buffer #'emacs-minibuffer-read-buffer))
 
-(when (emacs-minibuffer-builtins--install-function-p 'read-directory-name)
-  (defalias 'read-directory-name #'emacs-minibuffer-read-directory-name))
-
-(when (emacs-minibuffer-builtins--install-function-p 'read-passwd)
-  (defalias 'read-passwd #'emacs-minibuffer-read-passwd))
-
-(when (emacs-minibuffer-builtins--install-function-p 'read-number)
-  (defalias 'read-number #'emacs-minibuffer-read-number))
-
 ;;;; --- confirmation ---------------------------------------------------
-
-(when (emacs-minibuffer-builtins--install-function-p 'y-or-n-p)
-  (defalias 'y-or-n-p #'emacs-minibuffer-y-or-n-p))
 
 (when (emacs-minibuffer-builtins--install-function-p 'yes-or-no-p)
   (defalias 'yes-or-no-p #'emacs-minibuffer-yes-or-no-p))
@@ -276,9 +261,6 @@ Return `point-min' in an ordinary buffer or when no prompt field exists."
               (if (get-text-property start 'field) (point-max) start))
         start))))
 
-(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt-width)
-  (defalias 'minibuffer-prompt-width #'emacs-minibuffer-minibuffer-prompt-width))
-
 (when (emacs-minibuffer-builtins--install-function-p 'abort-recursive-edit)
   (defalias 'abort-recursive-edit #'emacs-minibuffer-abort-recursive-edit))
 
@@ -330,43 +312,6 @@ Return `point-min' in an ordinary buffer or when no prompt field exists."
 (unless (boundp 'completion-list-insert-choice-function)
   (defvar completion-list-insert-choice-function nil
     "Function used to insert the selected completion choice."))
-
-(unless (fboundp 'add-to-history)
-(defun add-to-history (history-var newelt &optional maxelt keep-all)
-  "Add NEWELT to the history list stored in the variable HISTORY-VAR.
-Return the new history list.
-If MAXELT is non-nil, it specifies the maximum length of the history.
-Otherwise, the maximum history length is the value of the `history-length'
-property on symbol HISTORY-VAR, if set, or the value of the `history-length'
-variable.  The possible values of maximum length have the same meaning as
-the values of `history-length'.
-Remove duplicates of NEWELT if `history-delete-duplicates' is non-nil.
-If optional fourth arg KEEP-ALL is non-nil, add NEWELT to history even
-if it is empty or duplicates the most recent entry in the history.
-HISTORY-VAR cannot refer to a lexical variable."
-  (unless maxelt
-    (setq maxelt (or (get history-var 'history-length)
-		     history-length)))
-  (let ((history (symbol-value history-var))
-	tail)
-    (when (and (listp history)
-	       (or keep-all
-		   (not (stringp newelt))
-		   (> (length newelt) 0))
-	       (or keep-all
-		   (not (equal (car history) newelt))))
-      (if history-delete-duplicates
-	  (setq history (delete newelt history)))
-      (setq history (cons newelt history))
-      (when (integerp maxelt)
-        (if (>= 0 maxelt)
-	    (setq history nil)
-	  (setq tail (nthcdr (1- maxelt) history))
-	  (when (consp tail)
-            (setcdr tail nil))))
-      (set history-var history))))
-
-)
 
 (provide 'emacs-minibuffer-builtins)
 
