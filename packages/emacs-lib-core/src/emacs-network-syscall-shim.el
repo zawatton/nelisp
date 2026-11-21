@@ -414,9 +414,14 @@ Doc 06 C2 added wait4 for SIGCHLD-fallback child reaping.")
 ;; gated on the standalone syscall surface, which host Emacs lacks.
 (when (and (fboundp 'syscall-direct)
            (fboundp 'alloc-bytes))
-  (defun /= (a b)
-    "Reader polyfill: only = < > <= >= ship as numeric builtins."
-    (not (= a b)))
+  ;; gnu562: each polyfill below only where the runtime lacks the name or
+  ;; its builtin fails; current runtimes define them correctly, and these
+  ;; replaced them (the `truncate' here answered 2 for 2.5e-5, a float for
+  ;; 1e20 and 0 for a NaN, and cost 5.8 us against 0.1 us).
+  (unless (fboundp '/=)
+    (defun /= (a b)
+      "Reader polyfill: only = < > <= >= ship as numeric builtins."
+      (not (= a b))))
   (defmacro declare (&rest _specs)
     "Reader polyfill: in host Emacs `declare' inside a defun body is
 consumed by the defun machinery; the reader's plain defun executes
@@ -454,19 +459,20 @@ answer, then accept symbols with function bindings and (closure ...) /
 is a phantom builtin — fboundp t, calling errors).  Strings are raw
 byte arrays there, so `length' already counts bytes."
       (length s)))
-  (defun truncate (x &optional divisor)
-    "Integer truncation toward zero (reader polyfill)."
-    (when divisor (setq x (/ x divisor)))
-    (if (integerp x)
-        x
-      (let* ((s (number-to-string x))
-             (i 0)
-             (n (length s))
-             (out ""))
-        (while (and (< i n) (/= (aref s i) ?.))
-          (setq out (concat out (char-to-string (aref s i))))
-          (setq i (1+ i)))
-        (string-to-number out)))))
+  (unless (condition-case nil (eql (truncate 2.5) 2) (error nil))
+    (defun truncate (x &optional divisor)
+      "Integer truncation toward zero (reader polyfill)."
+      (when divisor (setq x (/ x divisor)))
+      (if (integerp x)
+          x
+        (let* ((s (number-to-string x))
+               (i 0)
+               (n (length s))
+               (out ""))
+          (while (and (< i n) (/= (aref s i) ?.))
+            (setq out (concat out (char-to-string (aref s i))))
+            (setq i (1+ i)))
+          (string-to-number out))))))
 
 (provide 'emacs-network-syscall-shim)
 

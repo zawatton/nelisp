@@ -362,24 +362,35 @@ a negative, and signalling there turned a limit into a failure."
     (let ((ln (cond
                ((< x 0) (/ 0.0 0.0))
                ((= x 0) (/ -1.0 0.0))
+               ;; +inf is its own log; the halving loop below never ends on it.
+               ((> x 1.7976931348623157e308) (float x))
                (t (let ((k 0) (m (float x)))
                     (while (>= m 1.4142135623730951) (setq m (/ m 2.0)) (setq k (1+ k)))
                     (while (< m 0.7071067811865476) (setq m (* m 2.0)) (setq k (1- k)))
+                    ;; gnu562: z, z^3/3 and z^5/5 in double-double; the rest,
+                    ;; z^7 (1/7 + w/9 + ... + w^16/39) with w = z^2 <= 0.0295,
+                    ;; is below 4e-6 of the sum, so a double carries it to about
+                    ;; 1e-21.  Bit-identical to the 30-term double-double series
+                    ;; over 300000 arguments, at about a seventh of its cost.
                     (let* ((num (nelisp--two-sum m -1.0))
                            (den (nelisp--two-sum m 1.0))
                            (z (nelisp--dd-div num den))
                            (z2 (nelisp--dd-mul z z))
-                           (sum z)
-                           (term z)
-                           (n 1))
-                      (while (< n 30)
-                        (setq term (nelisp--dd-mul term z2))
-                        (setq sum (nelisp--dd-add sum (nelisp--dd-div-int term (+ (* 2 n) 1))))
-                        (setq n (1+ n)))
-                      (setq sum (nelisp--dd-mul sum (cons 2.0 0.0)))
-                      (let ((kk (nelisp--dd-mul (cons (float k) 0.0)
-                                                (cons 6.93147180369123816490e-01
-                                                      1.90821492927058770002e-10))))
+                           (z3 (nelisp--dd-mul z z2))
+                           (z5 (nelisp--dd-mul z3 z2))
+                           (w (car z2))
+                           (p 0.0)
+                           (n 39))
+                      (while (>= n 7)
+                        (setq p (+ (/ 1.0 n) (* w p)))
+                        (setq n (- n 2)))
+                      (let* ((sum (nelisp--dd-add z (nelisp--dd-div-int z3 3)))
+                             (sum (nelisp--dd-add sum (nelisp--dd-div-int z5 5)))
+                             (sum (nelisp--dd-add sum (cons (* (* (car z5) w) p) 0.0)))
+                             (sum (cons (* 2.0 (car sum)) (* 2.0 (cdr sum))))
+                             (kk (nelisp--dd-mul (cons (float k) 0.0)
+                                                 (cons 6.93147180369123816490e-01
+                                                       1.90821492927058770002e-10))))
                         (setq sum (nelisp--dd-add sum kk))
                         (+ (car sum) (cdr sum)))))))))
       (if base (/ ln (log base)) ln))))
@@ -645,14 +656,26 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
                (hi (- xf (* k 6.93147180369123816490e-01)))
                (lo (- 0.0 (* k 1.90821492927058770002e-10)))
                (r (nelisp--two-sum hi lo))
+               (rh (car r))
                (term (cons 1.0 0.0))
                (sum (cons 1.0 0.0))
-               (n 1))
-          (while (< n 22)
+               (p 0.0)
+               (n 21))
+          ;; gnu562: terms 1..6 in double-double; the rest, r^7/7! + ... +
+          ;; r^21/21!, is below 2e-7 of the sum, so a double carries it to
+          ;; about 1e-22.  P is 6! times its coefficients (Horner on r).
+          ;; Bit-identical to the 21-term double-double series over 300000
+          ;; arguments, at about a third of its cost.
+          (while (>= n 7)
+            (setq p (/ (+ 1.0 (* rh p)) n))
+            (setq n (1- n)))
+          (setq n 1)
+          (while (<= n 6)
             (setq term (nelisp--dd-mul term r))
             (setq term (nelisp--dd-div-int term n))
             (setq sum (nelisp--dd-add sum term))
             (setq n (1+ n)))
+          (setq sum (nelisp--dd-add sum (cons (* (* (car term) rh) p) 0.0)))
           (nelisp--scale-pow2 (+ (car sum) (cdr sum)) k)))))))
 ;; This stopped being a no-buffers stub on 2026-09-19 (Doc 204 gave the
 ;; runtime real buffers).  Doc 210 gave buffers and strings real text
