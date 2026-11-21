@@ -2864,9 +2864,29 @@ Return an edit plist.  A zero-width range returns a no-op plist with
           (setq pairs (cdr pairs)))))
     matched))
 
+(defun emacs-edit--word-fallback-class (char)
+  "Coarse script class of CHAR for word boundaries without category tables."
+  (cond ((and (<= #x30a0 char) (<= char #x30ff)) 'katakana)
+        ((or (and (<= #x3040 char) (<= char #x309f))
+             (and (<= #x3400 char) (<= char #x9fff)))
+         'han)
+        (t 'other)))
+
 (defun emacs-edit--word-boundary-p (position)
   "Return whether adjacent word characters separate at POSITION.
 Use the script and category tables when supplied by the runtime."
+  (if (or (not (fboundp 'char-category-set))
+          (get 'char-category-set 'emacs-stub-bulk)
+          (not (boundp 'char-script-table))
+          (not (char-table-p char-script-table))
+          ;; The runtime's script table can be present but empty.
+          (null (aref char-script-table (char-before position))))
+      ;; No category tables: split Katakana from Han/Hiragana runs, as GNU's
+      ;; default `word-separating-categories' does for these scripts.
+      (let ((left (char-before position)) (right (char-after position)))
+        (and left right
+             (not (eq (emacs-edit--word-fallback-class left)
+                      (emacs-edit--word-fallback-class right)))))
   (when (and (boundp 'char-script-table)
              (char-table-p char-script-table))
     (let* ((left (char-before position))
@@ -2879,7 +2899,7 @@ Use the script and category tables when supplied by the runtime."
                 left right word-separating-categories))
         (not (and (boundp 'word-combining-categories)
                   (emacs-edit--word-category-match-p
-                   left right word-combining-categories)))))))
+                   left right word-combining-categories))))))))
 
 (defun emacs-edit--word-field-at (position)
   "Return the field property at POSITION, including overlays when available."
@@ -2918,7 +2938,12 @@ Use the script and category tables when supplied by the runtime."
             (setq edge (1- edge)))
           (max position edge))))))
 
-(when (emacs-edit-builtins--install-function-p 'forward-word)
+;; The prelude's native-first `forward-word' ignores fields,
+;; `words-include-escapes' and syntax-table text properties; GNU's scan_words
+;; honours them, and this definition follows it, so standalone NeLisp
+;; (which has `nelisp--repr') takes ownership of the name.
+(when (or (emacs-edit-builtins--install-function-p 'forward-word)
+          (fboundp 'nelisp--repr))
   (defun forward-word (&optional arg)
     "Move point forward ARG words, or backward if ARG is negative.
 ARG defaults to one.  Word boundaries follow the current syntax table,

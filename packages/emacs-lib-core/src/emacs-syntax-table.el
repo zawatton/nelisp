@@ -243,6 +243,8 @@ syntax table."
       (emacs-char-table-set tbl c (cons 3 nil)))
     (emacs-char-table-set tbl 34 (cons 7 nil))
     (emacs-char-table-set tbl 92 (cons 9 nil))
+    ;; GNU's standard table makes NO-BREAK SPACE whitespace.
+    (emacs-char-table-set tbl #xa0 (cons 0 nil))
     (emacs-char-table-set tbl 40 (cons 4 41))
     (emacs-char-table-set tbl 41 (cons 5 40))
     (emacs-char-table-set tbl 91 (cons 4 93))
@@ -273,11 +275,17 @@ its local-variable sidecar.  Do not turn their syntax tables into globals."
 Precedence: a `with-syntax-table' dynamic binding, then the current buffer's
 buffer-local table, then the standard table."
   (or emacs-syntax-table--current
-      (let ((buf (emacs-syntax-table--buffer)))
-        (and buf
-             (fboundp 'emacs-buffer-local-variable-p)
-             (emacs-buffer-local-variable-p emacs-syntax-table--local-key buf)
-             (emacs-buffer-buffer-local-value emacs-syntax-table--local-key buf)))
+      ;; Standalone swap engine: the current buffer's live buffer-local
+      ;; value sits in the variable's global cell, so an unbound cell means
+      ;; no local table and the (slow) sidecar lookup below cannot find one.
+      (if (and (fboundp 'nelisp--repr)
+               (not (boundp emacs-syntax-table--local-key)))
+          nil
+        (let ((buf (emacs-syntax-table--buffer)))
+          (and buf
+               (fboundp 'emacs-buffer-local-variable-p)
+               (emacs-buffer-local-variable-p emacs-syntax-table--local-key buf)
+               (emacs-buffer-buffer-local-value emacs-syntax-table--local-key buf))))
       (emacs-syntax-table-standard)))
 
 (defun emacs-syntax-table-set-current (table)
@@ -762,6 +770,80 @@ compatibility and stops at comment boundaries."
     (emacs-syntax-table-parse-partial-sexp
      from to nil nil state targetdepth stopbefore commentstop)))
 
-(provide 'emacs-syntax-table)
 
 ;;; emacs-syntax-table.el ends here
+
+;;;; --- skip-syntax-forward / skip-syntax-backward ---------------------------
+;; The prelude's `nelisp--skip-syntaxes' resolves the table through its own
+;; per-buffer registry, so `with-syntax-table' (a dynamic binding here) and a
+;; table-valued `syntax-table' text property were ignored.  This is GNU
+;; syntax.c `skip_syntaxes' over the same buffer text string, resolving the
+;; table through `emacs-syntax-table-current'.
+
+(defun emacs-syntax-table--skip-raw-entry (table text pos)
+  "Raw syntax entry at 1-based POS of TEXT: property, else TABLE."
+  (let ((prop (and (boundp 'parse-sexp-lookup-properties)
+                   parse-sexp-lookup-properties
+                   (get-char-property pos 'syntax-table))))
+    (cond ((consp prop) prop)
+          ((and prop (emacs-char-table-p prop)
+                (eq (emacs-char-table-subtype prop) 'syntax-table))
+           (aref prop (aref text (1- pos))))
+          (t (aref table (aref text (1- pos)))))))
+
+(defun emacs-syntax-table--skip-syntaxes (forward syntax limit)
+  "GNU `skip_syntaxes': skip classes in SYNTAX from point, return the distance."
+  (unless (stringp syntax)
+    (signal 'wrong-type-argument (list 'stringp syntax)))
+  (let* ((buf nelisp--current-buffer)
+         (lo (nelisp-point-min buf)) (hi (nelisp-point-max buf))
+         (start (nelisp-point buf)))
+    (cond ((null limit) (setq limit (if forward hi lo)))
+          ((markerp limit)
+           (setq limit (or (marker-position limit)
+                           (signal 'error '("Marker does not point anywhere")))))
+          ((not (integerp limit))
+           (signal 'wrong-type-argument (list 'integer-or-marker-p limit))))
+    (setq limit (max lo (min hi limit)))
+    (if (if forward (>= start limit) (<= start limit))
+        0
+      (let* ((fastmap (make-vector 256 0))
+             (n (length syntax)) (i 0) (negate nil)
+             (text (nelisp-buffer-string buf))
+             (table (emacs-syntax-table-current))
+             (pos start) (step (if forward 1 -1)))
+        (when (and (> n 0) (= (logand (aref syntax 0) 255) ?^))
+          (setq negate t i 1))
+        (while (< i n)
+          (let* ((char (logand (aref syntax i) 255))
+                 (code (or (cdr (assq char nelisp--syntax-spec-codes)) 255)))
+            (aset fastmap code 1))
+          (setq i (1+ i)))
+        (when negate
+          (setq i 0)
+          (while (< i 256)
+            (aset fastmap i (logxor (aref fastmap i) 1))
+            (setq i (1+ i))))
+        (while (and (if forward (< pos limit) (> pos limit))
+                    (let* ((at (if forward pos (1- pos)))
+                           (entry (emacs-syntax-table--skip-raw-entry table text at))
+                           (code (if (consp entry) (logand (car entry) 255) 0)))
+                      (/= (aref fastmap code) 0)))
+          (setq pos (+ pos step)))
+        (nelisp-goto-char pos buf)
+        (- pos start)))))
+
+(when (and (fboundp 'nelisp--skip-syntaxes)
+           (emacs-syntax-table--install-function-p 'skip-syntax-forward))
+  (defun skip-syntax-forward (syntax &optional limit)
+    "Move forward across chars in syntax classes SYNTAX, stopping at LIMIT.
+If SYNTAX starts with ^, skip classes absent from the rest of SYNTAX.
+Return the distance traveled, either zero or positive."
+    (emacs-syntax-table--skip-syntaxes t syntax limit))
+  (defun skip-syntax-backward (syntax &optional limit)
+    "Move backward across chars in syntax classes SYNTAX, stopping at LIMIT.
+If SYNTAX starts with ^, skip classes absent from the rest of SYNTAX.
+Return the distance traveled, either zero or negative."
+    (emacs-syntax-table--skip-syntaxes nil syntax limit)))
+
+(provide 'emacs-syntax-table)

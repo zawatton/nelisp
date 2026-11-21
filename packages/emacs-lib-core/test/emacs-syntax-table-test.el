@@ -474,3 +474,89 @@ later mutation, matching host `copy-syntax-table' behavior."
     (should (= (point) 1))
     (should (emacs-syntax-table-forward-comment 0))
     (should (= (point) 1))))
+
+;;;; --- current-table resolution (fast path when no local table) ---------------
+
+(ert-deftest emacs-syntax-table-test/current-table-resolution-matches-gnu ()
+  "Per-buffer, switched and dynamic tables resolve as GNU 31.1 does.
+Expected values come from host emacs-31.1 -Q --batch (fundamental mode)."
+  (with-temp-buffer
+    (let ((st (make-syntax-table)))
+      (modify-syntax-entry ?a "." st) (modify-syntax-entry ?- "w" st)
+      (should (equal (list (char-syntax ?a)
+                           (progn (set-syntax-table st)
+                                  (list (char-syntax ?a) (char-syntax ?-) (char-syntax ?b)))
+                           (progn (modify-syntax-entry ?b "_" st) (char-syntax ?b))
+                           (with-syntax-table (standard-syntax-table)
+                             (list (char-syntax ?a) (char-syntax ?-)))
+                           (char-syntax ?a))
+                     '(119 (46 119 119) 95 (119 95) 46)))))
+  (let ((b1 (generate-new-buffer " b1")) (b2 (generate-new-buffer " b2"))
+        (st (make-syntax-table)) r)
+    (unwind-protect
+        (progn
+          (modify-syntax-entry ?x "." st)
+          (with-current-buffer b1 (set-syntax-table st))
+          (push (with-current-buffer b1 (char-syntax ?x)) r)
+          (push (with-current-buffer b2 (char-syntax ?x)) r)
+          (push (char-syntax ?x) r)
+          (push (with-current-buffer b1 (char-syntax ?x)) r)
+          (with-current-buffer b1 (set-syntax-table (standard-syntax-table)))
+          (push (with-current-buffer b1 (char-syntax ?x)) r)
+          (with-current-buffer b2 (set-syntax-table st) (push (char-syntax ?x) r))
+          (push (with-current-buffer b1 (char-syntax ?x)) r)
+          (should (equal (nreverse r) '(46 119 119 46 119 46 119))))
+      (kill-buffer b1) (kill-buffer b2))))
+
+;;;; --- GNU parity of char-syntax, skip-syntax and forward-word ---------------
+;; Expected values come from host emacs-31.1 -Q --batch.
+
+(ert-deftest emacs-syntax-table-test/nbsp-is-whitespace ()
+  (with-temp-buffer (should (= (char-syntax #xa0) 32))))
+
+(ert-deftest emacs-syntax-table-test/skip-syntax-honours-dynamic-table ()
+  (let ((st (make-syntax-table)))
+    (modify-syntax-entry ?- "w" st)
+    (with-temp-buffer
+      (insert "foo-bar baz") (goto-char 1)
+      (should (equal (list (skip-syntax-forward "w")
+                           (progn (goto-char 1)
+                                  (with-syntax-table st (skip-syntax-forward "w")))
+                           (point))
+                     '(3 7 8))))))
+
+(ert-deftest emacs-syntax-table-test/skip-syntax-table-valued-property ()
+  (with-temp-buffer
+    (insert "abc def") (goto-char 1)
+    (let ((tb (make-syntax-table)))
+      (modify-syntax-entry ?b "." tb)
+      (put-text-property 1 4 'syntax-table tb)
+      (should (equal (list (let ((parse-sexp-lookup-properties t))
+                             (goto-char 1) (skip-syntax-forward "w"))
+                           (let ((parse-sexp-lookup-properties nil))
+                             (goto-char 1) (skip-syntax-forward "w")))
+                     '(1 3))))))
+
+(ert-deftest emacs-syntax-table-test/forward-word-gnu-options ()
+  (with-temp-buffer
+    (insert "a\\b c") (goto-char 1)
+    (should (equal (list (let ((words-include-escapes nil))
+                           (goto-char 1) (forward-word) (point))
+                         (let ((words-include-escapes t))
+                           (goto-char 1) (forward-word) (point)))
+                   '(2 4))))
+  (with-temp-buffer
+    (insert "abc def ghi")
+    (put-text-property 5 8 'syntax-table (string-to-syntax "."))
+    (should (equal (list (let ((parse-sexp-lookup-properties nil))
+                           (goto-char 1) (forward-word 2) (point))
+                         (let ((parse-sexp-lookup-properties t))
+                           (goto-char 1) (forward-word 2) (point)))
+                   '(8 12))))
+  (with-temp-buffer
+    (insert "abc def ghi")
+    (put-text-property 1 6 'field 'f)
+    (should (equal (list (progn (goto-char 1) (forward-word 2) (point))
+                         (let ((inhibit-field-text-motion t))
+                           (goto-char 1) (forward-word 2) (point)))
+                   '(6 8)))))
