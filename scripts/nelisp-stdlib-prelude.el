@@ -21714,6 +21714,70 @@ characters that GNU names algorithmically as PREFIX-HEX.")
       (setq i (1+ i)))
     (and ok value)))
 
+(defvar nelisp--ucs-names-ranges-pos nil
+  "Index of the \"\\n#RANGES\\n\" line in `nelisp--ucs-names-text', once found.")
+
+(defun nelisp--ucs-names-ranges-pos (text)
+  "Index in TEXT of the newline that starts its \"#RANGES\" line, or nil."
+  (or nelisp--ucs-names-ranges-pos
+      (setq nelisp--ucs-names-ranges-pos (string-search "\n#RANGES\n" text))))
+
+(defun nelisp--ucs-name-lookup (key text)
+  "Code of the character named KEY in TEXT's name lines, or nil.
+The \"NAME<TAB>HEX\" lines before the \"#RANGES\" line are sorted by name
+in character-code order (tools/ai/reader1/gen-ucs-names.el), so this is a
+binary search over line starts instead of a scan of the whole table.
+Every name ends in a TAB, which ends each comparison.  LCP-LO and LCP-HI
+are how many leading characters KEY shares with the nearest lines known to
+sort before and after it; every line between them shares at least the
+smaller count, so a comparison starts there."
+  (let ((lo 1)
+        (hi (or (nelisp--ucs-names-ranges-pos text) (length text)))
+        (klen (length key))
+        (lcp-lo 0)
+        (lcp-hi 0)
+        (result nil)
+        (done nil))
+    (while (and (not done) (< lo hi))
+      (let* ((nl (string-search "\n" text (/ (+ lo hi) 2)))
+             (ls (if (and nl (< (1+ nl) hi)) (1+ nl) lo))
+             (i (min lcp-lo lcp-hi))
+             (j (+ ls i))
+             (d 0))
+        (while (and (= d 0) (< i klen))
+          (setq d (- (aref key i) (aref text j)))
+          (when (= d 0) (setq i (1+ i) j (1+ j))))
+        (when (= d 0)
+          ;; KEY ran out: equal when the name ends here too, else a prefix.
+          (setq d (if (= (aref text j) 9) 0 -1)))
+        (cond ((= d 0)
+               (setq result (nelisp--ucs-hex-value
+                             text (1+ j) (or (string-search "\n" text j) (length text)))
+                     done t))
+              ((< d 0)
+               (if (= ls lo) (setq done t) (setq hi ls lcp-hi i)))
+              (t
+               (let ((eol (string-search "\n" text j)))
+                 (if eol (setq lo (1+ eol) lcp-lo i) (setq done t)))))))
+    result))
+
+(defvar nelisp--ucs-name-cache nil
+  "Hash table from a name looked up by `char-from-name' to its code or nil.
+GNU answers from its `ucs-names' hash table; this keeps repeated lookups
+from searching the table text again.  Cleared when it grows past 4096.")
+
+(defun nelisp--ucs-name-cached (key text)
+  "Like `nelisp--ucs-name-lookup', remembering each KEY's answer."
+  (let* ((cache (or nelisp--ucs-name-cache
+                    (setq nelisp--ucs-name-cache (make-hash-table :test 'equal))))
+         (hit (gethash key cache 'nelisp--ucs-miss)))
+    (if (not (eq hit 'nelisp--ucs-miss))
+        hit
+      (let ((code (nelisp--ucs-name-lookup key text)))
+        (when (>= (hash-table-count cache) 4096) (clrhash cache))
+        (puthash (copy-sequence key) code cache)
+        code))))
+
 (defun nelisp--ucs-algorithmic-name (code)
   "Return the algorithmic Unicode name of CODE (PREFIX-HEX), or nil.
 Covers what GNU's `name' property computes and `ucs-names' leaves out: the
@@ -21726,7 +21790,7 @@ and the variation selectors."
     (format "VARIATION SELECTOR-%d" (- code #xE00EF)))
    (t
     (let* ((text (nelisp--ucs-names-text))
-           (pos (string-search "\n#RANGES\n" text))
+           (pos (nelisp--ucs-names-ranges-pos text))
            (end (length text))
            (result nil))
       (when pos
@@ -21755,13 +21819,11 @@ VARIATION SELECTOR-17)."
     (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
     (let* ((key (if ignore-case (upcase string) string))
            (text (nelisp--ucs-names-text))
-           (pos (and (not (string-search "\t" key))
-                     (not (string-search "\n" key))
-                     (string-search (concat "\n" key "\t") text))))
-      (if pos
-          (let* ((start (+ pos (length key) 2))
-                 (eol (string-search "\n" text start)))
-            (nelisp--ucs-hex-value text start eol))
+           (found (and (not (string-search "\t" key))
+                       (not (string-search "\n" key))
+                       (nelisp--ucs-name-cached key text))))
+      (if found
+          found
         ;; GNU: parse names like "VARIATION SELECTOR-17" and "CJK
         ;; COMPATIBILITY IDEOGRAPH-F900" that are not in `ucs-names'.
         (let* ((n (length string))
