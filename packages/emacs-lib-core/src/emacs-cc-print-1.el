@@ -199,35 +199,39 @@ if `print-circle' is nil."
 
 (defun emacs-cc-print-1--collect-strings (object)
   "Return strings in OBJECT's list/vector traversal order, or nil on cycles."
-  (let ((active (make-hash-table :test 'eq))
-        (seen (make-hash-table :test 'eq))
-        (strings nil)
-        (cycle nil))
-    (cl-labels ((walk (value)
-                  (cond
-                   ((stringp value) (setq strings (cons value strings)))
-                   ((consp value)
-                    (when (if print-circle (gethash value seen)
-                            (gethash value active))
-                      (setq cycle t))
-                    (unless cycle
-                      (puthash value t active)
-                      (puthash value t seen)
-                      (walk (car value))
-                      (walk (cdr value))
-                      (remhash value active)))
-                   ((and (vectorp value) (not (stringp value)))
-                    (when (if print-circle (gethash value seen)
-                            (gethash value active))
-                      (setq cycle t))
-                    (unless cycle
-                      (puthash value t active)
-                      (puthash value t seen)
-                      (dotimes (index (length value))
-                        (walk (aref value index)))
-                      (remhash value active))))))
-      (walk object))
-    (unless cycle (nreverse strings))))
+  ;; gnu562: an atom has no cycle to detect; answer before building the two
+  ;; tables and the walker (`prin1-to-string' of a symbol spent 74 us here).
+  (if (not (or (consp object) (and (vectorp object) (not (stringp object)))))
+      (and (stringp object) (list object))
+    (let ((active (make-hash-table :test 'eq))
+          (seen (make-hash-table :test 'eq))
+          (strings nil)
+          (cycle nil))
+      (cl-labels ((walk (value)
+                    (cond
+                     ((stringp value) (setq strings (cons value strings)))
+                     ((consp value)
+                      (when (if print-circle (gethash value seen)
+                              (gethash value active))
+                        (setq cycle t))
+                      (unless cycle
+                        (puthash value t active)
+                        (puthash value t seen)
+                        (walk (car value))
+                        (walk (cdr value))
+                        (remhash value active)))
+                     ((and (vectorp value) (not (stringp value)))
+                      (when (if print-circle (gethash value seen)
+                              (gethash value active))
+                        (setq cycle t))
+                      (unless cycle
+                        (puthash value t active)
+                        (puthash value t seen)
+                        (dotimes (index (length value))
+                          (walk (aref value index)))
+                        (remhash value active))))))
+        (walk object))
+      (unless cycle (nreverse strings)))))
 
 (defun emacs-cc-print-1--property-string (orig string)
   "Return STRING's readable property-vector form using ORIG for literals."

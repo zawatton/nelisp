@@ -26980,12 +26980,19 @@ nil), so there is nothing else to update for that name."
      ((integerp x) 'integer)
      ;; As below: `symbolp' is nil for a symbol with position.
      ((symbolp x) 'symbol)
+     ;; gnu562: records before the char-table tests.  Every struct predicate
+     ;; and accessor asks `type-of' of a record, and `char-table-p' is a
+     ;; library call (about 3 us of the former 4.8 us for a buffer).  The
+     ;; only record char-table is the bootstrap syntax table, and a record
+     ;; is never a native sub-char-table.
+     ((recordp x)
+      (let ((ty (aref x 0)))
+        (cond ((and (eq ty 'nelisp--syntax-table) (char-table-p x)) 'char-table)
+              ((and (recordp ty) (> (length ty) 1)) (aref ty 1))
+              (t ty))))
      ((char-table-p x) 'char-table)
      ((and (fboundp 'nelisp--native-sub-char-table-p)
            (nelisp--native-sub-char-table-p x)) 'sub-char-table)
-     ((recordp x)
-      (let ((ty (aref x 0)))
-        (if (and (recordp ty) (> (length ty) 1)) (aref ty 1) ty)))
      ((and (fboundp 'hash-table-p) (hash-table-p x)) 'hash-table)
      ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
      ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'

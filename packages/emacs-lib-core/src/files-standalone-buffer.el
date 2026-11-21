@@ -272,10 +272,14 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--buffer-string-value (&optional buffer)
   "Return BUFFER's fallback text."
   (if (and files--native-buffer-string (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-buffer-string)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-buffer-string)))
+        (funcall files--native-buffer-string))
     (let ((cell (files--buffer-state-cell 'files--buffer-strings buffer)))
       (if cell (cdr cell) files--buffer-string))))
 
@@ -287,20 +291,28 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--buffer-point-value (&optional buffer)
   "Return BUFFER's fallback point."
   (if (and files--native-point (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-point)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-point)))
+        (funcall files--native-point))
     (let ((cell (files--buffer-state-cell 'files--buffer-points buffer)))
       (if cell (cdr cell) files--point))))
 
 (defun files--set-buffer-point-value (point &optional buffer)
   "Set BUFFER's fallback point to POINT."
   (if (and files--native-goto-char (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-goto-char point)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-goto-char point)))
+        (funcall files--native-goto-char point))
     (setq files--point point)
     (files--set-buffer-state-cell 'files--buffer-points point buffer)))
 
@@ -325,10 +337,14 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--buffer-modified-value (&optional buffer)
   "Return BUFFER's fallback modified flag."
   (if (and files--native-buffer-modified-p (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-buffer-modified-p)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-buffer-modified-p)))
+        (funcall files--native-buffer-modified-p))
     (if (files--buffer-tick-mode-p buffer)
         (< (files--buffer-save-tick buffer)
            (buffer-modified-tick (files--buffer-key buffer)))
@@ -339,10 +355,14 @@ done (relative, `~', or containing `.'/`..'/`//')."
 (defun files--set-buffer-modified-value (flag &optional buffer)
   "Set BUFFER's fallback modified flag to FLAG."
   (if (and files--native-set-buffer-modified-p (files--host-buffer-available-p))
-      (files--with-host-buffer
-       buffer
-       (lambda ()
-         (funcall files--native-set-buffer-modified-p flag)))
+      ;; gnu562: without BUFFER, call the native directly; the thunk was a
+      ;; fresh closure built through `eval' on every call (`point' 15 us).
+      (if buffer
+          (files--with-host-buffer
+           buffer
+           (lambda ()
+             (funcall files--native-set-buffer-modified-p flag)))
+        (funcall files--native-set-buffer-modified-p flag))
     (when (files--buffer-tick-mode-p buffer)
       (let ((tick (buffer-modified-tick (files--buffer-key buffer))))
         (cond

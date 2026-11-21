@@ -834,11 +834,19 @@ slot count, which remains fixed for the lifetime of the table."
   ;; Tagged vectors are excluded by both native predicates below.  Check
   ;; their existing structural tag first to avoid repeating those class
   ;; checks on every access through the public `aref' bridge.
-  (or (and (vectorp object)
-           (> (length object) 6)
-           (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag))
-      (emacs-char-table--native-syntax-p object)
-      (emacs-char-table--native-p object)))
+  ;; gnu562: dispatch on the representation once.  The three tests exclude
+  ;; each other (a vector is never a record and `--native-p' rejects both),
+  ;; so this answers as the former `or' did, without the record tests that
+  ;; cost every `type-of' and struct predicate about 2 us.
+  (cond ((vectorp object)
+         (and (> (length object) 6)
+              (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag)))
+        ;; Only the bootstrap syntax record is a record char-table: test its
+        ;; tag before the full check, which costs a buffer or struct ~1 us.
+        ((recordp object)
+         (and (eq (aref object 0) 'nelisp--syntax-table)
+              (emacs-char-table--native-syntax-p object)))
+        (t (emacs-char-table--native-p object))))
 
 (defun emacs-char-table-same-p (first second)
   "Compare FIRST and SECOND by their logical char-table identity.

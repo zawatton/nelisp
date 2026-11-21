@@ -4942,25 +4942,31 @@ wrap below.")
              (functionp emacs-stub--native-commandp)
              (functionp emacs-stub--native-indirect-function))
 
-    (defun fboundp (symbol)
-      "Return non-nil if SYMBOL's function definition is not void.
+    ;; gnu562: each wrapper only where the native primitive still gets nil
+    ;; wrong.  A wrapper the native already matches costs an extra call on
+    ;; every use (`fboundp' was 4.6 us against 0.25 us for the native).
+    (when (condition-case nil (funcall emacs-stub--native-fboundp nil) (error t))
+      (defun fboundp (symbol)
+        "Return non-nil if SYMBOL's function definition is not void.
 Matches host Emacs for SYMBOL = nil (nil's function cell is void, so this
 is nil, not an error); delegates to the native primitive otherwise."
-      (if (null symbol) nil (funcall emacs-stub--native-fboundp symbol)))
+        (if (null symbol) nil (funcall emacs-stub--native-fboundp symbol))))
 
-    (defun macrop (object)
-      "Return non-nil if OBJECT is a macro.
+    (when (condition-case nil (funcall emacs-stub--native-macrop nil) (error t))
+      (defun macrop (object)
+        "Return non-nil if OBJECT is a macro.
 Matches host Emacs for OBJECT = nil (nil is not a macro); delegates to the
 native primitive otherwise."
-      (if (null object) nil (funcall emacs-stub--native-macrop object)))
+        (if (null object) nil (funcall emacs-stub--native-macrop object))))
 
-    (defun commandp (function &optional for-call-interactively)
-      "Return non-nil if FUNCTION is a command.
+    (when (condition-case nil (funcall emacs-stub--native-commandp nil) (error t))
+      (defun commandp (function &optional for-call-interactively)
+        "Return non-nil if FUNCTION is a command.
 Matches host Emacs for FUNCTION = nil (nil is not a command); delegates to
 the native primitive otherwise."
-      (if (null function)
-          nil
-        (funcall emacs-stub--native-commandp function for-call-interactively)))
+        (if (null function)
+            nil
+          (funcall emacs-stub--native-commandp function for-call-interactively))))
 
     (defun indirect-function (object &optional noerror)
       "Return the function OBJECT ultimately refers to, following aliases.

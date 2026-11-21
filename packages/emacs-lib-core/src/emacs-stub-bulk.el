@@ -412,7 +412,13 @@ Forwarder to `forward-char' with negated count."
       ;; the buffer read-only check still sees the global nil --
       ;; exactly the `default-process-coding-system' defect class the
       ;; magit bridge documented, recurring here for every name below.
-      (eval (list 'defvar --s-- nil) t))))
+      ;; gnu562: `s', `sym', `needed' and `output' only get a global value.
+      ;; Declaring them special made every later `(lambda (s) ...)' and
+      ;; `(let ((s ...)))' bind dynamically, unlike GNU, and kept each such
+      ;; body off the VM.  A free reference still reads the nil value.
+      (if (memq --s-- '(s sym needed output))
+          (set --s-- nil)
+        (eval (list 'defvar --s-- nil) t)))))
 
 ;; These runtime limits are read arithmetically by vendored libraries such as
 ;; cc-defs.el.  They need real Emacs defaults rather than the nil placeholder

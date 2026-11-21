@@ -261,11 +261,15 @@ Hash at most nine words using native byte access, without copying NAME."
   ;; without recording it in the bucket chains `mapatoms' walks.
   (unless (fboundp 'emacs-symbol--native-intern)
     (fset 'emacs-symbol--native-intern (symbol-function 'intern)))
-  (defun intern (name &optional obarray)
-    "Return the canonical symbol named NAME, interning it if necessary."
-    (if (and obarray (stringp name) (emacs-symbol--obarray-p obarray))
-        (emacs-symbol--obarray-intern name obarray)
-      (emacs-symbol--native-intern name obarray))))
+  ;; gnu562: the parameter is not named `obarray', the special variable: a
+  ;; special parameter bound it dynamically on every call and kept `intern'
+  ;; off the VM.
+  (defun intern (name &optional ob)
+    "Return the canonical symbol named NAME, interning it if necessary.
+Optional OB is the obarray to intern in."
+    (if (and ob (stringp name) (emacs-symbol--obarray-p ob))
+        (emacs-symbol--obarray-intern name ob)
+      (emacs-symbol--native-intern name ob))))
 
 
 (unless (fboundp 'intern-soft)
