@@ -231,7 +231,9 @@ minibuffer layer while storage stays transport-specific.")
                (emacs-window-window-live-p emacs-minibuffer--window))
     (setq emacs-minibuffer--window
           (condition-case _err
-              (emacs-window-create-minibuffer-window)
+              (if (fboundp 'emacs-cc-census-display-b34window01--minibuffer-window)
+                  (emacs-cc-census-display-b34window01--minibuffer-window nil)
+                (emacs-window-create-minibuffer-window))
             (error :stub))))
   emacs-minibuffer--window)
 

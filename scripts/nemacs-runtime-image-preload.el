@@ -265,6 +265,21 @@ skip, so the polyfill's ec-layer buffers leaked into the runtime."
                 '(require 'emacs-help)
                 (list 'apply (list 'quote public) 'args)))))
 
+(defun nemacs-runtime-image-preload--define-help-button-types ()
+  "Define the `help-xref' and `help-function-def' button types.
+GNU libraries such as cl-extra define subtypes of them when they load, and
+`quit-window' and friends reach cl-extra lazily, after this stub has provided
+`help-mode' without loading the real file."
+  (let ((define
+         (lambda ()
+           (unless (get 'help-xref 'button-category-symbol)
+             (define-button-type 'help-xref))
+           (unless (get 'help-function-def 'button-category-symbol)
+             (define-button-type 'help-function-def :supertype 'help-xref)))))
+    (if (fboundp 'define-button-type)
+        (funcall define)
+      (eval-after-load 'button define))))
+
 (defun nemacs-runtime-image-preload--install-help-core ()
   "Install the minimal help daily-driver surface without source `load'."
   (unless (featurep 'help-mode)
@@ -272,7 +287,8 @@ skip, so the polyfill's ec-layer buffers leaked into the runtime."
                       help-go-back
                       help-go-forward))
       (nemacs-runtime-image-preload--install-help-command symbol))
-    (provide 'help-mode))
+    (provide 'help-mode)
+    (nemacs-runtime-image-preload--define-help-button-types))
   (unless (featurep 'help-fns)
     (dolist (symbol '(describe-function
                       describe-variable

@@ -47,13 +47,20 @@
     "Compute cost of PAT matching STR using modified Gotoh algorithm."
     (emacs-cc-minibuf-1--flex-match pat str)))
 
+(defun emacs-cc-minibuf-1--innermost-p (buffer)
+  "Return t if BUFFER (default current) is the most nested active minibuffer.
+This is minibuf.c's notion: the minibuffer stack lives in
+`emacs-minibuffer--buffers', innermost first."
+  (let ((target (or buffer (current-buffer))))
+    (and (bufferp target)
+         (boundp 'emacs-minibuffer--buffers)
+         (eq target (car emacs-minibuffer--buffers))
+         t)))
+
 (unless (fboundp 'innermost-minibuffer-p)
   (defun innermost-minibuffer-p (&optional buffer)
     "Return t if BUFFER is the most nested active minibuffer."
-    (let ((target (or buffer (current-buffer))))
-      (condition-case nil
-          (and (minibufferp target) (eq target (current-buffer)) t)
-        (error nil)))))
+    (emacs-cc-minibuf-1--innermost-p buffer)))
 
 (unless (fboundp 'internal-complete-buffer)
   (defun internal-complete-buffer (string predicate flag)
@@ -70,9 +77,10 @@
 
 (unless (fboundp 'minibuffer-innermost-command-loop-p)
   (defun minibuffer-innermost-command-loop-p (&optional buffer)
-    "Return t if BUFFER is a minibuffer at the current command loop level."
-    (let ((target (or buffer (current-buffer))))
-      nil)))
+    "Return t if BUFFER is a minibuffer at the current command loop level.
+Minibuffers here never start a nested command loop, so this is the
+innermost-minibuffer test."
+    (emacs-cc-minibuf-1--innermost-p buffer)))
 
 (unless (fboundp 'read-variable)
   (defun read-variable (prompt &optional default-value)
