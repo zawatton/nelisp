@@ -307,6 +307,13 @@ if OBJECT does not identify a displayed buffer or a live window."
   (defvar baud-rate 0
     "The output baud rate of the terminal (0 when there is no tty)."))
 
+;; GNU minibuf.c `minibuffer-message-timeout' (DEFVAR_LISP, default 2): a
+;; C-level variable that no Lisp file defines.  isearch.el saves and
+;; rebinds it on every `isearch-mode' entry.
+(unless (boundp 'minibuffer-message-timeout)
+  (defvar minibuffer-message-timeout 2
+    "How long to display an echo-area message when the minibuffer is active."))
+
 ;; GNU keyboard.c `last-event-frame': the frame of the last input event
 ;; (nil before any event, `macro' for keyboard-macro events).  isearch.el
 ;; reads it to decide whether a search was typed on a text terminal.
