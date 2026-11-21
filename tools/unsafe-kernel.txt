@@ -53,11 +53,6 @@ lisp/nelisp-stdlib-os-int-helpers.el
 # (the prelude itself is not a kernel file); 2026-11-07.
 scripts/nelisp-prelude-kernel.el
 scripts/nelisp-standalone-build.el
-# 2026-11-18: build-time AOT translator.  Its quoted build-DSL helpers (wf_aot_*)
-# read and write raw words (operand blocks, the nl_aot_state cache, cons cells
-# in the in-loop nreverse/nconc arms) exactly like the VM arms they mirror in
-# scripts/nelisp-standalone-build.el.
-scripts/nelisp-aot-bytecode.el
 scripts/nelisp-flat-arena-probe.el
 scripts/nelisp-macho-acceptance.el
 scripts/nelisp-macos-build.el
@@ -198,9 +193,6 @@ pinned-kernel-touch scripts/nelisp-gc-pause-growth.el
 pinned-kernel-touch scripts/nelisp-macho-acceptance.el
 pinned-kernel-touch scripts/nelisp-macos-build.el
 pinned-kernel-touch scripts/nelisp-standalone-build.el
-# 2026-11-18: the AOT translator's build-DSL helpers touch raw words like the VM
-# arms they mirror (see the kernel-file comment above).
-pinned-kernel-touch scripts/nelisp-aot-bytecode.el
 pinned-kernel-touch lisp/nelisp-repl-gc.el
 pinned-kernel-touch scripts/nelisp-runtime-reload-telemetry.el
 # Tag-16 identity comparison reads the uninterned-symbol identity slot through
@@ -411,7 +403,7 @@ lisp/nelisp-runtime-prims-decl.el
 # helpers moved out of the prelude).
 # 2026-11-12: +2, lisp/nelisp-com-dsl.el and lisp/nelisp-com-wstr-lib.el.
 # 2026-11-13: +1, lisp/nelisp-runtime-prims-decl.el (declarations only).
-kernel-files 135
+kernel-files 134
 pinned-kernel-touch lisp/nelisp-runtime-prims-decl.el
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-emit.el
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el

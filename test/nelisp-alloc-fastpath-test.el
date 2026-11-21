@@ -97,51 +97,5 @@
     (should (nelisp-alloc-fastpath-test--before
              "bf_signal_alloc_exhausted" "alloc-bytes" b))))
 
-;; Lane C1: bump shortcut for small requests when every free structure is empty.
-(ert-deftest nelisp-alloc-fastpath-bump-try-reads-before-reserve ()
-  "`nl_alloc_bump_try' consults every free structure, reserves, then bills once."
-  (let ((b (nelisp-alloc-fastpath-test--defun "nl_alloc_bump_try")))
-    ;; exact-fit bit, no-collection/run, buckets above, large bin 0 and masks
-    (should (string-search "(shl 1 (/ (- want 16) 8))" b))
-    (should (string-search "268435632" b))
-    (should (string-search "(if (= rbt want) 0 1)" b))
-    (should (string-search "(sar mask (/ want 8))" b))
-    (should (string-search "(data-addr nl_freelist_large_bins)" b))
-    (dolist (off '(0 8 16 24 32 40 48))
-      (should (string-search (format "(data-addr nl_freelist_large_mask) %d)" off) b)))
-    ;; reserve by the CAS bump, debt billed once, after the reserve
-    (should (string-search "(nl_chunk_try_alloc chunk want)" b))
-    (should (= 1 (1- (length (split-string b (regexp-quote "(ptr-write-u64 (data-addr nl_gc_until)") nil)))))
-    (should (nelisp-alloc-fastpath-test--before
-             "(nl_chunk_try_alloc chunk want)" "(data-addr nl_gc_until)" b))
-    ;; any failure keeps the full path
-    (should (nelisp-alloc-fastpath-test--before
-             "(= got 0) (nl_alloc_bytes_slow" "(data-addr nl_gc_until)" b))))
-
-(ert-deftest nelisp-alloc-fastpath-run-falls-to-bump-try ()
-  "`nl_alloc_bytes_run' hands a run miss to the bump shortcut, not the slow path."
-  (let ((b (nelisp-alloc-fastpath-test--defun "nl_alloc_bytes_run")))
-    (should (string-search "(nl_alloc_bump_try size align want r)" b))
-    (should-not (string-search "(nl_alloc_bytes_slow size align)" b))))
-
-;; Lane C2: read-only list walks take the cdr as a WORD (no box for the nil terminator).
-(ert-deftest nelisp-alloc-fastpath-readonly-walks-use-cdr-word ()
-  "Formals scan, proper-list check, memq and assq walks do not box the cdr."
-  (dolist (spec '(("nl_clx_formals_contain_symbol" . "(nl_cons_cdr_word node-ptr)")
-                  ("bf_proper_list_raw" . "(nl_cons_cdr_word p)")
-                  ("wf_assq_walk_w" . "(nl_cons_cdr_word alist_ptr)")))
-    (let ((b (nelisp-alloc-fastpath-test--defun (car spec))))
-      (should (string-search (cdr spec) b))
-      (should-not (string-search "nl_cons_cdr_ptr" b)))))
-
-;; `wf_memq_walk_w' opens a quoted list, so it is not at a line-start defun.
-(ert-deftest nelisp-alloc-fastpath-memq-walk-uses-cdr-word ()
-  "The memq walk recurses on the cdr WORD."
-  (with-temp-buffer
-    (insert-file-contents nelisp-alloc-fastpath-test--build)
-    (should (search-forward "(wf_memq_walk_w elt_ptr (nl_cons_cdr_word list_ptr) 0)" nil t))
-    (goto-char (point-min))
-    (should-not (search-forward "(wf_memq_walk_w elt_ptr (nl_cons_cdr_ptr list_ptr) 0)" nil t))))
-
 (provide 'nelisp-alloc-fastpath-test)
 ;;; nelisp-alloc-fastpath-test.el ends here

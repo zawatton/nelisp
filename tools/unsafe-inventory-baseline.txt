@@ -331,52 +331,7 @@
 # scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
 # `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
 # elsewhere -- gate's own before/after totals agree exactly.
-# 2026-11-18: 2581 -> 2592 (+11).  The new build-time AOT translator
-# scripts/nelisp-aot-bytecode.el carries 11 raw-pointer calls in its build-DSL
-# helpers (pinned below); scripts/nelisp-standalone-build.el is unchanged at 1975.
-# The 4 excess already present at b00e9036e (2585 vs 2581) stay red and are not
-# covered here.
-# 2026-11-18: 2592 -> 2609 (+17), all in scripts/nelisp-aot-bytecode.el (11 -> 28,
-# pinned below).  The AOT helpers read their own state, the AOT table and VM
-# frames with ptr-read-u64 instead of heap-read-u64 (no per-read heap bounds
-# check on the per-node path), and the autoload-do-load fast path reads two
-# cached words of `nl_aot_state'.
-# 2026-11-18: 2609 -> 2615 (+6), all in scripts/nelisp-aot-bytecode.el (28 -> 34,
-# pinned below).  The inline `symbol-with-pos-p' / `fboundp' call-site helpers
-# read the live function cell, the subr descriptor id and the operand's tag
-# words with ptr-read-u64 to check the callee is still the original subr.
-# 2026-11-19: 2615 -> 2616 (+1), scripts/nelisp-standalone-build.el (pinned below):
-# the GNU `gcs-done' counter bump in `nl_gc_debt_rearm'.
-# 2026-11-19: 2616 -> 2620 (+4), all in scripts/nelisp-aot-bytecode.el (34 -> 38,
-# pinned below): the leaf fast path `wf_aot_leaf' reads the cached words of
-# `nl_aot_state' and the callers' constant words with ptr-read-u64 to check that
-# macroexp--expand-all, macroexp-macroexpand and macroexpand-1 are still the
-# installed objects before it returns a non-symbol atom as is.
-# 2026-11-19: 2620 -> 2644 (+24), all in scripts/nelisp-aot-bytecode.el (38 -> 62,
-# pinned below).  The plain-function head fast paths (`wf_aot_mm', `wf_aot_fg' and
-# helpers) read the head symbol's header kind and live function cell, the cell's kind
-# and Subr descriptor id, the captured `autoload-do-load' object and the function
-# epoch / validation words of `nl_aot_state' with ptr-read-u64/u8 (read-only, on the
-# per-node path) and write one validation word.
-# 2026-11-19: 2644 -> 2645 (+1), scripts/nelisp-standalone-build.el (pinned below):
-# the allocator bump fast path `nl_alloc_bump_try'.
-# 2026-11-20: scripts/nelisp-aot-bytecode.el 62 -> 63 (+1, pinned below): the &rest entry
-# wrapper conses the rest list from the VM argument words with ptr-read-u64 (lane F2).
-# 2026-11-20: scripts/nelisp-aot-bytecode.el 63 -> 64 (+1, pinned below): `wf_aot_adl' reads the
-# `autoload' symbol word with ptr-read-u64 to test the car of a boxed cons (lane H special forms).
-# The unsafe-call total is raised by this one only (2645 -> 2646); the base tree is still above it.
-# 2026-11-21: scripts/nelisp-aot-bytecode.el 63 -> 69 (+6, pinned below): lane L extends
-# `wf_aot_plain_cell' to cons-celled function cells; `wf_aot_plain_car' and the cons arms read the
-# car word, the state epoch, the captured `autoload' word and the `macro' constant with
-# ptr-read-u8/u64 (measured on the base a2e9c24cd tree: 63 -> 69).
-# The unsafe-call total is raised by those 6 only (2646 -> 2652); the base tree's own +4 stays.
-# 2026-11-21: unsafe-call 2652 -> 2656 (+4), all in scripts/nelisp-standalone-build.el, whose
-# `pinned-kernel-call' line (1978) already counts them; only this total was never raised.
-# +1 from 982ed65ac (`nl_chunk_try_alloc' writes the new committed-watermark word, the
-# 1972 -> 1973 excess noted above) and +3 from b00e9036e (the in-loop setcar/setcdr/nreverse/
-# nconc arms of `wf_bytecode_w_fast_run' and `wf_bytecode_w_get_fast', the 1972 -> 1975 entry
-# above).  Counts measured per commit with `make unsafe-inventory' (2581 -> 2582 -> 2585).
-unsafe-call 2656
+unsafe-call 2581
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -638,17 +593,7 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # Taken from the scanner (875) and cross-checked against `git diff', not
 # summed on paper.
 # 2026-11-07: scripts/nelisp-standalone-build.el 1971 -> 1972.  `nl_n4_finish_w_fail' (backtrace capture before the pop of a failing VM activation) adds one ptr-write-u64 to the pop, mirroring the existing pop in `nl_n4_finish_w'.
-# 2026-11-17: scripts/nelisp-standalone-build.el 1972 -> 1975.  Macroexpansion speed stages 2a-3a add three
-# raw-pointer writes: the in-loop setcar/setcdr/nreverse/nconc arms of `wf_bytecode_w_fast_run' write the cons
-# cell and the VM stack slot directly instead of leaving the fast loop, and `wf_bytecode_w_get_fast' fills its
-# result word.  Scanner delta measured against 8cd4fa972.  The separate 1972 -> 1973 excess inherited from
-# 982ed65a is not covered here and stays red.
-# 2026-11-19: scripts/nelisp-standalone-build.el 1975 -> 1977.  GNU `gcs-done': `nl_gc_debt_rearm' bumps the
-# forwarded variable's value cell inline at the end of each completed collection (one raw read of the cached symbol
-# word, one raw ptr-write-u64; no allocation), and `nl_gcs_done_init' stores that word once per boot.
-# 2026-11-19: 1977 -> 1978.  `nl_alloc_bump_try' reserves a small block with one CAS bump (`nl_chunk_try_alloc' call site) when every free list is empty.
-pinned-kernel-call scripts/nelisp-standalone-build.el 1978
-pinned-kernel-call scripts/nelisp-aot-bytecode.el 69
+pinned-kernel-call scripts/nelisp-standalone-build.el 1972
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

@@ -245,7 +245,6 @@ Records in `nelisp-standalone--toolchain-elc-status' which copy is used."
 (require 'nelisp-boot-image)
 (require 'nelisp-version)
 (require 'nelisp-prelude-bytecode)
-(require 'nelisp-aot-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
 
@@ -477,14 +476,6 @@ property this design needs for free.")
 ;; temporary generation split explicit and robust to future list reordering.
 (defconst nelisp-standalone--arena-chunk-flag-persistent 2)
 (defconst nelisp-standalone--arena-chunk-desc-next-offset #x30)
-;; Windows commit watermark: byte offset (relative to the chunk base, page
-;; aligned) up to which pages are known committed.  Lives in the unused word at
-;; desc+56, inside the 1024-byte metadata prefix (never GC payload and never in
-;; the serialized image `[base+1024,...]').  Written as the literal 56 in the
-;; quoted `nl_chunk_init_descriptor' source; keep the two in step.
-(defconst nelisp-standalone--arena-chunk-desc-committed-offset #x38)
-(defconst nelisp-standalone--arena-chunk-initial-committed 4096
-  "Bytes every Windows chunk has committed right after `nl_os_reserve_chunk'.")
 
 (defconst nelisp-standalone--arena-default-chunk-size #x4000000
   "Default standalone arena chunk size after the fixed first chunk.")
@@ -989,15 +980,6 @@ WORD, m5_fx_word_ptr for a non-symbol pointer WORD that is not a view).")
      ;; `nl_function_epoch' (Doc 238 B0): one u64, the global function epoch,
      ;; placed after `nl_repr_census'; zero-fresh on every start.
      8
-     ;; `nl_aot_state' (scripts/nelisp-aot-bytecode.el): the AOT install-table
-     ;; cache.  +0 table mirror entry, +8 its compaction epoch, +16 call-arm miss
-     ;; filter, +24 filter epoch+1, +96 table
-     ;; data address, +176 lean counter
-     ;; region address, +184 captured `autoload-do-load' object, +192 the
-     ;; symbol `autoload', +200 the function epoch + 1 of the last validation of the
-     ;; plain-head fast paths, +208+8i installed object words and +336+8i constants
-     ;; data addresses (16 rows).  Zero-fresh on every start.
-     464
      ;; `nl_cold_chunk0_domain'.
      16
      ;; `nl_gc_weak_head': the transient weak-table chain (Doc 228).
@@ -1440,11 +1422,6 @@ storage — not an arena reservation."
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64 2048 24 32 272 2072 64
                                  (if (nelisp-standalone--census-p) 512 0))
                               :section 'bss :bind 'global :type 'object))
-    (list (nelisp-link-symbol "nl_aot_state"
-                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64 2048 24 32 272 2072 64
-                                 (if (nelisp-standalone--census-p) 512 0)
-                                 8)
-                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 32)
                               :section 'bss :bind 'global :type 'object))
@@ -1841,57 +1818,7 @@ cross-unit call) before the freed payload is poisoned."
                  (setq o (+ o 16)))
                (if (< o (- want 8)) (ptr-write-u64 (+ obj o) 0 0) 0)
                obj))
-          (nl_alloc_bump_try size align want r))))
-    ;; Bump shortcut (lane C1).  Reached from `nl_alloc_bytes_run' (gate on,
-    ;; exact bucket head empty) when the run cannot serve WANT.  When every
-    ;; structure the full path would consult is provably empty -- the
-    ;; exact-fit mask bit is clear, no collection has run yet or the run is
-    ;; absent/too short (and not an exact fit that run_take would take whole),
-    ;; no small bucket above WANT is occupied, large bin 0 and every large
-    ;; mask word are empty -- `nl_alloc_bytes_uncheck' would walk bucket_pop,
-    ;; run_take, bucket_split and scan_large only to bump.  Do the same bump
-    ;; directly: one CAS reserve (header BT=WANT, mark 0, OS-zeroed payload),
-    ;; then bill the debt once.  Only reads happen before the reserve, so any
-    ;; failed test or a full chunk goes to `nl_alloc_bytes_slow', which bills
-    ;; and grows exactly as before.
-    (defun nl_alloc_bump_try (size align want r)
-      (let* ((mask (heap-read-u64 (data-addr nl_freelist_small_mask) 0))
-             (rbt (if (= r 0) 0 (logand (heap-read-u64 r 0) 4294967288)))
-             (chunk (heap-read-u64 268436168 0))
-             (got 0))
-        (seq
-         (if (= (logand mask (shl 1 (/ (- want 16) 8))) 0)
-             (if (if (= (heap-read-u64 268435632 0) 0) 1
-                   (if (if (= r 0) 1
-                         (if (< rbt (+ want 16)) (if (= rbt want) 0 1) 0))
-                       (if (= (sar mask (/ want 8)) 0)
-                           (if (= (heap-read-u64 (data-addr nl_freelist_large_bins) 0) 0)
-                               (if (= (logior
-                                       (heap-read-u64 (data-addr nl_freelist_large_mask) 0)
-                                       (logior
-                                        (heap-read-u64 (data-addr nl_freelist_large_mask) 8)
-                                        (logior
-                                         (heap-read-u64 (data-addr nl_freelist_large_mask) 16)
-                                         (logior
-                                          (heap-read-u64 (data-addr nl_freelist_large_mask) 24)
-                                          (logior
-                                           (heap-read-u64 (data-addr nl_freelist_large_mask) 32)
-                                           (logior
-                                            (heap-read-u64 (data-addr nl_freelist_large_mask) 40)
-                                            (heap-read-u64 (data-addr nl_freelist_large_mask) 48)))))))
-                                      0)
-                                   1 0)
-                             0)
-                         0)
-                     0))
-                 (if (= chunk 0) 0 (setq got (nl_chunk_try_alloc chunk want)))
-               0)
-           0)
-         (if (= got 0) (nl_alloc_bytes_slow size align)
-           (seq
-            (ptr-write-u64 (data-addr nl_gc_until) 0
-                           (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
-            got)))))
+          (nl_alloc_bytes_slow size align))))
     ;; Redzone verify on free (called from `nl_gc_free_block_link'
     ;; BEFORE poison-on-free overwrites the suffix).  Armed only via
     ;; the boot env probe, so every freed block carries a guard; the
@@ -6953,8 +6880,6 @@ it shares with cons and symbol blocks.")
          (ptr-write-u64 (+ desc 32) 0 (+ base size))
          (ptr-write-u64 (+ desc 40) 0 1)
          (ptr-write-u64 (+ desc 48) 0 0)
-         ;; Windows committed-end watermark (unused word on other targets).
-         (ptr-write-u64 (+ desc 56) 0 4096)
          desc)))
     (defun nl_chunk_alloc_new (want)
       (let* ((size (nl_chunk_size_for want))
@@ -7955,10 +7880,7 @@ with the base literal)."
       (ptr-write-u64 (+ ,b ,(+ d0 32)) 0 (+ ,b ,size)) ; desc.limit
       (ptr-write-u64 (+ ,b ,(+ d0 40)) 0
                      ,(logior 1 nelisp-standalone--arena-chunk-flag-persistent)) ; desc.flags (persistent: boot generation)
-      (ptr-write-u64 (+ ,b ,(+ d0 48)) 0 0)        ; desc.next
-      ;; desc.committed (Windows commit watermark; unused word elsewhere)
-      (ptr-write-u64 (+ ,b ,(+ d0 nelisp-standalone--arena-chunk-desc-committed-offset)) 0
-                     ,nelisp-standalone--arena-chunk-initial-committed))))
+      (ptr-write-u64 (+ ,b ,(+ d0 48)) 0 0))))     ; desc.next
 
 (defun nelisp-standalone--linux-arena-init-form ()
   "Return the Linux `nl_arena_init' form (Doc 140 Stage 8: fully chunked).
@@ -8085,16 +8007,7 @@ addressing by a runtime base, never by a fixed reservation."
                    (oldib (heap-read-u64 (+ oldbase 832) 0))
                    (oldie (heap-read-u64 (+ oldbase 840) 0)))
               (if (<= needed oldsize)
-                  (if (= (nl_os_commit_range oldbase 0 needed) 0) -1
-                    ;; [0,needed) is now committed.  The descriptor (chunk-0
-                    ;; desc at base+768, committed-end word at +56) is outside
-                    ;; the serialized image, so raise -- never lower -- it.
-                    (let ((req (nl_align_up needed 4096)))
-                      (seq
-                       (if (< (heap-read-u64 (+ oldbase 824) 0) req)
-                           (ptr-write-u64 (+ oldbase 824) 0 req)
-                         0)
-                       0)))
+                  (if (= (nl_os_commit_range oldbase 0 needed) 0) -1 0)
                 (let ((newbase (nl_os_reserve_chunk needed)))
                   (if (= newbase 0) -1
                     (if (= (nl_os_commit_range newbase 0 needed) 0)
@@ -8104,9 +8017,6 @@ addressing by a runtime base, never by a fixed reservation."
                        ;; old mapping retains pre-load argv/path allocations.
                        (ptr-write-u64 (data-addr nl_arena_base) 0 newbase)
                        (nl_cold_realloc_chunk0 newbase needed)
-                       ;; Fresh descriptor got the 4096 default; [0,needed)
-                       ;; was committed above, so record that known extent.
-                       (ptr-write-u64 (+ newbase 824) 0 (nl_align_up needed 4096))
                        (ptr-write-u64 (+ newbase 832) 0 oldib)
                        (ptr-write-u64 (+ newbase 840) 0 oldie)
                        (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 0 newbase)
@@ -8252,35 +8162,6 @@ arm64 Linux has no legacy x86 numbering)."
           (if (= (nl_os_free_chunk base size) 0) 1 0))))
     (defun nl_os_commit_range (base old new)
       (if (= (extern-call VirtualAlloc (+ base old) (- new old) 4096 4) 0) 0 1))
-    ;; Batched on-demand commit for `nl_chunk_try_alloc'.  Descriptor word +56
-    ;; is a monotonic committed-end byte offset from the chunk base (page
-    ;; aligned).  Answers 1 when [0,NEW) is committed, 0 on commit failure
-    ;; (watermark untouched).  The caller's cursor CAS runs BEFORE this, so a
-    ;; thread may see a watermark below another thread's in-flight commit; it
-    ;; then recommits an overlapping range, which VirtualAlloc MEM_COMMIT
-    ;; treats as idempotent.  The watermark only advances after OS success and
-    ;; is published with a CAS-max so it never moves backwards.
-    (defun nl_windows_chunk_commit_to (chunk new)
-      (let* ((wm_addr (+ chunk 56))
-             (wm (atomic-fetch-add wm_addr 0))
-             (required (nl_align_up new 4096)))
-        (if (>= wm required)
-            1
-          (let* ((size_end (nl_align_up (heap-read-u64 (+ chunk 8) 0) 4096))
-                 (want_end (nl_align_up new 65536))
-                 (end (if (< want_end size_end) want_end size_end)))
-            (if (= (nl_os_commit_range (heap-read-u64 chunk 0) wm end) 0)
-                0
-              (let ((done 0))
-                (seq
-                 (while (= done 0)
-                   (let ((cur (atomic-fetch-add wm_addr 0)))
-                     (if (>= cur end)
-                         (setq done 1)
-                       (if (= (atomic-compare-exchange wm_addr cur end) 1)
-                           (setq done 1)
-                         0))))
-                 1)))))))
     ;; Exit code 88 = standalone arena allocation failure.
     (defun nl_os_alloc_fail ()
       (extern-call ExitProcess 88))))
@@ -8300,7 +8181,7 @@ arm64 Linux has no legacy x86 numbering)."
             (if (> new size)
                 (setq done 1)
               (if (= (atomic-compare-exchange cursor_addr old new) 1)
-                  (if (= (nl_windows_chunk_commit_to chunk new) 0)
+                  (if (= (nl_os_commit_range base old new) 0)
                       (setq done 1)
                     (seq
                      (setq obj (+ base (+ old 8)))
@@ -8553,8 +8434,7 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                             (cl-remove-if-not
                              (lambda (form)
                                (memq (cadr form)
-                                     '(nl_os_reserve_chunk nl_os_alloc_aligned_group
-                                       nl_windows_chunk_commit_to)))
+                                     '(nl_os_reserve_chunk nl_os_alloc_aligned_group)))
                              chunk-forms))
                           (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
                             (nelisp-standalone--cold-domain-forms))
@@ -10995,12 +10875,6 @@ REPL-facing module it feeds."
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 24
                       (+ (heap-read-u64 (data-addr nl_gc_stats) 24) 1))
-       ;; GNU `gcs_done++' on the `gcs-done' value cell: no allocation; a cell
-       ;; that no longer holds a fixnum is left alone.
-       (let* ((gobj (heap-read-u64 (data-addr nl_gc_until_base) 8)))
-         (if (= gobj 0) 0
-           (let* ((gcell (+ (- gobj 6) 16)) (gw (heap-read-u64 gcell 0)))
-             (if (= (logand gw 3) 1) (ptr-write-u64 gcell 0 (+ gw 4)) 0))))
        (nl_gc_debt_rearm_for (heap-read-u64 (data-addr nl_gc_stats) 16))))
     ;; 1 when the debt trigger is armed and the debt has reached it.
     (defun nl_gc_debt_due ()
@@ -21803,10 +21677,10 @@ eval applyfn.")
 
 (defconst nelisp-standalone--applyfn-search-helpers
   '((defun wf_memq_walk_w (elt_ptr list_ptr _pad)
-      (if (= (nl_val_tag list_ptr) 7)
+      (if (= (heap-sexp-tag-word list_ptr) 7)
           (if (= (bf_eq2 elt_ptr (nl_cons_car_ptr list_ptr)) 1)
               list_ptr
-            (wf_memq_walk_w elt_ptr (nl_cons_cdr_word list_ptr) 0))
+            (wf_memq_walk_w elt_ptr (nl_cons_cdr_ptr list_ptr) 0))
         3))
     (defun wf_memq_walk (elt_ptr list_ptr out)
       (nl_abi_word_to_rc (wf_memq_walk_w elt_ptr list_ptr 0) out))
@@ -21823,14 +21697,14 @@ eval applyfn.")
     (defun wf_member_w (args _pad)
       (wf_member_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
     (defun wf_assq_walk_w (key_ptr alist_ptr _pad)
-      (if (= (nl_val_tag alist_ptr) 7)
+      (if (= (heap-sexp-tag-word alist_ptr) 7)
           (let* ((pair_ptr (nl_cons_car_word alist_ptr)))
             (if (= (if (= (nl_word_tag64 pair_ptr) 7)
                        (bf_eq2 key_ptr (nl_cons_car_ptr pair_ptr))
                      0)
                    1)
                 pair_ptr
-              (wf_assq_walk_w key_ptr (nl_cons_cdr_word alist_ptr) 0)))
+              (wf_assq_walk_w key_ptr (nl_cons_cdr_ptr alist_ptr) 0)))
         3))
     (defun wf_assq_w (args _pad)
       (wf_assq_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
@@ -22712,7 +22586,7 @@ eval applyfn.")
                          (let* ((mark (nl_root_mark env))
                                 ;; The starter set of `wf_bytecode_execute_frame' (keep in step).
                                 (state (if (= (if (< first-op 64)
-                                                  (if (/= (logand -1945274392959254529 (shl 1 first-op)) 0) 1 0)
+                                                  (if (/= (logand -2233504769110966273 (shl 1 first-op)) 0) 1 0)
                                                 (if (< first-op 128)
                                                     (if (/= (logand 2146959491 (shl 1 (- first-op 64))) 0) 1 0)
                                                   (if (< first-op 192)
@@ -24070,24 +23944,13 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= (wf_bytecode_w_nilp first) 1)
             (seq (ptr-write-u64 fa 0 second) 0)
           (if (= (wf_bytecode_w_consp first) 1)
-              ;; Brent cycle detection: GNU Fnconc signals `circular-list' on a
-              ;; circular first operand.  MARK is a cell word saved at each power-of-two
-              ;; step count; meeting it again means a cycle.  Nothing is written then.
-              (let* ((tail first) (mark first) (power 1) (lam 0) (cyc 0))
+              (let* ((tail first))
                 (seq
-                 (while (if (= cyc 0) (= (wf_bytecode_w_consp (heap-read-u64 (nl_word_payload tail) 8)) 1) 0)
-                   (seq (setq tail (heap-read-u64 (nl_word_payload tail) 8))
-                        (setq lam (+ lam 1))
-                        (if (= (wf_bytecode_w_eqw tail mark) 1) (setq cyc 1)
-                          (if (= lam power)
-                              (seq (setq mark tail) (setq power (* power 2)) (setq lam 0))
-                            0))))
-                 (if (= cyc 1)
-                     (wf_bytecode_circular_list env first)
-                   (seq
-                    (wf_dirty)
-                    (ptr-write-u64 (nl_word_payload tail) 8 (nl_word_canon second))
-                    0))))
+                 (while (= (wf_bytecode_w_consp (heap-read-u64 (nl_word_payload tail) 8)) 1)
+                   (setq tail (heap-read-u64 (nl_word_payload tail) 8)))
+                 (wf_dirty)
+                 (ptr-write-u64 (nl_word_payload tail) 8 (nl_word_canon second))
+                 0))
             (seq (bf_wrong_type_consp (wf_bytecode_w_view first scratch)) 1)))))
     (defun wf_bytecode_call_named (env mem sp argc name name_len)
       (wf_bytecode_call_named_value env mem sp argc name name_len 0))
@@ -25286,57 +25149,41 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; Unequal symbol objects really are distinct, even after reinterning;
       ;; object/view and view/view comparisons still need the existing test.
       ;; The backing vectors are addressed once (PB/HB/NB/IB = slot 0 of each).
-      ;; Direct vectorlike tables read the meta and index slots inline and take
-      ;; `nl_ht_identity_sync' only when its own up-to-date test fails; a symbol
-      ;; object key takes `nl_ht_symbol_hash' directly (what `bf_identity_hash'
-      ;; answers for one, after three immediate-word tests that cannot match).
       (if (or (= mode 1) (= mode 2))
-          (let* ((direct (if (= (logand table 7) 6) 1 0))
-                 (fm (if (= direct 1) (ptr-read-u64 (- table 6) 8) 0)))
-            (seq
-             (if (if (= (logand fm 7) 6)
-                     (if (= (sar (ptr-read-u64 (- fm 6) 56) 2) (ptr-read-u64 268436376 0))
-                         (= (sar (ptr-read-u64 (- fm 6) 64) 2) (- fm 6))
+          (seq
+           (nl_ht_identity_sync table)
+           (let* ((meta (nl_ht_meta_slot table))
+                  (mb (if (= (logand meta 7) 6) (+ meta 2) (+ (nl_word_payload meta) 8)))
+                  (pairs (ptr-read-u64 mb 88))
+                  (index (nl_ht_data_slot table))
+                  (pb (if (= (logand pairs 7) 6) (+ pairs 2) (+ (nl_word_payload pairs) 8)))
+                  (ib (if (= (logand index 7) 6) (+ index 2) (+ (nl_word_payload index) 8)))
+                  (hb 0) (nb 0)
+                  (hash (nl_ht_hash key mode))
+                  (i (sar (ptr-read-u64 ib (* 8 (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))) 2))
+                  (kimm (if (= (logand key 3) 1) 1 0))
+                  (kso (nl_so_p key))
+                  (entry 0))
+             (seq
+              (while (and (>= i 0) (= entry 0))
+                (let ((other (ptr-read-u64 pb (* 16 i))))
+                  (if (= key other) (setq entry (+ i 1))
+                    (seq
+                     ;; the hashes and next vectors are needed only once the first probe misses
+                     (if (= hb 0)
+                         (let* ((hw (ptr-read-u64 mb 96)) (nw (ptr-read-u64 mb 112)))
+                           (seq (setq hb (if (= (logand hw 7) 6) (+ hw 2) (+ (nl_word_payload hw) 8)))
+                                (setq nb (if (= (logand nw 7) 6) (+ nw 2) (+ (nl_word_payload nw) 8)))))
                        0)
-                   0)
-                 0
-               (nl_ht_identity_sync table))
-             (let* ((meta (if (= direct 1) (ptr-read-u64 (- table 6) 8) (nl_ht_meta_slot table)))
-                    (mb (if (= (logand meta 7) 6) (+ meta 2) (+ (nl_word_payload meta) 8)))
-                    (pairs (ptr-read-u64 mb 88))
-                    (index (if (= direct 1) (ptr-read-u64 (- table 6) 16) (nl_ht_data_slot table)))
-                    (pb (if (= (logand pairs 7) 6) (+ pairs 2) (+ (nl_word_payload pairs) 8)))
-                    (ib (if (= (logand index 7) 6) (+ index 2) (+ (nl_word_payload index) 8)))
-                    (hb 0) (nb 0)
-                    (hash (if (if (= (logand key 7) 6)
-                                  (= (logand (ptr-read-u64 (- key 6) 0) 63) 4)
-                                0)
-                              (logand (nl_ht_symbol_hash key) 1073741823)
-                            (nl_ht_hash key mode)))
-                    (i (sar (ptr-read-u64 ib (* 8 (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))) 2))
-                    (kso -1)
-                    (entry 0))
-               (seq
-                (while (and (>= i 0) (= entry 0))
-                  (let ((other (ptr-read-u64 pb (* 16 i))))
-                    (if (= key other) (setq entry (+ i 1))
-                      (seq
-                       ;; the hashes and next vectors are needed only once the first probe misses
-                       (if (= hb 0)
-                           (let* ((hw (ptr-read-u64 mb 96)) (nw (ptr-read-u64 mb 112)))
-                             (seq (setq hb (if (= (logand hw 7) 6) (+ hw 2) (+ (nl_word_payload hw) 8)))
-                                  (setq nb (if (= (logand nw 7) 6) (+ nw 2) (+ (nl_word_payload nw) 8)))
-                                  (setq kso (nl_so_p key))))
-                         0)
-                       (if (or (and (= (logand key 3) 1) (= (logand other 3) 1))
-                               (and (= kso 1) (= (nl_so_p other) 1)))
-                           (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))
-                         (if (or (= (bf_eq2 key other) 1)
-                                 (and (= hash (sar (ptr-read-u64 hb (* 8 i)) 2))
-                                      (= (nl_ht_key_match key other mode) 1)))
-                             (setq entry (+ i 1))
-                           (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))))))))
-                entry))))
+                     (if (or (and (= kimm 1) (= (logand other 3) 1))
+                             (and (= kso 1) (= (nl_so_p other) 1)))
+                         (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))
+                       (if (or (= (bf_eq2 key other) 1)
+                               (and (= hash (sar (ptr-read-u64 hb (* 8 i)) 2))
+                                    (= (nl_ht_key_match key other mode) 1)))
+                           (setq entry (+ i 1))
+                         (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))))))))
+              entry)))
         (nl_ht_find_in table key)))
     (defun wf_bytecode_switch (mem sp code-len scratch)
       ;; GNU byte-switch consumes KEY then TABLE.  A hit contains the absolute
@@ -26082,13 +25929,6 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun wf_bytecode_rest_marker_p (sym)
       (if (= (wf_bytecode_amp_name_p sym) 0) 0
         (symbol-name-eq sym "&rest")))
-    (defun wf_bytecode_amp_kind (sym)
-      ;; One decode of SYM for the formals walkers: 1 when it is the `&optional'
-      ;; marker, 2 for `&rest', else 0 (the same answers as `wf_bytecode_optional_marker_p'
-      ;; and `wf_bytecode_rest_marker_p', which a walker used to ask one after the other).
-      (if (= (wf_bytecode_amp_name_p sym) 0) 0
-        (if (= (symbol-name-eq sym "&optional") 1) 1
-          (if (= (symbol-name-eq sym "&rest") 1) 2 0))))
     (defun wf_bytecode_amp_name_p (sym)
       ;; vmfast: 0 when SYM is a symbol object whose name does not start with
       ;; `&' (GNU funcall_lambda compares with EQ against Qand_optional and
@@ -26109,48 +25949,43 @@ bytes are written into a fresh 8-byte buffer instead."
                   (if (= (ptr-read-u8 (ptr-read-u64 sb 24) 0) 38) 1 0))))))))
     (defun wf_bytecode_arglist_shape (formals state required maximum)
       ;; FORMALS is a word.  Return counts packed with a private, wider
-      ;; layout: required[0..15], maximum[16..31], rest[32]; -1 when the list is
-      ;; malformed.  One loop over the list, one `wf_bytecode_amp_kind' decode per name.
-      (let* ((cur formals) (st state) (req required) (mx maximum) (result 0) (done 0))
-        (seq
-         (while (= done 0)
-           (if (= (wf_bytecode_w_nilp cur) 1)
-               (seq (setq result (+ req (* mx 65536))) (setq done 1))
-             (if (= (wf_bytecode_w_consp cur) 1)
-                 (let* ((name (heap-read-u64 (nl_word_payload cur) 0))
-                        (tail (heap-read-u64 (nl_word_payload cur) 8)))
-                   (if (= (wf_bytecode_w_tag name) 4)
-                       (let* ((kind (wf_bytecode_amp_kind name)))
-                         (if (= kind 1)
-                             (if (= st 0)
-                                 (seq (setq st 1) (setq cur tail))
-                               (seq (setq result -1) (setq done 1)))
-                           (if (= kind 2)
-                               (seq
-                                (setq done 1)
-                                (setq result
-                                      (if (= (wf_bytecode_w_consp tail) 1)
-                                          (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0))
-                                                 (after-rest (heap-read-u64 (nl_word_payload tail) 8)))
-                                            (if (if (= (wf_bytecode_w_tag rest-name) 4)
-                                                    (if (= (wf_bytecode_w_nilp after-rest) 1)
-                                                        (if (= (wf_bytecode_amp_kind rest-name) 0) 1 0)
-                                                      0)
-                                                  0)
-                                                (+ req (* mx 65536) 4294967296)
-                                              -1))
-                                        -1)))
-                             (if (if (= st 0)
-                                     (if (< req 65535) 1 0)
-                                   (if (< mx 65535) 1 0))
-                                 (seq
-                                  (if (= st 0) (setq req (+ req 1)) 0)
-                                  (setq mx (+ mx 1))
-                                  (setq cur tail))
-                               (seq (setq result -1) (setq done 1))))))
-                     (seq (setq result -1) (setq done 1))))
-               (seq (setq result -1) (setq done 1)))))
-         result)))
+      ;; layout: required[0..15], maximum[16..31], rest[32].
+      (if (= (wf_bytecode_w_nilp formals) 1)
+          (+ required (* maximum 65536))
+        (if (= (wf_bytecode_w_consp formals) 1)
+            (let* ((name (heap-read-u64 (nl_word_payload formals) 0))
+                   (tail (heap-read-u64 (nl_word_payload formals) 8)))
+              (if (= (wf_bytecode_w_tag name) 4)
+                  (if (= (wf_bytecode_optional_marker_p name) 1)
+                      (if (= state 0)
+                          (wf_bytecode_arglist_shape tail 1 required maximum)
+                        -1)
+                    (if (= (wf_bytecode_rest_marker_p name) 1)
+                        (if (= (wf_bytecode_w_consp tail) 1)
+                            (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0))
+                                   (after-rest (heap-read-u64 (nl_word_payload tail) 8)))
+                              (if (if (= (wf_bytecode_w_tag rest-name) 4)
+                                      (if (= (wf_bytecode_w_nilp after-rest) 1)
+                                          (if (= (wf_bytecode_optional_marker_p rest-name) 0)
+                                              (if (= (wf_bytecode_rest_marker_p rest-name) 0) 1 0)
+                                            0)
+                                        0)
+                                    0)
+                                  (+ required (* maximum 65536) 4294967296)
+                                -1))
+                          -1)
+                      (if (if (= state 0)
+                              (if (< required 65535) 1 0)
+                            (if (< maximum 65535) 1 0))
+                          (if (= state 0)
+                              (wf_bytecode_arglist_shape tail 0
+                                                         (+ required 1)
+                                                         (+ maximum 1))
+                            (wf_bytecode_arglist_shape tail 1 required
+                                                       (+ maximum 1)))
+                        -1)))
+                -1))
+          -1)))
     (defun wf_bytecode_copy_arg_tail (env source)
       ;; &rest receives a fresh list spine, while its elements retain
       ;; their original identities as in funcall_lambda.  Answers the spine
@@ -26175,11 +26010,10 @@ bytes are written into a fresh 8-byte buffer instead."
         (seq
          (while (if (= done 0) (wf_bytecode_w_consp params) 0)
            (let* ((name (heap-read-u64 (nl_word_payload params) 0))
-                  (tail (heap-read-u64 (nl_word_payload params) 8))
-                  (kind (wf_bytecode_amp_kind name)))
-             (if (= kind 1)
+                  (tail (heap-read-u64 (nl_word_payload params) 8)))
+             (if (= (wf_bytecode_optional_marker_p name) 1)
                  (seq (setq state 1) (setq params tail))
-               (if (= kind 2)
+               (if (= (wf_bytecode_rest_marker_p name) 1)
                    (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0)))
                      (seq (wf_bytecode_varbind env rest-name
                                                (wf_bytecode_copy_arg_tail env arg-cursor))
@@ -26224,11 +26058,10 @@ bytes are written into a fresh 8-byte buffer instead."
         (wf_write_nil value)
         (while (if (= done 0) (wf_bytecode_w_consp params) 0)
           (let* ((name (heap-read-u64 (nl_word_payload params) 0))
-                 (tail (heap-read-u64 (nl_word_payload params) 8))
-                 (kind (wf_bytecode_amp_kind name)))
-            (if (= kind 1)
+                 (tail (heap-read-u64 (nl_word_payload params) 8)))
+            (if (= (wf_bytecode_optional_marker_p name) 1)
                 (setq params tail)
-              (if (= kind 2)
+              (if (= (wf_bytecode_rest_marker_p name) 1)
                   (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0)))
                     (seq (wf_write_nil value)
                          (wf_bytecode_build_args frame index (- argc index) value)
@@ -26566,38 +26399,6 @@ bytes are written into a fresh 8-byte buffer instead."
                            (if (> n 4096) (setq r 1) 0)))))
                (setq r (if (= p 3) 3 1))))
            (if (= r 1) 0 r)))))
-    (defun wf_bytecode_w_get_fast (sa key)
-      ;; stage 3a: GNU Bget -> Fget (fns.c) on a symbol OBJECT SA.  The plist slot is
-      ;; entry slot 2 (+32 of the object, as `nl_pl_read' reads it; 0 means nil) and
-      ;; the walk is `nl_pl_get_w' restricted to canonical operands: KEY must be an
-      ;; immediate or a symbol object (`wf_bytecode_w_canon_p'), so `eq' is one word
-      ;; compare, and every key met must be canonical too.  It reads only: no
-      ;; allocation, no GC point, no callback.  Answers the value WORD (3 when the
-      ;; property is absent or the plist is nil), or 0 to decline with nothing
-      ;; changed: a non-symbol SA, a view, an odd-length or dotted plist, a
-      ;; non-canonical key or more than 4096 pairs; the general `get' then runs.
-      (if (= (logand sa 7) 6)
-          (if (= (wf_bytecode_w_symobj_p sa) 0) 0
-            (if (= (wf_bytecode_w_canon_p key) 0) 0
-              (let* ((p (ptr-read-u64 (- sa 6) 32)) (r 0) (n 0) (c 0) (rest 0))
-                (seq
-                 (if (= p 0) (setq p 3) 0)
-                 (while (= r 0)
-                   (if (= (logand p 7) 2)
-                       (seq
-                        (setq rest (ptr-read-u64 (- p 2) 8))
-                        (if (= (logand rest 7) 2)
-                            (seq
-                             (setq c (ptr-read-u64 (- p 2) 0))
-                             (if (= c key) (setq r (ptr-read-u64 (- rest 2) 0))
-                               (if (= (wf_bytecode_w_canon_p c) 0) (setq r 1)
-                                 (seq (setq p (ptr-read-u64 (- rest 2) 8))
-                                      (setq n (+ n 1))
-                                      (if (> n 4096) (setq r 1) 0)))))
-                          (setq r 1)))
-                     (setq r (if (= p 3) 3 1))))
-                 (if (= r 1) 0 r)))))
-        0))
     (defun wf_bytecode_w_nth_fast (n l)
       ;; vmfast: GNU Bnth -> Fnth (fns.c): N cdrs, then car.  Covers a fixnum N in
       ;; 0..4096 over a chain of cons WORDs (low bits 2) ending in nil.  Answers the
@@ -26611,24 +26412,6 @@ bytes are written into a fresh 8-byte buffer instead."
                (while (= st 0)
                  (if (= (logand p 7) 2)
                      (if (= i k) (seq (setq r (ptr-read-u64 (- p 2) 0)) (setq st 1))
-                       (seq (setq p (ptr-read-u64 (- p 2) 8)) (setq i (+ i 1))))
-                   (if (= p 3) (seq (setq r 3) (setq st 1)) (setq st 2))))
-               (if (= st 1) r 0)))))))
-    (defun wf_bytecode_w_nthcdr_fast (n l)
-      ;; stage 2a: GNU Bnthcdr -> Fnthcdr (fns.c): N cdrs of L.  Covers a fixnum N in
-      ;; 0..4096 over a chain of cons WORDs (low bits 2) that ends, after at most N
-      ;; cdrs, in a cons word (the answer) or in nil (3, answered when the list is
-      ;; shorter than N).  Answers the tail WORD (never 0), or 0 when the case is not
-      ;; this one: a negative or huge N, an atom or dotted tail, a legacy view.  It
-      ;; reads only, so a 0 leaves everything untouched for the general walk.
-      (if (/= (logand n 3) 1) 0
-        (let* ((k (sar n 2)) (p l) (i 0) (r 0) (st 0))
-          (if (< k 0) 0
-            (if (> k 4096) 0
-              (seq
-               (while (= st 0)
-                 (if (= (logand p 7) 2)
-                     (if (= i k) (seq (setq r p) (setq st 1))
                        (seq (setq p (ptr-read-u64 (- p 2) 8)) (setq i (+ i 1))))
                    (if (= p 3) (seq (setq r 3) (setq st 1)) (setq st 2))))
                (if (= st 1) r 0)))))))
@@ -26855,16 +26638,12 @@ bytes are written into a fresh 8-byte buffer instead."
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (bf_wrong_number_of_args func argc)
-                        (let* ((aw (wf_aot_try func mem first argc env)))
-                          (if (= aw 2)
-                              (wf_bytecode_execute_frame
-                               (ptr-read-u64 rp 8)
-                               (ptr-read-u64 rp 16)
-                               (wf_bytecode_w_int (ptr-read-u64 rp 24))
-                               env out 0 argc maxargs rest 0
-                               (+ mem (* first 8)) outw 0 pre)
-                            (if (= aw 0) 1
-                              (seq (ptr-write-u64 outw 0 aw) 0))))))))))))))
+                        (wf_bytecode_execute_frame
+                         (ptr-read-u64 rp 8)
+                         (ptr-read-u64 rp 16)
+                         (wf_bytecode_w_int (ptr-read-u64 rp 24))
+                         env out 0 argc maxargs rest 0
+                         (+ mem (* first 8)) outw 0 pre)))))))))))
     (defun wf_bytecode_w_dynamic_function (func formals mem first argc env outw out)
       ;; Dynamic-binding bytecode: the callee activation binds FORMALS to the
       ;; argument words itself (`wf_bytecode_w_bind_formals').
@@ -27422,17 +27201,16 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; Bind a dynamic-binding function's FORMALS to the ARGC argument words
       ;; at ARGS (arity already checked) as events of this activation.
       ;; Answers 2 * (frame bindings made) + (1 if a binder signalled).
-      (let* ((params formals) (index 0) (bound 0) (stop 0) (rc 0) (k 0) (name 0) (kind 0))
+      (let* ((params formals) (index 0) (bound 0) (stop 0) (rc 0) (k 0) (name 0))
         (seq
          (while (if (= stop 0) (wf_bytecode_w_consp params) 0)
            (seq
             (setq name (heap-read-u64 (nl_word_payload params) 0))
             (setq params (heap-read-u64 (nl_word_payload params) 8))
-            (setq kind (wf_bytecode_amp_kind name))
-            (if (= kind 1)
+            (if (= (wf_bytecode_optional_marker_p name) 1)
                 0
               (seq
-               (if (= kind 2)
+               (if (= (wf_bytecode_rest_marker_p name) 1)
                    (seq (ptr-write-u64 wtmp 0 3)
                         (setq k (- argc 1))
                         (while (>= k index)
@@ -27569,8 +27347,7 @@ bytes are written into a fresh 8-byte buffer instead."
                              (logand (ptr-read-u8 func -6) 63))))
                    (p (if (= lowf 0) (ptr-read-u64 func 8) (- func 6))))
               (if (if (/= ftag 17) 1
-                    (if (< (sar (ptr-read-u64 p 0) 8) 4) 1
-                      (if (= (wf_aot_maybe p) 0) 0 (/= (wf_aot_find func env) 0))))
+                    (< (sar (ptr-read-u64 p 0) 8) 4))
                   -2
                 (let* ((tw (ptr-read-u64 p 16))
                        (sw (ptr-read-u64 p 40)))
@@ -27704,12 +27481,10 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; events. fx general frame events use {fixnum zero, nil}; byte-code
       ;; array records remain symbol-only. Handler and binding-walker entry
       ;; points spill first, exposing the original list event representation.
-      ;; segment of the event stack (see wf_bytecode_w_aux_spill).
-      ;; The binding-link record is a 32-byte integer-tagged block, normally
-      ;; a Sexp root slot, with heap storage used at root-stack capacity.
-      ;; The slot at +16 keeps it alive: +8 the previous link, +16 the address
-      ;; of the unwinds cell, +24 the binding depth. The collector ignores this
-      ;; integer payload; N4 state +16 threads it for the thread walkers. Answers
+      ;; segment of the event stack (see wf_bytecode_w_aux_spill).  The binding-link record is a 32-byte integer-tagged arena block
+      ;; that the slot at +16 keeps alive: +8 the previous link, +16 the address
+      ;; of the unwinds cell, +24 the binding depth, raw words the collector
+      ;; never reads; N4 state +16 threads it for the thread walkers.  Answers
       ;; the aux address, or 0 when the root stack cannot hold it.
       (let* ((a (ptr-read-u64 foot 40)))
         (if (/= a 3) (sar a 2)
@@ -27717,103 +27492,15 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (= aux 0) 0
               (seq (ptr-write-u64 foot 40 (+ (shl aux 2) 1))
                    aux))))))
-    (defun wf_bytecode_w_aux_idle_p (aux)
-      ;; dynbind: 1 when the block AUX holds no handler, no event and no
-      ;; in-place record, so dropping it with its frame needs nothing but the
-      ;; binding-chain pop.  Pure reads.
-      (if (/= (ptr-read-u64 aux 0) 3) 0
-        (if (/= (ptr-read-u64 aux 8) 3) 0
-          (if (/= (ptr-read-u64 aux 96) 1) 0 1))))
-    ;; dynbind: `nl_root_frame' for the 61-slot aux block with the nil fill straight-line (a loop of 61 stores cost
-    ;; four to six instructions a slot).  Same frame as `nl_root_frame' makes: header, 61 nil WORDs, top advanced
-    ;; by 544; any state but the plain main thread with room takes `nl_root_frame'.
-    (defun wf_bytecode_aux_frame (env)
-      (let* ((top (heap-read-u64 (data-addr nl_rootstack_top) 0))
-             (next (+ top 544)))
-        (if (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
-                (if (= top 0) 0 (<= next (nl_rootstack_end))) 0)
-            (seq
-               (ptr-write-u64 top 0 1464226381)
-               (ptr-write-u64 top 8 61)
-               (ptr-write-u64 top 16 0)
-               (ptr-write-u64 top 24 0)
-               (ptr-write-u64 top 32 3)
-               (ptr-write-u64 top 40 3)
-               (ptr-write-u64 top 48 3)
-               (ptr-write-u64 top 56 3)
-               (ptr-write-u64 top 64 3)
-               (ptr-write-u64 top 72 3)
-               (ptr-write-u64 top 80 3)
-               (ptr-write-u64 top 88 3)
-               (ptr-write-u64 top 96 3)
-               (ptr-write-u64 top 104 3)
-               (ptr-write-u64 top 112 3)
-               (ptr-write-u64 top 120 3)
-               (ptr-write-u64 top 128 3)
-               (ptr-write-u64 top 136 3)
-               (ptr-write-u64 top 144 3)
-               (ptr-write-u64 top 152 3)
-               (ptr-write-u64 top 160 3)
-               (ptr-write-u64 top 168 3)
-               (ptr-write-u64 top 176 3)
-               (ptr-write-u64 top 184 3)
-               (ptr-write-u64 top 192 3)
-               (ptr-write-u64 top 200 3)
-               (ptr-write-u64 top 208 3)
-               (ptr-write-u64 top 216 3)
-               (ptr-write-u64 top 224 3)
-               (ptr-write-u64 top 232 3)
-               (ptr-write-u64 top 240 3)
-               (ptr-write-u64 top 248 3)
-               (ptr-write-u64 top 256 3)
-               (ptr-write-u64 top 264 3)
-               (ptr-write-u64 top 272 3)
-               (ptr-write-u64 top 280 3)
-               (ptr-write-u64 top 288 3)
-               (ptr-write-u64 top 296 3)
-               (ptr-write-u64 top 304 3)
-               (ptr-write-u64 top 312 3)
-               (ptr-write-u64 top 320 3)
-               (ptr-write-u64 top 328 3)
-               (ptr-write-u64 top 336 3)
-               (ptr-write-u64 top 344 3)
-               (ptr-write-u64 top 352 3)
-               (ptr-write-u64 top 360 3)
-               (ptr-write-u64 top 368 3)
-               (ptr-write-u64 top 376 3)
-               (ptr-write-u64 top 384 3)
-               (ptr-write-u64 top 392 3)
-               (ptr-write-u64 top 400 3)
-               (ptr-write-u64 top 408 3)
-               (ptr-write-u64 top 416 3)
-               (ptr-write-u64 top 424 3)
-               (ptr-write-u64 top 432 3)
-               (ptr-write-u64 top 440 3)
-               (ptr-write-u64 top 448 3)
-               (ptr-write-u64 top 456 3)
-               (ptr-write-u64 top 464 3)
-               (ptr-write-u64 top 472 3)
-               (ptr-write-u64 top 480 3)
-               (ptr-write-u64 top 488 3)
-               (ptr-write-u64 top 496 3)
-               (ptr-write-u64 top 504 3)
-               (ptr-write-u64 top 512 3)
-               (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
-               (+ top 32))
-          (nl_root_frame env 61))))
     (defun wf_bytecode_aux_new (env state)
       ;; fxlet: a fresh aux block (layout above) on the root stack, its
       ;; binding-link record pushed on STATE's chain (N4 state +16).  Shared by
       ;; byte-code frames (`wf_bytecode_frame_aux', cached in the foot) and fx
       ;; activations (`m5_fx_run_body', held in a local); the owner pops the
       ;; link when it ends.  Answers 0 when the root stack cannot hold it.
-      ;; Owners restore STATE +16 before releasing their root mark, so the
-      ;; checked Sexp slot never outlives its activation. Preserve the existing
-      ;; heap-backed link when no additional root slot is available.
-      (let* ((aux (wf_bytecode_aux_frame env)))
+      (let* ((aux (nl_root_frame env 61)))
         (if (= aux 0) 0
-          (let* ((slot (nl_root_reserve_checked env))
-                 (link (if (= slot 0) (alloc-bytes 32 8) slot)))
+          (let* ((link (alloc-bytes 32 8)))
             (seq
              (sexp-int-make link (heap-read-u64 state 16))
              (ptr-write-u64 link 16 (+ aux 8))
@@ -27838,9 +27525,8 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; Leave the final instruction and invalid targets to the ordinary
     ;; dispatcher so malformed bytecode keeps its exact error offset.
     ;; Mirror identities are checked after each lookup in this pure batch.
-    ;; No callout or GC/Lisp safepoint occurs (the constructor arms
-    ;; Bcons/Blist1 allocate, but the allocator never collects); registered
-    ;; workers cannot mutate the shared mirror. Every return drops the cache before mutation,
+    ;; No allocation or callout occurs; registered workers cannot mutate
+    ;; the shared mirror. Every return drops the cache before mutation,
     ;; parking or GC. Slot 0 remains a live read on every hit.
     ;; GNU bytecode.c Bnegate (91), Bmax (93), Bmin (94), Bquo (165) and Brem (166) on two fixnum words, in place, for the fast
     ;; loop below.  Bmax and Bmin keep the first operand unless the second orders after it (so a tie answers the first), Bquo and
@@ -27954,13 +27640,9 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; are overwritten before the original hot arms use them. Do not borrow
       ;; LAST-* cache state, FAILED, the rooted frame fields, or BACK.
       ;; These leaves never run arbitrary Lisp, and none allocates except the lean
-      ;; varbind arm (only when wf_bytecode_w_lean_bind spills a full record array), the
-      ;; Bcons/Blist1 constructor arms (one cell via wf_bytecode_w_cons2; allocation is not
-      ;; a GC point) and the w1f text
+      ;; varbind arm (only when wf_bytecode_w_lean_bind spills a full record array) and the w1f text
       ;; arms (raw 79-82: one string via wf_bytecode_w_text_op), which therefore drop
-      ;; the dead varref cache flag (last-name, written by other arms) afterwards. The stage 2a arms
-      ;; (raw 75, 155, 157, 159, 160, 161, 164) neither allocate nor reach a GC point: they read, or
-      ;; write existing cells, only after a bounded read-only walk, and decline before any write. Rejecting an opcode
+      ;; the dead varref cache flag (last-name, written by other arms) afterwards. Rejecting an opcode
       ;; leaves PC/SP/operand memory untouched; bounded list walks replay long,
       ;; circular or improper inputs in the outer handler. Eq on positioned
       ;; symbols and non-eq/custom/large switch tables also retains that path.
@@ -28132,19 +27814,6 @@ bytes are written into a fresh 8-byte buffer instead."
                                      (if (or (= env 0) (<= sp 0)) (setq go 0)
                                        (seq
                                         (setq ref (ptr-read-u64 foot 40))
-                                        ;; dynbind: a frame without a specpdl block makes its
-                                        ;; block here, without leaving the loop (the exit and
-                                        ;; re-entry cost more than the block).  The block is
-                                        ;; the frame's own (`wf_bytecode_frame_aux' caches it
-                                        ;; in the foot); the dispatcher adopts it from the foot
-                                        ;; when the loop stops.  0 (root stack full) declines
-                                        ;; to the dispatcher, which reports the exhaustion.
-                                        (if (if (= ref 3) (/= (heap-read-u64 env 176) 0) 0)
-                                            (seq
-                                             (setq a (wf_bytecode_frame_aux env foot (heap-read-u64 env 176)))
-                                             (setq last-name -1)
-                                             (if (/= a 0) (setq ref (+ (shl a 2) 1)) 0))
-                                          0)
                                         (if (= ref 3) (setq go 0)
                                           (seq
                                            (setq a (if (< raw 30) 0 (if (= raw 30) 1 2)))
@@ -28211,14 +27880,11 @@ bytes are written into a fresh 8-byte buffer instead."
                                                    -2
                                                  (let* ((p (- func 6)))
                                                    (if
-                                                       (if
-                                                           (<
-                                                            (sar
-                                                             (ptr-read-u64 p 0)
-                                                             8)
-                                                            4)
-                                                           1
-                                                         (if (= (wf_aot_maybe p) 0) 0 (/= (wf_aot_find func env) 0)))
+                                                       (<
+                                                        (sar
+                                                         (ptr-read-u64 p 0)
+                                                         8)
+                                                        4)
                                                        -2
                                                      (let*
                                                          ((tw
@@ -28850,10 +28516,11 @@ bytes are written into a fresh 8-byte buffer instead."
                                          (if (= isp -2)
                                              (let*
                                                  ((rc
-                                                   (let* ((aq (wf_aot_vm_call env mem sp argc cell)))
-                                                     (if (= aq 2)
-                                                         (wf_bytecode_call_subr env mem sp argc cell)
-                                                       aq))))
+                                                   (wf_bytecode_call_subr env
+                                                                          mem
+                                                                          sp
+                                                                          argc
+                                                                          cell)))
                                                (seq (setq last-name -1)
                                                     (if (= rc 0)
                                                         (seq
@@ -29027,8 +28694,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                                0)
                                              (setq pc (+ pc 1)))
                                           (setq go 0)))))))
-                                    ((or (= raw 61) (= raw 63) (= raw 58) (= raw 57) (= raw 59) (= raw 60))
-                                     ;; dynbind: raw 58 (Bconsp) is the same unary shape as Bnot (63).
+                                    ((or (= raw 61) (= raw 63))
                                      (if (< sp (if (= raw 61) 2 1))
                                          (setq go 0)
                                        (seq
@@ -29067,20 +28733,17 @@ bytes are written into a fresh 8-byte buffer instead."
                                                             1)
                                                            7
                                                          3)
-                                                     (if (= raw 58)
-                                                         (if (= (wf_bytecode_w_consp a) 1) 7 3)
-                                                       ;; dynbind: symbolp (57), stringp (59), listp (60) on the word's tag, as
-                                                       ;; `wf_bytecode_predicate' tests it; a positioned symbol (tag 19) declines.
-                                                       (let* ((tg (wf_bytecode_w_tag a)))
-                                                         (if (= raw 57)
-                                                             (if (or (= tg 0) (= tg 1) (= tg 4) (= tg 16)) 7 (if (= tg 19) -1 3))
-                                                           (if (= raw 59)
-                                                               (if (or (= tg 5) (= tg 6) (= tg 14) (= tg 15)) 7 3)
-                                                             (if (or (= tg 0) (= tg 7)) 7 3))))))))
-                                             (if (= word -1) (setq go 0)
-                                               (seq (ptr-write-u64 mem (* b 8) word)
-                                                    (setq sp (+ b 1))
-                                                    (setq pc (+ pc 1)))))))))
+                                                     (if
+                                                         (=
+                                                          (wf_bytecode_w_consp
+                                                           a)
+                                                          1)
+                                                         (nl_cons_car_word
+                                                          a)
+                                                       3))))
+                                           (ptr-write-u64 mem (* b 8) word)
+                                           (setq sp (+ b 1))
+                                           (setq pc (+ pc 1)))))))
                                     ((and (>= raw 40) (< raw 48))
                                      ;; Lean unbind of the frame's own events; see
                                      ;; wf_bytecode_w_fast_unbind for what declines.
@@ -29303,52 +28966,10 @@ bytes are written into a fresh 8-byte buffer instead."
                                      (if (< raw 79)
                                          ;; corecall: length (71), aref (72) and aset (73) stay in
                                          ;; this loop (`wf_bytecode_fast_slot'); -1 punts as before.
-                                         (if (if (< raw 71) (if (= raw 66) 0 (if (= raw 67) 0 1)) (> raw 73))
-                                           ;; stage 2a: Bsymbol_function (75).  GNU Fsymbol_function returns the
-                                           ;; raw function cell with no alias resolution (nil when void); this is
-                                           ;; the lookup `bf_symbol_function_w' makes, minus the argument list,
-                                           ;; the interned (builtin NAME) callee and the apply.  Only a symbol
-                                           ;; OBJECT argument is taken; nil, t, a view, a non-symbol (the
-                                           ;; wrong-type signal) and a lookup that answers 0 all decline with
-                                           ;; nothing written.  The lookup reads the mirror and allocates nothing.
-                                           (if (= raw 75)
-                                               (if (< sp 1) (setq go 0)
-                                                 (let* ((sa (heap-read-u64 mem (* (- sp 1) 8))))
-                                                   (if (if (= (logand sa 7) 6) (wf_bytecode_w_symobj_p sa) 0)
-                                                       (let* ((fv (nelisp_env_lookup_function_w (+ env 0) (+ env 64) sa 0)))
-                                                         (if (= fv 0) (setq go 0)
-                                                           (seq (ptr-write-u64 mem (* (- sp 1) 8)
-                                                                               (if (= fv 2) 3 (if (= (nl_word_tag64 fv) 0) 3 fv)))
-                                                                (setq pc (+ pc 1)))))
-                                                     (setq go 0))))
-                                             ;; stage 3a: Bget (78), see `wf_bytecode_w_get_fast'; the other opcodes of
-                                             ;; this group (74 symbol-value, 76 set, 77 fset) have no arm.
-                                             (if (= raw 78)
-                                                 (if (< sp 2) (setq go 0)
-                                                   (let* ((gv (wf_bytecode_w_get_fast (heap-read-u64 mem (* (- sp 2) 8))
-                                                                                      (heap-read-u64 mem (* (- sp 1) 8)))))
-                                                     (if (= gv 0) (setq go 0)
-                                                       (seq (ptr-write-u64 mem (* (- sp 2) 8) gv)
-                                                            (setq sp (- sp 1))
-                                                            (setq pc (+ pc 1))))))
-                                               (setq go 0)))
-                                           (if (< raw 71)
-                                               ;; dynbind: Bcons (66) and Blist1 (67).  The operands stay on the
-                                               ;; rooted stack until the cell exists, so an allocation that
-                                               ;; collects sees them; the result then replaces them.
-                                               (if (< sp (if (= raw 66) 2 1)) (setq go 0)
-                                                 (seq
-                                                  (setq word (if (= raw 66)
-                                                                 (wf_bytecode_w_cons2 (heap-read-u64 mem (* (- sp 2) 8))
-                                                                                      (heap-read-u64 mem (* (- sp 1) 8)))
-                                                               (wf_bytecode_w_cons2 (heap-read-u64 mem (* (- sp 1) 8)) 3)))
-                                                  (if (= raw 66) (setq sp (- sp 1)) 0)
-                                                  (ptr-write-u64 mem (* (- sp 1) 8) word)
-                                                  (setq last-name -1)
-                                                  (setq pc (+ pc 1))))
+                                         (if (if (< raw 71) 1 (> raw 73)) (setq go 0)
                                            (let* ((nsp (wf_bytecode_fast_slot mem sp raw)))
                                              (if (< nsp 0) (setq go 0)
-                                               (seq (setq sp nsp) (setq pc (+ pc 1)))))))
+                                               (seq (setq sp nsp) (setq pc (+ pc 1))))))
                                        ;; w1f: substring (79) and concat2..4 (80-82) on the WORD stack through
                                        ;; the directcall text body; -3 leaves everything untouched (go 0).
                                        (let* ((cnt (if (= raw 79) 3 (- raw 78))))
@@ -29648,13 +29269,7 @@ bytes are written into a fresh 8-byte buffer instead."
                            (if (< raw 136)
                                (if
                                    (if (= (ptr-read-u64 foot 16) 3) 1
-                                     (if (/= (ptr-read-u64 foot 40) 3)
-                                         ;; dynbind: an idle block (no handler, no event, no
-                                         ;; record) is dropped with the frame, below.
-                                         (if (= (wf_bytecode_w_aux_idle_p
-                                                 (sar (ptr-read-u64 foot 40) 2)) 1)
-                                             (<= sp 0)
-                                           1)
+                                     (if (/= (ptr-read-u64 foot 40) 3) 1
                                        (<= sp 0)))
                                    (setq go 0)
                                  (let*
@@ -29685,15 +29300,6 @@ bytes are written into a fresh 8-byte buffer instead."
                                            (sar (ptr-read-u64 foot 0) 2))
                                           (nt (- mem 32)))
                                        (seq
-                                        ;; dynbind: leave the binding chain as the activation
-                                        ;; epilogue does, before the block is released.
-                                        (if (/= (ptr-read-u64 foot 40) 3)
-                                            (ptr-write-u64 state 16
-                                                           (heap-read-u64
-                                                            (heap-read-u64
-                                                             (+ (sar (ptr-read-u64 foot 40) 2) 16) 0)
-                                                            8))
-                                          0)
                                         (ptr-write-u64 caller (* fi 8)
                                                        (heap-read-u64 mem
                                                                       (-
@@ -30040,97 +29646,6 @@ bytes are written into a fresh 8-byte buffer instead."
                                        (ptr-write-u64 mem (* b 8) word)
                                        (setq sp (+ b 1))
                                        (setq pc (+ pc 1)))))))
-                                ;; stage 2a: nthcdr (155) and member (157) on the word stack.  Both
-                                ;; answer through a bounded read-only walk (nthcdr_fast / memq_fast: a
-                                ;; fixnum or canonical symbol key makes `equal' one compare); a 0 means
-                                ;; not this case and nothing was written.
-                                ((or (= raw 155) (= raw 157))
-                                 (if (< sp 2) (setq go 0)
-                                   (let* ((fm (if (= raw 155)
-                                                  (wf_bytecode_w_nthcdr_fast (heap-read-u64 mem (* (- sp 2) 8))
-                                                                             (heap-read-u64 mem (* (- sp 1) 8)))
-                                                (wf_bytecode_w_memq_fast (heap-read-u64 mem (* (- sp 2) 8))
-                                                                         (heap-read-u64 mem (* (- sp 1) 8))))))
-                                     (if (= fm 0) (setq go 0)
-                                       (seq (ptr-write-u64 mem (* (- sp 2) 8) fm)
-                                            (setq sp (- sp 1))
-                                            (setq pc (+ pc 1)))))))
-                                ;; stage 2a: setcar (160) / setcdr (161).  Only a cons WORD target and a
-                                ;; canonical (non-view) value; the stored word then needs no
-                                ;; `nl_word_canon'.  Everything else, including the wrong-type signal,
-                                ;; declines before any write.  No allocation.
-                                ((or (= raw 160) (= raw 161))
-                                 (if (< sp 2) (setq go 0)
-                                   (let* ((cell (heap-read-u64 mem (* (- sp 2) 8)))
-                                          (value (heap-read-u64 mem (* (- sp 1) 8))))
-                                     (if (if (= (logand cell 7) 2) (/= (logand value 7) 0) 0)
-                                         (seq (wf_dirty)
-                                              (ptr-write-u64 (- cell 2) (if (= raw 160) 0 8) value)
-                                              (ptr-write-u64 mem (* (- sp 2) 8) value)
-                                              (setq sp (- sp 1))
-                                              (setq pc (+ pc 1)))
-                                       (setq go 0)))))
-                                ;; stage 2a: nconc of two operands (164).  A nil first operand answers the
-                                ;; second.  Otherwise the first must be a cons WORD whose cdr chain
-                                ;; (at most 4097 cdr steps, so a cycle declines) ends in nil or an atom word,
-                                ;; and the second a canonical word; the last cdr is then set.  A non-list
-                                ;; first operand (the signal), a view, a long or circular chain decline
-                                ;; before any write.  No allocation.
-                                ((= raw 164)
-                                 (if (< sp 2) (setq go 0)
-                                   (let* ((nfirst (heap-read-u64 mem (* (- sp 2) 8)))
-                                          (nsecond (heap-read-u64 mem (* (- sp 1) 8)))
-                                          (tail nfirst) (nx 0) (n 0) (st 0))
-                                     (if (= nfirst 3)
-                                         (seq (ptr-write-u64 mem (* (- sp 2) 8) nsecond)
-                                              (setq sp (- sp 1))
-                                              (setq pc (+ pc 1)))
-                                       (if (if (= (logand nfirst 7) 2) (/= (logand nsecond 7) 0) 0)
-                                           (seq
-                                            (while (= st 0)
-                                              (seq (setq nx (ptr-read-u64 (- tail 2) 8))
-                                                   (if (= (logand nx 7) 2)
-                                                       (seq (setq tail nx)
-                                                            (setq n (+ n 1))
-                                                            (if (> n 4096) (setq st 2) 0))
-                                                     (setq st (if (= (logand nx 7) 0) 2 1)))))
-                                            (if (= st 1)
-                                                (seq (wf_dirty)
-                                                     (ptr-write-u64 (- tail 2) 8 nsecond)
-                                                     (setq sp (- sp 1))
-                                                     (setq pc (+ pc 1)))
-                                              (setq go 0)))
-                                         (setq go 0))))))
-                                ;; stage 2a: nreverse of a list (159).  The whole chain is first walked
-                                ;; read-only (cons WORDs ending in nil, at most 4097 cdr steps), so a
-                                ;; dotted, circular, long or non-list operand declines with nothing
-                                ;; written; only then the cdrs are reversed in place and the new head
-                                ;; replaces the operand.  nil answers nil.  No allocation.
-                                ((= raw 159)
-                                 (if (< sp 1) (setq go 0)
-                                   (let* ((head (heap-read-u64 mem (* (- sp 1) 8)))
-                                          (p head) (prev 3) (nx 0) (n 0) (st 0))
-                                     (if (= head 3) (setq pc (+ pc 1))
-                                       (if (/= (logand head 7) 2) (setq go 0)
-                                         (seq
-                                          (while (= st 0)
-                                            (seq (setq nx (ptr-read-u64 (- p 2) 8))
-                                                 (if (= (logand nx 7) 2)
-                                                     (seq (setq p nx)
-                                                          (setq n (+ n 1))
-                                                          (if (> n 4096) (setq st 2) 0))
-                                                   (setq st (if (= nx 3) 1 2)))))
-                                          (if (= st 1)
-                                              (seq (wf_dirty)
-                                                   (setq p head)
-                                                   (while (/= p 3)
-                                                     (seq (setq nx (ptr-read-u64 (- p 2) 8))
-                                                          (ptr-write-u64 (- p 2) 8 prev)
-                                                          (setq prev p)
-                                                          (setq p nx)))
-                                                   (ptr-write-u64 mem (* (- sp 1) 8) prev)
-                                                   (setq pc (+ pc 1)))
-                                            (setq go 0))))))))
                                 (t (setq go 0)))
                              (if (< raw 167)
                                  (let*
@@ -30428,15 +29943,8 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; the frame left keeps its binding count.
                   (if (/= reload 0)
                       (seq
-                       ;; dynbind: the frame left may have been popped by the fast
-                       ;; loop (an idle block is dropped with its frame), its block
-                       ;; then freed and maybe reused: save the count only when
-                       ;; there is one (such a block is never idle).  The count is
-                       ;; reset when read back, so +64 is 0 while a frame runs.
                        (if (/= aux 0)
-                           (if (/= bindings 0)
-                               (ptr-write-u64 (+ aux 64) 0 (+ (shl bindings 2) 1))
-                             0)
+                           (ptr-write-u64 (+ aux 64) 0 (+ (shl bindings 2) 1))
                          0)
                        (setq mem reload)
                        (setq reload 0)
@@ -30483,18 +29991,8 @@ bytes are written into a fresh 8-byte buffer instead."
                               (if (= a2 3)
                                   (seq (setq aux 0) (setq bindings 0))
                                 (seq (setq aux (sar a2 2))
-                                     (setq bindings (sar (heap-read-u64 (+ aux 64) 0) 2))
-                                     (ptr-write-u64 (+ aux 64) 0 1)))))
+                                     (setq bindings (sar (heap-read-u64 (+ aux 64) 0) 2))))))
                        (setq unwind-rc 0))
-                    0)
-                  ;; dynbind: the fast loop makes the current frame's specpdl
-                  ;; block itself at its first lean binding, caching it in the
-                  ;; foot; adopt it, so that this frame's exit unwinds it.
-                  (if (= aux 0)
-                      (let* ((fa (heap-read-u64 foot 40)))
-                        (if (= fa 3) 0
-                          (seq (setq aux (sar fa 2))
-                               (setq bindings (sar (heap-read-u64 (+ aux 64) 0) 2)))))
                     0)
                   (if (and (= done 0) (>= pc code-len)) (setq done 2) 0)
                   (if (and (/= done 0) (/= done 4))
@@ -30540,7 +30038,7 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; unsupported operands replay in the outer handler.
                   ;; Constants 192..255 also enter the existing batch runner.
                   (if (= (if (< first-op 64)
-			     (if (/= (logand -1945274392959254529 (shl 1 first-op)) 0) 1 0)
+			     (if (/= (logand -2233504769110966273 (shl 1 first-op)) 0) 1 0)
 			   (if (< first-op 128)
 			       (if (/= (logand 2146959491 (shl 1 (- first-op 64))) 0) 1 0)
 			     (if (< first-op 192)
@@ -34169,11 +33667,11 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; (one-past-the-end): the shape `substring''s FROM/TO indices need.
     ;; -1 only when TARGET exceeds the true char length.
     (defun nl_u8_cidx_byte_bounded_incl (p bi n c target)
-      (let* ((bb bi) (cc c) (go 1) (dp (nl_bi_strptr p)))
+      (let* ((bb bi) (cc c) (go 1))
         (while (= go 1)
           (if (>= cc target) (setq go 0)
             (if (>= bb n) (setq go -1)
-              (seq (setq bb (+ bb (nl_u8_clen_at (heap-read-u8 dp bb))))
+              (seq (setq bb (+ bb (nl_u8_clen_at (m5_byte_at p bb))))
                    (setq cc (+ cc 1))))))
         (if (= go -1) -1 bb)))
     ;; --- Global ptr-keyed scan cache ---
@@ -37741,13 +37239,11 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; Emacs, naming the WHOLE list: (memq 9 '(1 2 . 3)) signals, it does not
     ;; answer nil.  Answering nil said "not present" about a list that could
     ;; not be searched.
-    ;; The cdr is read as a WORD: the nil terminator is an immediate and
-    ;; `nl_cons_cdr_ptr' boxed it on every call just to test its tag.
     (defun bf_proper_list_raw (p)
-      (if (= (nl_val_tag p) 0)
+      (if (= (heap-sexp-tag-word p) 0)
           1
-        (if (= (nl_val_tag p) 7)
-            (bf_proper_list_raw (nl_cons_cdr_word p))
+        (if (= (heap-sexp-tag-word p) 7)
+            (bf_proper_list_raw (nl_cons_cdr_ptr p))
           0)))
     ;; String (5), MutStr (6), Vector (8): what `arrayp' accepts here.
     ;; nil and t compare by their NAMES: (string< " a b " nil) is t because
@@ -38907,26 +38403,6 @@ bytes are written into a fresh 8-byte buffer instead."
                               (nl_ent_set obj 0 (if (= (nl_val_tag v) 0) 3 7))))
                         0)
                       1))))))
-    ;; GNU `gcs-done' (DEFVAR_INT, alloc.c): collections completed so far.  The
-    ;; symbol is a forwarded integer like `max-lisp-eval-depth', so a Lisp
-    ;; `setq' of a non-integer is refused as in GNU.  Its object word is cached in
-    ;; the spare word at +8 of `nl_gc_until_base' (zero-fresh on every start; this
-    ;; init runs on every boot, after a cold image restore too), and
-    ;; `nl_gc_debt_rearm' bumps the value cell inline at the end of each completed
-    ;; collection (inline and on an exported data symbol, because that function
-    ;; is part of the reloadable runtime source and may import nothing new).
-    ;; Symbol cells never move, so the cached object stays valid.
-    (defun nl_gcs_done_init (env)
-      (let* ((bytes (alloc-bytes 8 1)) (name (alloc-bytes 32 8)))
-        (seq
-         (ptr-write-u64 bytes 0 7308901721318843239)
-         (nl_alloc_symbol bytes 8 name)
-         (let* ((obj (nl_pa_entry env name)))
-           (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
-             (seq (nl_ent_set obj 7 (nl_imm_int 1))
-                  (nl_ent_set obj 0 (nl_imm_int (heap-read-u64 (data-addr nl_gc_stats) 24)))
-                  (ptr-write-u64 (data-addr nl_gc_until_base) 8 obj)
-                  1))))))
     (defun nl_sym_fwd_init (env)
       (let* ((bytes (alloc-bytes 24 1)))
         (seq
@@ -38938,7 +38414,6 @@ bytes are written into a fresh 8-byte buffer instead."
          (ptr-write-u64 bytes 8 8603403804415648099)
          (ptr-write-u64 bytes 16 495622973804)
          (nl_sym_fwd_mark env bytes 21 2)
-         (nl_gcs_done_init env)
          0)))
     ;; 1 when SYM names a FORWARDED symbol (an object with a descriptor).
     ;; 1 when SYM is FORWARDED (redirect 3); a forwarded variable made
@@ -39821,29 +39296,6 @@ bytes are written into a fresh 8-byte buffer instead."
                 (let* ((r (nl_str_sub_byte_off src limit target)))
                   (if (< r 0) limit r)))
             (bf_read_one_char_to_byte src 0 0 target limit)))))
-    ;; Reader cursor hint.  A caller reading form after form from one big
-    ;; string (`read' over a buffer's memoized text) passes START as a cons
-    ;; (START . (CHAR . BYTE)) instead of an integer: (CHAR . BYTE) is a
-    ;; char/byte position pair the caller keeps for this very string object.
-    ;; Unlike the 8-row pointer cache, the pair lives in a Lisp object, so
-    ;; it survives every collection (the cache is cleared by each GC and
-    ;; each boundary reclaim, which made the next read rescan from byte 0).
-    ;; The caller owns validity: it must drop the pair when the string
-    ;; changes, and pass END as the full character length (the hinted read
-    ;; always ends at the byte length).  Here the pair is only range-checked.
-    ;; Answers the byte offset of char START, or -1 to fall back to the
-    ;; cache-backed conversion.
-    (defun bf_read_one_hint_start (src cell start byte-len)
-      (if (= (sexp-tag src) 5)
-          (let* ((hc (nl_cons_car_word cell)) (hb (nl_cons_cdr_word cell)))
-            (if (if (= (nl_val_tag hc) 2) (= (nl_val_tag hb) 2) 0)
-                (let* ((c (sar hc 2)) (b (sar hb 2)))
-                  (if (if (>= c 0) (if (<= c start) (if (>= b 0) (<= b byte-len) 0) 0) 0)
-                      (if (= c start) b
-                        (nl_u8_cidx_byte_bounded_incl src b byte-len c start))
-                    -1))
-              -1))
-        -1))
     (defun bf_read_one_bytes_to_chars (src from to)
       (if (= (bf_string_unibyte_p src) 1)
           (- to from)
@@ -40044,16 +39496,10 @@ bytes are written into a fresh 8-byte buffer instead."
          ok)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_read_one_from_string_native_w (args env _pad)
-  (let* ((src (wf_arg_ptr args 0))
-         (hint (let* ((w (wf_arg_word args 1))) (if (= (nl_val_tag w) 7) w 0)))
-         (start (if (/= hint 0) (sar (nl_cons_car_word hint) 2) (wf_argval args 1)))
+  (let* ((src (wf_arg_ptr args 0)) (start (wf_argval args 1))
          (end (wf_argval args 2)) (byte-len (bf_str_len src))
-         (hint-byte (if (/= hint 0)
-                        (bf_read_one_hint_start src (nl_cons_cdr_word hint) start byte-len)
-                      -1))
-         (byte-start (if (>= hint-byte 0) hint-byte (bf_read_one_cb src start byte-len)))
-         (byte-end (if (>= hint-byte 0) byte-len
-                     (if (<= end start) byte-start (bf_read_one_cb src end byte-len))))
+         (byte-start (bf_read_one_cb src start byte-len))
+         (byte-end (if (<= end start) byte-start (bf_read_one_cb src end byte-len)))
          (view (alloc-bytes 32 8)) (cursor (alloc-bytes 32 8))
          (context (bf_read_load_file_name_w env 0))
          (limit (let* ((n (* 4 (- byte-end byte-start))))
@@ -40082,13 +39528,6 @@ bytes are written into a fresh 8-byte buffer instead."
            (seq (if (if (= (sexp-tag src) 5) (>= start 0) 0)
                     (nl_aref_cache_store (heap-read-u64 src 16) byte-len
                        (+ (* position 4294967296) byte-pos)) 0)
-                ;; Advance the caller's hint.  Both words are fixnums, so no
-                ;; heap box is installed into the old cons: no `wf_dirty'.
-                (if (if (/= hint 0) (= (sexp-tag src) 5) 0)
-                    (let* ((cell (nl_cons_cdr_word hint)))
-                      (seq (cons-set-car cell (nl_imm_int position))
-                           (cons-set-cdr cell (nl_imm_int byte-pos))))
-                  0)
                 (ptr-write-u64 268436448 0 prevcap)
                 (nelisp_cons_construct_w word (nl_imm_int position) 0)))
        (seq (ptr-write-u64 268435472 0 0)
@@ -43749,7 +43188,6 @@ extern arms in dynamic builds."
          nelisp-standalone--applyfn-bignum-helpers
          (nelisp-standalone--argframe-m5-helpers)
          (append (nelisp-standalone--target-bytecode-helpers)
-                 (nelisp-aot-bytecode-dsl-defuns)
                  nelisp-cc-eln-callback--source
                  nelisp-cc-eln-callback7--source)
          nelisp-standalone--applyfn-bf-helpers
@@ -49942,7 +49380,6 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
          (expected (and entry
                         (list 'defun name '(x) doc
                               '(declare
-                                (side-effect-free t)
                                 (compiler-macro
                                  internal--compiler-macro-cXXr))
                               body))))
@@ -50375,8 +49812,8 @@ never on the build host.  Keep the original Lisp factory as the reference."
             (concat "\n;; Preserve GNU cXXr compiler-macro declarations.\n"
                     (mapconcat
                      (lambda (entry)
-                       (format "(put '%s 'compiler-macro 'internal--compiler-macro-cXXr)\n(put '%s 'side-effect-free t)"
-                               (car entry) (car entry)))
+                       (format "(put '%s 'compiler-macro 'internal--compiler-macro-cXXr)"
+                               (car entry)))
                      nelisp-standalone--prelude-cxxr-accessors "\n")
                     "\n"))
            (combined
@@ -51219,8 +50656,7 @@ resolved fine.  Same feature, different answer per entry point."
    ;; GNU Emacs 31.1 preloads this special variable from src/lread.c
    ;; (DEFVAR_LISP, initialized to Qnil); macroexp uses it during expansion.
    "(defvar macroexp--dynvars nil \"List of variables declared dynamic in the current scope. Only valid during macro-expansion. Internal use only.\")\n"
-   (nelisp-aot-bytecode-macroexp-text)
-   (nelisp-aot-bytecode-install-source)
+   (nelisp-boot-image-provider 'macroexp)
    ;; Other command bootstraps retain their historical eager providers.
    ;; The reader installs relocatable autoloads after its matcher is ready.
    (unless defer-libraries "(require 'inline)\n(require 'json)\n")
@@ -51316,8 +50752,6 @@ resolved fine.  Same feature, different answer per entry point."
    "\n;; --- GNU Emacs 31.1 subr.el: function-get ---\n"
    (nelisp-standalone--vendor-function-source
     "vendor/staged-emacs-lisp/subr.el" 'function-get)
-   ;; AOT rows defined by staged subr.el (function-get) install here, then the table is sealed.
-   (nelisp-aot-bytecode-late-install-source)
    ;; Association helpers are exact GNU forms shared with the source evaluator.
    "\n;; --- GNU Emacs 31.1 subr.el: association-list helpers ---\n"
    (nelisp-standalone--vendor-function-source
@@ -51550,67 +50984,11 @@ caller at once and broke the JIT ledger's S1.3/S3.5/S5.8/S6.16-21/S7.6."
    "\n;; --- GNU Emacs 31.1 faces.el (whole file) ---\n"
    (nelisp-vendor-source-whole-file "vendor/staged-emacs-lisp/faces.el")))
 
-(defconst nelisp-standalone--vendor-bytecode-defuns
-  '(("vendor/staged-emacs-lisp/subr.el" function-get))
-  "Embedded genuine vendor definitions compiled with host GNU byte code.
-Each entry is (RELATIVE-FILE NAME...).  A listed definition goes through the
-same `nelisp-prelude-bytecode-transform' gates as a prelude defun (opcode
-allowlist, nested-function check, parity fixture and source-form digest);
-a rejected one stays the interpreted GNU source.  GNU runs these in C.")
-
-(defvar nelisp-standalone--vendor-defun-bytecode-report nil
-  "Report rows of `nelisp-standalone--vendor-bytecode-defuns', newest first.")
-
-(defun nelisp-standalone--vendor-defun-bytecode-source (relative-file name text)
-  "Return TEXT, the exact source of NAME, compiled if every adoption gate passes.
-Record the adopt/reject decision in target/nelisp-vendor-defun-bytecode-report.tsv."
-  (require 'bytecomp)
-  (let* ((fixtures (nelisp-prelude-bytecode-read-parity-fixtures
-                    (expand-file-name
-                     "test/nelisp-prelude-bytecode-parity-fixtures.tsv"
-                     nelisp-standalone--repo-root)))
-         (result (nelisp-prelude-bytecode-transform text relative-file fixtures))
-         (report-path (nelisp-standalone--target-file
-                       "nelisp-vendor-defun-bytecode-report.tsv")))
-    (setq nelisp-standalone--vendor-defun-bytecode-report
-          (append (nth 2 result)
-                  (cl-remove-if (lambda (row) (eq (nth 2 row) name))
-                                nelisp-standalone--vendor-defun-bytecode-report)))
-    (make-directory (file-name-directory report-path) t)
-    (nelisp-prelude-bytecode-write-report
-     report-path nelisp-standalone--vendor-defun-bytecode-report)
-    (car result)))
-
 (defun nelisp-standalone--vendor-function-source (relative-file function-name)
   "Return the exact source text of FUNCTION-NAME's sole top-level function form.
 RELATIVE-FILE must match its pinned upstream SHA-256.  Fail closed if the
-file changed or the form is missing or duplicated.  Names listed in
-`nelisp-standalone--vendor-bytecode-defuns' are returned compiled when the
-prelude adoption gates accept them."
-  (let ((text (nelisp-vendor-source-form relative-file function-name)))
-    (if (and (memq function-name
-                   (cdr (assoc relative-file nelisp-standalone--vendor-bytecode-defuns)))
-             (not (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1")))
-        (nelisp-standalone--vendor-defun-bytecode-source
-         relative-file function-name text)
-      text)))
-
-;; The AOT translator compiles the staged subr.el rows (`function-get') from the
-;; exact boot text this build compiles, so its install guard sees `equal' objects.
-;; Each name is a literal call so `nelisp-staged-handler-guard' can read it.
-(setq nelisp-aot-bytecode-subr-source-function
-      (lambda (name)
-        (pcase name
-          ('function-get
-           (nelisp-standalone--vendor-function-source
-            "vendor/staged-emacs-lisp/subr.el" 'function-get))
-          ;; The baked backquote provider text: the install guard compares the live
-          ;; objects to the ones compiled from exactly this text.
-          ('backquote-process (nelisp-boot-image-provider 'backquote))
-          ('backquote-listify (nelisp-boot-image-provider 'backquote))
-          ;; byte-run.el's compiled `defun' expander and `byte-run--parse-body'.
-          ('byte-run--parse-body (nelisp-boot-image-provider 'byte-run))
-          ('defun (nelisp-boot-image-provider 'byte-run)))))
+file changed or the form is missing or duplicated."
+  (nelisp-vendor-source-form relative-file function-name))
 
 (defun nelisp-standalone--vendor-define-error-source (relative-file name)
   "Return the exact source text of RELATIVE-FILE's `(define-error \\='NAME ...)'.
@@ -61922,18 +61300,13 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
               (nl_clx_symbol_filter_walk_raw_w (nl_cons_cdr_word node)
                 (nl_clx_symbol_filter_walk_raw_w (nl_cons_car_word node) acc roots) roots)
             acc))))
-    ;; Read-only scan: car/cdr are taken as WORDs, so an immediate cdr (the
-    ;; nil terminator of every list) no longer materialises a fresh 32-byte
-    ;; box per call.  A pointer WORD is exactly what `nl_cons_*_ptr' returned
-    ;; for a non-immediate, and an immediate has tag 0/1/2 (neither a symbol
-    ;; nor a cons), so the answer is unchanged.
     (defun nl_clx_formals_contain_symbol (node-ptr name-ptr)
-      (let* ((tag (nl_val_tag node-ptr)))
+      (let* ((tag (sexp-tag node-ptr)))
         (if (or (= tag 4) (= tag 16))
             (nelisp_symbol_key_equal node-ptr name-ptr)
           (if (= tag 7)
-              (let* ((car-ptr (nl_cons_car_word node-ptr))
-                     (cdr-ptr (nl_cons_cdr_word node-ptr)))
+              (let* ((car-ptr (nl_cons_car_ptr node-ptr))
+                     (cdr-ptr (nl_cons_cdr_ptr node-ptr)))
                 (if (= (nl_clx_formals_contain_symbol car-ptr name-ptr) 1)
                     1
                   (nl_clx_formals_contain_symbol cdr-ptr name-ptr)))
@@ -67206,13 +66579,6 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
     ;; `m5_fx_primitive_run', with the exact arity the id's body assumes.
     ("aref" -14) ("null" 3) ("not" 3) ("consp" 4) ("setcdr" 5) ("setcar" 6)
     ("eq" 7) ("nthcdr" 11)
-    ;; stage 2b: pure one-argument tag predicates (LEAF ids 90-93, WORD bodies in
-    ;; `nl_directcall_run'), the members of the predicate list that have neither an
-    ;; opcode nor an id: symbol-with-pos-p, atom, vectorp, floatp.
-    ("symbol-with-pos-p" 90) ("atom" 91) ("vectorp" 92) ("floatp" 93)
-    ;; stage 2c: `fboundp' (LEAF id 94).  Reads the live function cell by name through the
-    ;; mirror lookup, as `bf_fboundp_w' does; no allocation, no Lisp, no safepoint.
-    ("fboundp" 94)
     ;; bufnative: the buffer read path (WORD bodies in `nl_buf_leaf_run').
     ("point" 40) ("point-min" 41) ("point-max" 42) ("goto-char" 43)
     ("buffer-size" 45) ("bobp" 46) ("eobp" 47) ("narrow-to-region" 48) ("widen" 49)
@@ -67638,37 +67004,7 @@ remains the reference. No production hit/fallback counters are emitted."
                 (nl_directcall_callback_run id base argc result)
               (if (>= id 112)
                   (nl_directcall_alloc_run id base argc result)
-                (if (= id 94)
-                    ;; stage 2c: `fboundp' on the one argument word, `bf_fboundp_w' without its
-                    ;; temporary slot: a symbol OBJECT asks the mirror for the live function cell
-                    ;; (`nelisp_env_lookup_function_w' answers 2 for none or the unbound marker,
-                    ;; else the cell word, the legacy list for a Subr); t iff the cell is not nil.
-                    ;; nil and t are symbols without a function cell (nil).  Anything else, which
-                    ;; the builtin answers with wrong-type-argument, declines (-3) with nothing
-                    ;; written.  The lookup reads the mirror: no allocation, Lisp or safepoint.
-                    (let* ((a (heap-read-u64 base 0)) (tg (wf_bytecode_w_tag a)))
-                      (if (or (= tg 0) (= tg 1))
-                          (seq (ptr-write-u64 result 0 3) 0)
-                        (if (or (= tg 4) (= tg 16))
-                            (let* ((v (nelisp_env_lookup_function_w (+ env 0) (+ env 64) a 0)))
-                              (if (= v 0) -3
-                                (seq (ptr-write-u64 result 0
-                                                    (if (= v 2) 3 (if (= (nl_word_tag64 v) 0) 3 7)))
-                                     0)))
-                          -3)))
-                (if (if (>= id 90) (<= id 93) 0)
-                    ;; stage 2b: tag predicates on the one argument word, as the
-                    ;; :word bodies of `symbol-with-pos-p', `atom', `vectorp' and
-                    ;; `floatp' compute them.  No allocation, no safepoint, never declines
-                    ;; (ARGC is exactly 1 by the id's arity).
-                    (let* ((tg (wf_bytecode_w_tag (heap-read-u64 base 0))))
-                      (seq (ptr-write-u64 result 0
-                                          (if (= id 90) (if (= tg 19) 7 3)
-                                            (if (= id 91) (if (= tg 7) 3 7)
-                                              (if (= id 92) (if (= tg 8) 7 3)
-                                                (if (= tg 3) 7 3)))))
-                           0))
-                  (m5_fx_primitive_run id base argc argc result env 0)))))))))
+                (m5_fx_primitive_run id base argc argc result env 0)))))))
       (defun nl_directcall_alloc_run (id base argc result)
         ;; Allocating primitives on canonical WORD argv (112 vector, 113
         ;; make-vector, 114 list, 115 concat, 116 substring, 117 make-string).

@@ -2331,14 +2331,9 @@ standalone MCP fast handshake completed before this change, 20/20 after."
         (should (tree-member-p
                  '(extern-call VirtualAlloc 0 size 8192 4)
                  arena))
-        ;; 982ed65ac: the cursor CAS is followed by one batched, monotonic
-        ;; commit (`nl_windows_chunk_commit_to'), not a per-object commit range.
         (should (tree-member-p
-                 '(nl_windows_chunk_commit_to chunk new)
-                 arena))
-        (should-not (tree-member-p
-                     '(nl_os_commit_range base old new)
-                     arena))))
+                 '(nl_os_commit_range base old new)
+                 arena))))
     (let ((nelisp-standalone--target 'macos-aarch64))
       (should (tree-member-p
                '(syscall-direct 197 0 size 3 4098 -1 0)

@@ -601,10 +601,6 @@ scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	1	p
 scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
-scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	5	walked	Fast-loop stringp arm (opcode 59) tests tag 5/6 together with 14/15, so every string tag is covered.
-scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	6	walked	Fast-loop stringp arm (opcode 59) tests tag 5/6 together with 14/15, so every string tag is covered.
-scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	7	n-a	Compares the 3-bit word pointer tag (low bits 6 = symbol object word) of a stack word, not a Sexp Str/MutStr tag.
-scripts/nelisp-standalone-build.el	wf_bytecode_w_get_fast	unresolved-numeric	0	n-a	Compares the 3-bit word pointer tag (low bits 6 = symbol object word) of a stack word, not a Sexp Str/MutStr tag.
 scripts/nelisp-standalone-build.el	wf_bytecode_w_lean_store	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	wf_bytecode_w_local_set	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	wf_cb_kind	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.

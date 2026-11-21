@@ -387,7 +387,6 @@ parity substrate-parity-smoke
 smokes nl-condition-standalone-smoke
 smokes nl-safe-standalone-smoke
 smokes nelisp-eval-closure-standalone-smoke
-smokes nelisp-gcs-done-standalone-smoke
 smokes nl-resource-standalone-smoke
 smokes nl-num-standalone-smoke
 smokes nelisp-toml-standalone-smoke

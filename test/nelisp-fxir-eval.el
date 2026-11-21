@@ -41,20 +41,6 @@
             (setq want (delq (nth 1 form) want))))))
     (when want (error "fxir hot patch: not found %S" want))))
 
-;; Shared function-information provider (validated source parts).  Same root
-;; resolution as the hot patch above, with this file's own checkout as the
-;; fallback; it is a plain source load, so no cache is built.
-(unless (fboundp 'nelisp-function--source-parts)
-  (let ((file (expand-file-name
-               "lisp/nelisp-function-info.el"
-               (or (getenv "NELISP_FXIR_ROOT")
-                   (and load-file-name
-                        (expand-file-name ".." (file-name-directory load-file-name)))
-                   default-directory))))
-    (load file nil t)
-    (unless (fboundp 'nelisp-function--source-parts)
-      (error "fxir: function-info provider missing: %s" file))))
-
 (defun nelisp-fxir--ev (n code slots)
   "Value of fxir node N; CODE is the live code vector, SLOTS the locals."
   (let ((k (car n)))
@@ -158,12 +144,7 @@
 (defun nelisp-fxir-install (name)
   "Make NAME's function cell run its fx record's fxir; nil when it has none."
   (let* ((fn (symbol-function name))
-         ;; Validated source parts; bytecode, subrs and malformed shapes give nil.
-         ;; :body is the live body list, the same object the table is keyed by.
-         (parts (and fn (not (symbolp fn)) (nelisp-function--source-parts fn)))
-         (rec (and (memq (plist-get parts :representation)
-                         '(legacy-closure interpreted-function))
-                   (gethash (plist-get parts :body) nelisp--fx-table)))
+         (rec (and (eq (car-safe fn) 'closure) (gethash (nthcdr 3 fn) nelisp--fx-table)))
          ;; NLOCALS -1 is a compiler lowering (string compare), not fx code.
          (ir (and (vectorp rec) (/= (aref rec 1) -1)
                   (gethash (aref rec 0) nelisp--fx-ir-table))))
@@ -181,60 +162,23 @@
 
 ;; ---- structural checks and harvest helpers ----
 
-(defun nelisp-fxir-analyze (function)
-  "Analyze FUNCTION once, as `nelisp--fx-register-fn' would compile it.
-Return a versioned plist: :schema 1, :status `accepted' or `rejected',
-:reason (nil when accepted, else the failed guard or the error symbol),
-:condition (the original condition data, or nil), :node (always nil: no
-guard names a source node), and on acceptance :code :nlocals :ir :callees.
-This is the only admission and compile path; nothing is installed or
-published, and the fx table is not touched."
-  (let* ((parts (nelisp-function--source-parts function))
-         (env (plist-get parts :environment))
-         (body (plist-get parts :body))
-         (shape nil) (reason nil) (condition nil) (c nil))
-    (cond
-     ((null parts)
-      ;; No validated source: bytecode, subr, unresolved, malformed.
-      (let ((info (nelisp-function-info function)))
-        (setq reason (or (plist-get info :reason) (plist-get info :kind)
-                         'not-a-function))))
-     ((not (nelisp--fx-env-ok-p env)) (setq reason 'unsupported-environment))
-     (t
-      (let ((nelisp--fx-declared (remq t env)))
-        (setq shape (nelisp--fx-arglist-shape (plist-get parts :arglist)))
-        (cond
-         ((null shape) (setq reason 'unsupported-arglist))
-         ((cl-some #'nelisp--fx-special-p (car shape))
-          (setq reason 'special-arguments))
-         ((nelisp--fx-hopeless-p body) (setq reason 'unsupported-body))
-         (t
-          (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (inhibit-message t)
-                 (macros (nelisp--fx-macros-used body))
-                 (nelisp--fx-expand (and macros t))
-                 (nelisp--fx-outer-env env)
-                 (nelisp--fx-want-ir t))
-            (condition-case err
-                (progn
-                  (setq c (nelisp--fx-compile (cons 'progn body) (car shape)))
-                  (unless c (setq reason 'compiler-returned-nil)))
-              (error (setq reason (car err) condition err)))))))))
-    (if (and c (null reason))
-        (let ((ir (gethash (car c) nelisp--fx-ir-table)))
-          (list :schema 1 :status 'accepted :reason nil :condition nil :node nil
-                :code (car c) :nlocals (cdr c) :ir ir
-                :callees (nelisp-fxir-callees ir (car c))))
-      (list :schema 1 :status 'rejected :reason reason :condition condition
-            :node nil))))
-
 (defun nelisp-fxir-recompile (fn)
   "Compile closure FN as `nelisp--fx-register-fn' does, without touching the table.
-Answers (CODE NLOCALS IR) or nil.  A thin view of `nelisp-fxir-analyze'.
-As before, a symbol is not a source closure for this compatibility entry."
-  (unless (symbolp fn)
-    (let ((a (nelisp-fxir-analyze fn)))
-      (when (eq (plist-get a :status) 'accepted)
-        (list (plist-get a :code) (plist-get a :nlocals) (plist-get a :ir))))))
+Answers (CODE NLOCALS IR) or nil."
+  (when (and (eq (car-safe fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
+    (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
+           (nelisp--fx-declared (remq t (nth 1 fn)))
+           (shape (nelisp--fx-arglist-shape args)))
+      (when (and shape (not (cl-some #'nelisp--fx-special-p (car shape)))
+                 (not (nelisp--fx-hopeless-p body)))
+        (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (inhibit-message t)
+               (macros (nelisp--fx-macros-used body))
+               (nelisp--fx-expand (and macros t))
+               (nelisp--fx-outer-env (nth 1 fn))
+               (nelisp--fx-want-ir t)
+               (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
+                    (error nil))))
+          (when c (list (car c) (cdr c) (gethash (car c) nelisp--fx-ir-table))))))))
 
 (defun nelisp-fxir-code-same-p (a b)
   "Non-nil when code vectors A and B are the same code (call-site caches by name)."

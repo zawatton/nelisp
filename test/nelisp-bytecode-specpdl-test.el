@@ -251,10 +251,7 @@
     ;; The aux block (61 WORD slots) is allocated by `wf_bytecode_aux_new',
     ;; which `wf_bytecode_frame_aux' calls on first need.
     (should (funcall has 'wf_bytecode_frame_aux 'wf_bytecode_aux_new))
-    ;; 8cd4fa972: `wf_bytecode_aux_new' calls `wf_bytecode_aux_frame', which lays
-    ;; the 61 nil slots out straight-line and falls back to `nl_root_frame'.
-    (should (funcall has 'wf_bytecode_aux_new 'wf_bytecode_aux_frame))
-    (should (sst--find (sst--function 'wf_bytecode_aux_frame)
+    (should (sst--find (sst--function 'wf_bytecode_aux_new)
                        (lambda (f) (equal f '(nl_root_frame env 61)))))
     ;; The lean binder neither conses nor looks anything up.
     (dolist (sym '(wf_bytecode_w_cons2 nelisp_mirror_lookup_entry nl_sb_plain_entry_p nl_cons_alloc))

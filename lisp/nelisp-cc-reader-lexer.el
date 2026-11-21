@@ -1135,39 +1135,6 @@
         (mut-str-finalize scratch payload-slot)
         kind)))
 
-    ;; End of the atom starting at CURSOR when it holds no backslash, else -1.
-    (defun nelisp_reader_atom_span_end (dp cursor n)
-      (let* ((i cursor) (r -2))
-        (seq
-         (while (= r -2)
-           (if (>= i n) (setq r i)
-             (let* ((b (ptr-byte-at dp i)))
-               (if (= b 92) (setq r -1)
-                 (if (= (nelisp_reader_is_atom_term b) 1) (setq r i)
-                   (setq i (+ i 1)))))))
-         r)))
-
-    ;; `nelisp_reader_lex_atom_finalize' with the payload copied straight from
-    ;; the source bytes [START, END) instead of through the scratch MutStr.
-    (defun nelisp_reader_lex_atom_finalize_span
-        (str-ptr start end payload-slot cursor-out-slot dp)
-      (let* ((b0 (if (< start end) (str-byte-at str-ptr start) 0)))
-        (if (= (if (= (- end start) 1) (if (= b0 46) 1 0) 0) 1)
-            (nelisp_reader_prog2
-             (sexp-int-make cursor-out-slot end)
-             10)
-          (if (>= start end)
-              (nelisp_reader_prog2
-               (sexp-int-make cursor-out-slot end)
-               -1)
-            (nelisp_reader_prog2
-             (sexp-int-make cursor-out-slot end)
-             (nelisp_reader_prog2
-              (extern-call nl_alloc_str (+ dp start) (- end start) payload-slot)
-              (if (= (nelisp_reader_classify_first_p b0) 1)
-                  (nelisp_reader_classify_step str-ptr start end 0)
-                23)))))))
-
     (defun nelisp_reader_lex_atom
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
       ;; Doc 238 A1r4: resolve the data pointer once and read the first byte
@@ -1195,14 +1162,10 @@
                  str-ptr cursor
                  (nelisp_reader_scan_atom_p dp (+ cursor 1) n scratch)
                  payload-slot cursor-out-slot scratch)))
-            (let* ((e (nelisp_reader_atom_span_end dp cursor n)))
-              (if (>= e 0)
-                  (nelisp_reader_lex_atom_finalize_span
-                   str-ptr cursor e payload-slot cursor-out-slot dp)
-                (nelisp_reader_lex_atom_finalize
-                 str-ptr cursor
-                 (nelisp_reader_scan_atom_p dp cursor n scratch)
-                 payload-slot cursor-out-slot scratch)))))))
+            (nelisp_reader_lex_atom_finalize
+             str-ptr cursor
+             (nelisp_reader_scan_atom_p dp cursor n scratch)
+             payload-slot cursor-out-slot scratch)))))
 
     (defun nelisp_reader_leading_dot_float_p (str-ptr cursor n)
       (if (>= (+ cursor 1) n)
@@ -1255,46 +1218,11 @@
              (mut-str-finalize scratch payload-slot)
              22))))))
 
-    ;; Span fast path: a literal with no backslash is its own bytes.  Answers
-    ;; 2*Q + H, Q the index of the closing quote and H 1 when a byte >= 128
-    ;; was seen, or -1 (a backslash, or no closing quote: the general scanner
-    ;; decides).
-    (defun nelisp_reader_string_span (dp cursor n)
-      (let* ((i cursor) (high 0) (r -2))
-        (seq
-         (while (= r -2)
-           (if (>= i n) (setq r -1)
-             (let* ((b (ptr-byte-at dp i)))
-               (if (= b 34) (setq r (+ (* i 2) high))
-                 (if (= b 92) (setq r -1)
-                   (seq (if (>= b 128) (setq high 1) 0)
-                        (setq i (+ i 1))))))))
-         r)))
-
-    ;; Same payload as the scratch path: an all-ASCII literal is unibyte (as
-    ;; `nelisp_reader_lex_string_finalize' marks it), otherwise multibyte; both
-    ;; are built by the producers `mut-str-finalize' itself ends in.
-    (defun nelisp_reader_lex_string_span
-        (dp cursor packed payload-slot cursor-out-slot)
-      (let* ((q (/ packed 2)) (high (- packed (* q 2))))
-        (nelisp_reader_prog2
-         (sexp-int-make cursor-out-slot (+ q 1))
-         (nelisp_reader_prog2
-          (if (= high 0)
-              (extern-call nl_alloc_unibyte_str (+ dp cursor) (- q cursor) payload-slot)
-            (extern-call nl_alloc_str (+ dp cursor) (- q cursor) payload-slot))
-          22))))
-
     (defun nelisp_reader_lex_string
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
-      (let* ((dp (str-data-ptr str-ptr))
-             (packed (nelisp_reader_string_span dp cursor n)))
-        (if (>= packed 0)
-            (nelisp_reader_lex_string_span
-             dp cursor packed payload-slot cursor-out-slot)
-          (nelisp_reader_lex_string_finalize
-           (nelisp_reader_string_body str-ptr cursor n scratch)
-           payload-slot cursor-out-slot scratch))))
+      (nelisp_reader_lex_string_finalize
+       (nelisp_reader_string_body str-ptr cursor n scratch)
+       payload-slot cursor-out-slot scratch))
 
     ;; ===========================================================
     ;; Sharpsign dispatch: `#'' / `#[...' / `##' / `#$' / `#(' / `#N='/`#N#' / `#s(' /

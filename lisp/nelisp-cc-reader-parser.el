@@ -788,15 +788,8 @@
     ;; Reset the scratch-mutstr (= drain it for the next lex run).
     ;; ===========================================================
 
-    ;; The scratch MutStr is created once per parse (`nelisp_reader_p_init_scratch')
-    ;; and only emptied per token: `mut-str-finalize' clones it, so the buffer
-    ;; is never shared.  A slot that is not a MutStr yet is made one here.
-    (defun nelisp_reader_p_init_scratch (scratch-slot)
-      (mut-str-make-empty scratch-slot 64))
     (defun nelisp_reader_p_reset_scratch (scratch-slot)
-      (if (= (heap-read-u8 scratch-slot 0) 6)
-          (ptr-write-u64 (heap-read-u64 (+ scratch-slot 8) 0) 16 0)
-        (mut-str-make-empty scratch-slot 64)))
+      (mut-str-make-empty scratch-slot 64))
 
     ;; ===========================================================
     ;; Drive one lex call.  Returns the i64 kind code.
@@ -1588,25 +1581,14 @@
     ;; callable representation instead of returning an ordinary vector.
     ;; ===========================================================
 
-    ;; A `#N#' reference read inside the literal (the code string or the
-    ;; constants vector shared with an earlier `#N=') is still a proxy cons
-    ;; here; `nelisp_reader_p_label_resolve' swaps in the definition's value
-    ;; when the whole form is done.  Treat the proxy as having the tag the
-    ;; slot needs (GNU .elc files share such strings between functions).
-    (defun nelisp_reader_p_slot_tag (word pool want)
-      (if (and (= (nl_val_tag word) 7)
-               (>= (nelisp_reader_p_label_proxy_number word pool 0) 0))
-          want
-        (nl_val_tag word)))
-
-    (defun nelisp_reader_p_byte_code_valid_p (vec pool)
+    (defun nelisp_reader_p_byte_code_valid_p (vec)
       (let ((count (vector-len vec)))
         (if (or (< count 4) (> count 6))
             0
           (let* ((arglist (nl_vector_slot_word vec 0))
                  (arg-tag (nl_val_tag arglist))
-                 (code-tag (nelisp_reader_p_slot_tag (nl_vector_slot_word vec 1) pool 5))
-                 (constants-tag (nelisp_reader_p_slot_tag (nl_vector_slot_word vec 2) pool 8))
+                 (code-tag (nl_val_tag (nl_vector_slot_word vec 1)))
+                 (constants-tag (nl_val_tag (nl_vector_slot_word vec 2)))
                  (depth (nl_vector_slot_word vec 3))
                  (depth-value (if (= (nl_val_tag depth) 2)
                                   (nl_word_payload depth) -1))
@@ -1644,7 +1626,7 @@
     ;; Doc 215: parsed values are WORDs throughout the recursive reader.
     (defun nelisp_reader_p_parse_byte_code_w (str-ptr cursor-slot _pad slot-pool depth)
   (let* ((vec (nelisp_reader_p_parse_vector_w str-ptr cursor-slot 0 slot-pool depth 0)))
-    (if (and (and (/= vec 0) (/= vec 2)) (= (nelisp_reader_p_byte_code_valid_p vec slot-pool) 1))
+    (if (and (and (/= vec 0) (/= vec 2)) (= (nelisp_reader_p_byte_code_valid_p vec) 1))
         (let* ((object (alloc-bytes 32 8)))
           (seq (record-make (nl_vector_slot_word vec 0) (vector-len vec) object)
                (nelisp_reader_p_fill_byte_code vec object 0 (vector-len vec))
@@ -1692,17 +1674,11 @@
        (ptr-write-u64 268436448 0 parse-cap)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 0 0)
        (ptr-write-u64 (nelisp_reader_p_slot slot-pool 3) 8 0)
-       (nelisp_reader_p_init_scratch (nelisp_reader_p_slot slot-pool 0))
        (setq w (nelisp_reader_p_parse_at_w str-ptr cursor-slot 0 slot-pool depth))
        (if (and (/= w 0) (/= w 2))
            (if (>= (nelisp_reader_p_label_proxy_number w slot-pool 0) 0)
                (setq w (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0))
-             ;; No `#N=' / `#N#' was lexed (count 0): there is no proxy to swap
-             ;; in, and the resolve walk would only rewrite every cons and
-             ;; vector slot with its own value.
-             (if (= (nelisp_reader_p_label_count slot-pool) 0)
-                 0
-               (setq w (nelisp_reader_p_label_resolve w slot-pool)))) 0)
+             (setq w (nelisp_reader_p_label_resolve w slot-pool))) 0)
        (nelisp_reader_p_clear_used slot-pool parse-cap)
        (ptr-write-u64 268436448 0 pool-cap) w)))))
 
