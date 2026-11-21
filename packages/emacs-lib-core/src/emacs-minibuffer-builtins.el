@@ -63,9 +63,6 @@ primitive to distinguish standalone execution from host Emacs."
 (when (emacs-minibuffer-builtins--install-function-p 'read-string)
   (defalias 'read-string #'emacs-minibuffer-read-string))
 
-(when (emacs-minibuffer-builtins--install-function-p 'read-no-blanks-input)
-  (defalias 'read-no-blanks-input #'emacs-minibuffer-read-no-blanks-input))
-
 (when (emacs-minibuffer-builtins--install-function-p 'read-key)
   (defalias 'read-key #'emacs-minibuffer-read-key))
 
@@ -73,9 +70,6 @@ primitive to distinguish standalone execution from host Emacs."
 
 (when (emacs-minibuffer-builtins--install-function-p 'read-buffer)
   (defalias 'read-buffer #'emacs-minibuffer-read-buffer))
-
-(when (emacs-minibuffer-builtins--install-function-p 'read-file-name)
-  (defalias 'read-file-name #'emacs-minibuffer-read-file-name))
 
 (when (emacs-minibuffer-builtins--install-function-p 'read-directory-name)
   (defalias 'read-directory-name #'emacs-minibuffer-read-directory-name))
@@ -282,14 +276,8 @@ Return `point-min' in an ordinary buffer or when no prompt field exists."
 (when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt-width)
   (defalias 'minibuffer-prompt-width #'emacs-minibuffer-minibuffer-prompt-width))
 
-(when (emacs-minibuffer-builtins--install-function-p 'exit-minibuffer)
-  (defalias 'exit-minibuffer #'emacs-minibuffer-exit-minibuffer))
-
 (when (emacs-minibuffer-builtins--install-function-p 'abort-recursive-edit)
   (defalias 'abort-recursive-edit #'emacs-minibuffer-abort-recursive-edit))
-
-(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-message)
-  (defalias 'minibuffer-message #'emacs-minibuffer-minibuffer-message))
 
 ;;;; --- history defvars ------------------------------------------------
 
@@ -332,15 +320,6 @@ Return `point-min' in an ordinary buffer or when no prompt field exists."
 ;; Keep the default behavior disabled, but make the symbols available so
 ;; vendor callers such as Magit can execute their real source unchanged.
 
-(unless (boundp 'minibuffer-visible-completions)
-  (defvar minibuffer-visible-completions nil
-    "When non-nil, visible *Completions* navigation is enabled.
-The standalone substrate currently keeps this disabled by default."))
-
-(unless (boundp 'minibuffer-visible-completions--always-bind)
-  (defvar minibuffer-visible-completions--always-bind nil
-    "Force visible completion bindings on when non-nil."))
-
 (unless (boundp 'minibuffer-completion-predicate)
   (defvar minibuffer-completion-predicate nil
     "Predicate for the active minibuffer completion session."))
@@ -348,12 +327,6 @@ The standalone substrate currently keeps this disabled by default."))
 (unless (boundp 'completion-list-insert-choice-function)
   (defvar completion-list-insert-choice-function nil
     "Function used to insert the selected completion choice."))
-
-(unless (boundp 'minibuffer-visible-completions-map)
-  (defvar minibuffer-visible-completions-map (make-sparse-keymap)
-    "Fallback keymap for visible completion navigation.
-The standalone substrate does not yet install the upstream navigation
-bindings here, but vendor code can safely compose this map."))
 
 (unless (fboundp 'add-to-history)
 (defun add-to-history (history-var newelt &optional maxelt keep-all)

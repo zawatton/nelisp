@@ -166,46 +166,6 @@ Keys:
     (and entry (nth 2 entry))))
 
 ;;;###autoload
-(defun minibuffer-complete ()
-  "Complete the active minibuffer contents by prefix match.
-Unique matches replace the minibuffer contents directly.  Multiple
-matches render the `*Completions*' buffer."
-  (interactive)
-  (let* ((origin (emacs-completion-ui--active-minibuffer))
-         (input (emacs-completion-ui--minibuffer-contents))
-         (matches (emacs-completion-ui--matches input)))
-    (cond
-     ((null matches)
-      (emacs-minibuffer-minibuffer-message "No completions for %s" input)
-      nil)
-     ((= (length matches) 1)
-      (emacs-completion-ui--set-minibuffer-contents (car matches)))
-     (t
-      (emacs-completion-ui--show-completions origin matches)))))
-
-;;;###autoload
-(defun minibuffer-complete-and-exit ()
-  "Confirm the active minibuffer completion and close the minibuffer."
-  (interactive)
-  (let* ((input (emacs-completion-ui--minibuffer-contents))
-         (matches (emacs-completion-ui--matches input))
-         (exact (member input matches)))
-    (cond
-     (exact
-      (emacs-completion-ui--confirm-and-exit))
-     ((= (length matches) 1)
-      (emacs-completion-ui--set-minibuffer-contents (car matches))
-      (emacs-completion-ui--confirm-and-exit))
-     ((and (null matches) minibuffer-completion-confirm)
-      (signal 'emacs-minibuffer-error (list "Match required" input)))
-     ((null matches)
-      (emacs-completion-ui--confirm-and-exit))
-     (t
-      (emacs-completion-ui--show-completions
-       (emacs-completion-ui--active-minibuffer) matches)
-      nil))))
-
-;;;###autoload
 (defun next-completion (&optional n)
   "Move point to the next completion in `*Completions*'."
   (interactive)

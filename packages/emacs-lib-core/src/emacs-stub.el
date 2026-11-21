@@ -2359,16 +2359,6 @@ Preserve existing entries and prepend any unseen dependency."
     "Stub: degrade to global `set'."
     (set symbol value)))
 
-(unless (fboundp 'format-prompt)
-  (defun format-prompt (prompt default &rest format-args)
-    "Stub: minimal `format-prompt' — PROMPT plus an optional default hint."
-    (concat (if format-args (apply #'format prompt format-args) prompt)
-            (if (and default (not (equal default "")))
-                (format " (default %s)"
-                        (if (consp default) (car default) default))
-              "")
-            ": ")))
-
 (unless (fboundp 'derived-mode-p)
   (defun derived-mode-p (&optional modes &rest old-modes)
     "Return non-nil if the current `major-mode' is derived from one of MODES.
