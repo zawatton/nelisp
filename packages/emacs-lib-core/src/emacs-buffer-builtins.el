@@ -858,10 +858,10 @@ under the live Magit bridge even when the actual current buffer is valid."
     (let ((buf (and (fboundp 'current-buffer)
                     (ignore-errors (current-buffer)))))
       (if (and buf
-               (or (and (fboundp 'nelisp-ec-buffer-p)
-                        (nelisp-ec-buffer-p buf))
-                   (and (fboundp 'buffer-live-p)
-                        (buffer-live-p buf))))
+               (or (and (fboundp 'buffer-live-p)
+                        (buffer-live-p buf))
+                   (and (fboundp 'nelisp-ec-buffer-p)
+                        (nelisp-ec-buffer-p buf))))
           buf
         nil)))
    ((or (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object))
@@ -898,6 +898,9 @@ under the live Magit bridge even when the actual current buffer is valid."
           (progn (nelisp-ec-set-buffer object)
                  (list (nelisp-ec-point-min) (nelisp-ec-point-max)))
         (when saved (nelisp-ec-set-buffer saved)))))
+   ;; gnu562: the current buffer needs no switch (`with-current-buffer'
+   ;; was most of a text-property read's validation).
+   ((eq object (current-buffer)) (list (point-min) (point-max)))
    (t (with-current-buffer object (list (point-min) (point-max))))))
 
 (defun emacs-buffer-builtins--property-range (start end object)
@@ -1116,7 +1119,10 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
            ((stringp target)
             (emacs-buffer-builtins--call-string-property
              'get target pos prop))
-           ((not (eq target :string-or-unsupported))
+           ;; gnu562: an unmanaged buffer answers the native value, so its
+           ;; sidecar is not read (its only error, a non-integer POS, the
+           ;; native call above has already signalled).
+           ((and managed (not (eq target :string-or-unsupported)))
             (emacs-buffer-builtins--call-emacs-buffer
              'emacs-buffer-get-text-property
              (list pos prop target))))))
@@ -1155,8 +1161,11 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
              (sidecar-value
               (if (stringp target)
                   (emacs-buffer-builtins--call-string-property 'at target pos)
-                (emacs-buffer-builtins--call-emacs-buffer
-                 'emacs-buffer-text-property-at (list pos target)))))
+                ;; gnu562: read only when the answer uses it; POS is an
+                ;; integer already, the sidecar's only check.
+                (and managed
+                     (emacs-buffer-builtins--call-emacs-buffer
+                      'emacs-buffer-text-property-at (list pos target))))))
         (if managed sidecar-value native-value)))))
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
@@ -1587,9 +1596,11 @@ select it, and return it."
 
 (defun emacs-buffer-builtins--checked-position (position)
   "Return POSITION as an integer, rejecting detached markers."
-  (when (and (markerp position) (not (marker-position position)))
-    (signal 'error '("Marker does not point anywhere")))
-  (emacs-buffer-builtins--position position))
+  (if (integerp position)
+      position
+    (when (and (markerp position) (not (marker-position position)))
+      (signal 'error '("Marker does not point anywhere")))
+    (emacs-buffer-builtins--position position)))
 
 (defun emacs-buffer-builtins--overlay-operation (name function args)
   "Apply overlay NAME with GNU argument checks and detached overlay semantics."
