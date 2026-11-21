@@ -228,6 +228,78 @@ and booting the image loads no cl-seq.el."
       (nelisp-prelude-bytecode-write-report report (nth 2 result))
       (car result))))
 
+;; Lane F2: the expansion of every `defun' in a program runs byte-run.el's `defun'
+;; expander and `byte-run--parse-body'.  Both are source forms the whole-file
+;; bake keeps (a `defmacro' and a `defalias' of a lambda), so they ran on the fx
+;; interpreter.  Compile them with the host compiler and install the byte-code right
+;; after the source forms; the source forms stay in front, so every property the
+;; source `defmacro' sets (doc-string-elt, indent, autoload-macro) is unchanged.
+(defvar byte-optimize--dynamic-vars)
+(defvar byte-compile-warnings)
+(defvar byte-compile-verbose)
+(defvar nelisp-prelude-bytecode--opcodes)
+(declare-function nelisp-prelude-bytecode--nested-unsupported "nelisp-prelude-bytecode")
+(declare-function nelisp-prelude-bytecode--decode-opcodes "nelisp-prelude-bytecode")
+
+(defconst nelisp-boot-image--byte-run-baked '(byte-run--parse-body defun)
+  "Names of the byte-run.el definitions the byte-run bake compiles.")
+
+(defun nelisp-boot-image--byte-run-lambda (form)
+  "Return (NAME MACRO-P LAMBDA) for a bakeable byte-run.el FORM, or nil."
+  (cond
+   ((and (eq (car-safe form) 'defalias) (eq (car-safe (nth 1 form)) 'quote)
+         (memq (cadr (nth 1 form)) nelisp-boot-image--byte-run-baked)
+         (eq (car-safe (nth 2 form)) 'function)
+         (eq (car-safe (cadr (nth 2 form))) 'lambda))
+    (list (cadr (nth 1 form)) nil (cadr (nth 2 form))))
+   ((and (eq (car-safe form) 'defmacro) (memq (nth 1 form) nelisp-boot-image--byte-run-baked))
+    ;; Drop the (declare ...) form: the source defmacro already applied it.
+    (let ((body (nthcdr 3 form)) (head nil))
+      (when (stringp (car body)) (push (pop body) head))
+      (when (eq (car-safe (car body)) 'declare) (pop body))
+      (list (nth 1 form) t (cons 'lambda (cons (nth 2 form) (append (nreverse head) body))))))))
+
+(defun nelisp-boot-image--byte-run-compile (name macro-p lambda-form)
+  "Return the boot text installing the compiled LAMBDA-FORM as NAME, or nil.
+Refuse (nil) unless every opcode is one the VM runs."
+  (require 'bytecomp)
+  (require 'byte-opt)
+  (let ((compiled (with-temp-buffer
+                    (setq-local lexical-binding t)
+                    (let ((byte-compile-warnings nil) (byte-compile-verbose nil)
+                          (byte-optimize--dynamic-vars nil))
+                      (condition-case nil (byte-compile lambda-form) (error nil))))))
+    (when (and (byte-code-function-p compiled)
+               (stringp (aref compiled 1))
+               (null (cl-remove-if (lambda (op) (memq op nelisp-prelude-bytecode--opcodes))
+                                   (nelisp-prelude-bytecode--decode-opcodes (aref compiled 1))))
+               (not (nelisp-prelude-bytecode--nested-unsupported compiled)))
+      (let ((print-escape-nonascii t) (print-escape-multibyte t)
+            (print-escape-control-characters t) (print-length nil) (print-level nil)
+            (fn (list 'make-byte-code (aref compiled 0)
+                      (cons 'unibyte-string (string-to-list (aref compiled 1)))
+                      (aref compiled 2) (aref compiled 3)
+                      (and (> (length compiled) 4) (aref compiled 4)))))
+        (concat "\n"
+                (prin1-to-string
+                 (list 'fset (list 'quote name) (if macro-p (list 'cons ''macro fn) fn)))
+                "\n")))))
+
+(defun nelisp-boot-image--byte-run-bake (text)
+  "Return TEXT (byte-run.el boot text) with compiled `defun' and parse-body."
+  (require 'nelisp-prelude-bytecode)
+  (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") text
+    (let ((patches nil))
+      (dolist (span (nelisp-prelude-bytecode--top-level-spans text))
+        (let ((spec (nelisp-boot-image--byte-run-lambda (nth 2 span))))
+          (when spec
+            (let ((baked (apply #'nelisp-boot-image--byte-run-compile spec)))
+              (when baked (push (cons (nth 1 span) baked) patches))))))
+      (dolist (patch patches)             ; latest first: offsets stay valid
+        (setq text (concat (substring text 0 (car patch)) (cdr patch)
+                           (substring text (car patch)))))
+      text)))
+
 (defun nelisp-boot-image-provider (name)
   "Return NAME's provider for embedding, with a trailing form.
 GNU macroexp functions use the existing reviewed bytecode selector. Other
@@ -243,7 +315,13 @@ providers and source-only builds retain their exact source text."
     ;; The executable build digest binds these bytes to its heap companion.
     (concat
      (cond ((eq name 'macroexp) (nelisp-boot-image--macroexp-source source path))
-           ((memq name '(pcase gv help cl-macs cl-preloaded oclosure cl-generic nadvice))
+           ;; byte-run and backquote are GNU preloaded `.elc' files: bake their defuns
+           ;; (`backquote-process', `backquote-listify', ...) as byte-code like
+           ;; pcase, so macro expansion does not run them interpreted on the fx VM.
+           ((eq name 'byte-run)
+            (nelisp-boot-image--byte-run-bake
+             (nelisp-boot-image--pcase-source source path name)))
+           ((memq name '(pcase gv help cl-macs cl-preloaded oclosure cl-generic nadvice backquote))
             (nelisp-boot-image--pcase-source source path name))
            ;; GNU's cl-lib.elc has `cl-old-struct-compat-mode' already expanded.
            ((eq name 'cl-lib) (nelisp-boot-image--expand-load-time-macros source))

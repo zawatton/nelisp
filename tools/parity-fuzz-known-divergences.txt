@@ -205,7 +205,6 @@ constrain-to-field
 continue-process
 controlling-tty-p
 coordinates-in-window-p
-copy-file
 copy-rectangle-as-kill
 copy-rectangle-to-register
 copy-region-as-kill

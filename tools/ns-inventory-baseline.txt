@@ -466,7 +466,7 @@ ns-collision 434
 # unguarded `(defvar process-environment nil ...)' in
 # lisp/nelisp-build-host.el (a host-side build-tool file with its own
 # getenv/setenv sandbox, predates this segment and is out of its scope).
-ns-collision-divergent 897
+ns-collision-divergent 898
 # 133 -> 135 on 2026-10-20 (prim-alias): indirect-variable and
 # internal-delete-indirect-variable gain native-only standalone facades;
 # foundation retains fboundp-gated registry fallbacks. defvaralias already
@@ -852,7 +852,7 @@ ns-collision-divergent 897
 # 2026-11-09 (integ/hub-owner-20261109): +4 -- the GNU-named prelude
 # definitions `xor', `subr-name', `subr-primitive-p', `primitive-function-p'
 # (S3, 48342b978), measured against the hub tree 3bdf30706.
-ns-prefix-violation 2427
+ns-prefix-violation 2430
 # 328 -> 329 on 2026-10-20 (prim-alias): the same GNU public built-in
 # variable is intentionally initialized in the buffer-local provider.
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
@@ -1070,7 +1070,18 @@ ns-prefix-violation 2427
 # and lisp/nelisp-artifact.el declares nl--with-handlers (the expansion
 # target of nl-handler-bind, now required at compile time).  Dropping
 # them returns those warnings to the lisp-byte-compile gate instead.
-ns-private-escape 2444
+# 2026-11-20: 2444 -> 2447 (+3).  scripts/nelisp-boot-image.el bakes byte-run.el's
+# `defun' expander and `byte-run--parse-body' as bytecode (lane F2) and reads the
+# opcode tables of scripts/nelisp-prelude-bytecode.el to refuse unsupported bodies:
+# `nelisp-prelude-bytecode--opcodes', `--decode-opcodes' and `--nested-unsupported',
+# the same build-time pairing as its existing `--top-level-spans' use.  The base
+# tree's own excess (2446) is not raised here.
+# 2026-11-21: ns-private-escape 2447 -> 2449 (+2), both from lisp/nelisp-function-info.el
+# (982ed65ac): it reads the runtime-private `nelisp--closure-p' and `nelisp--closure-cons'
+# (owner scripts/nelisp-stdlib-prelude.el) to recover a closure's canonical backing form.
+# The calls are guarded by fboundp / `nelisp-function--test', and there is no public
+# accessor that preserves the captured-cell identity.
+ns-private-escape 2449
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
@@ -1318,6 +1329,7 @@ pinned-collision ns-collision	prog1	lisp/nelisp-stdlib-eval-special.el scripts/n
 pinned-collision ns-collision	prog2	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	push	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	reverse	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	copy-file	packages/emacs-lib-core/src/emacs-fileio-builtins.el scripts/nelisp-stdlib-prelude.el	d849cddb3b58
 pinned-collision ns-collision-divergent	save-excursion	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	c6b515d43a7b
 pinned-collision ns-collision-divergent	sequencep	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	2a196e42ac02
 pinned-collision ns-collision	set-buffer-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
@@ -2129,7 +2141,8 @@ pinned-collision ns-collision-divergent	assoc-default	packages/emacs-lib-core/sr
 pinned-collision ns-collision-divergent	assoc-string	packages/emacs-lib-core/src/emacs-string.el scripts/nelisp-stdlib-prelude.el	e141a64a3734
 pinned-collision ns-collision-divergent	assq	lisp/nelisp-stdlib-search.el packages/emacs-lib-core/src/emacs-list.el scripts/nelisp-stdlib-prelude.el	dd3b123a8507
 pinned-collision ns-collision-divergent	autoload	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	c7b28080d10e
-pinned-collision ns-collision-divergent	autoload-do-load	packages/emacs-lib-core/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	839b94897348
+# 2026-11-17: autoload-do-load re-pinned (839b94897348 -> a1b95fb17113): the prelude definition became a thin dispatcher over nelisp--autoload-do-load-1 so its common path is adopted as bytecode; the divergence from emacs-eval.el is unchanged in kind.
+pinned-collision ns-collision-divergent	autoload-do-load	packages/emacs-lib-core/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	a1b95fb17113
 pinned-collision ns-collision-divergent	back-to-indentation	packages/emacs-lib-core/src/regi.el scripts/nelisp-stdlib-prelude.el	7759c3e114ce
 pinned-collision ns-collision-divergent	backquote	packages/emacs-lib-core/src/emacs-backquote.el packages/emacs-lib-core/src/emacs-parity-macros2.el	401dfa22d712
 pinned-collision ns-collision-divergent	backward-char	packages/emacs-lib-core/src/emacs-buffer-builtins.el packages/emacs-lib-core/src/emacs-stub-bulk.el packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	707dad9e29fd
@@ -2972,3 +2985,14 @@ pinned-collision ns-collision-divergent	type-of	lisp/nelisp-stdlib-misc.el scrip
 # (88b16f523): vendor/emacs-lisp/indent.el and org/ob-* define names outside
 # this tree's prefix rules and reach other files' private names, as GNU's
 # own code does.  vendor/ is not edited here, so the counts are raised.
+#
+# 2026-11-15: ns-collision-divergent 897 -> 898 and ns-prefix-violation 2427 -> 2428
+# come from the standalone prelude's new guarded `copy-file' (hostcopy slice).
+# The only other definition, emacs-lib-core's install-guarded MVP, is not part
+# of the standalone prelude path and differs (no directory/same-file checks).
+#
+# 2026-11-17: ns-prefix-violation 2428 -> 2430 come from the standalone
+# prelude's late GNU 31.1 `with-current-buffer' and `with-temp-buffer'
+# macros (local-lambda/macroexp slice). They are genuine GNU names that the
+# stdlib prelude must define after `save-current-buffer' gets its special
+# form, so they sit outside the file's inferred `nelisp-' prefix.

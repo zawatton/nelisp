@@ -38,11 +38,15 @@
                  (mapcar #'swf--host (cdr form))))))
 (defun swf--sar (x n) (ash x (- n)))
 
-(defun swf--run (key mode pairs hashes next buckets &optional fast target-limit)
+(defun swf--run (key mode pairs hashes next buckets &optional fast target-limit direct stale)
   "Execute the production indexed search or opcode arm on checked storage.
 The small memory model supplies table layout, identity hashing and eq/eql
 semantics; the collision walk and all opcode state updates are production IR."
-  (let* ((table 8192) (meta 12288) (mem 4096) (sp 2) (pc 0)
+  ;; DIRECT makes TABLE and its meta vector direct vectorlike words (low bits
+  ;; 6) so the production code reads the meta and index slots inline and
+  ;; skips `nl_ht_identity_sync' while the table's epoch matches the global
+  ;; one; STALE makes the table's epoch differ, which must take the sync call.
+  (let* ((table (if direct 8198 8192)) (meta (if direct 12294 12288)) (mem 4096) (sp 2) (pc 0)
          (length (or target-limit 128)) (go 128) (back 255)
          (a 0) (b 0) (branch 0) (fused 0) (target 0) (ref 0) (word 0) (cmp 0)
          (probes 0) (comparisons 0) (syncs 0))
@@ -59,7 +63,14 @@ semantics; the collision walk and all opcode state updates are production IR."
               ((symbol-function 'ptr-read-u64)
                (lambda (p off)
                  (let ((a (+ p off)))
-                   (cond ((= a (+ 12296 88)) #x20000)
+                   (cond ((and direct (= a 8200)) meta)
+                         ((and direct (= a 8208)) #x50000)
+                         ((and direct (= a 12344)) (1+ (* 4 (if stale 76 77))))
+                         ((and direct (= a 12352)) (1+ (* 4 12288)))
+                         ((= a 268436376) 77)
+                         ;; kind byte of a symbol object key (word - 6)
+                         ((and (memq (+ a 6) '(102 110 118)) (= off 0)) 4)
+                         ((= a (+ 12296 88)) #x20000)
                          ((= a (+ 12296 96)) #x30000)
                          ((= a (+ 12296 112)) #x40000)
                          ((= a #x50000) (ash (length buckets) 8))
@@ -73,6 +84,7 @@ semantics; the collision walk and all opcode state updates are production IR."
                           (1+ (* 4 (aref buckets (/ (- a #x50008) 8)))))
                          (t (error "Unexpected raw read %S" a))))))
               ((symbol-function 'nl_ht_hash) (lambda (k _) (ash k -2)))
+              ((symbol-function 'nl_ht_symbol_hash) (lambda (k) (ash k -2)))
               ((symbol-function 'nl_ht_hash_index) (lambda (h n) (mod h n)))
               ((symbol-function 'nl_so_p)
                (lambda (w) (if (memq w '(102 110 118)) 1 0)))
@@ -129,6 +141,12 @@ semantics; the collision walk and all opcode state updates are production IR."
   ;; Keep generic find_index's eq-before-stored-hash behavior for views.
   (should (equal (swf--run 120 1 [102 29] [31] [-1] [0]) '(1 1 1 1)))
   (should (equal (swf--run 128 2 [136 29] [32] [-1] [0]) '(1 1 2 1))))
+;; The inline direct-table read must skip the sync call only while the table
+;; is current, and still find the same entries (symbol key, plain key).
+(ert-deftest swf-direct-table-skips-sync-only-when-current ()
+  (should (equal (swf--run 110 1 [102 29 110 33] [27 27] [1 -1] [0] nil nil t) '(2 2 0 0)))
+  (should (equal (swf--run 110 1 [102 29 110 33] [27 27] [1 -1] [0] nil nil t t) '(2 2 0 1)))
+  (should (equal (swf--run 102 1 [102 29] [25] [-1] [0] nil nil t) '(1 1 0 0))))
 (ert-deftest swf-opcode-default-decline-and-invalid-target ()
   (should (equal (cl-subseq (swf--run 5 1 [9 29] [2] [-1] [0] t) 0 4)
                  '(1 0 128 255)))

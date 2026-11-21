@@ -204,7 +204,10 @@
 # (`--add-vectors', `--rollback-vectors'): each handler records its failure
 # (retained cleanup, releasing unit, retained record list), mirroring the
 # pinned symbol/string handlers.
-silent-fallback 429
+# 2026-11-21: +4 (429 -> 433), one per pinned-site below: three decode probes in
+# lisp/nelisp-function-info.el (982ed65ac) and the build-time compile of the
+# byte-run bake in scripts/nelisp-boot-image.el (61ecf6481).
+silent-fallback 433
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
@@ -378,7 +381,8 @@ pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-
 # (`--add-vectors', `--rollback-vectors'): each handler records its failure
 # (retained cleanup, releasing unit, retained record list), mirroring the
 # pinned symbol/string handlers.
-bare-handler 231
+# 2026-11-21: +4 (231 -> 235), the bare twins of the four silent-fallback sites above.
+bare-handler 235
 pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
@@ -901,7 +905,7 @@ pinned-site silent-fallback	nelisp-prelude-bytecode.el	defun nelisp-prelude-byte
 pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--prelude-bytecode-source	09db60440f5b 1
 pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--prelude-compiled-defun	e3f2648caa3a 1
 pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--vendor-menu-bar-final-items-source	09db60440f5b 1
-pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun autoload-do-load	50ac4a8a8727 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--autoload-do-load-1	50ac4a8a8727 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	7100283652a8 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	6b8661b10f65 1
 pinned-site silent-fallback	nelisp-vendor-bytecode-triparity.el	defun nelisp-vendor-bytecode-triparity--child-form	04786ea61955 1
@@ -1259,3 +1263,26 @@ pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--too
 pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--toolchain-elc-setup	707fa542433b 1
 pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--toolchain-elc-setup	7a85c44cdaf9 1
 pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--toolchain-elc-setup	8bc0fa1e2974 2
+#
+# 2026-11-21: lisp/nelisp-function-info.el (982ed65ac).  Each handler turns a
+# host probe failure into a structured REASON in the (VALUE . REASON) result the
+# caller reports, so the fall is returned, not swallowed:
+#   - nelisp-function--resolve: `indirect-function' failing after the walk proved
+#     the chain acyclic keeps the walked final cell;
+#   - nelisp-function--decode-native-closure: a failing `nelisp--closure-cons'
+#     yields the `malformed-shape' reason;
+#   - nelisp-function--decode-interpreted: a failing slot `aref' yields the
+#     `malformed-shape' reason.
+pinned-site bare-handler	nelisp-function-info.el	defun nelisp-function--decode-interpreted	f4fa5a20c0db 1
+pinned-site bare-handler	nelisp-function-info.el	defun nelisp-function--decode-native-closure	5d15a98020cd 1
+pinned-site bare-handler	nelisp-function-info.el	defun nelisp-function--resolve	da3e6c7d4f46 1
+pinned-site silent-fallback	nelisp-function-info.el	defun nelisp-function--decode-interpreted	b3847b851843 1
+pinned-site silent-fallback	nelisp-function-info.el	defun nelisp-function--decode-native-closure	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-function-info.el	defun nelisp-function--resolve	e3f2648caa3a 1
+#
+# 2026-11-21: scripts/nelisp-boot-image.el `nelisp-boot-image--byte-run-compile'
+# (61ecf6481).  A `byte-compile' error yields nil and the byte-run bake then
+# leaves that defun's source text in the boot image unchanged, so the result is
+# the same definition, interpreted instead of compiled; no wrong answer results.
+pinned-site bare-handler	nelisp-boot-image.el	defun nelisp-boot-image--byte-run-compile	7ec43bacc8d3 1
+pinned-site silent-fallback	nelisp-boot-image.el	defun nelisp-boot-image--byte-run-compile	e3f2648caa3a 1

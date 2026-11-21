@@ -314,7 +314,10 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (dolist (k keys)
       (setq hr--calls nil)
       (should (= (wf_bytecode_switch_find tb (hr--fix k) 1) (1+ (cl-position k keys))))
-      (should (equal (hr--helper-calls) '(nl_ht_data_slot nl_ht_meta_slot))))
+      ;; a direct vectorlike table has its meta and index slots read inline
+      ;; (the same physical reads `nl_ht_meta_slot'/`nl_ht_data_slot' do), so
+      ;; no generic accessor runs at all
+      (should (equal (hr--helper-calls) nil)))
     (should (= (wf_bytecode_switch_find tb (hr--fix 42) 1) 0))
     ;; a symbol object key, hashed by the stubbed symbol hash
     (let* ((s (hr--sym "foo")) (meta (cadr b)) (pairs (hr--vget meta 11)))

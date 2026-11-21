@@ -30,7 +30,10 @@
                        (or (string-prefix-p "nelisp--fx-" (symbol-name (cadr form)))
                            ;; The compiler's helpers and state (Doc 243 S5).
                            (string-prefix-p "nelisp--fxc-" (symbol-name (cadr form)))
-                           (eq (cadr form) 'nelisp-fx-enabled)))
+                           (eq (cadr form) 'nelisp-fx-enabled)
+                           ;; 14bfa2a7f: the local-lambda inliner's switches.
+                           (memq (cadr form) '(nelisp-fx-inline-local-lambdas
+                                               nelisp-fx-inline-inner-binders))))
               (eval form t))))
       (end-of-file nil))))
 
