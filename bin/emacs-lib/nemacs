@@ -44,6 +44,8 @@
 #   NEMACS_BOOTSTRAP_REPL optional generated NeLisp REPL bootstrap input
 #                    (default: $NEMACS_HOME/build/nemacs-bootstrap.repl)
 #   NEMACS_RUNTIME_IMAGE optional NeLisp .nlri runtime image for --driver=nelisp
+#   NEMACS_RUNTIME_DUMP optional saved heap (make bake-runtime-dump) started with
+#                    --cold-load-from instead of replaying the runtime image
 #                    (set to `auto' to choose build/*.nlri by mode)
 #   NEMACS_COLD_IMAGE flat-arena cold image output/cache path
 #                    (default: ${XDG_CACHE_HOME:-$HOME/.cache}/nemacs/)
@@ -1056,6 +1058,13 @@ case "$NEMACS_DRIVER" in
     fi
     ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
     [[ "$NEMACS_NELISP_MEMORY" == "unlimited" ]] || ulimit -v "$NEMACS_NELISP_MEMORY" 2>/dev/null || true
+    # A saved runtime dump (make bake-runtime-dump) beats every replay route.
+    if [[ -n "${NEMACS_RUNTIME_DUMP:-}" && -r "$NEMACS_RUNTIME_DUMP" &&
+          "$(nelisp_driver_kind)" == "standalone-reader" ]]; then
+      exec "$NEMACS_NELISP" --cold-load-from "$NEMACS_RUNTIME_DUMP" --eval \
+        "(progn (nemacs-runtime-dump-reinit) $BOOT_FORM
+)"
+    fi
     cold_image_ready=0
     cold_skipped_by_policy=0
     if cold_cache_disabled_p; then
