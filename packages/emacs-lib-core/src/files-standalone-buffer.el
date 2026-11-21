@@ -492,10 +492,26 @@ START and END may be integers or markers and are order-independent."
          (text (files--buffer-string-value)))
     (substring text (min from to) (max from to))))
 
+(defconst files--native-buffer-read-functions
+  '(point point-min point-max goto-char char-before char-after
+    following-char preceding-char)
+  "Buffer read primitives the standalone runtime implements natively.
+GNU implements these in C (editfns.c, buffer.c); NeLisp runs them as native
+subrs on the current buffer.  A Lisp fallback layered on top only adds call
+overhead, so the fallback is skipped while the native subr is in place.")
+
+(defun files--native-buffer-read-subr-p (symbol)
+  "Return non-nil when SYMBOL is a native buffer read primitive in place."
+  (and files--standalone-runtime-p
+       (memq symbol files--native-buffer-read-functions)
+       (fboundp symbol)
+       (subrp (symbol-function symbol))))
+
 (defun files--install-fallback-function-p (symbol)
   "Return non-nil when fallback SYMBOL should be installed."
-  (or files--standalone-runtime-p
-      (not (fboundp symbol))))
+  (and (or files--standalone-runtime-p
+           (not (fboundp symbol)))
+       (not (files--native-buffer-read-subr-p symbol))))
 
 (when (files--install-fallback-function-p 'point-min)
   (defun point-min ()

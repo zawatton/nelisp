@@ -760,6 +760,27 @@ runaway forms rather than the editing-shim limit."
            (oversized (files-test--oversized-top-level-forms file (cdr spec))))
       (should (equal oversized nil)))))
 
+(ert-deftest files-test/native-buffer-read-subrs-not-shadowed ()
+  ;; GNU implements point/goto-char/char-after in C; standalone NeLisp runs
+  ;; them as native subrs.  The Lisp fallback must not sit on top of them
+  ;; (it cost 8-50 us per call against ~0.4 us native).
+  (skip-unless (and files--standalone-runtime-p (fboundp 'nelisp--repr)))
+  (dolist (name '(point point-min point-max following-char preceding-char))
+    (should (subrp (symbol-function name))))
+  (with-temp-buffer
+    (insert "hello")
+    (should (= (point) 6))
+    (should (= (goto-char 100) 100))
+    (should (= (point) 6))
+    (should (eq (char-after 1) ?h))
+    (should (null (char-after 6)))
+    (should (eq (char-before 6) ?o))
+    (should (= (following-char) 0))
+    (should (= (preceding-char) ?o))
+    (let ((n 2000) (i 0) (t0 (float-time)))
+      (while (< i n) (point) (point-min) (point-max) (following-char) (setq i (1+ i)))
+      (should (< (/ (* 1e6 (- (float-time) t0)) n) 20.0)))))
+
 (provide 'files-test)
 
 ;;; files-test.el ends here
