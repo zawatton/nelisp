@@ -1481,17 +1481,25 @@ help/completion/popup workflow."
   (emacs-window--ensure-root)
   (let* ((w (or window (emacs-window-selected-window)))
          (buf (emacs-window-buffer w)))
-    (if (> (length (emacs-window-window-list)) 1)
+    ;; The minibuffer window is not part of the ordinary tree, so it does
+    ;; not count as a second window to fall back on.
+    (if (> (length (cl-remove-if
+                    (lambda (win) (emacs-window-window-parameter win 'minibuffer))
+                    (emacs-window-window-list)))
+           1)
         (emacs-window-delete-window w)
-      (let ((other (cl-loop for (_name . b) in nelisp-ec--buffers
-                            when (not (eq b buf)) return b)))
+      (let ((other (cl-loop for b in (buffer-list)
+                            when (and (not (eq b buf))
+                                      (not (string-prefix-p " " (buffer-name b))))
+                            return b)))
         (when other
           (emacs-window-set-window-buffer w other)
-          (nelisp-ec-set-buffer other))))
-    (when (and kill (nelisp-ec-buffer-p buf)
+          (when (eq w (emacs-window-selected-window))
+            (set-buffer other)))))
+    (when (and kill (buffer-live-p buf)
                ;; only kill once it is no longer displayed anywhere
-               (not (emacs-window-get-buffer-window buf)))
-      (nelisp-ec-kill-buffer buf))
+               (not (get-buffer-window buf)))
+      (kill-buffer buf))
     nil))
 
 ;;; Buffer fitting and tree-preserving resizing.

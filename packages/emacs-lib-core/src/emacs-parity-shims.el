@@ -299,13 +299,6 @@ has no lazy `define-coding-system' registry to trigger."
     (put mode 'derived-mode-extra-parents extra-parents)
     (derived-mode--flush mode)))
 
-(unless (fboundp 'completion-table-case-fold)
-  (defun completion-table-case-fold (table &optional dont-fold)
-    "Return TABLE made case-insensitive (case-sensitive if DONT-FOLD)."
-    (lambda (string pred action)
-      (let ((completion-ignore-case (not dont-fold)))
-        (complete-with-action action table string pred)))))
-
 (unless (fboundp 'easy-mmode-define-navigation)
   (defmacro easy-mmode-define-navigation (base re &optional name endfun _narrowfun
                                                &rest body)

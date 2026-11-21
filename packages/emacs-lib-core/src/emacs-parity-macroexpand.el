@@ -143,7 +143,16 @@ expander (either a function or a `(macro . EXPANDER)' cell)."
 Binds the global `macroexpand-all-environment' during expansion so macros
 that consult it (e.g. `rx' via `:rx-locals') see the local definitions."
   (let ((macroexpand-all-environment environment))
-    (macroexpand-all--rec form)))
+    (if (fboundp 'macroexp--expand-all)
+        ;; Genuine GNU macroexp.el, which also applies compiler macros: the
+        ;; `cl--block-wrapper' one expands its body with `macroexpand-all' and
+        ;; keeps the block's `catch' only if a `cl--block-throw' compiler macro
+        ;; ran inside, so a walker that skips compiler macros drops the `catch'
+        ;; and leaves an unbound `--cl-block-NAME--' tag.
+        (let ((macroexp--dynvars (and (boundp 'macroexp--dynvars)
+                                      macroexp--dynvars)))
+          (macroexp--expand-all form))
+      (macroexpand-all--rec form))))
 
 (defun macrop (object)
   "Return non-nil if OBJECT (a symbol or function object) is a macro."

@@ -464,9 +464,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
     ;; for project.el and anything calling `hack-dir-local-variables'.
     "emacs-files-gnu.el"
-    ;; GNU minibuffer.el completion-table-dynamic (generated, verbatim) for
-    ;; elisp-mode.el, which calls it while loading.
-    "emacs-minibuffer-gnu.el"
     ;; GNU window.el window-group functions (generated, verbatim) for
     ;; isearch.el, which reads the window-group start on every search step.
     "emacs-window-gnu.el"
@@ -593,6 +590,11 @@ These are existing vendor implementations, not local reimplementations.")
     ;; `enable-theme' / `disable-theme' all run and behave correctly against
     ;; a real `defcustom'.
     "emacs-lisp/custom.el"
+    ;; Genuine GNU minibuffer.el (the pinned unmodified copy): the Lisp-level
+    ;; completion API (styles, completion-in-region, completion tables).  It
+    ;; needs the real `defcustom' (:set/:initialize) from custom.el above and must
+    ;; load before elisp-mode.el, which calls `completion-table-dynamic'.
+    "staged-emacs-lisp/minibuffer.el"
     ;; S2 coverage batch 5 (2026-09-28): eight more GNU Emacs 31.1 vendor
     ;; files, verified via a raw standalone `load' probe against the batch-4
     ;; bundle before being added here -- each of these loads with zero

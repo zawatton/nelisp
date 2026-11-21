@@ -62,9 +62,6 @@
 (unless (boundp 'stipple-pixmap) (defvar stipple-pixmap nil))
 (unless (boundp 'lisp-mode-symbol-regexp)
   (defvar lisp-mode-symbol-regexp "\\(?:\\sw\\|\\s_\\|\\\\.\\)+"))
-(unless (boundp 'completion-styles-alist) (defvar completion-styles-alist nil))
-;; GNU minibuffer.el default; read at load time by gnus-util (via url.el).
-(defvar completion-styles '(basic partial-completion emacs22))
 (unless (boundp 'completion-ignored-extensions)
   (defvar completion-ignored-extensions '(".o" ".elc" "~" ".bin" ".obj")))
 (unless (boundp 'face-attribute-name-alist) (defvar face-attribute-name-alist nil))
@@ -309,13 +306,6 @@ if OBJECT does not identify a displayed buffer or a live window."
 (unless (boundp 'baud-rate)
   (defvar baud-rate 0
     "The output baud rate of the terminal (0 when there is no tty)."))
-
-;; GNU minibuffer.el `minibuffer-message-timeout' (default 2): isearch.el
-;; saves and rebinds it on every `isearch-mode' entry.  Guarded so that GNU's
-;; own defcustom owns the value once minibuffer.el is loaded.
-(unless (boundp 'minibuffer-message-timeout)
-  (defvar minibuffer-message-timeout 2
-    "How long to display an echo-area message when the minibuffer is active."))
 
 ;; GNU keyboard.c `last-event-frame': the frame of the last input event
 ;; (nil before any event, `macro' for keyboard-macro events).  isearch.el

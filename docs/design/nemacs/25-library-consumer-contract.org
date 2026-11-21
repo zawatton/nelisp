@@ -1466,14 +1466,9 @@ minibuffer variables through =emacs-minibuffer-history=,
 =emacs-minibuffer-completion-ignore-case=,
 =emacs-minibuffer-feed-input=, and =emacs-minibuffer-reset=; core and
 typed readers through =emacs-minibuffer-read-from-minibuffer=,
-=emacs-minibuffer-read-string=,
-=emacs-minibuffer-read-no-blanks-input=,
-=emacs-minibuffer-read-key=, =emacs-minibuffer-read-buffer=,
-=emacs-minibuffer-read-file-name=,
-=emacs-minibuffer-read-directory-name=,
-=emacs-minibuffer-read-passwd=, and
-=emacs-minibuffer-read-number=; confirmation and completion through
-=emacs-minibuffer-y-or-n-p=, =emacs-minibuffer-yes-or-no-p=,
+=emacs-minibuffer-read-string=, and
+=emacs-minibuffer-read-buffer=; confirmation and completion through
+=emacs-minibuffer-yes-or-no-p=,
 =emacs-minibuffer-completing-read=,
 =emacs-minibuffer-try-completion=,
 =emacs-minibuffer-all-completions=, and
@@ -1483,11 +1478,8 @@ typed readers through =emacs-minibuffer-read-from-minibuffer=,
 =emacs-minibuffer-minibuffer-window=,
 =emacs-minibuffer-minibuffer-prompt=,
 =emacs-minibuffer-minibuffer-contents=,
-=emacs-minibuffer-minibuffer-prompt-end=,
-=emacs-minibuffer-minibuffer-prompt-width=,
-=emacs-minibuffer-exit-minibuffer=,
-=emacs-minibuffer-abort-recursive-edit=, and
-=emacs-minibuffer-minibuffer-message=; GUI backend registration and
+=emacs-minibuffer-minibuffer-prompt-end=, and
+=emacs-minibuffer-abort-recursive-edit=; GUI backend registration and
 context sharing through =emacs-minibuffer-gui-backend=,
 =emacs-minibuffer-gui-standard-backend-keys=,
 =emacs-minibuffer-gui-register-backend=,
@@ -1602,14 +1594,7 @@ emacs-minibuffer-gui-completing-read,
 emacs-minibuffer-gui-start-purpose-read,
 emacs-minibuffer-read-from-minibuffer,
 emacs-minibuffer-read-string,
-emacs-minibuffer-read-no-blanks-input,
-emacs-minibuffer-read-key,
 emacs-minibuffer-read-buffer,
-emacs-minibuffer-read-file-name,
-emacs-minibuffer-read-directory-name,
-emacs-minibuffer-read-passwd,
-emacs-minibuffer-read-number,
-emacs-minibuffer-y-or-n-p,
 emacs-minibuffer-yes-or-no-p,
 emacs-minibuffer-completing-read,
 emacs-minibuffer-try-completion,
@@ -1621,10 +1606,7 @@ emacs-minibuffer-minibuffer-window,
 emacs-minibuffer-minibuffer-prompt,
 emacs-minibuffer-minibuffer-contents,
 emacs-minibuffer-minibuffer-prompt-end,
-emacs-minibuffer-minibuffer-prompt-width,
-emacs-minibuffer-exit-minibuffer,
 emacs-minibuffer-abort-recursive-edit,
-emacs-minibuffer-minibuffer-message,
 emacs-minibuffer-feed-input,
 emacs-minibuffer-reset,
 emacs-minibuffer-gui-register-backend,
@@ -1703,14 +1685,7 @@ emacs-minibuffer-gui-completing-read
 emacs-minibuffer-gui-start-purpose-read
 emacs-minibuffer-read-from-minibuffer
 emacs-minibuffer-read-string
-emacs-minibuffer-read-no-blanks-input
-emacs-minibuffer-read-key
 emacs-minibuffer-read-buffer
-emacs-minibuffer-read-file-name
-emacs-minibuffer-read-directory-name
-emacs-minibuffer-read-passwd
-emacs-minibuffer-read-number
-emacs-minibuffer-y-or-n-p
 emacs-minibuffer-yes-or-no-p
 emacs-minibuffer-completing-read
 emacs-minibuffer-try-completion
@@ -1722,10 +1697,7 @@ emacs-minibuffer-minibuffer-window
 emacs-minibuffer-minibuffer-prompt
 emacs-minibuffer-minibuffer-contents
 emacs-minibuffer-minibuffer-prompt-end
-emacs-minibuffer-minibuffer-prompt-width
-emacs-minibuffer-exit-minibuffer
 emacs-minibuffer-abort-recursive-edit
-emacs-minibuffer-minibuffer-message
 emacs-minibuffer-feed-input
 emacs-minibuffer-reset
 emacs-minibuffer-gui-register-backend

@@ -98,24 +98,10 @@
 
 ;;;; F. read-number parses integer input
 
-(ert-deftest emacs-minibuffer-builtins-test/read-number-integer ()
-  (emacs-minibuffer-builtins-test--with-fresh-world
-    (emacs-minibuffer-feed-input "42")
-    (should (= 42 (emacs-minibuffer-read-number "N: " 0)))))
 
 ;;;; G. y-or-n-p truthy / falsy
 
-(ert-deftest emacs-minibuffer-builtins-test/y-or-n-p-truthy ()
-  (emacs-minibuffer-builtins-test--with-fresh-world
-    (cl-letf (((symbol-function 'emacs-minibuffer--y-or-n-default)
-               (lambda (_prompt) t)))
-      (should (emacs-minibuffer-y-or-n-p "Confirm? ")))))
 
-(ert-deftest emacs-minibuffer-builtins-test/y-or-n-p-falsy ()
-  (emacs-minibuffer-builtins-test--with-fresh-world
-    (cl-letf (((symbol-function 'emacs-minibuffer--y-or-n-default)
-               (lambda (_prompt) nil)))
-      (should-not (emacs-minibuffer-y-or-n-p "Confirm? ")))))
 
 ;;;; H. yes-or-no-p — same plug-in path
 
@@ -126,15 +112,6 @@
 
 ;;;; I. read-no-blanks-input rejects whitespace
 
-(ert-deftest emacs-minibuffer-builtins-test/read-no-blanks-input-signals-on-blanks ()
-  (emacs-minibuffer-builtins-test--with-fresh-world
-    (emacs-minibuffer-feed-input "no blanks")
-    (should-error (emacs-minibuffer-read-no-blanks-input "X: ")
-                  :type 'emacs-minibuffer-error))
-  (emacs-minibuffer-builtins-test--with-fresh-world
-    (emacs-minibuffer-feed-input "noblanks")
-    (should (equal "noblanks"
-                   (emacs-minibuffer-read-no-blanks-input "X: ")))))
 
 ;;;; J. minibuffer history accumulates (= via the `read-string-history' defvar)
 

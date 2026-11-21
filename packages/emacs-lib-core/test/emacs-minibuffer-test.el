@@ -61,20 +61,7 @@
     (should (string-equal "(1 2 3)"
                           (emacs-minibuffer-read-string "Str: ")))))
 
-(ert-deftest emacs-minibuffer-read-no-blanks-rejects-whitespace ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "has space")
-    (should-error (emacs-minibuffer-read-no-blanks-input "P: ")
-                  :type 'emacs-minibuffer-error)))
 
-(ert-deftest emacs-minibuffer-read-key-int-and-symbol ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input ?a 'f1 "bc")
-    (should (eq ?a (emacs-minibuffer-read-key)))
-    (should (eq 'f1 (emacs-minibuffer-read-key)))
-    ;; "bc" -> ?b consumed, ?c left as a 1-char string
-    (should (eq ?b (emacs-minibuffer-read-key)))
-    (should (eq ?c (emacs-minibuffer-read-key)))))
 
 ;;;; B. typed readers (6 tests)
 
@@ -92,52 +79,15 @@
       (should (string-equal "foo"
                             (emacs-minibuffer-read-buffer "Buf: "))))))
 
-(ert-deftest emacs-minibuffer-read-file-name-relative-prepends-dir ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "foo.txt")
-    (should (string-equal "/tmp/foo.txt"
-                          (emacs-minibuffer-read-file-name "F: " "/tmp")))))
 
-(ert-deftest emacs-minibuffer-read-directory-name-trailing-slash ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "subdir")
-    (should (string-equal "/tmp/subdir/"
-                          (emacs-minibuffer-read-directory-name
-                           "D: " "/tmp")))))
 
-(ert-deftest emacs-minibuffer-read-passwd-confirm-mismatch ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "first" "second")
-    (should-error (emacs-minibuffer-read-passwd "P: " t)
-                  :type 'emacs-minibuffer-error)))
 
-(ert-deftest emacs-minibuffer-read-passwd-confirm-match ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "same" "same")
-    (should (string-equal "same"
-                          (emacs-minibuffer-read-passwd "P: " t)))))
 
-(ert-deftest emacs-minibuffer-read-number-default-on-empty ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "")
-    (should (= 42 (emacs-minibuffer-read-number "N: " 42)))))
 
-(ert-deftest emacs-minibuffer-read-number-parses-integer ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "-7")
-    (should (= -7 (emacs-minibuffer-read-number "N: ")))))
 
 ;;;; C. confirmation (3 tests)
 
-(ert-deftest emacs-minibuffer-y-or-n-p-yes ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "y")
-    (should (emacs-minibuffer-y-or-n-p "Sure? "))))
 
-(ert-deftest emacs-minibuffer-y-or-n-p-no ()
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "n")
-    (should-not (emacs-minibuffer-y-or-n-p "Sure? "))))
 
 (ert-deftest emacs-minibuffer-yes-or-no-p-strict ()
   (emacs-minibuffer-test--with-fresh-world
@@ -298,15 +248,6 @@
     (should (null (emacs-minibuffer-test-completion
                    "APPLE" '("apple" "banana"))))))
 
-(ert-deftest emacs-minibuffer-completing-read-default-aliases ()
-  ;; Both names must resolve to the same underlying function object.
-  (should (eq (indirect-function 'emacs-minibuffer-completing-read-default)
-              (indirect-function 'emacs-minibuffer-completing-read)))
-  (emacs-minibuffer-test--with-fresh-world
-    (emacs-minibuffer-feed-input "banana")
-    (should (string-equal "banana"
-                          (emacs-minibuffer-completing-read-default
-                           "P: " '("apple" "banana") nil t)))))
 
 (ert-deftest emacs-minibuffer-completing-read-ignore-case ()
   (emacs-minibuffer-test--with-fresh-world
@@ -434,20 +375,15 @@
 
 (ert-deftest emacs-minibuffer-prompt-end-and-width ()
   (emacs-minibuffer-test--with-fresh-world
-    (let (mid-end mid-width)
+    (let (mid-end)
       (setq emacs-minibuffer--read-fn
             (lambda (_p _i _d _h _k _r)
-              (setq mid-end   (emacs-minibuffer-minibuffer-prompt-end)
-                    mid-width (emacs-minibuffer-minibuffer-prompt-width))
+              (setq mid-end (emacs-minibuffer-minibuffer-prompt-end))
               "x"))
       (emacs-minibuffer-read-from-minibuffer "Hi: ")
       ;; Hi:  is 4 chars + initial empty, so prompt-end = 5 (1-based, after prompt)
-      (should (= 5 mid-end))
-      (should (= 4 mid-width)))))
+      (should (= 5 mid-end)))))
 
-(ert-deftest emacs-minibuffer-message-returns-nil ()
-  (emacs-minibuffer-test--with-fresh-world
-    (should-not (emacs-minibuffer-minibuffer-message "msg %s" "ok"))))
 
 (ert-deftest emacs-minibuffer-stack-pop-on-error ()
   ;; Verify the unwind-protect pops a frame even when the reader signals.
@@ -1548,12 +1484,7 @@
            (paints 0)
            (emacs-minibuffer-redisplay-function (lambda () (setq paints (1+ paints)))))
       (should (equal "aXcd" (emacs-minibuffer-read-string "Live: " "old")))
-      (should (> paints 0)))
-    (let ((emacs-command-loop-input-poll-function (lambda (_timeout) 13))
-          (emacs-command-loop--unread-events nil)
-          (unread-command-events nil))
-      (should (equal "/fixture/" (emacs-minibuffer-read-directory-name
-                                  "Dir: " nil "/fixture/"))))))
+      (should (> paints 0)))))
 
 (ert-deftest emacs-minibuffer-live-provider-abort-and-queue-priority ()
   (require 'emacs-command-loop)
