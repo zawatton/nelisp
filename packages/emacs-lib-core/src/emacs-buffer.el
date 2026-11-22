@@ -2171,7 +2171,9 @@ Checks read-only text and shifts/expands text-property intervals."
   (let ((result (apply orig string properties)))
     (when (and (stringp string) (stringp result)
                (fboundp 'emacs-buffer-string-text-property))
-      (emacs-buffer-string-text-property 'copy string result)
+      ;; Copying runs from a string without sidecar state is a no-op.
+      (when (gethash string emacs-buffer--string-state)
+        (emacs-buffer-string-text-property 'copy string result))
       (when properties
         (emacs-buffer-string-text-property
          'add result 0 (length result) properties)))
@@ -2244,6 +2246,16 @@ Checks read-only text and shifts/expands text-property intervals."
     (when (stringp result)
       (emacs-buffer--copy-buffer-properties-to-string buffer start end result))
     result))
+
+(defun emacs-buffer--buffer-substring (start end &rest more)
+  "Native `buffer-substring' that copies sidecar properties to the result.
+Installed in place of the native function, not as advice (see
+`emacs-buffer--propertize')."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'buffer-substring (+ 2 (length more))))
+    (emacs-buffer--native-buffer-substring-around
+     #'emacs-buffer--native-buffer-substring start end)))
 
 (defun emacs-buffer--native-buffer-substring-around (orig start end &rest args)
   "Preserve sidecar text properties returned by native `buffer-substring'."
@@ -2446,11 +2458,20 @@ read back after a subsequent insertion.  Failed erasures retain their state."
   (advice-add 'insert :around #'emacs-buffer--native-insert-around-advice))
 
 ;; A native `propertize' can attach properties that the standalone sidecar
-;; cannot enumerate.  Mirror its explicit property arguments without replacing
-;; the native function cell, so later insertion can preserve the ranges.
+;; cannot enumerate.  Mirror its explicit property arguments around the native
+;; function, so later insertion can preserve the ranges.  Like `substring',
+;; it is wrapped by a named function rather than :around advice, whose
+;; dispatch cost about 5 us a call; the native is captured once.
+(defun emacs-buffer--propertize (string &rest properties)
+  "Native `propertize' that mirrors PROPERTIES into the string sidecar."
+  (apply #'emacs-buffer--propertize-around-advice
+         #'emacs-buffer--native-propertize string properties))
+
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'propertize))
-  (advice-add 'propertize :around #'emacs-buffer--propertize-around-advice))
+  (unless (fboundp 'emacs-buffer--native-propertize)
+    (defalias 'emacs-buffer--native-propertize (symbol-function 'propertize)))
+  (defalias 'propertize (symbol-function 'emacs-buffer--propertize)))
 
 (when (fboundp 'nelisp--buffer-multibyte-p)
   (when (fboundp 'buffer-string)
@@ -2459,8 +2480,11 @@ read back after a subsequent insertion.  Failed erasures retain their state."
   (when (and (fboundp 'buffer-substring)
              (not (eq (indirect-function 'buffer-substring)
                       (indirect-function 'nelisp-ec-buffer-substring))))
-    (advice-add 'buffer-substring :around
-                #'emacs-buffer--native-buffer-substring-around))
+    (unless (fboundp 'emacs-buffer--native-buffer-substring)
+      (defalias 'emacs-buffer--native-buffer-substring
+        (symbol-function 'buffer-substring)))
+    (defalias 'buffer-substring
+      (symbol-function 'emacs-buffer--buffer-substring)))
   ;; Capture each native function once, so loading this file again does
   ;; not wrap the wrapper.
   (when (fboundp 'copy-sequence)
