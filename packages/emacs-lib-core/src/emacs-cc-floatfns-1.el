@@ -33,7 +33,7 @@ Resolving searches the library directories, about 120 us a call."
   "Call OPERATION in libm with numeric ARG through the typed FFI."
   (unless (numberp arg)
     (signal 'wrong-type-argument (list 'numberp arg)))
-  (unless (memq operation '(acos asin))
+  (unless (memq operation '(acos asin exp log log10))
     (error "Unsupported libm operation: %S" operation))
   (unless (and (fboundp 'nl-ffi-call)
                (fboundp 'nl-ffi-loader--resolve-soname)
@@ -105,5 +105,70 @@ Resolving searches the library directories, about 120 us a call."
       "Return the tangent of ARG.\n\n(fn ARG)"
       (unless (numberp arg) (signal 'wrong-type-argument (list 'numberp arg)))
       (/ (sin arg) (cos arg)))))
+
+;; gnu562: GNU's floatfns.c computes exp and log with libm.  On a reader whose
+;; own libm arms are not linked (the static Linux build), the typed FFI still
+;; reaches libm's plain exp, log and log10 symbols (sin, cos, tan, atan and
+;; log2 are IFUNC symbols, which the FFI loader cannot resolve).  Calling them
+;; gives GNU's results to the last bit at about 14 us a call, against the
+;; double-double series' 56-118 us.  An operation whose FFI call fails is
+;; turned off for the session and takes the definition installed before
+;; (`emacs-cc-floatfns--lisp-exp' / `--lisp-log').  Type errors are signalled
+;; first, as GNU does; like GNU's extract_float, a bignum goes in as the
+;; nearest double.  Log to base 2 keeps the Lisp definition (GNU uses log2).  Where `nl-ffi-call' itself
+;; reaches libm (the reader's native arms are live), nothing is wrapped.
+(defvar emacs-cc-floatfns--libm-off nil
+  "libm operations whose FFI call failed in this session.")
+
+(defun emacs-cc-floatfns--libm-arg-p (x)
+  "Non-nil when X goes to libm: a number, converted as GNU's extract_float."
+  (numberp x))
+
+(defun emacs-cc-floatfns--libm (operation arg)
+  "OPERATION of the number ARG in libm, or nil when that call is unavailable."
+  (unless (memq operation emacs-cc-floatfns--libm-off)
+    (let ((value (condition-case nil
+                     (emacs-cc-floatfns--typed-libm operation (float arg))
+                   (error nil))))
+      (if (floatp value) value
+        (push operation emacs-cc-floatfns--libm-off)
+        nil))))
+
+(defun emacs-cc-floatfns--exp (arg)
+  "Return the exponential base e of ARG, through libm when available.\n\n(fn ARG)"
+  (unless (numberp arg) (signal 'wrong-type-argument (list 'numberp arg)))
+  (or (and (emacs-cc-floatfns--libm-arg-p arg)
+           (emacs-cc-floatfns--libm 'exp arg))
+      (emacs-cc-floatfns--lisp-exp arg)))
+
+(defun emacs-cc-floatfns--log (arg &optional base)
+  "Return the natural logarithm of ARG, or its logarithm to BASE.
+Through libm when available: log10 for base 10, else log (ARG) / log (BASE),
+as GNU's Flog does.\n\n(fn ARG &optional BASE)"
+  (unless (numberp arg) (signal 'wrong-type-argument (list 'numberp arg)))
+  (when base
+    (unless (numberp base) (signal 'wrong-type-argument (list 'numberp base))))
+  (or (and (emacs-cc-floatfns--libm-arg-p arg)
+           (if (null base)
+               (emacs-cc-floatfns--libm 'log arg)
+             (and (emacs-cc-floatfns--libm-arg-p base)
+                  (let ((b (float base)))
+                    (cond
+                     ((= b 10.0) (emacs-cc-floatfns--libm 'log10 arg))
+                     ((= b 2.0) nil)
+                     (t (let* ((num (emacs-cc-floatfns--libm 'log arg))
+                               (den (and num (emacs-cc-floatfns--libm 'log b))))
+                          (and den (/ num den)))))))))
+      (emacs-cc-floatfns--lisp-log arg base)))
+
+(when (and (fboundp 'nl-ffi--invoke)
+           (fboundp 'nl-ffi-call)
+           (not (condition-case nil (numberp (nl-ffi-call "exp" 0.0)) (error nil))))
+  (unless (fboundp 'emacs-cc-floatfns--lisp-exp)
+    (defalias 'emacs-cc-floatfns--lisp-exp (symbol-function 'exp)))
+  (defalias 'exp (symbol-function 'emacs-cc-floatfns--exp))
+  (unless (fboundp 'emacs-cc-floatfns--lisp-log)
+    (defalias 'emacs-cc-floatfns--lisp-log (symbol-function 'log)))
+  (defalias 'log (symbol-function 'emacs-cc-floatfns--log)))
 
 (provide 'emacs-cc-floatfns-1)
