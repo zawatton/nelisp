@@ -597,6 +597,38 @@ standalone-reader:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 
+# gnu562: the dynamically linked reader as an opt-in fast flavor.  Its native
+# libm arms (`nelisp-standalone--math-dispatch-arms') are live there, so sin,
+# cos, tan, exp, log and atan run as single libm calls and answer what GNU
+# Emacs answers on the same host; the static default runs Lisp series (sin,
+# cos, tan, atan) or calls libm through the FFI loader (exp, log, asin, acos).
+# Built to its own output so target/nelisp and the static gates are untouched.
+#   make standalone-reader-dynamic                # -> target/nelisp-dynamic
+#   make standalone-reader-dynamic-math-smoke     # its math vs host Emacs
+.PHONY: standalone-reader-dynamic standalone-reader-dynamic-math-smoke
+STANDALONE_DYNAMIC_BIN ?= target/nelisp-dynamic
+standalone-reader-dynamic:
+	@mkdir -p target
+	NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$(STANDALONE_DYNAMIC_BIN) \
+	  NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+
+standalone-reader-dynamic-math-smoke:
+	@mkdir -p target
+	@if [ ! -x "$(STANDALONE_DYNAMIC_BIN)" ]; then \
+	  echo "GATE-SKIP: $(STANDALONE_DYNAMIC_BIN) not built (make standalone-reader-dynamic)"; exit 0; fi; \
+	cp test/standalone-reader-dynamic-math-smoke.el target/standalone-reader-dynamic-math-smoke.el; \
+	$(EMACS) --batch -Q -l target/standalone-reader-dynamic-math-smoke.el \
+	  2>/dev/null | grep -a '^[-0-9(]' > target/standalone-reader-dynamic-math-smoke.host; \
+	timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_DYNAMIC_BIN) --load target/standalone-reader-dynamic-math-smoke.el \
+	  2>/dev/null | grep -a '^[-0-9(]' > target/standalone-reader-dynamic-math-smoke.out; \
+	if [ ! -s target/standalone-reader-dynamic-math-smoke.out ]; then \
+	  echo "standalone-reader-dynamic-math-smoke: FAIL (no output)"; exit 1; fi; \
+	if diff target/standalone-reader-dynamic-math-smoke.host target/standalone-reader-dynamic-math-smoke.out; then \
+	  echo "standalone-reader-dynamic-math-smoke: PASS ($$(wc -l < target/standalone-reader-dynamic-math-smoke.out) arguments)"; \
+	else echo "standalone-reader-dynamic-math-smoke: FAIL (differs from host Emacs)"; exit 1; fi
+
 # Opt-in native allocator/collector development, Linux x86_64 only.
 .PHONY: runtime-reload-reader runtime-reload-test
 runtime-reload-reader:
