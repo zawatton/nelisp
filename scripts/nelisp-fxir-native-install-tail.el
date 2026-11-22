@@ -12,14 +12,17 @@
   ;; so a row callee is converted and its own callees follow).
   (defun nelisp-nc--register-callees (name)
     "Register the closure callees of NAME's native row that have no record."
-    (let ((row (nelisp-nc--row name)) (seen nil))
+    (let ((row (and (eq (car nelisp-nc--last-row) name) nelisp-nc--last-row)) (seen nil))
       (when row
         (dolist (c (nth 2 row))
           (unless (or (memq c seen) (eq c name))
             (push c seen)
             (let ((cf (and (fboundp c) (nelisp--closure-cons (symbol-function c)))))
               (when (and (eq (car-safe cf) 'closure)
-                         (null (gethash (nthcdr 3 cf) nelisp--fx-table)))
+                         (memq (gethash (nthcdr 3 cf) nelisp--fx-table) '(nil none)))
+                ;; A `none' left by a call made before the compiler could run
+                ;; is retried like an absent record.
+                (remhash (nthcdr 3 cf) nelisp--fx-table)
                 (remhash (nthcdr 3 cf) nelisp--fx-pending)
                 (nelisp--fx-register c))))))))
   (fset 'nelisp--fx-register-fn

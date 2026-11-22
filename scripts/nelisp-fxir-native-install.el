@@ -74,6 +74,7 @@
     (nreverse out)))
 
 (defvar nelisp-nc--converted nil "Names whose fx record runs native code.")
+(defvar nelisp-nc--last-row nil "The row `nelisp-nc--convert' last converted.")
 
 (defun nelisp-nc--row (name &optional mutant)
   "NAME's row as (NAME ID CALLEES IR ARITY [:mutant]), its TEXT read, or nil."
@@ -90,10 +91,12 @@
 
 (defun nelisp-nc--convert (name fn &optional mutant)
   "Switch NAME's fx record (closure FN) to its native function when the fxir matches."
-  (let ((row (nelisp-nc--row name mutant))
-        (fn (nelisp-nc--closure-list fn)))
-    (when (and row (eq (car-safe fn) 'closure))
-      (let ((rec (gethash (nthcdr 3 fn) nelisp--fx-table)))
+  (let* ((fn (nelisp-nc--closure-list fn))
+         (rec (and (eq (car-safe fn) 'closure) (gethash (nthcdr 3 fn) nelisp--fx-table)))
+         ;; The row text is parsed only for a function that has a record.
+         (row (and (vectorp rec) (nelisp-nc--row name mutant))))
+    (when row
+      (progn
         (when (and (vectorp rec) (> (length rec) 7) (integerp (aref rec 1))
                    (not (= (aref rec 1) -1)))
           (let ((c (nelisp-nc--recompile fn)))
@@ -104,6 +107,7 @@
                        (equal (nelisp-nc--callees (nth 2 c) (car c)) (nth 2 row)))
               (aset rec 1 (- -16 (nth 1 row)))
               (unless mutant (push name nelisp-nc--converted))
+              (setq nelisp-nc--last-row row)
               t)))))))
 
 (defun nelisp-nc-select (name mode)
