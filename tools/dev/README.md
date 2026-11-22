@@ -25,5 +25,7 @@ Properties
   timed form as separate requests. `(nl-dev-time-call FN)` errors if `load-in-progress` is set.
 - Output (princ) and `NLDS=> VALUE` / `NLDS-ERR ...` come back on the client's stdout.
 
+A truncated or unbalanced final form in a loaded file signals an error (the reader's end-of-file is the same for a clean end and for an unfinished form, so the rest after the last form must be whitespace/comments). A warning (NLDS-WARN) is printed on first fast load: fast-loaded code can run on a different tier than under the real loader (F95), so there is no timing claim and no tier/semantic equivalence claim; time in cold runs only.
+
 Verdicts from the session license "correct and worth batching" only, never perf numbers or "integrated"
 (see review-fable-buildfree-strategy.md section 2). Pin probes to CPUs that no benchmark uses.

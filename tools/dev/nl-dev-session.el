@@ -96,12 +96,27 @@ Files elsewhere (vendor, baked packages) keep the image's real loader, which app
   (unless (featurep 'nelisp-native-load) (require 'nelisp-native-load))
   (mapcar (lambda (s) (cons s (nelisp-native-load-artifact file s))) symbols))
 
+(defvar nl-dev-session--warned nil)
+(defun nl-dev-session--warn-tier ()
+  "Say once that fast-loaded code is not the real loader's code."
+  (unless nl-dev-session--warned
+    (setq nl-dev-session--warned t)
+    (princ "NLDS-WARN fast-loaded code may run on a different tier than under the real loader (state-perf F95: code run under an active `load' stays interpreted, top-level calls reach the word VM) and skips eager macroexpansion, load-history and reader rewrites: no timing claim, no tier or semantic equivalence claim; time in cold runs only.\n")))
+
 (defun nl-dev-session--read-forms (file)
+  "Read every form of FILE; signal when the final form is truncated.
+`read-from-string' signals end-of-file both at a clean end and inside an
+unfinished form, so after it the rest must be only whitespace and comments."
   (let ((text (with-temp-buffer (insert-file-contents file) (buffer-string)))
         (pos 0) (forms nil) (go t))
+    (nl-dev-session--warn-tier)
     (while go
       (let ((r (condition-case nil (read-from-string text pos) (end-of-file nil))))
-        (if r (progn (setq forms (cons (car r) forms)) (setq pos (cdr r))) (setq go nil))))
+        (if r
+            (progn (setq forms (cons (car r) forms)) (setq pos (cdr r)))
+          (unless (string-match-p "\\`\\(?:[ \t\n\r\f]\\|;[^\n]*\\)*\\'" (substring text pos))
+            (error "nl-dev-session: truncated or unbalanced final form in %s after offset %d" file pos))
+          (setq go nil))))
     (nreverse forms)))
 
 (defun nl-dev-session--serve (file)
