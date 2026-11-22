@@ -21,13 +21,16 @@ EOR
 for flag in off leaf inline; do
   F=nil; I=nil; [ $flag = leaf ] && F=t; [ $flag = inline ] && I=t
   ( ulimit -v 8388608; timeout 600 emacs -Q --batch -L "$ROOT/lisp" -L "$ROOT/src" \
-      --eval "(progn (require 'nelisp-artifact) (require 'nelisp-aot-compiler)
+      --eval "(progn (require 'nelisp-artifact) (require 'nelisp-aot-compiler) (require 'nelisp-native-load)
         (let ((nelisp-aot-compiler--dynamic-user-calls t) (nelisp-aot-compiler-buffer-leaves $F) (nelisp-aot-compiler-buffer-leaves-inline $I))
-          (nelisp-artifact-compile-file \"$OUT/rows.el\" \"$OUT/$flag.neln\" nil nil nil nil nil 'neln 'opportunistic)))" \
+          (nelisp-artifact-compile-file \"$OUT/rows.el\" \"$OUT/$flag.neln\" nil nil nil nil nil 'neln 'opportunistic)
+          (with-temp-file \"$OUT/settings-$flag.el\" (prin1 (nelisp-native-load-codegen-settings) (current-buffer)))))" \
       </dev/null > "$OUT/compile-$flag.log" 2>&1 )
   cat > "$OUT/run-$flag.el" <<EOR
 (setq load-path (append (list "$ROOT/lisp" "$ROOT/src") load-path))
 (require 'nelisp-native-load)
+;; the artifact records the flags it was built with; the image loader (no compiler) must expect them
+(setq nelisp-native-load-expected-codegen-settings (car (read-from-string (nelisp--syscall-read-file "$OUT/settings-$flag.el"))))
 (defun blt-time (name n)
   (let* ((h (nelisp-native-load-artifact "$OUT/$flag.neln" name)))
     (with-temp-buffer

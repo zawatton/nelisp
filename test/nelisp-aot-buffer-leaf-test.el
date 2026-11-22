@@ -18,6 +18,9 @@
   (file-name-directory (directory-file-name
                         (file-name-directory (or load-file-name buffer-file-name)))))
 (defvar nelisp-aot-buffer-leaf-test--dir nil)
+(defvar nelisp-aot-buffer-leaf-test--last-settings nil
+  "Codegen settings in force when the last artifact was compiled; the image
+loader must expect exactly these (the artifact records its flags).")
 
 (defun nelisp-aot-buffer-leaf-test--dir ()
   (or nelisp-aot-buffer-leaf-test--dir
@@ -284,6 +287,7 @@ exactly one call to the fetch before the fallback's calls."
     (write-region
      (format "(setq load-path (append (list %S %S) load-path))
 (require 'nelisp-native-load)
+(setq nelisp-native-load-expected-codegen-settings '%S)
 (load %S nil t t)
 (defvar dt-handles nil)
 (defun dt-call (name args)
@@ -295,6 +299,7 @@ exactly one call to the fetch before the fallback's calls."
   (princ \"L \") (princ l) (princ \"\\n\"))
 (princ \"DT-DONE\\n\")\n"
              (expand-file-name "lisp" root) (expand-file-name "src" root)
+             nelisp-aot-buffer-leaf-test--last-settings
              (expand-file-name "test/nelisp-aot-buffer-leaf-image.el" root) neln)
      nil script nil 'silent)
     (with-temp-buffer
@@ -341,7 +346,9 @@ bignum and wrong-type arguments, answers as GNU's byte-compiled code does."
                 nelisp-aot-buffer-leaf-image-source "mut" t))
          (want (nelisp-aot-buffer-leaf-test--gnu-lines))
          (got (nelisp-aot-buffer-leaf-test--image-lines neln (nelisp-aot-buffer-leaf-test--home))))
-    (should-not (equal want got))))
+    (should-not (equal want got))
+    ;; The difference must come from wrong values, not from a load refusal.
+    (should-not (cl-some (lambda (l) (string-match-p "cannot load\\|codegen-settings" l)) got))))
 
 (defun nelisp-aot-buffer-leaf-test--compile-neln (source tag flag)
   (let* ((dir (nelisp-aot-buffer-leaf-test--dir))
@@ -351,6 +358,7 @@ bignum and wrong-type arguments, answers as GNU's byte-compiled code does."
          (nelisp-aot-compiler-buffer-leaves flag))
     (with-temp-file src (insert source))
     (nelisp-artifact-compile-file src art nil nil nil nil nil 'neln 'opportunistic)
+    (setq nelisp-aot-buffer-leaf-test--last-settings (nelisp-native-load-codegen-settings))
     art))
 
 (provide 'nelisp-aot-buffer-leaf-test)
