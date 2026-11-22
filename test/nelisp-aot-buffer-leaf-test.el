@@ -96,7 +96,10 @@ loader must expect exactly these (the artifact records its flags).")
            (r-on (nelisp-aot-buffer-leaf-test--relocs on))
            (r-off (nelisp-aot-buffer-leaf-test--relocs off)))
       ;; Flag on: the extern is called once and the generic call stays as the fallback.
-      (should (= 1 (cl-count "nl_native_buf_leaf" r-on :test #'equal)))
+      ;; (char-before X) lowers as GNU's compiler macro (char-after (1- (or X (point)))),
+      ;; so it calls two leaves: point and char-after.
+      (should (= (if (eq (car case) 'char-before) 2 1)
+                 (cl-count "nl_native_buf_leaf" r-on :test #'equal)))
       (should (cl-some (lambda (n) (string-match-p "nl_alloc_symbol\\|funcalln" n)) r-on))
       ;; Flag off: no extern, the old generic call only.
       (should (= 0 (cl-count "nl_native_buf_leaf" r-off :test #'equal)))
