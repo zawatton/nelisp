@@ -180,6 +180,32 @@ Return (handled . value); a clipped snapshot falls back to the full reader."
                 (emacs-cc-dired-1--simple-completion
                  file directory (nelisp--readdir-scan-raw raw t t))))))))
 
+(defun emacs-cc-dired-1--visit-candidates (directory file visit)
+  "Call VISIT on the names in DIRECTORY that may complete FILE.
+Case-sensitive ASCII prefixes are found by searching the flat native
+snapshot for NUL+FILE, so only matching names reach Lisp (type 0, so the
+caller stats them).  Other cases, and a clipped or failed snapshot, visit
+every entry with `emacs-cc-dired-1--visit-directory'."
+  (let ((raw (and (> (length file) 0)
+                  (not completion-ignore-case)
+                  (= (string-bytes file) (length file))
+                  (fboundp 'nelisp--syscall-readdir-names)
+                  (fboundp 'nelisp--string-search)
+                  (nelisp--syscall-readdir-names directory t))))
+    (if (not (and raw (< (string-bytes raw) 65535)))
+        (emacs-cc-dired-1--visit-directory directory visit)
+      ;; RAW is NAME NUL NAME NUL ...; a leading NUL makes every name
+      ;; start right after a NUL.
+      (let* ((text (concat "\0" raw))
+             (needle (concat "\0" file))
+             (skip (length file))
+             (pos (nelisp--string-search needle text 0)))
+        (while pos
+          (let* ((start (1+ pos))
+                 (end (nelisp--string-search "\0" text (+ start skip))))
+            (funcall visit (substring text start end) 0)
+            (setq pos (and end (nelisp--string-search needle text end)))))))))
+
 (defun emacs-cc-dired-1--complete (file directory all predicate)
   "Implement file completion by visiting DIRECTORY once without sorting."
   (unless (stringp file) (signal 'wrong-type-argument (list 'stringp file)))
@@ -190,8 +216,8 @@ Return (handled . value); a clipped snapshot falls back to the full reader."
          (case-fold-search completion-ignore-case)
          (best nil) (bestsize 0) (count 0) (includeall t) result)
     (catch 'emacs-cc-dired-1--done
-      (emacs-cc-dired-1--visit-directory
-       directory
+      (emacs-cc-dired-1--visit-candidates
+       directory file
        (lambda (bare type)
          (when (emacs-cc-dired-1--prefix-p file bare size completion-ignore-case)
            (let* ((directoryp
