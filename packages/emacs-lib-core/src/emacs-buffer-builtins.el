@@ -644,44 +644,65 @@ called directly."
   (cond ((integerp value) value)
         ((and (markerp value) (marker-buffer value)) (marker-position value))))
 
+;; gnu562: with no change hook to run (none set, or inhibited), each public
+;; wrapper below calls ORIG directly under `inhibit-modification-hooks' t,
+;; which is what `emacs-buffer-builtins--change-edit' does for that case
+;; (`emacs-buffer-builtins--run-edit', PUBLIC), without the closure, the
+;; `apply' and the two calls (erase-buffer +35 us, delete-char +55 us).
+(defmacro emacs-buffer-builtins--public-no-hooks-p ()
+  "Non-nil when an edit now runs no `before-' or `after-change-functions'."
+  '(or inhibit-modification-hooks (and (null before-change-functions) (null after-change-functions))))
+
 (defun emacs-buffer-builtins--public-insert (orig &rest args)
   "Run ORIG (`insert') with change hooks."
-  (emacs-buffer-builtins--change-edit 'insert orig args t))
+  (if (emacs-buffer-builtins--public-no-hooks-p)
+      (let ((inhibit-modification-hooks t)) (apply orig args))
+    (emacs-buffer-builtins--change-edit 'insert orig args t)))
 
 (defun emacs-buffer-builtins--public-insert-before-markers (orig &rest args)
   "Run ORIG (`insert-before-markers') with change hooks."
-  (emacs-buffer-builtins--change-edit 'insert-before-markers orig args t))
+  (if (emacs-buffer-builtins--public-no-hooks-p)
+      (let ((inhibit-modification-hooks t)) (apply orig args))
+    (emacs-buffer-builtins--change-edit 'insert-before-markers orig args t)))
 
 (defun emacs-buffer-builtins--public-delete-region (orig start end)
   "Run ORIG (`delete-region') on START and END with change hooks."
   (let ((s (emacs-buffer-builtins--public-position start))
         (e (emacs-buffer-builtins--public-position end)))
-    (if (and s e (<= (point-min) (min s e)) (<= (max s e) (point-max)))
-        (emacs-buffer-builtins--change-edit
-         'delete (lambda (&rest _) (funcall orig start end)) (list s e) t)
-      (funcall orig start end))))
+    (cond ((not (and s e (<= (point-min) (min s e)) (<= (max s e) (point-max))))
+           (funcall orig start end))
+          ((emacs-buffer-builtins--public-no-hooks-p)
+           (let ((inhibit-modification-hooks t)) (funcall orig start end)))
+          (t (emacs-buffer-builtins--change-edit
+              'delete (lambda (&rest _) (funcall orig start end)) (list s e) t)))))
 
 (defun emacs-buffer-builtins--public-erase-buffer (orig)
   "Run ORIG (`erase-buffer') with change hooks."
-  (emacs-buffer-builtins--change-edit
-   'erase (lambda (&rest _) (funcall orig)) nil t))
+  (if (emacs-buffer-builtins--public-no-hooks-p)
+      (let ((inhibit-modification-hooks t)) (funcall orig))
+    (emacs-buffer-builtins--change-edit
+     'erase (lambda (&rest _) (funcall orig)) nil t)))
 
 (defun emacs-buffer-builtins--public-insert-char (orig char &optional count inherit)
   "Run ORIG (`insert-char') with change hooks."
-  (if (and (characterp char) (or (null count) (integerp count)))
-      (emacs-buffer-builtins--change-edit
-       'insert (lambda (&rest _) (funcall orig char count inherit))
-       (list (make-string (max 0 (or count 1)) char)) t)
-    (funcall orig char count inherit)))
+  (cond ((not (and (characterp char) (or (null count) (integerp count))))
+         (funcall orig char count inherit))
+        ((emacs-buffer-builtins--public-no-hooks-p)
+         (let ((inhibit-modification-hooks t)) (funcall orig char count inherit)))
+        (t (emacs-buffer-builtins--change-edit
+            'insert (lambda (&rest _) (funcall orig char count inherit))
+            (list (make-string (max 0 (or count 1)) char)) t))))
 
 (defun emacs-buffer-builtins--public-delete-char (orig n &optional killflag)
   "Run ORIG (`delete-char') with change hooks."
-  (if (and (integerp n) (not killflag)
-           (<= (point-min) (+ (point) n)) (<= (+ (point) n) (point-max)))
-      (emacs-buffer-builtins--change-edit
-       'delete (lambda (&rest _) (funcall orig n killflag))
-       (list (point) (+ (point) n)) t)
-    (funcall orig n killflag)))
+  (cond ((not (and (integerp n) (not killflag)
+                   (<= (point-min) (+ (point) n)) (<= (+ (point) n) (point-max))))
+         (funcall orig n killflag))
+        ((emacs-buffer-builtins--public-no-hooks-p)
+         (let ((inhibit-modification-hooks t)) (funcall orig n killflag)))
+        (t (emacs-buffer-builtins--change-edit
+            'delete (lambda (&rest _) (funcall orig n killflag))
+            (list (point) (+ (point) n)) t))))
 
 (when (and (emacs-buffer-builtins--standalone-p)
            (fboundp 'nelisp-insert))
