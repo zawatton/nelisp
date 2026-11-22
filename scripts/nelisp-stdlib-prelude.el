@@ -13476,9 +13476,11 @@ You cannot count on them to still be there!"))
   ;; GNU Emacs 31.1 editfns.c `Fgoto_char': POSITION is an integer or a
   ;; marker (a marker goes through `set_point_from_marker', which signals
   ;; when it points nowhere), anything else is `integer-or-marker-p', and
-  ;; the value is POSITION itself.  The integer case is flat: it clamps and
-  ;; records the pending point without further calls.
-    (if (integerp pos)
+  ;; the value is POSITION itself.  The fixnum case is flat: it clamps and
+  ;; records the pending point without further calls.  A bignum is no
+  ;; fixnum, so GNU's CHECK_FIXNUM_COERCE_MARKER signals for it as for any
+  ;; other non-position (the leaf declines bignums to this reference).
+    (if (fixnump pos)
         (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
                (clamped (max (or (nelisp-buffer-narrow-start b) 1)
                              (min (or (nelisp-buffer-narrow-end b)
