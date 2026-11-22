@@ -5989,6 +5989,93 @@ what a cache wants and what the demo did."
       (nelisp-native-load-unbox raw))
      (t raw))))
 
+;; The pending exit's tag and value.  Runtimes before Doc 229 S4.4 stash two
+;; 32-byte Sexp views in the arena header (TAG@24, VALUE@56).  Later ones keep
+;; two WORDs in the BSS link symbol `nl_exit_values', which no bridge exports,
+;; so its address is the driver BSS base (`nl_arena_base') plus the link
+;; table's offset.  The layout is verified once per process, by raising a
+;; probe signal and reading it back, so a moved symbol is reported rather
+;; than read blind.
+(defconst nelisp-native-load--exit-values-offset 4783184
+  "Offset of `nl_exit_values' from the driver BSS base (`nl_arena_base').
+Equals `nelisp-standalone--catch-head-offset' + 8 + 128 + 32 + 56 + 96 + 512,
+the link symbol's offset in scripts/nelisp-standalone-build.el.")
+
+(defvar nelisp-native-load--exit-layout nil
+  "How the runtime stashes a pending exit: `words', `views', `unknown', or nil.")
+
+(defun nelisp-native-load--exit-values-addr ()
+  "Return the address of the runtime's `nl_exit_values' WORD pair."
+  (+ (nelisp-native-load--symbol-addr "nl_arena_base")
+     nelisp-native-load--exit-values-offset))
+
+(defun nelisp-native-load--exit-word-into-slot (word-addr slot)
+  "Store the Sexp view of the exit WORD at WORD-ADDR into SLOT.
+A word of 0 (no exit yet) reads as nil, like `nl_exit_tag_w'."
+  (let* ((lo (logand (ptr-read-u32 word-addr 0) #xffffffff))
+         (hi (logand (ptr-read-u32 word-addr 4) #xffffffff)))
+    (cond
+     ((and (= lo 0) (= hi 0))
+      (ptr-write-u64 slot 0 0) (ptr-write-u64 slot 8 0)
+      (ptr-write-u64 slot 16 0) (ptr-write-u64 slot 24 0))
+     ((= (logand lo 3) 1)
+      ;; An immediate fixnum 4N+1: N may need the whole 64-bit word, which
+      ;; `ptr-read-u64' would truncate, so decode it from the two lanes.
+      (ptr-write-u64 slot 0 nelisp-native-load-tag-int)
+      (ptr-write-u64 slot 8 (ash (+ (ash (if (>= hi #x80000000) (- hi #x100000000) hi) 32) lo)
+                                 -2))
+      (ptr-write-u64 slot 16 0) (ptr-write-u64 slot 24 0))
+     (t
+      ;; nil, t, or a pointer word: the runtime's own word-to-view copy.
+      (ptr-call (nelisp-native-load--symbol-addr "nl_sexp_clone_into")
+                (+ lo (ash hi 32)) slot 0 0 0 0)))))
+
+(defun nelisp-native-load--exit-layout (env pin-frame)
+  "Return and cache how this runtime stashes a pending exit.
+Raises a probe signal and checks the stash holds it in WORDs, else in
+arena views, else answers `unknown'."
+  (or nelisp-native-load--exit-layout
+      (setq nelisp-native-load--exit-layout
+            (condition-case nil
+                (let ((slot (nelisp-native-load--pin-reserve env pin-frame))
+                      (arena (ptr-read-u64
+                              (nelisp-native-load--symbol-addr "nl_arena_base") 0))
+                      (addr (nelisp-native-load--exit-values-addr))
+                      (probe '(nelisp-native-load-exit-probe))
+                      (layout 'unknown))
+                  (condition-case nil
+                      (signal 'wrong-type-argument probe)
+                    (wrong-type-argument nil))
+                  (nelisp-native-load--exit-word-into-slot addr slot)
+                  (when (eq (nelisp-native-load-unbox slot env pin-frame)
+                            'wrong-type-argument)
+                    (nelisp-native-load--exit-word-into-slot (+ addr 8) slot)
+                    (when (equal (nelisp-native-load-unbox slot env pin-frame) probe)
+                      (setq layout 'words)))
+                  (when (eq layout 'unknown)
+                    (when (and (= (logand (ptr-read-u64 arena 24) 255)
+                                  nelisp-native-load-tag-symbol)
+                               (eq (nelisp-native-load-unbox (+ arena 24) env pin-frame)
+                                   'wrong-type-argument))
+                      (setq layout 'views)))
+                  ;; The probe's handler ran; leave no exit pending.
+                  (ptr-write-u64 arena 16 0)
+                  layout)
+              (error 'unknown)))))
+
+(defun nelisp-native-load--capture-pending-exit (arena exit-tag exit-value)
+  "Copy the pending exit's tag and value into the pinned slots EXIT-TAG/EXIT-VALUE.
+ARENA is the arena base; the layout was settled before the call."
+  (if (eq nelisp-native-load--exit-layout 'words)
+      (let ((addr (nelisp-native-load--exit-values-addr)))
+        (nelisp-native-load--exit-word-into-slot addr exit-tag)
+        (nelisp-native-load--exit-word-into-slot (+ addr 8) exit-value))
+    (let ((i 0))
+      (while (< i 8)
+        (ptr-write-u32 exit-tag (* i 4) (ptr-read-u32 arena (+ 24 (* i 4))))
+        (ptr-write-u32 exit-value (* i 4) (ptr-read-u32 arena (+ 56 (* i 4))))
+        (setq i (1+ i))))))
+
 (defun nelisp-native-load--resume-native-exit (kind tag-slot value-slot env pin-frame)
   "Resume a frozen native exit after the call's cleanup has completed.
 The already-running public caller copied the pair into pinned roots and
@@ -6004,12 +6091,15 @@ cleared the shared stash before any cleanup or cold helper dispatch."
         (signal tag value)))))
 
 (defun nelisp-native-load--immediate-word (value)
-  "Return VALUE's immediate native word, or nil when it needs a root."
+  "Return VALUE's immediate native word, or nil when it needs a root.
+The word is handed to `ptr-call', whose arguments are Lisp fixnums
+(62 bits), so a 4N+1 word must fit that range: N within 59 bits.  A
+wider fixnum goes in a rooted Int slot, which native code decodes."
   (cond ((null value) 3)
         ((eq value t) 7)
         ((and (integerp value)
-              (>= value -2305843009213693952)
-              (<= value 2305843009213693951))
+              (>= value -576460752303423488)
+              (<= value 576460752303423487))
          (logior (ash value 2) 1))))
 
 (defun nelisp-native-load-call (handle args)
@@ -6083,6 +6173,7 @@ including nested native calls and cleanup after an error."
                    (patch-offsets (plist-get handle :boundary-imm64-offsets))
                    (patch-values (append (list out mirror frames scratch name-slot)
                                          callbacks)))
+              (nelisp-native-load--exit-layout env pin-frame)
               (nelisp-native-load--make-scratch-vector
                scratch (+ nelisp-native-load-scratch-slots
                           (length (plist-get handle :constants))))
@@ -6149,13 +6240,8 @@ including nested native calls and cleanup after an error."
                     ;; of a helper can clear the evaluator's shared stash.
                     (setq exit-kind (ptr-read-u64 exit-arena 16))
                     (unless (= exit-kind 0)
-                      (let ((i 0))
-                        (while (< i 8)
-                          (ptr-write-u32 exit-tag (* i 4)
-                                         (ptr-read-u32 exit-arena (+ 24 (* i 4))))
-                          (ptr-write-u32 exit-value (* i 4)
-                                         (ptr-read-u32 exit-arena (+ 56 (* i 4))))
-                          (setq i (1+ i))))
+                      (nelisp-native-load--capture-pending-exit
+                       exit-arena exit-tag exit-value)
                       (ptr-write-u64 exit-arena 16 0)))
                 (let ((rc (nelisp-native-load--unmap call-entry call-size)))
                   (unless (= rc 0)
