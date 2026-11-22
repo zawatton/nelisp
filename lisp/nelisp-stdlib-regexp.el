@@ -2794,7 +2794,15 @@ in `nlre--nat-last'.")
 (defun nlre--nat-fold-default-p ()
   "Non-nil when the current buffer folds case with the built-in mapping.
 The native matcher's own path (`nlre--nat-have'): the current buffer is
-read where `nlre--nat-bsearch' reads it, as GNU reads `current_buffer'."
+read where `nlre--nat-bsearch' reads it, as GNU reads `current_buffer'.
+gnu562: a stale memo (another buffer, or an older case-table epoch) is
+refreshed here first.  Only the Lisp matcher refreshed it, and only for a
+pattern whose case translation matters, so a pattern without letters,
+such as a class of blanks, declined to the Lisp matcher on every call in
+a buffer whose memo it never set (re-search-forward 84 us instead of 11)."
+  (unless (and (eq nelisp--current-buffer nlre--translate-memo-buffer)
+               (eq nelisp-casetab--epoch nlre--translate-memo-epoch))
+    (nlre--current-translate-table))
   (and (eq nelisp--current-buffer nlre--translate-memo-buffer)
        (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
        (eq (symbol-function 'set-case-table) nelisp-casetab--epoch-owner)
