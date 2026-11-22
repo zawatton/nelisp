@@ -43,14 +43,26 @@
   (dolist (n nelisp-aot-lisp-arith-cases-names) (byte-compile (intern n)))
   (nelisp-aot-lisp-arith-cases-run (lambda (n a) (apply (intern n) a))))
 
-;; The runtime loader reports every native signal as the same
-;; "malformed native signal" error, before and after this lowering, so the
-;; error data cannot be compared across the boundary; the line keeps
-;; whether the call signalled.  A signal's data is the generic function's
-;; own, which the lowering does not touch.
-(defun nelisp-aot-lisp-arith-test--normalize (lines)
-  (mapcar (lambda (l) (replace-regexp-in-string "=> (signal .*\\'" "=> SIGNAL" l))
-          lines))
+;; Error data is compared too: the loader now re-signals a native call's
+;; condition and data (native-load reads the pending exit's WORDs).
+;; One known runtime divergence is allowed, narrowly: the image's own
+;; comparison builtins (the interpreter too: (< 2305843009213693952 'a))
+;; name a BIGNUM first operand as the culprit where GNU names the bad
+;; operand.  It lives in the runtime's comparison builtin, not in the
+;; lowering.  A line differs acceptably only when it is a comparison
+;; function's wrong-type-argument whose native culprit is a bignum literal;
+;; every other line, and every other part of those lines, compares exactly.
+(defun nelisp-aot-lisp-arith-test--lines-equal (want got)
+  (and (= (length want) (length got))
+       (cl-every
+        (lambda (w g)
+          (or (equal w g)
+              (and (string-match
+                    "\\`\\(lad-\\(?:lt\\|le\\|gt\\|eq\\)-[a-z]+ ([^)]*) => (signal wrong-type-argument (number-or-marker-p \\)\\(.*\\)))\\'" g)
+                   (let ((prefix (match-string 1 g)) (culprit (match-string 2 g)))
+                     (and (string-match-p "\\`-?[0-9]\\{19,\\}\\'" culprit)
+                          (string-prefix-p prefix w))))))
+        want got)))
 
 (defun nelisp-aot-lisp-arith-test--compile (source dir name)
   "Compile SOURCE into DIR/NAME.neln and return the path."
@@ -126,8 +138,7 @@
                (want (nelisp-aot-lisp-arith-test--gnu-lines))
                (got (nelisp-aot-lisp-arith-test--image-lines
                      neln (nelisp-aot-lisp-arith-test--home))))
-          (should (equal (nelisp-aot-lisp-arith-test--normalize want)
-                       (nelisp-aot-lisp-arith-test--normalize got))))
+          (should (nelisp-aot-lisp-arith-test--lines-equal want got)))
       (delete-directory dir t))))
 
 (ert-deftest nelisp-aot-lisp-arith/image-differential-mutation-control ()
@@ -150,8 +161,7 @@
                (want (nelisp-aot-lisp-arith-test--gnu-lines))
                (got (nelisp-aot-lisp-arith-test--image-lines
                      neln (nelisp-aot-lisp-arith-test--home))))
-          (should-not (equal (nelisp-aot-lisp-arith-test--normalize want)
-                           (nelisp-aot-lisp-arith-test--normalize got))))
+          (should-not (nelisp-aot-lisp-arith-test--lines-equal want got)))
       (delete-directory dir t))))
 
 (provide 'nelisp-aot-lisp-arith-test)
