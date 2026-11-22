@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# nl-elcheck [--no-bytecomp] [--strict] [-L DIR] FILE...   see nl-elcheck.el for the finding kinds.
+# Runs on host Emacs (reader is the real one), under ulimit -v 8388608, stdin closed, a timeout.
+# Exit 0 clean (warnings allowed unless --strict), 1 findings, 124 timeout.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ulimit -v 8388608
+exec timeout "${NL_ELCHECK_TIMEOUT:-300}" taskset -c "${NL_CPUS:-9,25}" "${EMACS_BIN:-emacs-31.1}" -Q --batch \
+  -l "$here/nl-elcheck.el" -f nl-elcheck-batch "$@" </dev/null
