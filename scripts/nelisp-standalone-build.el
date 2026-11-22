@@ -32030,7 +32030,8 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (< n -2305843009213693952) -1 (+ (shl n 2) 1))))
     ;; gnu562: the float arm of the arithmetic opcodes (GNU arith_driver /
     ;; arithcompare once an operand is a float): + - < = > on two operands
-    ;; (and, for the interpreter's primitives, * as op 100, <= 101, >= 102)
+    ;; (and, for the interpreter's primitives, * as op 100, <= 101, >= 102,
+    ;; / 103: GNU converts every operand to double once one is a float)
     ;; that are each a float or an immediate fixnum, at least one a float.
     ;; The fixnum is converted as XFIXNUM -> double; for a comparison it must
     ;; be exact as a double (|n| <= 2^53), since GNU compares exactly.  NaN
@@ -32052,7 +32053,7 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= (+ fa fb) 0) -1
           (if (if (= fa 1) 0 (/= (logand a 3) 1)) -1
             (if (if (= fb 1) 0 (/= (logand b 3) 1)) -1
-              (if (if (if (= op 4) 1 (if (= op 5) 1 (= op 100))) 0
+              (if (if (if (= op 4) 1 (if (= op 5) 1 (if (= op 100) 1 (= op 103)))) 0
                     (if (if (= fa 1) 0 (> (sar a 2) 9007199254740992)) 1
                       (if (if (= fa 1) 0 (< (sar a 2) -9007199254740992)) 1
                         (if (if (= fb 1) 0 (> (sar b 2) 9007199254740992)) 1
@@ -32064,6 +32065,8 @@ bytes are written into a fresh 8-byte buffer instead."
                       (m5_fx_float_box (f64-bits (f64-add (bits-to-f64 x) (bits-to-f64 y))))
                   (if (= op 100)
                       (m5_fx_float_box (f64-bits (f64-mul (bits-to-f64 x) (bits-to-f64 y))))
+                  (if (= op 103)
+                      (m5_fx_float_box (f64-bits (f64-div (bits-to-f64 x) (bits-to-f64 y))))
                   (if (= op 101)
                       (if (= (f64-le (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
                   (if (= op 102)
@@ -32078,7 +32081,7 @@ bytes are written into a fresh 8-byte buffer instead."
                               (if (= (f64-le (bits-to-f64 x) (bits-to-f64 y)) 1)
                                   (if (= (f64-ge (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
                                 3)
-                            -1)))))))))))))))
+                            -1))))))))))))))))
     ;; The same for 1+ (op 7) and 1- (op 15) of a float.
     (defun m5_fx_float_incdec (op a)
       (if (= (m5_fx_float_p a) 0) -1
@@ -66177,7 +66180,10 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ("=" 20 2 2) (">" 21 2 2) ("<=" 22 2 2) (">=" 23 2 2)
     ("cons" 24 2 2) ("list" 25 0 15) ("make-vector" 26 2 2)
     ("aref" 27 2 2) ("aset" 28 3 3) ("length" 29 1 1)
-    ("%" 30 2 2) ("logand" 31 0 15))
+    ("%" 30 2 2) ("logand" 31 0 15)
+    ;; gnu562: two-argument `/' with a float operand (`nl_eic_prim2_run');
+    ;; integer division and every other count decline to the builtin.
+    ("/" 32 2 2))
   "(NAME ID MIN MAX) of the builtins the interpreter calls on their evaluated
 argument WORDs (GNU eval_sub's argvals, eval.c:2626-2693), by primitive id: 1-13
 run in `m5_fx_primitive_run', 14 is apply, 15 and up in `nl_eic_prim2_run'.  MAX 15
@@ -67615,6 +67621,19 @@ two flag bits 20 and 21."
                    (r (if (= r0 -1) (nl_eic_prim_float id a b argc) r0)))
               (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))
           (if (>= id 27)
+              (if (= id 32)
+                  ;; gnu562: `/' of two operands: fixnums divide truncating
+                  ;; toward zero (GNU's integer division); a zero divisor or
+                  ;; an overflow (most-negative-fixnum / -1) declines, so the
+                  ;; builtin signals.  With a float operand, `m5_fx_float_arith'.
+                  (let* ((a (heap-read-u64 base 0))
+                         (b (heap-read-u64 (+ base 8) 0))
+                         (r (if (= argc 2)
+                                (if (if (= (logand a 3) 1) (= (logand b 3) 1) 0)
+                                    (if (= b 1) -1 (m5_fx_fix (/ (sar a 2) (sar b 2))))
+                                  (m5_fx_float_arith 103 a b))
+                              -1)))
+                    (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))
               (if (= id 31) (nl_directcall_run 27 base argc resw 0)
                 (let* ((st (m5_fx_primitive_run (- 13 id) base argc argc resw 0 0)))
                   (if (if (= id 28) (= st -3) 0)
@@ -67630,7 +67649,7 @@ two flag bits 20 and 21."
                                 (if (if (= tag 9) 1 (= tag 12)) -3
                                   (bf_wrong_type_arrayp (wf_word_view a)))))
                           -3))
-                    st)))
+                    st))))
           (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
                (r (if (<= id 23)
