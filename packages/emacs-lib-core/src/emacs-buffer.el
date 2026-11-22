@@ -2179,10 +2179,20 @@ Checks read-only text and shifts/expands text-property intervals."
 
 (defun emacs-buffer--native-insert-around-advice (orig &rest strings)
   "Track sidecar properties for native INSERT in its current buffer."
-  (let ((buffer (current-buffer))
-        (start (point))
-        (length (emacs-buffer--insert-text-length strings)))
+  (let* ((buffer (current-buffer))
+         (start (point))
+         (length (emacs-buffer--insert-text-length strings))
+         (plain (and (emacs-buffer--plain-insert-strings-p strings)
+                     (emacs-buffer--plain-sidecar buffer))))
     (prog1 (apply orig strings)
+      (if (and plain (null (emacs-buffer--ext-text-props plain)))
+          ;; Plain text into a buffer without intervals: only the tick moves,
+          ;; as in the general path below.
+          (progn
+            (when (> length 0)
+              (emacs-buffer--increment-ext-modified-tick plain))
+            (when (and (buffer-live-p buffer) (zerop (buffer-size buffer)))
+              (setf (emacs-buffer--ext-interval-root-present plain) nil)))
       (when (> length 0)
         (let ((ext (emacs-buffer--ensure-text-property-ext buffer)))
           (emacs-buffer--set-ext-text-props ext
@@ -2194,7 +2204,7 @@ Checks read-only text and shifts/expands text-property intervals."
         (let ((ext (gethash buffer emacs-buffer--state)))
           (emacs-buffer--native-property-text-commit
            buffer (buffer-size buffer)
-           (and ext (emacs-buffer--ext-text-props ext))))))))
+           (and ext (emacs-buffer--ext-text-props ext)))))))))
 
 (defun emacs-buffer--property-current-buffer ()
   "Return the active native buffer owner, falling back to the compat owner."
@@ -2363,13 +2373,48 @@ Checks read-only text and shifts/shrinks text-property intervals."
                     (indirect-function 'nelisp-ec-delete-region))))
   (advice-add 'delete-region :around #'emacs-buffer--delete-region-around-advice))
 
+(defun emacs-buffer--plain-sidecar (buffer)
+  "BUFFER's sidecar when it holds no intervals and BUFFER is no indirect child.
+For such a sidecar `emacs-buffer--native-property-text-commit' with no
+mapping only clears the interval-root flag of an empty buffer, so the edit
+advice below can skip it.  Nil otherwise, or when BUFFER has no sidecar."
+  (let ((ext (gethash buffer emacs-buffer--state)))
+    (and ext
+         (null (emacs-buffer--ext-text-props ext))
+         (null (emacs-buffer--ext-base-buffer ext))
+         (fboundp 'nelisp-buffer-p)
+         (nelisp-buffer-p buffer)
+         ext)))
+
+(defun emacs-buffer--plain-insert-strings-p (strings)
+  "Non-nil when no string in STRINGS carries text properties on the standalone."
+  (and (boundp 'nelisp--tp-string-properties)
+       (let ((plain t))
+         (while (and plain strings)
+           (let ((s (car strings)))
+             (when (and (stringp s)
+                        (or (gethash s emacs-buffer--string-state)
+                            (gethash s nelisp--tp-string-properties)))
+               (setq plain nil)))
+           (setq strings (cdr strings)))
+         plain)))
+
 (defun emacs-buffer--native-erase-around-advice (orig &rest args)
   "Clear the native buffer's property sidecar after successful erasure.
 Erasure removes all text, including hidden narrowed text.  Keeping the empty
 sidecar authoritative also prevents obsolete native properties from being
 read back after a subsequent insertion.  Failed erasures retain their state."
-  (let ((buffer (current-buffer)))
+  (let* ((buffer (current-buffer))
+         (plain (emacs-buffer--plain-sidecar buffer)))
     (prog1 (apply orig args)
+      (if (and plain (null (emacs-buffer--ext-text-props plain))
+               (buffer-live-p buffer))
+          ;; What the general path below does for a sidecar without intervals.
+          (progn
+            (emacs-buffer--increment-ext-modified-tick plain)
+            (cl-incf (emacs-buffer--ext-text-tick plain))
+            (when (zerop (buffer-size buffer))
+              (setf (emacs-buffer--ext-interval-root-present plain) nil)))
       (when (and (fboundp 'buffer-live-p) (buffer-live-p buffer))
         (let* ((ext (gethash buffer emacs-buffer--state))
                (full-size (buffer-size buffer))
@@ -2380,7 +2425,7 @@ read back after a subsequent insertion.  Failed erasures retain their state."
             (emacs-buffer--increment-ext-modified-tick ext)
             (cl-incf (emacs-buffer--ext-text-tick ext)))
           (emacs-buffer--native-property-text-commit
-           buffer full-size (if (zerop full-size) nil mapping)))))))
+           buffer full-size (if (zerop full-size) nil mapping))))))))
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'erase-buffer))

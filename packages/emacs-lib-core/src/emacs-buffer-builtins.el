@@ -1115,27 +1115,25 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
 (defun emacs-buffer-builtins--get-text-property-around (orig pos prop &optional object)
   "Read sidecar properties while preserving native `get-text-property'."
   (let* ((native-value (funcall orig pos prop object))
-         (pos (emacs-buffer-builtins--position pos))
          (target (emacs-buffer-builtins--text-property-object object))
          (managed
           (cond
            ((stringp target)
            (gethash target emacs-buffer--string-state))
            ((and target (not (eq target :string-or-unsupported)))
-            (gethash target emacs-buffer--state))))
-         (sidecar-value
-          (cond
-           ((stringp target)
+            (gethash target emacs-buffer--state)))))
+    ;; gnu562: an unmanaged string or buffer answers the native value, so its
+    ;; sidecar is not read.  The sidecar's only errors, a non-integer POS or
+    ;; one outside the object, the native call above has already signalled.
+    (if (not managed)
+        native-value
+      (let ((pos (emacs-buffer-builtins--position pos)))
+        (if (stringp target)
             (emacs-buffer-builtins--call-string-property
-             'get target pos prop))
-           ;; gnu562: an unmanaged buffer answers the native value, so its
-           ;; sidecar is not read (its only error, a non-integer POS, the
-           ;; native call above has already signalled).
-           ((and managed (not (eq target :string-or-unsupported)))
-            (emacs-buffer-builtins--call-emacs-buffer
-             'emacs-buffer-get-text-property
-             (list pos prop target))))))
-    (if managed sidecar-value native-value)))
+             'get target pos prop)
+          (emacs-buffer-builtins--call-emacs-buffer
+           'emacs-buffer-get-text-property
+           (list pos prop target)))))))
 
 (defun emacs-buffer-builtins--whole-buffer-size (&optional buffer)
   "Return BUFFER's total character count, independent of narrowing."
@@ -1149,10 +1147,28 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
 (when (fboundp 'nelisp--repr)
   (defalias 'buffer-size #'emacs-buffer-builtins--whole-buffer-size))
 
+;; `get-text-property' and `text-properties-at' are wrapped by named
+;; functions installed in place of the natives rather than by :around advice,
+;; whose generic dispatch cost about 5 us a call.  Each native is captured
+;; once, so loading this file again does not wrap the wrapper.  Arguments past
+;; the native arity signal the error GNU gives a direct call.
+(defun emacs-buffer-builtins--get-text-property
+    (position prop &optional object &rest more)
+  "Native `get-text-property' that answers managed sidecar properties."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'get-text-property (+ 3 (length more))))
+    (emacs-buffer-builtins--get-text-property-around
+     #'emacs-buffer-builtins--native-get-text-property
+     position prop object)))
+
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'get-text-property))
-  (advice-add 'get-text-property :around
-              #'emacs-buffer-builtins--get-text-property-around))
+  (unless (fboundp 'emacs-buffer-builtins--native-get-text-property)
+    (defalias 'emacs-buffer-builtins--native-get-text-property
+      (symbol-function 'get-text-property)))
+  (defalias 'get-text-property
+    (symbol-function 'emacs-buffer-builtins--get-text-property)))
 
 (defun emacs-buffer-builtins--text-properties-at-around (orig pos &optional object)
   "Read complete managed sidecar plists before native text properties."
@@ -1167,20 +1183,33 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
               (if (stringp target)
                   (gethash target emacs-buffer--string-state)
                 (gethash target emacs-buffer--state)))
+             ;; gnu562: read only when the answer uses it; POS is an
+             ;; integer inside TARGET already, the sidecar's only checks.
              (sidecar-value
-              (if (stringp target)
-                  (emacs-buffer-builtins--call-string-property 'at target pos)
-                ;; gnu562: read only when the answer uses it; POS is an
-                ;; integer already, the sidecar's only check.
-                (and managed
+              (and managed
+                   (if (stringp target)
+                       (emacs-buffer-builtins--call-string-property
+                        'at target pos)
                      (emacs-buffer-builtins--call-emacs-buffer
                       'emacs-buffer-text-property-at (list pos target))))))
         (if managed sidecar-value native-value)))))
 
+(defun emacs-buffer-builtins--text-properties-at
+    (position &optional object &rest more)
+  "Native `text-properties-at' that answers managed sidecar plists."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'text-properties-at (+ 2 (length more))))
+    (emacs-buffer-builtins--text-properties-at-around
+     #'emacs-buffer-builtins--native-text-properties-at position object)))
+
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'text-properties-at))
-  (advice-add 'text-properties-at :around
-              #'emacs-buffer-builtins--text-properties-at-around))
+  (unless (fboundp 'emacs-buffer-builtins--native-text-properties-at)
+    (defalias 'emacs-buffer-builtins--native-text-properties-at
+      (symbol-function 'text-properties-at)))
+  (defalias 'text-properties-at
+    (symbol-function 'emacs-buffer-builtins--text-properties-at)))
 
 (defun emacs-buffer-builtins--native-put-property-undo-records
     (target start end property value)
