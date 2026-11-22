@@ -704,17 +704,67 @@ called directly."
             'delete (lambda (&rest _) (funcall orig n killflag))
             (list (point) (+ (point) n)) t))))
 
+;; gnu562: installed as named wrappers over the previous definitions (kept
+;; as emacs-buffer-builtins--NAME-next), not as :around advice, whose
+;; dispatch cost about 10 us per edit (delete-region +40 us over its
+;; inner layers).  The public functions above receive the previous
+;; definition as ORIG, as the advice did.
 (when (and (emacs-buffer-builtins--standalone-p)
            (fboundp 'nelisp-insert))
-  (dolist (entry '((insert . emacs-buffer-builtins--public-insert)
-                   (insert-before-markers
-                    . emacs-buffer-builtins--public-insert-before-markers)
-                   (delete-region . emacs-buffer-builtins--public-delete-region)
-                   (erase-buffer . emacs-buffer-builtins--public-erase-buffer)
-                   (insert-char . emacs-buffer-builtins--public-insert-char)
-                   (delete-char . emacs-buffer-builtins--public-delete-char)))
-    (when (fboundp (car entry))
-      (advice-add (car entry) :around (cdr entry)))))
+  (when (fboundp 'insert)
+    (unless (fboundp 'emacs-buffer-builtins--insert-next)
+      (defalias 'emacs-buffer-builtins--insert-next (symbol-function 'insert)))
+    (defun emacs-buffer-builtins--insert-wrapper (&rest args)
+      "`insert' running the change hooks."
+      (apply #'emacs-buffer-builtins--public-insert
+             #'emacs-buffer-builtins--insert-next args))
+    (defalias 'insert #'emacs-buffer-builtins--insert-wrapper))
+  (when (fboundp 'insert-before-markers)
+    (unless (fboundp 'emacs-buffer-builtins--insert-before-markers-next)
+      (defalias 'emacs-buffer-builtins--insert-before-markers-next
+        (symbol-function 'insert-before-markers)))
+    (defun emacs-buffer-builtins--insert-before-markers-wrapper (&rest args)
+      "`insert-before-markers' running the change hooks."
+      (apply #'emacs-buffer-builtins--public-insert-before-markers
+             #'emacs-buffer-builtins--insert-before-markers-next args))
+    (defalias 'insert-before-markers
+      #'emacs-buffer-builtins--insert-before-markers-wrapper))
+  (when (fboundp 'delete-region)
+    (unless (fboundp 'emacs-buffer-builtins--delete-region-next)
+      (defalias 'emacs-buffer-builtins--delete-region-next
+        (symbol-function 'delete-region)))
+    (defun emacs-buffer-builtins--delete-region-wrapper (start end)
+      "`delete-region' running the change hooks."
+      (emacs-buffer-builtins--public-delete-region
+       #'emacs-buffer-builtins--delete-region-next start end))
+    (defalias 'delete-region #'emacs-buffer-builtins--delete-region-wrapper))
+  (when (fboundp 'erase-buffer)
+    (unless (fboundp 'emacs-buffer-builtins--erase-buffer-next)
+      (defalias 'emacs-buffer-builtins--erase-buffer-next
+        (symbol-function 'erase-buffer)))
+    (defun emacs-buffer-builtins--erase-buffer-wrapper ()
+      "`erase-buffer' running the change hooks."
+      (emacs-buffer-builtins--public-erase-buffer
+       #'emacs-buffer-builtins--erase-buffer-next))
+    (defalias 'erase-buffer #'emacs-buffer-builtins--erase-buffer-wrapper))
+  (when (fboundp 'insert-char)
+    (unless (fboundp 'emacs-buffer-builtins--insert-char-next)
+      (defalias 'emacs-buffer-builtins--insert-char-next
+        (symbol-function 'insert-char)))
+    (defun emacs-buffer-builtins--insert-char-wrapper (char &optional count inherit)
+      "`insert-char' running the change hooks."
+      (emacs-buffer-builtins--public-insert-char
+       #'emacs-buffer-builtins--insert-char-next char count inherit))
+    (defalias 'insert-char #'emacs-buffer-builtins--insert-char-wrapper))
+  (when (fboundp 'delete-char)
+    (unless (fboundp 'emacs-buffer-builtins--delete-char-next)
+      (defalias 'emacs-buffer-builtins--delete-char-next
+        (symbol-function 'delete-char)))
+    (defun emacs-buffer-builtins--delete-char-wrapper (n &optional killflag)
+      "`delete-char' running the change hooks."
+      (emacs-buffer-builtins--public-delete-char
+       #'emacs-buffer-builtins--delete-char-next n killflag))
+    (defalias 'delete-char #'emacs-buffer-builtins--delete-char-wrapper)))
 
 (when (emacs-buffer-builtins--standalone-p)
   (defun buffer-base-buffer (&optional buffer)
