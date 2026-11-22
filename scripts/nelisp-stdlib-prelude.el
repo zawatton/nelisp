@@ -12252,6 +12252,15 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
   (let* ((b (nelisp-buffer--ambient buf))
          (oldlen (nelisp-buffer-len b))
          (ovt (nelisp-buffer-overlays b)))
+   ;; gnu562: GNU `erase-buffer' is `widen' + del_range (BEG, Z); on an
+   ;; empty buffer that deletes nothing, so neither the modified flag nor
+   ;; the tick changes.  Only the widening and the stale pending point
+   ;; apply; markers are already at 1 and there are no properties.
+   (if (= oldlen 0)
+       (progn
+         (setf (nelisp-buffer-narrow-start b) nil)
+         (setf (nelisp-buffer-narrow-end b) nil)
+         (setf (nelisp-buffer-pend b) nil))
     (when (and ovt (> oldlen 0))
       (nelisp-ov--before-change b 1 (1+ oldlen)))
     (setf (nelisp-buffer-ins b) nil)
@@ -12272,7 +12281,7 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
     (setf (nelisp-buffer-text-properties b) nil)
     (when (and ovt (> oldlen 0))
       (nelisp-ov--adjust-delete b 1 oldlen)
-      (nelisp-ov--after-change b 1 oldlen 0)))
+      (nelisp-ov--after-change b 1 oldlen 0))))
   nil)
 
 (defun nelisp-buffer-modified-p (&optional buf)
