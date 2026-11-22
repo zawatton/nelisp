@@ -67672,7 +67672,13 @@ two flag bits 20 and 21."
                         (if (= id 23) (m5_fx_float_arith 102 a b) -1)))))))
           (if (= argc 1)
               (if (= id 18) (m5_fx_float_incdec 7 a)
-                (if (= id 19) (m5_fx_float_incdec 15 a) -1))
+                (if (= id 19) (m5_fx_float_incdec 15 a)
+                  ;; (- X) of a float: the sign bit flipped, as GNU negates.
+                  (if (= id 16)
+                      (if (= (m5_fx_float_p a) 1)
+                          (m5_fx_float_box (logxor (nl_float_bits a) (shl 1 63)))
+                        -1)
+                    -1)))
             -1)))
       ;; The fixnum WORD of S, or -1 when S does not fit.
       (defun nl_eic_fix_wrap (s)
