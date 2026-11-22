@@ -573,10 +573,11 @@ new vector, or with DEST the vector when it changed and nil when it did not."
       (nelisp--two-sum (car pe) e)))
   (defun nelisp--dd-div-int (x n)
     "Double-double X divided by the small integer N."
-    (let* ((q (/ (car x) (float n)))
-           (pe (nelisp--two-prod q (float n)))
+    (let* ((fn (float n))
+           (q (/ (car x) fn))
+           (pe (nelisp--two-prod q fn))
            (rem (+ (- (- (car x) (car pe)) (cdr pe)) (cdr x))))
-      (nelisp--two-sum q (/ rem (float n)))))
+      (nelisp--two-sum q (/ rem fn))))
   (defun nelisp--pow2-exact (n)
     "2.0^N as an exact double, via repeated squaring (O(log N), never a
 per-unit loop).  Every intermediate the caller ever asks for stays inside
@@ -4232,9 +4233,11 @@ error handler continues from where it left off."
     "Dekker's split: A as HI + LO with HI carrying 26 significant bits."
     (let* ((c (* 134217729.0 a)) (hi (- c (- c a)))) (cons hi (- a hi))))
   (defun nelisp--two-prod-err (a b p)
-    "The part of A*B that P, the rounded product, dropped."
-    (let* ((sa (nelisp--f64-split a)) (sb (nelisp--f64-split b))
-           (ahi (car sa)) (alo (cdr sa)) (bhi (car sb)) (blo (cdr sb)))
+    "The part of A*B that P, the rounded product, dropped.
+Dekker's split of A and B (`nelisp--f64-split') is computed in place:
+the same operations, without the two pairs."
+    (let* ((ca (* 134217729.0 a)) (ahi (- ca (- ca a))) (alo (- a ahi))
+           (cb (* 134217729.0 b)) (bhi (- cb (- cb b))) (blo (- b bhi)))
       (+ (+ (+ (- (* ahi bhi) p) (* ahi blo)) (* alo bhi)) (* alo blo))))
   (defun sqrt (x)
     "The square root of X.
