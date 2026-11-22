@@ -771,7 +771,6 @@ compatibility and stops at comment boundaries."
      from to nil nil state targetdepth stopbefore commentstop)))
 
 
-;;; emacs-syntax-table.el ends here
 
 ;;;; --- skip-syntax-forward / skip-syntax-backward ---------------------------
 ;; The prelude's `nelisp--skip-syntaxes' resolves the table through its own
@@ -847,3 +846,5 @@ Return the distance traveled, either zero or negative."
     (emacs-syntax-table--skip-syntaxes nil syntax limit)))
 
 (provide 'emacs-syntax-table)
+
+;;; emacs-syntax-table.el ends here
