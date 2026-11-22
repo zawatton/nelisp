@@ -2,6 +2,20 @@
 
 ;;; Code:
 
+;; gnu562: whether unibyte STRING has both ASCII and non-ASCII bytes, the
+;; case `string-as-multibyte' below must split.  A short string is scanned
+;; directly; two regexp searches cost about 45 us however short it is.
+(defun emacs-cc-chars-parity-1--mixed-bytes-p (string)
+  "Non-nil when unibyte STRING has both ASCII and non-ASCII bytes."
+  (if (> (length string) 128)
+      (and (string-match-p "[\200-\377]" string)
+           (string-match-p "[\0-\177]" string))
+    (let ((i 0) (n (length string)) (high nil) (low nil))
+      (while (and (< i n) (not (and high low)))
+        (if (< (aref string i) 128) (setq low t) (setq high t))
+        (setq i (1+ i)))
+      (and high low))))
+
 (when (and (fboundp 'nelisp--repr) (fboundp 'string-as-multibyte))
   (unless (fboundp 'emacs-cc-chars-parity-1--native-string-as-multibyte)
     (fset 'emacs-cc-chars-parity-1--native-string-as-multibyte
@@ -16,8 +30,7 @@ non-ASCII bytes natively and pass ASCII runs through."
               (list 'string-as-multibyte (length arguments))))
     (let ((string (car arguments)))
       (if (or (not (stringp string)) (multibyte-string-p string)
-              (not (string-match-p "[\200-\377]" string))
-              (not (string-match-p "[\0-\177]" string)))
+              (not (emacs-cc-chars-parity-1--mixed-bytes-p string)))
           (emacs-cc-chars-parity-1--native-string-as-multibyte string)
         (let ((index 0) (length (length string)) (parts nil))
           (while (< index length)
