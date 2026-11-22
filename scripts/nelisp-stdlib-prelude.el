@@ -6184,8 +6184,13 @@ selects."
   "MESSAGE, an error symbol's `error-message', as GNU print.c
 print_error_message prints it: through `substitute-command-keys' when
 that is defined, keeping MESSAGE if that fails (safe_call1), else with
-its quotes substituted for `text-quoting-style'."
+its quotes substituted for `text-quoting-style'.
+Without a backslash there is no key, keymap or escape sequence to expand, and
+`substitute-command-keys' only curves the quotes, which
+`nelisp--substitute-quotes' does without its ~0.5 ms buffer round trip."
   (cond ((not (stringp message)) message)
+        ((not (string-search "\\" message))
+         (nelisp--substitute-quotes message))
         ((fboundp 'substitute-command-keys)
          (or (condition-case nil (substitute-command-keys message)
                (error nil))
