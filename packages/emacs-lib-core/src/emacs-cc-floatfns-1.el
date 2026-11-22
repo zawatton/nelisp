@@ -29,12 +29,29 @@ Resolving searches the library directories, about 120 us a call."
       (setq emacs-cc-floatfns--libm-path
             (nl-ffi-loader--resolve-soname "libm.so.6" nil))))
 
+(defvar emacs-cc-floatfns--libm-ready nil
+  "Library path of the last successful typed libm call, or nil.")
+
 (defun emacs-cc-floatfns--typed-libm (operation arg)
   "Call OPERATION in libm with numeric ARG through the typed FFI."
   (unless (numberp arg)
     (signal 'wrong-type-argument (list 'numberp arg)))
   (unless (memq operation '(acos asin exp log log10))
     (error "Unsupported libm operation: %S" operation))
+  ;; gnu562: once a call has succeeded, the FFI entry points exist and the
+  ;; library is declared, so go straight to the call (the checks below cost
+  ;; about 19 us of a 35 us `log').  Any error there falls back to the full
+  ;; path, which also re-resolves a library path that no longer opens.
+  (or (and emacs-cc-floatfns--libm-ready
+           (condition-case nil
+               (let ((nl-ffi--library-order (list emacs-cc-floatfns--libm-ready)))
+                 (nl-ffi--invoke operation (symbol-name operation)
+                                 '(:double) :double (list arg)))
+             (error (setq emacs-cc-floatfns--libm-ready nil) nil)))
+      (emacs-cc-floatfns--typed-libm-1 operation arg)))
+
+(defun emacs-cc-floatfns--typed-libm-1 (operation arg)
+  "The full `emacs-cc-floatfns--typed-libm' path for OPERATION and ARG."
   (unless (and (fboundp 'nl-ffi-call)
                (fboundp 'nl-ffi-loader--resolve-soname)
                (fboundp 'ffi:library)
@@ -54,8 +71,9 @@ Resolving searches the library directories, about 120 us a call."
          (signal 'nelisp-unsupported-primitive (list operation)))
        (ffi:library path)))
     (let ((nl-ffi--library-order (list path)))
-      (nl-ffi--invoke operation (symbol-name operation)
-                      '(:double) :double (list arg)))))
+      (prog1 (nl-ffi--invoke operation (symbol-name operation)
+                             '(:double) :double (list arg))
+        (setq emacs-cc-floatfns--libm-ready path)))))
 
 ;; Replace only native stubs that reject a valid numeric call.  Working
 ;; host and dynamic-library implementations keep their original function cell.
