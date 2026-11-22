@@ -1330,8 +1330,32 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
       (setq i (1- i)))
     (1+ i)))
 
+(defun files--native-unnarrowed-p ()
+  "Non-nil when the current buffer is native and not narrowed.
+gnu562: such a buffer is read in place with `char-after' instead of
+copying its text (`files--buffer-string-value', `files--bol-position')."
+  (and (fboundp 'pos-bol)
+       (files--host-buffer-available-p)
+       (eq (point-min) 1)
+       (eq (point-max) (1+ (buffer-size)))))
+
 (defun files--column-at (pos)
   "Return the zero-based display column of POS honouring tab stops."
+  (if (files--native-unnarrowed-p)
+      (let* ((end (max 1 (min pos (1+ (buffer-size)))))
+             (bol (if (eq end (point)) (pos-bol)
+                    (let ((b end))
+                      (while (and (> b 1) (not (eq (char-after (1- b)) ?\n)))
+                        (setq b (1- b)))
+                      b)))
+             (tw (files--tab-width))
+             (col 0))
+        (while (< bol end)
+          (setq col (if (eq (char-after bol) ?\t)
+                        (* (1+ (/ col tw)) tw)
+                      (1+ col))
+                bol (1+ bol)))
+        col)
   (let* ((content (files--buffer-string-value))
          (bol (1- (files--bol-position pos)))   ; 0-indexed BOL
          (end (1- (files--clip-point pos)))     ; 0-indexed target
@@ -1343,7 +1367,7 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
                     (* (1+ (/ col tw)) tw)
                   (1+ col)))
       (setq i (1+ i)))
-    col))
+    col)))
 
 (when (files--install-fallback-function-p 'current-indentation)
   (defun current-indentation ()
@@ -1351,10 +1375,7 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
     ;; gnu562: an unnarrowed native buffer is scanned in place from
     ;; `pos-bol'; the general path below copies the whole buffer twice
     ;; (the text, then again to find the line start: about 80 us).
-    (if (and (fboundp 'pos-bol)
-             (files--host-buffer-available-p)
-             (eq (point-min) 1)
-             (eq (point-max) (1+ (buffer-size))))
+    (if (files--native-unnarrowed-p)
         (let ((tw (files--tab-width)) (p (pos-bol)) (col 0) ch)
           (while (and (setq ch (char-after p)) (or (eq ch ?\s) (eq ch ?\t)))
             (setq col (if (eq ch ?\t) (* (1+ (/ col tw)) tw) (1+ col))
@@ -1379,6 +1400,20 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
 With FORCE t, pad a too-short line with spaces to reach COLUMN."
     (unless (and (integerp column) (>= column 0))
       (signal 'wrong-type-argument (list 'wholenump column)))
+    (if (files--native-unnarrowed-p)
+        (let ((tw (files--tab-width)) (p (pos-bol)) (col 0) ch)
+          (while (and (< col column)
+                      (setq ch (char-after p))
+                      (not (eq ch ?\n)))
+            (setq col (if (eq ch ?\t) (* (1+ (/ col tw)) tw) (1+ col))
+                  p (1+ p)))
+          (files--set-buffer-point-value p)
+          (when (and (eq force t) (< col column))
+            (let ((n (- column col)))
+              (when (> n 0)
+                (insert (make-string n ?\s))
+                (setq col column))))
+          col)
     (let* ((content (files--buffer-string-value))
            (len (files--string-length content))
            (tw (files--tab-width))
@@ -1397,7 +1432,7 @@ With FORCE t, pad a too-short line with spaces to reach COLUMN."
           (when (> n 0)
             (insert (make-string n ?\s))
             (setq col column))))
-      col)))
+      col))))
 
 (when (files--install-fallback-function-p 'indent-to)
   (defun indent-to (column &optional minimum)
