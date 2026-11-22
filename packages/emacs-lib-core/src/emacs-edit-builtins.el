@@ -3020,10 +3020,12 @@ if all requested words were traversed, nil at a buffer or field edge."
               (setq complete nil)
             (let* ((first (if forward position (1- position)))
                    (function
-                    (and (boundp 'find-word-boundary-function-table)
-                         (char-table-p find-word-boundary-function-table)
-                         (aref find-word-boundary-function-table
-                               (char-after first)))))
+                    ;; GNU treats a `t' entry as no function (syntax.c).
+                   (let ((entry (and (boundp 'find-word-boundary-function-table)
+                                     (char-table-p find-word-boundary-function-table)
+                                     (aref find-word-boundary-function-table
+                                           (char-after first)))))
+                     (and (not (eq entry t)) entry))))
               (if function
                   (progn
                     (unless (symbolp function)
