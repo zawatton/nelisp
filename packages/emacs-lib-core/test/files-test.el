@@ -784,9 +784,9 @@ runaway forms rather than the editing-shim limit."
       (should (eq (goto-char m) m))
       (should (= (point) 2)))
     (should-error (goto-char (make-marker)) :type 'error)
-    (let ((n 2000) (i 0) (t0 (float-time)))
-      (while (< i n) (point) (point-min) (point-max) (following-char) (setq i (1+ i)))
-      (should (< (/ (* 1e6 (- (float-time) t0)) n) 20.0)))))
+    ;; The subrp checks above are the discriminating assertion (a Lisp
+    ;; shadow cost 8-50 us per call); no absolute timing bound here.
+    nil))
 
 (ert-deftest files-test/buffer-substring-fast-path-keeps-properties ()
   ;; A buffer whose property sidecar is empty takes the native buffer-substring
@@ -799,20 +799,21 @@ runaway forms rather than the editing-shim limit."
     (should (equal (buffer-substring 6 1) "hello"))
     (should-error (buffer-substring 1 100) :type 'args-out-of-range)
     (should-error (buffer-substring (make-marker) 5) :type 'error)
-    ;; Relative speed: the advised call must beat the full property-copy body
-    ;; run in the same process (a fixed microsecond bound is machine-noisy).
-    (should (fboundp 'emacs-buffer--native-buffer-substring-slow))
-    (let* ((n 400) (orig (lambda (a b) (ignore a b) "hello"))
-           (time (lambda (thunk)
-                   (let ((i 0) (t0 (float-time)))
-                     (while (< i n) (funcall thunk) (setq i (1+ i)))
-                     (- (float-time) t0))))
-           (fast (funcall time (lambda () (buffer-substring 1 6))))
-           (slow (funcall time
-                          (lambda ()
-                            (emacs-buffer--native-buffer-substring-slow
-                             orig 1 6 nil)))))
-      (should (< fast (* 0.7 slow))))
+    ;; Path, not speed: with integer bounds and an empty sidecar the
+    ;; property copy is never entered; once a property exists it is.
+    (let ((copies 0)
+          (orig (symbol-function 'emacs-buffer--copy-buffer-properties-to-string)))
+      (unwind-protect
+          (progn
+            (fset 'emacs-buffer--copy-buffer-properties-to-string
+                  (lambda (&rest a) (setq copies (1+ copies)) (apply orig a)))
+            (buffer-substring 1 6)
+            (buffer-substring 6 1)
+            (should (= copies 0))
+            (put-text-property 2 5 'face 'bold)
+            (buffer-substring 1 6)
+            (should (= copies 1)))
+        (fset 'emacs-buffer--copy-buffer-properties-to-string orig)))
     (put-text-property 2 5 'face 'bold)
     (should (eq (get-text-property 0 'face (buffer-substring 1 6)) nil))
     (should (eq (get-text-property 1 'face (buffer-substring 1 6)) 'bold))
