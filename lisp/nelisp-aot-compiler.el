@@ -1806,13 +1806,16 @@ The defun then runs in the evaluator, which signals it."
   `(and (nelisp-aot--raw-op >= ,value -2305843009213693952)
         (nelisp-aot--raw-op <= ,value 2305843009213693951)))
 
-(defun nelisp-aot-compiler--lisp-fixnum-result-form (op a b fallback)
+(defun nelisp-aot-compiler--lisp-fixnum-result-form (op a b fallback &optional word)
   "Return a guarded raw OP form, delegating an overflowing result to FALLBACK.
 GNU bytecode.c Bplus/Bdiff check FIXNUM_OVERFLOW_P; Bmult also uses
 ckd_mul.  This IR has no overflow-bit result, so multiplication adapts
 the runtime wf_prod_w's division round trip after its range check.
 That check excludes INT64_MIN before division, and a zero multiplier
-short circuits the division.  A and B are already evaluated fixnums."
+short circuits the division.  A and B are already evaluated fixnums.
+With WORD the in-range result is returned as the immediate word 4N+1
+\(FALLBACK is then a word too), so the consumer need not range check it
+again."
   (let ((result (nelisp-aot-compiler--gensym "lisp-result")))
     `(let ((,result (nelisp-aot--raw-op ,op ,a ,b)))
        (if (and ,(nelisp-aot-compiler--lisp-fixnum-range-form result)
@@ -1821,8 +1824,33 @@ short circuits the division.  A and B are already evaluated fixnums."
                           (nelisp-aot--raw-op =
                            (nelisp-aot--raw-op / ,result ,a) ,b))
                    t))
-           ,result
+           ,(if word
+                `(nelisp-aot--raw-as-word (logior (shl ,result 2) 1))
+              result)
          ,fallback))))
+
+(defvar nelisp-aot-compiler-lisp-word-fixnum-test t
+  "Non-nil: a value word operand of + - < > <= >= = is tested with the mask test.
+Bind to nil to get the three-way tag decode of every operand.")
+
+(defvar nelisp-aot-compiler-lisp-inline-incdec t
+  "Non-nil: lower (1+ X) and (1- X) as (+ X 1) and (- X 1) in Lisp mode.
+Bind to nil to get the per-call function-cell delegation back.")
+
+(defun nelisp-aot-compiler--lisp-imm-fixnum-p (node)
+  "Non-nil when NODE is a constant raw integer inside the 62-bit fixnum range."
+  (and (eq (nelisp-aot-compiler--ir-kind node) 'imm)
+       (integerp (nelisp-aot-compiler--ir-get node :value))
+       (<= -2305843009213693952 (nelisp-aot-compiler--ir-get node :value)
+           2305843009213693951)))
+
+(defun nelisp-aot-compiler--lisp-word-fixnum-form (var)
+  "Return a raw truth form: the word in VAR is an immediate fixnum (4N+1).
+GNU's FIXNUMP on a tagged word is one mask and compare (lisp.h
+`FIXNUMP'; the fxir-native templates use the same test).  A word that
+is a slot, nil or t fails it and takes the generic function, which
+answers a boxed fixnum, a float, a marker and a wrong type as GNU does."
+  `(= (logand (nelisp-aot--word-bits ,var) 3) 1))
 
 (defun nelisp-aot-compiler--lisp-numeric-op (op a b env fenv defuns)
   "Return Lisp OP on parsed A and B with type and fixnum overflow guards.
@@ -1830,46 +1858,87 @@ GNU's structure (bytecode.c:1331 Bplus, 1278 Blss): when both operands
 are fixnums the machine operation runs, otherwise the runtime's own
 function does -- for a float, a marker, or a wrong type, which it
 signals.  A division takes the fast path only for a nonzero divisor, so
-the generic function answers the zero divisor as GNU does."
+the generic function answers the zero divisor as GNU does.
+An operand the compiler knows is a value word is first tested with the
+immediate-fixnum mask test and read with one arithmetic shift; a word
+that passes is in range already, so it needs no range guard.  A word
+that fails (a boxed fixnum slot, a float, nil...) goes on to the full
+tag decode, so a fixnum held in a slot keeps its fast path."
   (let* ((ta (nelisp-aot-compiler--gensym "lisp-num"))
          (tb (nelisp-aot-compiler--gensym "lisp-num"))
+         ;; The raw value of a word operand: one arithmetic shift.
+         (ra `(sar (nelisp-aot--word-bits ,ta) 2))
+         (rb `(sar (nelisp-aot--word-bits ,tb) 2))
+         ;; The mask test covers + - and the comparisons.
+         (cheap (and nelisp-aot-compiler-lisp-word-fixnum-test
+                     (memq op '(+ - < > <= >= =))))
+         (word-a (and cheap (eq (nelisp-aot-compiler--lisp-repr a) 'word)))
+         (word-b (and cheap (eq (nelisp-aot-compiler--lisp-repr b) 'word)))
+         (arith (memq op '(+ - * / mod)))
          ;; A's value may be the dispatcher's OUT slot, which evaluating B
          ;; can overwrite before the operation reads A.
          (a-form (if (memq (nelisp-aot-compiler--ir-kind b) '(imm ref))
                      `(nelisp-aot--parsed-ir ,a)
                    `(nelisp-aot--user-init (nelisp-aot--parsed-ir ,a))))
-         (guards (delq nil
-                       (list
-                        (unless (eq (nelisp-aot-compiler--lisp-repr a) 'raw-i64)
-                          `(nelisp-aot--fixnump ,ta))
-                        (unless (eq (nelisp-aot-compiler--lisp-repr b) 'raw-i64)
-                          `(nelisp-aot--fixnump ,tb))
-                        (when (memq op '(+ - * / mod))
-                          (nelisp-aot-compiler--lisp-fixnum-range-form ta))
-                        (when (memq op '(+ - * / mod))
-                          (nelisp-aot-compiler--lisp-fixnum-range-form tb))
-                        (when (memq op '(/ mod))
-                          `(nelisp-aot--raw-op /= ,tb 0))))))
+         (generic `(nelisp-aot--generic-call ,op ,ta ,tb))
+         (build
+          (lambda (wa wb)
+            ;; Return (GUARD . FAST) for operands read as words (WA, WB)
+            ;; or by the full tag decode.
+            (let* ((guards
+                    (delq nil
+                          (list
+                           (cond (wa (nelisp-aot-compiler--lisp-word-fixnum-form ta))
+                                 ((not (eq (nelisp-aot-compiler--lisp-repr a) 'raw-i64))
+                                  `(nelisp-aot--fixnump ,ta)))
+                           (cond (wb (nelisp-aot-compiler--lisp-word-fixnum-form tb))
+                                 ((not (eq (nelisp-aot-compiler--lisp-repr b) 'raw-i64))
+                                  `(nelisp-aot--fixnump ,tb)))
+                           (when (and arith (not wa)
+                                      (not (nelisp-aot-compiler--lisp-imm-fixnum-p a)))
+                             (nelisp-aot-compiler--lisp-fixnum-range-form ta))
+                           (when (and arith (not wb)
+                                      (not (nelisp-aot-compiler--lisp-imm-fixnum-p b)))
+                             (nelisp-aot-compiler--lisp-fixnum-range-form tb))
+                           (when (memq op '(/ mod))
+                             `(nelisp-aot--raw-op /= ,(if wb rb tb) 0)))))
+                   (fast-a (if wa ra ta))
+                   (fast-b (if wb rb tb))
+                   (fast
+                    (cond
+                     ((memq op '(+ - * /))
+                      (if (or wa wb)
+                          (nelisp-aot-compiler--lisp-fixnum-result-form
+                           op fast-a fast-b `(nelisp-aot--as-word ,generic) t)
+                        (nelisp-aot-compiler--lisp-fixnum-result-form
+                         op fast-a fast-b generic)))
+                     ((eq op 'mod)
+                      ;; GNU `mod' is floored (data.c Fmod): the machine
+                      ;; remainder takes the divisor's sign when it differs.
+                      (let ((r (nelisp-aot-compiler--gensym "lisp-mod")))
+                        `(let ((,r (nelisp-aot--raw-op mod ,fast-a ,fast-b)))
+                           (if (and (nelisp-aot--raw-op /= ,r 0)
+                                    (nelisp-aot--raw-op
+                                     < (nelisp-aot--raw-op logxor ,r ,fast-b) 0))
+                               (nelisp-aot--raw-op + ,r ,fast-b)
+                             ,r))))
+                     ((and wa wb (memq op nelisp-aot-compiler--cmp-ops))
+                      ;; 4N+1 words order as N does: compare the tagged words.
+                      `(nelisp-aot--raw-op ,op (nelisp-aot--word-bits ,ta)
+                                           (nelisp-aot--word-bits ,tb)))
+                     (t `(nelisp-aot--raw-op ,op ,fast-a ,fast-b)))))
+              (cons (if (cdr guards) `(and ,@guards) (car guards)) fast))))
+         (full (funcall build nil nil))
+         (cheap-arm (and (or word-a word-b) (funcall build word-a word-b)))
+         (body (if cheap-arm
+                   `(if ,(car cheap-arm)
+                        ,(cdr cheap-arm)
+                      (if ,(car full) ,(cdr full) ,generic))
+                 `(if ,(car full) ,(cdr full) ,generic))))
     (nelisp-aot-compiler--parse-value
      `(let ((,ta ,a-form))
         (let ((,tb (nelisp-aot--parsed-ir ,b)))
-          (if ,(if (cdr guards) `(and ,@guards) (car guards))
-              ,(cond
-                ((memq op '(+ - * /))
-                 (nelisp-aot-compiler--lisp-fixnum-result-form
-                  op ta tb `(nelisp-aot--generic-call ,op ,ta ,tb)))
-                ((eq op 'mod)
-                   ;; GNU `mod' is floored (data.c Fmod): the machine
-                   ;; remainder takes the divisor's sign when it differs.
-                   (let ((r (nelisp-aot-compiler--gensym "lisp-mod")))
-                     `(let ((,r (nelisp-aot--raw-op mod ,ta ,tb)))
-                        (if (and (nelisp-aot--raw-op /= ,r 0)
-                                 (nelisp-aot--raw-op
-                                  < (nelisp-aot--raw-op logxor ,r ,tb) 0))
-                            (nelisp-aot--raw-op + ,r ,tb)
-                          ,r))))
-                (t `(nelisp-aot--raw-op ,op ,ta ,tb)))
-            (nelisp-aot--generic-call ,op ,ta ,tb))))
+          ,body))
      env fenv defuns)))
 
 (defun nelisp-aot-compiler--lisp-raw-op (op a b)
@@ -11455,6 +11524,11 @@ functions `((NAME . ARITY) ...)'."
     (nelisp-aot-compiler--lisp-as-word
      (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)
      env fenv defuns))
+   ;; A raw fixnum word 4N+1 already built by the caller: label it a word.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--raw-as-word))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--parse-value (cadr sexp) env fenv defuns)
+     :repr 'word))
    ;; Doc 229: a user `let' binding's value, in a slot of its own.
    ((and (consp sexp) (eq (car sexp) 'nelisp-aot--user-init))
     (nelisp-aot-compiler--lisp-stabilize
@@ -11799,6 +11873,16 @@ functions `((NAME . ARITY) ...)'."
                     `(if (< ,tree ,arg) ,tree ,arg)
                   `(if (> ,tree ,arg) ,tree ,arg))))
         (nelisp-aot-compiler--parse-value tree env fenv defuns))))
+   ;; GNU Badd1/Bsub1 are Bplus/Bdiff with the constant 1 (bytecode.c):
+   ;; lower (1+ X) and (1- X) as (+ X 1) and (- X 1) so a native artifact
+   ;; inlines them instead of calling the function cell per iteration.
+   ((and (consp sexp) (memq (car sexp) '(1+ 1-))
+         (= (length sexp) 2)
+         nelisp-aot-compiler-lisp-inline-incdec
+         (nelisp-aot-compiler--lisp-values-p))
+    (nelisp-aot-compiler--parse-value
+     (list (if (eq (car sexp) '1+) '+ '-) (nth 1 sexp) 1)
+     env fenv defuns))
    ;; Arithmetic with at least one non-constant operand.  Doc 100
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
