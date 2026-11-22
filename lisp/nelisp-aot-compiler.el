@@ -2215,8 +2215,13 @@ user `let' binding keeps its value as a GNU Lisp_Object does."
        :repr 'word)))))
 
 ;; Doc 229 S4.5: use the evaluator's existing rooted non-local-exit stash.
-;; standalone-build's arena header is KIND@16, TAG@24, VALUE@56.  KIND is
-;; 1 for signals and 2 for throws.  No new provider or scratch ABI is needed.
+;; standalone-build's arena header holds KIND@16 (1 for signals, 2 for
+;; throws).  The pending exit's TAG and VALUE are two WORDs in the BSS link
+;; symbol `nl_exit_values' (+0, +8), which the collector marks; since the
+;; signal-stash flip (6fa5b5116) they are no longer 32-byte views at
+;; arena+24/+56.  No runtime export is added: the symbol's address is the
+;; driver BSS base (the address of `nl_arena_base') plus the link table's
+;; offset, as `nelisp-native-load--exit-values-addr' computes it.
 (defun nelisp-aot-compiler--lisp-exit-arena ()
   (nelisp-aot-compiler--make-ir 'ptr-read-u64
         ;; Use the loader's existing shared-data getter convention, as
@@ -2224,6 +2229,18 @@ user `let' binding keeps its value as a GNU Lisp_Object does."
         :ptr (nelisp-aot-compiler--make-ir 'extern-call :name 'nl_arena_base
               :ret-class 'gp :args nil :varargs-p nil :f64-count 0)
         :offset (nelisp-aot-compiler--make-ir 'imm :value 0)))
+
+(defconst nelisp-aot-compiler--exit-values-offset 4783184
+  "Offset of `nl_exit_values' from the address of `nl_arena_base'.
+Must equal `nelisp-native-load--exit-values-offset' (a test asserts it).")
+
+(defun nelisp-aot-compiler--lisp-exit-values-addr ()
+  "IR for the address of the runtime's `nl_exit_values' WORD pair."
+  (nelisp-aot-compiler--make-ir 'arith :op '+
+        :a (nelisp-aot-compiler--make-ir 'extern-call :name 'nl_arena_base
+            :ret-class 'gp :args nil :varargs-p nil :f64-count 0)
+        :b (nelisp-aot-compiler--make-ir
+            'imm :value nelisp-aot-compiler--exit-values-offset)))
 
 (defun nelisp-aot-compiler--lisp-exit-field (offset)
   (nelisp-aot-compiler--make-ir 'ptr-read-u64
@@ -2349,21 +2366,30 @@ still runs.  Calls in handlers target the outer pad, never their own pad."
                    (let* ((pad-sp (nelisp-aot-compiler--lisp-exit-ref "lisp-handler-sp" 'raw-i64))
                           (pad-label (nelisp-aot-compiler--ir-get node :label))
                           (error-ref (nelisp-aot-compiler--ir-get node :error-ref))
-                          (capture-raw (nelisp-aot-compiler--make-ir
-                                    'extern-call :name 'nelisp_cons_construct :ret-class 'gp
-                                    :args (list
-                                           (nelisp-aot-compiler--make-ir
-                                            'arith :op '+ :a (nelisp-aot-compiler--lisp-exit-arena)
-                                            :b (nelisp-aot-compiler--make-ir 'imm :value 24))
-                                           (nelisp-aot-compiler--make-ir
-                                            'arith :op '+ :a (nelisp-aot-compiler--lisp-exit-arena)
-                                            :b (nelisp-aot-compiler--make-ir 'imm :value 56))
-                                           error-ref)))
-                          (capture (nelisp-aot-compiler--parse-value
-                                    `(extern-call nelisp_cons_construct
-                                                  ,@(mapcar (lambda (arg) `(nelisp-aot--parsed-ir ,arg))
-                                                            (nelisp-aot-compiler--ir-get capture-raw :args)))
-                                    env fenv defuns))
+                          (capture
+                           (let ((tg (nelisp-aot-compiler--gensym "lisp-exit-tag"))
+                                 (vl (nelisp-aot-compiler--gensym "lisp-exit-val"))
+                                 (tw (nelisp-aot-compiler--gensym "lisp-exit-tw"))
+                                 (vw (nelisp-aot-compiler--gensym "lisp-exit-vw")))
+                             (nelisp-aot-compiler--parse-value
+                              `(let ((,tg (alloc-bytes 32 8))
+                                     (,vl (alloc-bytes 32 8))
+                                     (,tw (ptr-read-u64
+                                           (nelisp-aot--parsed-ir
+                                            ,(nelisp-aot-compiler--lisp-exit-values-addr))
+                                           0))
+                                     (,vw (ptr-read-u64
+                                           (nelisp-aot--parsed-ir
+                                            ,(nelisp-aot-compiler--lisp-exit-values-addr))
+                                           8)))
+                                 (seq (extern-call nl_sexp_clone_into
+                                                   (if (= ,tw 0) 3 ,tw) ,tg)
+                                      (extern-call nl_sexp_clone_into
+                                                   (if (= ,vw 0) 3 ,vw) ,vl)
+                                      (extern-call nelisp_cons_construct
+                                                   ,tg ,vl
+                                                   (nelisp-aot--parsed-ir ,error-ref))))
+                              env fenv defuns)))
                           (cases (jump saved target)))
                      (dolist (clause (reverse (nelisp-aot-compiler--ir-get node :clauses)))
                        (setq cases (nelisp-aot-compiler--make-ir
@@ -2432,41 +2458,16 @@ still runs.  Calls in handlers target the outer pad, never their own pad."
                      :body (nelisp-aot-compiler--make-ir 'imm :value 0 :repr repr))
               :repr repr))))))))
 
-(defun nelisp-aot-compiler--lisp-exit-restore-signal (error-ref env fenv defuns)
-  "Restore M6's borrowed signal descriptor from rooted ERROR-REF.
-Condition matching runs after clearing KIND, and can allocate.  Re-read
-both words from the owned descriptor before making the stash live again;
-no allocation occurs between this snapshot and reinstating KIND."
-  (let ((nelisp-aot-compiler--runtime-entry-params nil)
-        (word (nelisp-aot-compiler--gensym "lisp-exit-word"))
-        (dst (nelisp-aot-compiler--gensym "lisp-exit-dst")))
-    (cl-labels
-        ((snapshot (field offset)
-           `(let ((,word (ptr-read-u64
-                         (ptr-read-u64 (nelisp-aot--parsed-ir ,error-ref) 8)
-                         ,field))
-                  (,dst (+ (nelisp-aot--parsed-ir
-                            ,(nelisp-aot-compiler--lisp-exit-arena)) ,offset)))
-              (seq (ptr-write-u64 ,dst 0 0)
-                   (ptr-write-u64 ,dst 8 0)
-                   (ptr-write-u64 ,dst 16 0)
-                   (ptr-write-u64 ,dst 24 0)
-                   (if (= (logand ,word 3) 1)
-                       (seq (ptr-write-u64 ,dst 0 ,nelisp-sexp--tag-int)
-                            (ptr-write-u64 ,dst 8 (sar ,word 2)))
-                     (if (= ,word 3) 0
-                       (if (= ,word 7)
-                           (ptr-write-u64 ,dst 0 ,nelisp-sexp--tag-t)
-                         (seq
-                          (ptr-write-u64 ,dst 0 (ptr-read-u64 ,word 0))
-                          (ptr-write-u64 ,dst 8 (ptr-read-u64 ,word 8))
-                          (ptr-write-u64 ,dst 16 (ptr-read-u64 ,word 16))
-                          (ptr-write-u64 ,dst 24 (ptr-read-u64 ,word 24))))))))))
-      (nelisp-aot-compiler--parse-value
-       `(seq ,(snapshot 0 24) ,(snapshot 8 56)
-             (ptr-write-u64 (nelisp-aot--parsed-ir
-                            ,(nelisp-aot-compiler--lisp-exit-arena)) 16 1))
-       env fenv defuns))))
+(defun nelisp-aot-compiler--lisp-exit-restore-signal (_error-ref env fenv defuns)
+  "Make a declined signal live again for an outer pad.
+Condition matching runs after clearing KIND and can allocate, but the
+pending exit's WORDs stay in `nl_exit_values' (marked by the collector, and
+only a new exit overwrites them), so reinstating KIND is all that is left."
+  (let ((nelisp-aot-compiler--runtime-entry-params nil))
+    (nelisp-aot-compiler--parse-value
+     `(ptr-write-u64 (nelisp-aot--parsed-ir
+                      ,(nelisp-aot-compiler--lisp-exit-arena)) 16 1)
+     env fenv defuns)))
 
 (defun nelisp-aot-compiler--lisp-exit-declined (node saved target error-ref env fenv defuns)
   "Restore a declined signal before NODE's outer-pad jump."
