@@ -12301,6 +12301,23 @@ functions `((NAME . ARITY) ...)'."
      (nelisp-aot-compiler--parse-value
       '(extern-call nl_native_buf_rec mirror) env fenv defuns)
      :repr 'raw-i64))
+   ;; GNU's byte compiler (a compiler macro, verified on emacs 31.1) turns
+   ;; (char-before X) into (char-after (1- (or X (point)))), so compiled
+   ;; code signals number-or-marker-p, and (integer-or-marker-p 0.5) for
+   ;; 1.5, where the interpreted function signals integer-or-marker-p on
+   ;; the argument itself.  Always on: the same source answers as GNU's
+   ;; compiled code with the leaves off, on or inline.
+   ((and (consp sexp) (eq (car sexp) 'char-before)
+         (= (length sexp) 2)
+         (not (assq 'char-before defuns))
+         (nelisp-aot-compiler--lisp-values-p)
+         fenv
+         (nelisp-aot-compiler--aot-builtin-boundary-available-p fenv))
+    (let ((v (nelisp-aot-compiler--gensym "cb-pos")))
+      (nelisp-aot-compiler--parse-value
+       `(let ((,v ,(nth 1 sexp)))
+          (char-after (1- (or ,v (point)))))
+       env fenv defuns)))
    ((and (consp sexp) (or nelisp-aot-compiler-buffer-leaves
                           nelisp-aot-compiler-buffer-leaves-inline)
          (assq (car sexp) nelisp-aot-compiler--buffer-leaves)
