@@ -150,6 +150,14 @@ Slots:
         (nelisp--record-set ext 4 value)
       (setf (emacs-buffer--ext-modified-tick ext) value))))
 
+(defvar emacs-buffer--char-props-seen nil
+  "Non-nil once any text-property interval or overlay was ever created.
+Monotone and global (never reset): the native `forward-word' (syntax.c
+scan_words, constrain_to_field) declines to the Lisp scan once this is set,
+because it cannot see the property sidecar.  A superset of `a buffer has a
+field property'; set in `emacs-buffer--tp-cell' (every interval is built by
+it) and `emacs-buffer--overlay-insert-sorted'.")
+
 (defvar emacs-buffer--state (make-hash-table :test 'eq :weakness nil)
   "Hash table buffer-object -> `emacs-buffer--ext'.
 Populated lazily by `emacs-buffer--ensure-ext'.  We keep strong refs
@@ -1158,6 +1166,7 @@ exists to fix.  Skips silently when there is no current
 
 (defun emacs-buffer--tp-cell (start end plist)
   "Construct a text-prop interval cell."
+  (setq emacs-buffer--char-props-seen t)
   (cons start (cons end plist)))
 
 (defun emacs-buffer--tp-start (cell) (car cell))
@@ -2571,6 +2580,7 @@ Slots:
   "Insert REC into BUF's overlay list, keeping ascending START order.
 Ties on START preserve insertion order (= REC goes after any existing
 record with equal START)."
+  (setq emacs-buffer--char-props-seen t)
   (let* ((ext (emacs-buffer--ensure-text-property-ext buf))
          (lst (emacs-buffer--ext-overlays ext))
          (start (emacs-buffer--overlay-rec-start rec)))

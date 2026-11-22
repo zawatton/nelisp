@@ -2991,9 +2991,8 @@ has no `field' property, so field constraints leave motion unchanged."
 ;; `words-include-escapes' and syntax-table text properties; GNU's scan_words
 ;; honours them, and this definition follows it, so standalone NeLisp
 ;; (which has `nelisp--repr') takes ownership of the name.
-(when (or (emacs-edit-builtins--install-function-p 'forward-word)
-          (fboundp 'nelisp--repr))
-  (defun forward-word (&optional arg)
+(progn
+  (defun emacs-edit--forward-word-lisp (&optional arg)
     "Move point forward ARG words, or backward if ARG is negative.
 ARG defaults to one.  Word boundaries follow the current syntax table,
 script categories, and `find-word-boundary-function-table'.  Return t
@@ -3049,6 +3048,24 @@ if all requested words were traversed, nil at a buffer or field edge."
                              (emacs-edit--word-field-position position start))))
           (goto-char constrained)
           (and complete (= constrained position)))))))
+
+;; Standalone NeLisp answers `forward-word' natively (explicit user instruction;
+;; GNU implements it in C, syntax.c Fforward_word/scan_words) and declines to
+;; `nelisp--forward-word-reference'.  Make that reference this GNU-exact
+;; scan.  Without a native `forward-word' (the cell is still the prelude
+;; reference), take over the name as before.
+(let ((prelude-owned
+       (and (fboundp 'nelisp--forward-word-reference)
+            (fboundp 'forward-word)
+            (eq (symbol-function 'forward-word)
+                (symbol-function 'nelisp--forward-word-reference)))))
+  (when (fboundp 'nelisp--forward-word-reference)
+    (fset 'nelisp--forward-word-reference #'emacs-edit--forward-word-lisp))
+  (when (or prelude-owned
+            (and (not (fboundp 'nelisp--forward-word-reference))
+                 (or (emacs-edit-builtins--install-function-p 'forward-word)
+                     (fboundp 'nelisp--repr))))
+    (fset 'forward-word #'emacs-edit--forward-word-lisp)))
 
 (when (emacs-edit-builtins--install-function-p 'backward-word)
   (defun backward-word (&optional arg)

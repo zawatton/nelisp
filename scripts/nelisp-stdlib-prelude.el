@@ -30145,8 +30145,12 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (unless (fboundp 'interactive-p) (defun interactive-p () nil))
 
 ;; F2 U4b: Lisp-owned motion provider and frozen buffer values. No native entry.
-(unless (fboundp 'forward-word)
-  (defun forward-word (&optional n)
+;; The native `forward-word' (explicit user instruction; GNU implements it in C,
+;; syntax.c Fforward_word/scan_words) declines to this reference.  In a bare
+;; binary it is the 3-class fallback for non-ASCII text; the emacs-lib package
+;; replaces it with the GNU-exact scan.
+(progn
+  (defun nelisp--forward-word-reference (&optional n)
     "Move N words, returning t if all requested words were traversed."
     (unless (or (null n) (and (integerp n) (<= -2305843009213693952 n)
                              (< n 2305843009213693952)))
@@ -30175,6 +30179,8 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
             (setq remaining (- remaining)))))
       (nelisp-goto-char p b)
       (>= remaining 0))))
+(unless (fboundp 'forward-word)
+  (fset 'forward-word (symbol-function 'nelisp--forward-word-reference)))
 ;; GNU defines these names in C, so each must answer `subrp'.  This runtime
 ;; defines some of them in Lisp; mark each such closure as a Lisp primitive
 ;; (same body, same dispatch) so it reports as a subr.  A byte-code function

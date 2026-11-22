@@ -1198,6 +1198,167 @@
                           0)
                       0)
                   (if (= id 81) (if (= argc 5) (nl_gb_insert_file args r) 0) 0))))))))
+    ;; forward-word natively (explicit user instruction; GNU implements it in C: syntax.c
+    ;; Fforward_word / scan_words).  The scan is pure until the final point write and covers the
+    ;; GNU-exact ASCII case only; every other case answers -3 (nothing written) and the builtin
+    ;; delegates to the Lisp reference `nelisp--forward-word-reference'.
+    ;; The value word of the variable number K of the gate list (symbol interned from its name).
+    (defun nl_fw_gate (env k)
+      (let* ((buf (alloc-bytes 48 8)) (view (alloc-bytes 32 8))
+             (n (if (= k 0) (seq (ptr-write-u64 (+ buf 0) 0 7310236533904269680) (ptr-write-u64 (+ buf 8) 0 8460978849292578936) (ptr-write-u64 (+ buf 16) 0 8243118316935196016) (ptr-write-u64 (+ buf 24) 0 1936025972) 28)
+            (if (= k 1) (seq (ptr-write-u64 (+ buf 0) 0 7955940190356402039) (ptr-write-u64 (+ buf 8) 0 8315102200509852771) (ptr-write-u64 (+ buf 16) 0 495623102819) 21)
+            (if (= k 2) (seq (ptr-write-u64 (+ buf 0) 0 8245940479580858726) (ptr-write-u64 (+ buf 8) 0 7017855570009009508) (ptr-write-u64 (+ buf 16) 0 8386668381598480754) (ptr-write-u64 (+ buf 24) 0 7809911855420174185) (ptr-write-u64 (+ buf 32) 0 101) 33)
+            (if (= k 3) (seq (ptr-write-u64 (+ buf 0) 0 8099006143691648887) (ptr-write-u64 (+ buf 8) 0 3271705053511119457) (ptr-write-u64 (+ buf 16) 0 7598258011201888611) (ptr-write-u64 (+ buf 24) 0 29541) 26)
+            (if (= k 4) (seq (ptr-write-u64 (+ buf 0) 0 8751388474522824037) (ptr-write-u64 (+ buf 8) 0 7089075027099874414) (ptr-write-u64 (+ buf 16) 0 8246782936488961388) (ptr-write-u64 (+ buf 24) 0 7630437) 27)
+            (if (= k 5) (seq (ptr-write-u64 (+ buf 0) 0 8751388474522824037) (ptr-write-u64 (+ buf 8) 0 7089075027099874414) (ptr-write-u64 (+ buf 16) 0 7378714104018330988) (ptr-write-u64 (+ buf 24) 0 7809632559044588133) 32)
+            (if (= k 6) (seq (ptr-write-u64 (+ buf 0) 0 8751388474522824037) (ptr-write-u64 (+ buf 8) 0 7089075027099874414) (ptr-write-u64 (+ buf 16) 0 7953766454941017452) (ptr-write-u64 (+ buf 24) 0 7018969065866813796) (ptr-write-u64 (+ buf 32) 0 28548142445374834) 39)
+            (if (= k 7) (seq (ptr-write-u64 (+ buf 0) 0 8458373023767031141) (ptr-write-u64 (+ buf 8) 0 7521905475854886502) (ptr-write-u64 (+ buf 16) 0 8318271049052287585) (ptr-write-u64 (+ buf 24) 0 474147549997) 29)
+            (if (= k 8) (seq (ptr-write-u64 (+ buf 0) 0 3275362080406267236) (ptr-write-u64 (+ buf 8) 0 8030604426084902260) (ptr-write-u64 (+ buf 16) 0 32481125921351024) 23)
+            (seq (ptr-write-u64 (+ buf 0) 0 8030604426049841251) (ptr-write-u64 (+ buf 8) 0 7809573228505097584) (ptr-write-u64 (+ buf 16) 0 8316297351546495337) (ptr-write-u64 (+ buf 24) 0 116) 25))))))))))))
+        (seq (nl_alloc_symbol buf n view)
+             (nl_sym_find_value_w env view 0))))
+    ;; 1 when V is nil or void (word 3 / 2).
+    (defun nl_fw_nilvoid (v) (if (= v 3) 1 (if (= v 2) 1 0)))
+    ;; 1 when V is the list ((72 . 75)): GNU's default word-separating-categories ((?H . ?K)).
+    (defun nl_fw_sepdefault (v)
+      (if (= (nl_val_tag v) 7)
+          (let* ((p (nl_cons_car_word v)) (rest (nl_cons_cdr_word v)))
+            (if (= (nl_val_tag rest) 0)
+                (if (= (nl_val_tag p) 7)
+                    (if (= (nl_cons_car_word p) 289)
+                        (if (= (nl_cons_cdr_word p) 301) 1 0)
+                      0)
+                  0)
+              0))
+        0))
+    ;; 1 when V is an owned eight-slot library char-table.
+    (defun nl_fw_owned_tbl (v)
+      (if (= (nl_val_tag v) 8) (bf_nemacs_char_table_owned_vector_p v) 0))
+    ;; The gates of the native scan: 0 with the syntax table written at OUT+0 and the
+    ;; find-word-boundary-function-table (or 0 when nil) at OUT+8, else -3 (the Lisp reference's).
+    (defun nl_fw_gates (env out)
+      (if (= (nl_fw_nilvoid (nl_fw_gate env 0)) 0) -3
+        (if (= (nl_fw_nilvoid (nl_fw_gate env 1)) 0) -3
+          (if (= (nl_fw_nilvoid (nl_fw_gate env 7)) 0) -3
+            (if (= (nl_fw_nilvoid (nl_fw_gate env 8)) 0) -3
+              (if (= (nl_fw_nilvoid (nl_fw_gate env 9)) 0) -3
+                (if (= (nl_fw_sepdefault (nl_fw_gate env 3)) 0) -3
+                  (let* ((ft (nl_fw_gate env 2)) (cur (nl_fw_gate env 4)) (loc (nl_fw_gate env 5)))
+                    (if (if (= (nl_fw_nilvoid ft) 0) (= (nl_fw_owned_tbl ft) 0) 0) -3
+                      (let* ((tbl (if (= (nl_fw_nilvoid cur) 0) cur
+                                    (if (= (nl_fw_nilvoid loc) 0) loc
+                                      (nl_fw_gate env 6)))))
+                        (if (= (nl_fw_owned_tbl tbl) 0) -3
+                          (seq (ptr-write-u64 out 0 tbl)
+                               (ptr-write-u64 out 8 (if (= (nl_fw_nilvoid ft) 1) 0 ft))
+                               0))))))))))))
+    ;; 1 when C (< 128) has word syntax in the owned syntax table TBL (CONT its 128-slot node
+    ;; contents or 0), 0 when not, -1 when the entry is not understood.  The class is the low
+    ;; byte of the entry's code (a cons (CODE . MATCH) or an integer); an entry nil (no default,
+    ;; no parent) is word, as `emacs-syntax-table-char-syntax' answers.
+    (defun nl_fw_cls (tbl cont c env)
+      (let* ((v (if (/= cont 0) (nl_vector_slot_word cont c) 0))
+             (e (if (= v 0) (nl_lct_owner_ref tbl c env)
+                  (if (= (nl_val_tag v) 0) (nl_lct_owner_ref tbl c env) v))))
+        (if (= e 0) -1
+          (let* ((tg (nl_val_tag e)))
+            (if (= tg 7)
+                (let* ((cw (nl_cons_car_word e)))
+                  (if (= (nl_val_tag cw) 2)
+                      (if (= (logand (nl_word_payload cw) 255) 2) 1 0)
+                    -1))
+              (if (= tg 2) (if (= (logand (nl_word_payload e) 255) 2) 1 0)
+                (if (= tg 0) 1 -1)))))))
+    ;; The scan of GNU scan_words (ASCII text, no fields).  OUT: syntax table 0, find-word-boundary
+    ;; table 8, BLEN 16, PT 24, BEGV 32, ZV 40, count 48 (integers).
+    (defun nl_fw_scan (r h env resw out)
+      (let* ((tbl (ptr-read-u64 out 0)) (ft (ptr-read-u64 out 8))
+             (blen (ptr-read-u64 out 16)) (hi (ptr-read-u64 out 40)) (lo (ptr-read-u64 out 32))
+             (cnt (ptr-read-u64 out 48))
+             (cont (nl_lct_owner_contents tbl env)) (d (ptr-read-u64 h 24))
+             (pos (ptr-read-u64 out 24)) (rem (if (< cnt 0) (- 0 cnt) cnt)) (fwd (if (< cnt 0) 0 1))
+             (complete 1) (bad 0) (go 1) (c 0) (k 0))
+        (seq
+         (while (if (> rem 0) (if (= complete 1) (= bad 0) 0) 0)
+           (seq
+            (setq go 1)
+            (while (if (= go 1) (if (= fwd 1) (< pos hi) (> pos lo)) 0)
+              (seq
+               (setq c (nl_gb_at r d (if (= fwd 1) (- pos 1) (- pos 2))))
+               (if (>= c 128) (seq (setq bad 1) (setq go 0))
+                 (seq
+                  (setq k (nl_fw_cls tbl cont c env))
+                  (if (< k 0) (seq (setq bad 1) (setq go 0))
+                    (if (= k 1) (setq go 0)
+                      (setq pos (if (= fwd 1) (+ pos 1) (- pos 1)))))))))
+            (if (= bad 1) 0
+              (if (if (= fwd 1) (>= pos hi) (<= pos lo)) (setq complete 0)
+                (seq
+                 (if (/= ft 0)
+                     (if (= (nl_lct_owner_ref ft (nl_gb_at r d (if (= fwd 1) (- pos 1) (- pos 2))) env) 3) 0
+                       (setq bad 1))
+                   0)
+                 (if (= bad 1) 0
+                   (seq
+                    (setq pos (if (= fwd 1) (+ pos 1) (- pos 1)))
+                    (setq go 1)
+                    (while (if (= go 1) (if (= fwd 1) (< pos hi) (> pos lo)) 0)
+                      (seq
+                       (setq c (nl_gb_at r d (if (= fwd 1) (- pos 1) (- pos 2))))
+                       (if (>= c 128) (seq (setq bad 1) (setq go 0))
+                         (seq
+                          (setq k (nl_fw_cls tbl cont c env))
+                          (if (< k 0) (seq (setq bad 1) (setq go 0))
+                            (if (= k 1) (setq pos (if (= fwd 1) (+ pos 1) (- pos 1)))
+                              (setq go 0)))))))
+                    (setq rem (- rem 1)))))))))
+         (if (= bad 1) -3
+           (seq (wf_dirty)
+                (ptr-write-u64 r 104 (if (= pos (+ blen 1)) 3 (+ (shl pos 2) 1)))
+                (ptr-write-u64 resw 0 (if (= complete 1) 7 3))
+                0)))))
+    ;; Fforward_word on the current buffer record B with the count word A: 0 with the value in
+    ;; RESW (point moved like goto-char), -3 with nothing changed.
+    (defun nl_fw_run (a b env resw)
+      (let* ((r (- b 6)) (h (nl_gb_ok r)))
+        (if (= h 0) -3
+          (let* ((blenw (ptr-read-u64 r 112)) (lenw (ptr-read-u64 r 120)) (pend (ptr-read-u64 r 104))
+                 (nsw (ptr-read-u64 r 64)) (new (ptr-read-u64 r 72)))
+            (if (/= (logand blenw 3) 1) -3
+              (if (/= (logand lenw 3) 1) -3
+                (let* ((blen (sar blenw 2)) (len (sar lenw 2))
+                       (ptw (if (= pend 3) (+ blenw 4) pend))
+                       (lo (if (= nsw 3) 1 (if (= (logand nsw 3) 1) (sar nsw 2) -9)))
+                       (hi (if (= new 3) (+ len 1) (if (= (logand new 3) 1) (sar new 2) -9)))
+                       (argok (if (= a 3) 1 (if (= (logand a 3) 1) 1 0)))
+                       (cnt (if (= a 3) 1 (if (= (logand a 3) 1) (sar a 2) 0))))
+                  (if (= argok 0) -3
+                    (if (/= (logand ptw 3) 1) -3
+                      (let* ((pt (sar ptw 2)))
+                        (if (< lo 1) -3
+                          (if (> hi (+ len 1)) -3
+                            (if (< pt lo) -3
+                              (if (> pt hi) -3
+                                (let* ((out (alloc-bytes 56 8)))
+                                  (if (/= (nl_fw_gates env out) 0) -3
+                                    (seq (ptr-write-u64 out 16 blen) (ptr-write-u64 out 24 pt)
+                                         (ptr-write-u64 out 32 lo) (ptr-write-u64 out 40 hi)
+                                         (ptr-write-u64 out 48 cnt)
+                                         (nl_fw_scan r h env resw out))))))))))))))))))
+    ;; The reference route of `forward-word': the Lisp reference defun of the prelude on ARGS.
+    (defun nl_fw_slow_w (args env)
+      (let* ((buf (alloc-bytes 40 8)))
+        (seq (ptr-write-u64 (+ buf 0) 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 3270864992319205222) (ptr-write-u64 (+ buf 16) 0 7378429103800741751) (ptr-write-u64 (+ buf 24) 0 111477728309861)
+             (nl_buf_delegate args env buf 30))))
+    ;; forward-word as a builtin on the argument list ARGS.
+    (defun nl_fw_prim_w (id args env)
+      (let* ((argc (m5_list_len args 0)) (b (nl_buf_current env)))
+        (if (> argc 1) (nl_fw_slow_w args env)
+          (if (= b 0) (nl_fw_slow_w args env)
+            (let* ((res (alloc-bytes 8 8))
+                   (a (if (= argc 1) (wf_arg_word args 0) 3)))
+              (if (= (nl_fw_run a b env res) 0) (heap-read-u64 res 0)
+                (nl_fw_slow_w args env)))))))
     ;; The reference route of the ids 50-60 and 70-78: the Lisp reference defun of the prelude on ARGS.
     (defun nl_gb_slow_w (id args env)
       (let* ((buf (alloc-bytes 72 8)))
