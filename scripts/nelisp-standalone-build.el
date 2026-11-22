@@ -61207,7 +61207,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                                    pair_ptr) 1)
                                    (= (sexp-tag pair_ptr) 6)
                                    (= (sexp-tag pair_ptr) 15))
-                               (nelisp_frame_local_declare_one
+                               (nelisp_frame_local_prepend_fresh
                                 (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
                                  (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))
                                 pair_ptr) 0))

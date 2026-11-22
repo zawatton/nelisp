@@ -507,13 +507,27 @@
                  (if (or (= (nelisp_frame_stack_find_word_name_p p) 1)
                          (= (sexp-tag p) 6)
                          (= (sexp-tag p) 15))
-                     (nelisp_frame_local_declare_one
+                     (nelisp_frame_local_prepend_fresh
                       (vector-ref-ptr
                        (nl_record_slot_word frames 0)
                        (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
                       p)
                    0))
                (nelisp_frame_captured_decls (nl_cons_cdr_word al) frames)))))
+
+    ;; Unconditional prepend, no membership test.  Only for the FRESH frame
+    ;; `nl_env_push_captured' has just pushed (slot 3 is Nil, nothing else
+    ;; writes it before the closure's markers are installed): the markers
+    ;; of a closure are only ever read by contains-walks, so a duplicate is
+    ;; harmless and the O(n^2) dedupe is skipped.  Do NOT use this for
+    ;; `defvar' in a body or an alist eval (`nelisp_frame_local_declare_one').
+    (defun nelisp_frame_local_prepend_fresh (frame name)
+      (if (> (record-slot-count frame) 3)
+          (let* ((names (record-slot-ref-ptr frame 3))
+                 (new-names (alloc-bytes 32 8)))
+            (seq (cons-make-with-clone name names new-names)
+                 (record-slot-set frame 3 new-names) 0))
+        1))
 
     (defun nelisp_frame_local_declare_one (frame name)
       (if (> (record-slot-count frame) 3)

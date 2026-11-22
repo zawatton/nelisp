@@ -102,6 +102,62 @@ CASES = [
     ("(condition-case e (boundp 1) (wrong-type-argument e))", '(wrong-type-argument symbolp 1)'),
     ('(let ((special-test-late 7)) (condition-case nil (defvar special-test-late (error "init")) (error nil)) '
      "(list (special-variable-p 'special-test-late) (boundp 'special-test-late)))", '(t nil)'),
+    # closure env markers (B1: fresh-frame decl install); expected = GNU 31.1.
+    # (g) condition-case var named like a marker diverges pre-existing; not a row.
+    ("(funcall (eval '(lambda () (let ((b1-a 5)) (list (symbol-value 'b1-a) x1 x9))) (append '((x1 . 1) (x2 . 2) (x3 . 3) (x4 . 4) (x5 . 5) (x6 . 6) (x7 . 7) (x8 . 8) (x9 . 9)) '(b1-a t))))",
+     '(5 1 9)'),
+    ("(funcall (eval '(lambda () (let ((b1-a5 5)) (list (symbol-value 'b1-a5) x1 x9))) (append '(b1-a1 b1-a2 b1-a3 b1-a4 b1-a5 b1-a6 b1-a7 b1-a8 b1-a9 b1-a10) '((x1 . 1) (x2 . 2) (x3 . 3) (x4 . 4) (x5 . 5) (x6 . 6) (x7 . 7) (x8 . 8) (x9 . 9)) '(t))))",
+     '(5 1 9)'),
+    ("(funcall (eval '(lambda () (let ((b1-a5 5)) (list (symbol-value 'b1-a5) x1 x9))) (append '((x1 . 1) (x2 . 2) (x3 . 3) (x4 . 4) (x5 . 5) (x6 . 6) (x7 . 7) (x8 . 8) (x9 . 9)) '(b1-a1 b1-a2 b1-a3 b1-a4 b1-a5 b1-a6 b1-a7 b1-a8 b1-a9 b1-a10) '(t))))",
+     '(5 1 9)'),
+    ("(funcall (eval '(lambda () (let ((b1-a1 1) (b1-a10 2)) (list (symbol-value 'b1-a1) (symbol-value 'b1-a10) x4 x9))) (apply #'append (append (mapcar #'list (append '(b1-a1 b1-a2 b1-a3 b1-a4 b1-a5 b1-a6 b1-a7 b1-a8 b1-a9 b1-a10) nil)) (mapcar #'list '((x1 . 1) (x2 . 2) (x3 . 3) (x4 . 4) (x5 . 5) (x6 . 6) (x7 . 7) (x8 . 8) (x9 . 9))) '((t))))))",
+     '(1 2 4 9)'),
+    ("(funcall (eval '(lambda () (let ((b1-b 5)) (symbol-value 'b1-b))) '(b1-b b1-b b1-b t)))",
+     '5'),
+    ("(let ((f (eval '(lambda () (let ((b1-b 5)) (symbol-value 'b1-b))) '(b1-b b1-b b1-b t)))) (list (funcall f) (funcall f) (funcall f)))",
+     '(5 5 5)'),
+    ("(funcall (eval '(lambda () (let ((b1-c1 1) (b1-c2 2)) (list (symbol-value 'b1-c1) (symbol-value 'b1-c2) x y))) '(b1-c1 (x . 7) b1-c2 (y . 8) t)))",
+     '(1 2 7 8)'),
+    ("(funcall (eval '(lambda () (let ((x 3)) (condition-case nil (symbol-value 'x) (void-variable 'void)))) '(b1-c1 (x . 7) t)))",
+     'void'),
+    ("(progn (setq b1-self (eval '(lambda (n) (let ((b1-d n)) (if (> n 0) (cons (symbol-value 'b1-d) (funcall b1-self (1- n))) (list (symbol-value 'b1-d))))) '(b1-d t))) (funcall b1-self 3))",
+     '(3 2 1 0)'),
+    ("(progn (setq b1-self (eval '(lambda (n) (let ((b1-d n)) (if (> n 0) (cons (+ z (symbol-value 'b1-d)) (funcall b1-self (1- n))) (list (symbol-value 'b1-d))))) '(b1-d (z . 10) t))) (funcall b1-self 3))",
+     '(13 12 11 0)'),
+    ("(let ((f (eval '(lambda () (let ((b1-e 1)) (symbol-value 'b1-e))) '(b1-e t))) (g (eval '(lambda (f) (list (funcall f) (condition-case nil (let ((b1-e2 2)) (symbol-value 'b1-e2)) (void-variable 'void)))) '(b1-e2 t)))) (list (funcall g f) (condition-case nil (let ((b1-e 3)) (symbol-value 'b1-e)) (void-variable 'void)) (condition-case nil (let ((b1-e2 3)) (symbol-value 'b1-e2)) (void-variable 'void))))",
+     '((1 2) void void)'),
+    ("(let ((f (funcall (lambda (q) (eval '(lambda () (let ((b1-f 6)) (symbol-value 'b1-f))) '(b1-f t))) 1))) (list (funcall f) (funcall f)))",
+     '(6 6)'),
+    ("(let ((f (eval '(lambda () (let ((r1 (condition-case nil (let ((b1-h 5)) (symbol-value 'b1-h)) (void-variable 'void)))) (defvar b1-h) (list r1 (let ((b1-h 6)) (symbol-value 'b1-h))))) '((x . 1) b1-hm t)))) (list (funcall f) (funcall f) (funcall f)))",
+     '((void 6) (void 6) (void 6))'),
+    ("(let ((f (eval '(lambda () (let ((r1 (condition-case nil (let ((b1-h2 5)) (symbol-value 'b1-h2)) (void-variable 'void)))) (defvar b1-h2) (list r1 (let ((b1-h2 6)) (symbol-value 'b1-h2))))) '(b1-hm t)))) (list (funcall f) (funcall f) (funcall f)))",
+     '((void 6) (void 6) (void 6))'),
+    ('(let ((m (mapcar (lambda (i) (intern (format "b1-m%d" i))) (number-sequence 1 200)))) (list (funcall (eval \'(lambda () (let ((b1-m100 7) (b1-m200 8)) (list (symbol-value \'b1-m100) (symbol-value \'b1-m200)))) (append m \'(t)))) (funcall (eval \'(lambda () (let ((b1-m1 7)) (symbol-value \'b1-m1))) (append \'((x . 1)) m \'(t))))))',
+     '((7 8) 7)'),
+    ("(let () (defvar b1-j) (let ((q 1)) (defvar b1-j) (let ((f (lambda () (let ((b1-j 4)) (list q (symbol-value 'b1-j)))))) (list (funcall f) (funcall f)))))",
+     '((1 4) (1 4))'),
+    ("(let ((f (eval '(let ((q 1)) (defvar b1-j2) (lambda () (let ((b1-j2 4)) (list q (symbol-value 'b1-j2))))) '(b1-j2 t)))) (list (funcall f) (funcall f)))",
+     '((1 4) (1 4))'),
+    ('(let ((u (make-symbol "b1-ku"))) (list (funcall (eval `(lambda () (let ((,u 5)) (condition-case nil (symbol-value \',u) (void-variable \'void)))) (list u t))) (funcall (eval \'(lambda () (let ((b1-ku 5)) (condition-case nil (symbol-value \'b1-ku) (void-variable \'void)))) (list u t)))))',
+     '(5 void)'),
+    ('(funcall (eval \'(lambda () (let ((b1-ks 5)) (condition-case nil (symbol-value \'b1-ks) (void-variable \'void)))) \'("b1-ks" t)))',
+     'void'),
+    ('(funcall (eval \'(lambda () (let ((b1-ks2 5)) (list x (condition-case nil (symbol-value \'b1-ks2) (void-variable \'void))))) \'(("b1-ks2" . 1) "b1-ks2" (x . 2) t)))',
+     '(2 void)'),
+    ("(let ((f (eval '(lambda () (defvar b1-l) (lambda () (let ((b1-l 3)) (symbol-value 'b1-l)))) '(b1-lm t)))) (list (funcall (funcall f)) (funcall (funcall f)) (condition-case nil (let ((b1-l 1)) (symbol-value 'b1-l)) (void-variable 'void))))",
+     '(3 3 void)'),
+    ("(let ((f (eval '(lambda () (defvar b1-l2) (lambda () (let ((b1-l2 3)) (list x (symbol-value 'b1-l2))))) '(b1-lm (x . 9) t)))) (list (funcall (funcall f)) (funcall (funcall f))))",
+     '((9 3) (9 3))'),
+    ('(let ((f (eval \'(lambda (k) (list (condition-case nil (catch \'b1-t (let ((b1-m 1)) (if k (throw \'b1-t \'thrown) (error "x")))) (error \'err)) (let ((b1-m 7)) (symbol-value \'b1-m)))) \'(b1-m t)))) (list (funcall f t) (funcall f nil) (funcall f t) (let ((b1-m 2)) (condition-case nil (symbol-value \'b1-m) (void-variable \'void)))))',
+     '((thrown 7) (err 7) (thrown 7) void)'),
+    ('(let ((f (eval \'(lambda (k) (list x (condition-case nil (catch \'b1-t (let ((b1-m 1)) (if k (throw \'b1-t \'thrown) (error "x")))) (error \'err)) (let ((b1-m 7)) (symbol-value \'b1-m)))) \'(b1-m (x . 5) t)))) (list (funcall f t) (funcall f nil) (funcall f t)))',
+     '((5 thrown 7) (5 err 7) (5 thrown 7))'),
+    ("(list (eval '(let ((b1-n 5)) (condition-case nil (symbol-value 'b1-n) (void-variable 'void))) '(b1-n b1-n t)) (eval '(progn (defvar b1-n2) (defvar b1-n2) (let ((b1-n2 3)) (symbol-value 'b1-n2))) '((x . 1) b1-n2 t)) (eval '(let ((b1-n3 3)) (symbol-value 'b1-n3)) '(b1-n3 b1-n3 (x . 1) b1-n3 t)))",
+     '(5 3 3)'),
+    ("(let ((f (eval '(lambda () (let ((r1 (condition-case nil (let ((b1-q 5)) (symbol-value 'b1-q)) (void-variable 'void)))) (defvar b1-q) (list r1 (let ((b1-q 6)) (symbol-value 'b1-q))))) '((x . 1) b1-qm b1-qm2 t))) r) (dotimes (i 60) (when (= 0 (% i 10)) (garbage-collect)) (push (funcall f) r)) (delete-dups r))",
+     '((void 6))'),
+    ("(let ((f (eval '(lambda () (let ((b1-q2 6)) (list (symbol-value 'b1-q2) (mapcar #'identity '(1 2))))) '(b1-q2 b1-q2 b1-q3 t))) r) (dotimes (i 60) (when (= 0 (% i 10)) (garbage-collect)) (push (funcall f) r)) (delete-dups r))",
+     '((6 (1 2)))'),
 ]
 
 
@@ -123,6 +179,27 @@ class SpecialVariables(unittest.TestCase):
                                  capture_output=True, text=True, timeout=30)
             self.assertEqual((run.returncode, run.stdout, run.stderr), (0, '(1 t 7)\n', ''))
         print('LOCAL-IMAGE checked=1')
+
+    def test_closure_markers_runtime_image(self):
+        # A closure baked into an image keeps its bare markers: the fresh-frame
+        # install must see the same names as a closure created at run time.
+        binary = Path(os.environ.get('NELISP_BIN', str(ROOT/'target/nelisp'))).resolve()
+        with tempfile.TemporaryDirectory(prefix='nelisp marker image ') as directory:
+            image = Path(directory) / 'markers.nlri'
+            form = ("(setq image-marker-fn (eval '(lambda () (list x "
+                    "(let ((image-marker-a 5)) (symbol-value 'image-marker-a)) "
+                    "(condition-case nil (let ((image-marker-b 6)) (symbol-value 'image-marker-b)) "
+                    "(void-variable 'void)))) "
+                    "'(image-marker-a image-marker-a (x . 1) image-marker-a t)))")
+            dump = subprocess.run([str(binary), 'dump-runtime-image', str(image), form],
+                                  cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual((dump.returncode, dump.stderr), (0, ''))
+            run = subprocess.run([str(binary), 'eval-runtime-image', str(image),
+                                  '(list (funcall image-marker-fn) (funcall image-marker-fn))'],
+                                 cwd=ROOT, capture_output=True, text=True, timeout=30)
+            self.assertEqual((run.returncode, run.stdout, run.stderr),
+                             (0, '((1 5 void) (1 5 void))\n', ''))
+        print('MARKER-IMAGE checked=1')
 
     def test_file_local_declarations_and_nested_load(self):
         with tempfile.TemporaryDirectory(prefix='nelisp local declarations ') as directory:
