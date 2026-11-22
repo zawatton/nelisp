@@ -4450,6 +4450,9 @@ macros do not leak into the host Emacs session."
 (defvar nelisp-aot-compiler--current-defun-name nil
   "Source function whose body is being parsed, for variable diagnostics.")
 
+(defvar nelisp-aot-compiler--current-defun-body nil
+  "Whole body of the function being parsed (for whole-function scans).")
+
 (defun nelisp-aot-compiler--top-level-defun-names (sexp)
   "Return top-level defun names in SEXP."
   (let (names)
@@ -11574,6 +11577,33 @@ a variable to its latest raw temporary.  Positive whitelist only."
        (t (throw 'fxloop-decline 'not-form)))))
    (t (throw 'fxloop-decline (list 'test (if (consp e) (car e) e))))))
 
+(defun nelisp-aot-compiler--fxloop-closure-mentions (body names)
+  "Return the first of NAMES that occurs inside a closure form of BODY, or nil.
+A closure form is a `lambda', `function' of a lambda, or any head whose name
+contains \"closure\"."
+  (let ((found nil))
+    (cl-labels
+        ((mentions (x)
+           (cond ((and x (symbolp x) (memq x names)) (setq found x))
+                 ((consp x)
+                  (let ((p x))
+                    (while (and (consp p) (not found))
+                      (mentions (car p))
+                      (setq p (cdr p)))
+                    (when (and p (not found)) (mentions p))))))
+         (walk (x)
+           (when (and (consp x) (not found))
+             (if (or (eq (car x) 'lambda)
+                     (and (symbolp (car x))
+                          (string-match-p "closure" (symbol-name (car x)))))
+                 (mentions x)
+               (let ((p x))
+                 (while (and (consp p) (not found))
+                   (walk (car p))
+                   (setq p (cdr p))))))))
+      (walk body))
+    found))
+
 (defun nelisp-aot-compiler--fxloop-rewrite (sexp fenv)
   "Return the fast-loop rewrite of while SEXP, or nil (reason logged)."
   (let* ((test (nth 1 sexp))
@@ -11607,6 +11637,14 @@ a variable to its latest raw temporary.  Positive whitelist only."
                   (unless (or (eq n t) (nelisp-aot-compiler--fxloop-var-ok n fenv))
                     (throw 'fxloop-decline (list 'variable n))))
                 (setq names (delq t names))
+                ;; A variable a closure can see may be read or written by it
+                ;; at any time; the raw copy would hide that.  Conservative:
+                ;; decline when any lambda in the function mentions it.
+                (let ((hit (nelisp-aot-compiler--fxloop-closure-mentions
+                            nelisp-aot-compiler--current-defun-body names)))
+                  (when (and hit (not (eq nelisp-aot-compiler--fxloop-mutation
+                                          'ignore-closures)))
+                    (throw 'fxloop-decline (list 'captured-by-lambda hit))))
                 (let* ((cells (mapcar (lambda (n) (cons n (nelisp-aot-compiler--gensym "fxr")))
                                       names))
                        (budget (nelisp-aot-compiler--gensym "fxb"))
@@ -14867,7 +14905,8 @@ Returns one of:
                             body))
              (body-ir (let ((nelisp-aot-compiler--next-rt-let-slot
                              rt-slot-cell)
-                           (nelisp-aot-compiler--current-defun-name name))
+                           (nelisp-aot-compiler--current-defun-name name)
+                           (nelisp-aot-compiler--current-defun-body return-body))
                         ;; Doc 229: one representation on every return
                         ;; path, recorded below for the loader.
                         (let ((settled (nelisp-aot-compiler--lisp-settle
@@ -14880,7 +14919,8 @@ Returns one of:
                             settled))))
              (body-ir (if (nelisp-aot-compiler--lisp-values-p)
                           (let ((nelisp-aot-compiler--next-rt-let-slot rt-slot-cell)
-                                (nelisp-aot-compiler--current-defun-name name))
+                                (nelisp-aot-compiler--current-defun-name name)
+                                (nelisp-aot-compiler--current-defun-body return-body))
                             (nelisp-aot-compiler--lisp-exit-control-flow
                              body-ir env parse-fenv defuns))
                         body-ir))

@@ -173,4 +173,28 @@
     (should (= 2485 (nelisp-artifact-native-exec-general good "fx-sum2" '(70))))
     (should-not (= 2485 (nelisp-artifact-native-exec-general bad "fx-sum2" '(70))))))
 
+(defconst nelisp-aot-fxloop-test--closure-source
+  "(defun fxc-before (n) (let* ((i 0) (f (lambda () i))) (while (< i n) (setq i (1+ i))) (funcall f)))
+(defun fxc-after (n) (let ((i 0) (f nil)) (while (< i n) (setq i (1+ i))) (setq f (lambda () i)) (funcall f)))
+(defun fxc-sets (n) (let* ((i 0) (f (lambda () (setq i (+ i 100)) i))) (while (< i n) (setq i (1+ i))) (funcall f)))
+(defun fxc-other (n) (let ((i 0) (k 5)) (while (< i n) (setq i (1+ i))) (funcall (lambda () k))))\n")
+
+(ert-deftest nelisp-aot-fxloop/closure-captured-variable-declines ()
+  "A loop variable mentioned by any lambda of the function is not rewritten."
+  (skip-unless (nelisp-aot-fxloop-test--tools-p))
+  (let ((log (cdr (nelisp-aot-fxloop-test--compile nelisp-aot-fxloop-test--closure-source "cl" t))))
+    (should (member '(fxc-before declined (captured-by-lambda i)) log))
+    (should (member '(fxc-after declined (captured-by-lambda i)) log))
+    (should (member '(fxc-sets declined (captured-by-lambda i)) log))
+    ;; A lambda that does not mention the loop variable does not block it.
+    (should (member '(fxc-other applied nil) log))))
+
+(ert-deftest nelisp-aot-fxloop/mutation-ignore-closures-is-detected ()
+  "Control: with the closure scan off the captured loops are reported applied."
+  (skip-unless (nelisp-aot-fxloop-test--tools-p))
+  (let ((log (cdr (nelisp-aot-fxloop-test--compile nelisp-aot-fxloop-test--closure-source
+                                                   "clm" t 'ignore-closures))))
+    (should (member '(fxc-before applied nil) log))
+    (should (member '(fxc-sets applied nil) log))))
+
 (provide 'nelisp-aot-fxloop-test)
