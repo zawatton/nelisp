@@ -94,7 +94,7 @@
       (insert "(defvar fxp-handles nil)\n(defun fxp-h (art fn) (let ((k (cons art fn))) (or (cdr (assoc k fxp-handles)) (let ((h (nelisp-native-load-artifact art fn))) (push (cons k h) fxp-handles) h))))\n")
       (insert (format "(defconst fxp-builds '%S)\n(defconst fxp-cases '%S)\n"
                       (reverse paths) cases))
-      (insert "(dolist (b fxp-builds) (dolist (c fxp-cases)
+      (insert "(dolist (b (let ((only (getenv \"FXP_BUILD\"))) (if (and only (> (length only) 0)) (list (assoc only fxp-builds)) fxp-builds))) (dolist (c fxp-cases)
  (princ (format \"%s\\t%S\\t%s\\n\" (car b) c
    (condition-case e (format \"%S\" (nelisp-native-load-call (fxp-h (cdr b) (symbol-name (car c))) (cadr c))) (error (format \"ERR %S\" e)))))))\n"))
     (message "wrote %s" dir)))

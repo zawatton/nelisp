@@ -11637,24 +11637,30 @@ a variable to its latest raw temporary.  Positive whitelist only."
                                    (reverse carried))
                            `((setq ,budget (nelisp-aot--raw-op - ,budget 1)))))
                          (inner
-                          (let ((body (if (eq nelisp-aot-compiler--fxloop-mutation 'per-setq-commit)
-                                          `(if ,(if (cdr checks) (cons 'and checks) (or (car checks) '(nelisp-aot--raw-op = 0 0)))
-                                               (seq (setq ,budget (nelisp-aot--raw-op - ,budget 1)) nil)
-                                             (seq (setq ,budget 0) nil))
-                                        (if checks
-                                          `(if ,(if (cdr checks) (cons 'and checks) (car checks))
-                                               (seq ,@commit nil)
-                                             (seq (setq ,budget 0) nil))
-                                        `(seq ,@commit nil)))))
-                            (dolist (l (reverse lets))
-                              (setq body
-                                    (if (eq nelisp-aot-compiler--fxloop-mutation 'per-setq-commit)
-                                        (let ((v (car (rassq (car l) map))))
-                                          `(let ((,(car l) ,(cdr l)))
-                                             (seq ,@(and v `((setq ,(cdr (assq v map0)) ,(car l))))
-                                                  ,body nil)))
-                                      `(let ((,(car l) ,(cdr l))) (seq ,body nil)))))
-                            body))
+                          (if (eq nelisp-aot-compiler--fxloop-mutation 'per-setq-commit)
+                              ;; Test mutant: check and commit each setq as it is
+                              ;; computed.  A later failing check then leaves the
+                              ;; earlier variables already advanced, and the
+                              ;; generic loop replays the iteration on top of them.
+                              (let ((body `(seq (setq ,budget (nelisp-aot--raw-op - ,budget 1)) nil)))
+                                (cl-mapc
+                                 (lambda (l p chk)
+                                   (setq body
+                                         `(let ((,(car l) ,(cdr l)))
+                                            (if ,chk
+                                                (seq (setq ,(cdr (assq (car p) map0)) ,(car l))
+                                                     ,body nil)
+                                              (seq (setq ,budget 0) nil)))))
+                                 (reverse lets) (reverse pairs) (reverse checks))
+                                body)
+                            (let ((body (if checks
+                                            `(if ,(if (cdr checks) (cons 'and checks) (car checks))
+                                                 (seq ,@commit nil)
+                                               (seq (setq ,budget 0) nil))
+                                          `(seq ,@commit nil))))
+                              (dolist (l (reverse lets))
+                                (setq body `(let ((,(car l) ,(cdr l))) (seq ,body nil))))
+                              body)))
                          (guard
                           (let ((g (mapcan (lambda (n)
                                              (list `(nelisp-aot--fixnump ,n)
