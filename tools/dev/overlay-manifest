@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""overlay-manifest: per-lane changed sources and defuns vs a base sha, tiered.
+
+usage: overlay-manifest --repo DIR --base SHA --lane NAME=REF [--lane ...] [--format tsv|summary]
+
+REF is a branch, sha or worktree path.  Output (TSV): lane, tier, file, change, symbols.
+Tiers (review-fable-buildfree-strategy.md section 1):
+  T0 host-only    compiler, host-side artifact writer, tests, tools, docs
+  T1 neln hot-load  (a .neln is not a source file; reported only for files listed in T1_PATHS)
+  T2 Lisp overlay lisp/ and packages/ defuns that can be loaded into an image
+  T3 needs rebuild src/, scripts/ build + preload + bootstrap, Makefile, fxir native rows
+A lane's overall tier is its maximum.  Exit 0 clean, 3 when a symbol is defined by
+more than one lane with different text (duplicate-symbol check).
+"""
+import argparse, hashlib, os, re, subprocess, sys
+
+T0_FILES = {"lisp/nelisp-aot-compiler.el", "lisp/nelisp-artifact.el"}
+T3_PREFIX = ("src/", "mk/", "Makefile", "bin/emacs-lib/")
+T3_FILES = {"scripts/nelisp-standalone-build.el", "lisp/nelisp-cc-fx-call-primitives.el"}
+T0_PREFIX = ("test/", "tools/", "docs/", "handoff/", "bench/", "release/")
+T1_PATHS = ()  # no source file is T1; .neln artifacts are derived from T0 compiler output
+DEF = re.compile(r"^\((def(?:un|macro|subst|var|const|custom|alias|generic|method|ine-\S+|struct)|cl-defun|cl-defmacro|cl-defstruct)\s+'?([^\s()]+)")
+
+
+def git(repo, *a):
+    r = subprocess.run(["git", "-C", repo] + list(a), capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit("git %s: %s" % (" ".join(a), r.stderr.strip()))
+    return r.stdout
+
+
+def classify(path):
+    if path in T3_FILES or path.startswith(T3_PREFIX) or "preload" in path or "bootstrap" in path:
+        return "T3"
+    if path in T0_FILES or path.startswith(T0_PREFIX):
+        return "T0"
+    if path.endswith(".el") and (path.startswith("lisp/") or path.startswith("packages/")):
+        return "T2"
+    return "T0"
+
+
+def forms(text):
+    """Map top-level definition name -> sha of its text (column-0 '(' starts a form)."""
+    out, cur, name = {}, [], None
+    def flush():
+        if name:
+            out[name] = hashlib.sha1("".join(cur).encode()).hexdigest()[:12]
+    for line in text.splitlines(True):
+        if line.startswith("("):
+            flush()
+            m = DEF.match(line)
+            name, cur = (m.group(1).split("-")[0] + " " + m.group(2) if m else None), [line]
+        else:
+            cur.append(line)
+    flush()
+    return out
+
+
+def show(repo, ref, path):
+    r = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (ref, path)], capture_output=True)
+    return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
+
+
+def lane_changes(repo, base, ref):
+    rows = []
+    for line in git(repo, "diff", "--name-status", "--no-renames", "%s...%s" % (base, ref)).splitlines():
+        st, path = line.split("\t", 1)
+        tier, syms, how = classify(path), [], {"A": "added", "D": "deleted", "M": "modified"}.get(st[0], st)
+        if path.endswith(".el"):
+            old, new = show(repo, base, path), show(repo, ref, path)
+            fo, fn = forms(old or ""), forms(new or "")
+            syms = sorted(k for k in set(fo) | set(fn) if fo.get(k) != fn.get(k))
+        rows.append((tier, path, how, syms))
+    return rows
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repo", default=".")
+    ap.add_argument("--base", required=True)
+    ap.add_argument("--lane", action="append", required=True)
+    ap.add_argument("--format", default="tsv", choices=["tsv", "summary"])
+    a = ap.parse_args()
+    repo = a.repo
+    base = git(repo, "rev-parse", a.base).strip()
+    defs = {}  # (kind name) -> {lane: (file, sha)}
+    total = {}
+    for spec in a.lane:
+        name, _, ref = spec.partition("=")
+        if os.path.isdir(ref):
+            ref = git(ref, "rev-parse", "HEAD").strip()
+        mb = git(repo, "merge-base", base, ref).strip()
+        if mb != base:
+            print("WARN\t%s\tmerge-base %s != base %s (lane not based on it)" % (name, mb[:9], base[:9]), file=sys.stderr)
+        rows = lane_changes(repo, base, ref)
+        worst = max((r[0] for r in rows), default="T0")
+        total[name] = worst
+        for tier, path, how, syms in rows:
+            if a.format == "tsv":
+                print("\t".join([name, tier, path, how, " ".join(s.split(" ", 1)[1] for s in syms)]))
+            if path.endswith(".el") and tier != "T0":
+                new = show(repo, ref, path) or ""
+                fn = forms(new)
+                for s in syms:
+                    if s in fn:
+                        defs.setdefault(s, {})[name] = (path, fn[s])
+        if a.format == "summary":
+            counts = {}
+            for r in rows:
+                counts[r[0]] = counts.get(r[0], 0) + 1
+            print("%s\toverall %s\t%s" % (name, worst, " ".join("%s=%d" % kv for kv in sorted(counts.items()))))
+    bad = 0
+    for s, by in sorted(defs.items()):
+        if len(by) > 1 and len({v[1] for v in by.values()}) > 1:
+            bad += 1
+            print("DUPLICATE\t%s\t%s" % (s, "; ".join("%s:%s" % (l, v[0]) for l, v in sorted(by.items()))))
+    print("DUPLICATE-CHECK\t%s" % ("%d conflicts" % bad if bad else "clean"))
+    sys.exit(3 if bad else 0)
+
+
+main()
