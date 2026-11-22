@@ -2094,8 +2094,16 @@ buffers are returned regardless."
 
 (defun emacs-buffer-builtins-bridge-buffer-modified-tick (&optional buffer)
   "Return BUFFER's modified tick, deferring to the native one for native buffers."
-  (emacs-buffer-builtins--tick-dispatch
-   emacs-buffer-builtins--native-buffer-modified-tick buffer))
+  ;; gnu562: `emacs-buffer-builtins--tick-dispatch' and
+  ;; `emacs-buffer-builtins--ec-buffer-p' inlined (about 2 us of 10).
+  (let ((native emacs-buffer-builtins--native-buffer-modified-tick)
+        (target (or buffer (current-buffer))))
+    (if (or (null native)
+            (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p target)))
+        (emacs-buffer-builtins-buffer-modified-tick buffer)
+      (+ (funcall native buffer)
+         (let ((ext (emacs-buffer--native-property-state target)))
+           (if ext (emacs-buffer--ext-property-delta ext) 0))))))
 
 (when (emacs-buffer-builtins--install-function-p 'buffer-modified-tick)
   (defalias 'buffer-modified-tick
