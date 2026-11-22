@@ -895,15 +895,23 @@ that does not apply, leaving CT to the general path."
            (> (length ct) emacs-char-table--i-owner-state)
            (emacs-char-table--native-vector-bridge-p)
            (eq (nelisp--raw-aref ct 0) emacs-char-table--tag))
+      ;; The two record tests are `emacs-char-table--owner-state-p' and
+      ;; `emacs-char-table--topology-node-p' with the record's type slot
+      ;; read directly (both types are symbols, so `type-of' answers the same).
       (let ((state (nelisp--raw-aref ct emacs-char-table--i-owner-state)))
-        (if (emacs-char-table--owner-state-p state)
+        (if (and (recordp state)
+                 (eq (nelisp--record-type state) 'emacs-char-table--owner-state)
+                 (memq (length state) '(3 4)))
             (let* ((current (if (and (= (length state) 4)
                                      (>= (aref state 3)
                                          emacs-char-table--owner-state-version))
                                 state
                               (emacs-char-table--owner-current-state ct)))
                    (cache (aref current 2)))
-              (if (emacs-char-table--topology-node-p cache)
+              (if (and (recordp cache)
+                       (eq (nelisp--record-type cache)
+                           emacs-char-table--topology-node-brand)
+                       (= (length cache) 2))
                   (aref (aref cache 1) char)
                 cache))
           'emacs-char-table--unset))
