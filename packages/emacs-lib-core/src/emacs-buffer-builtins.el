@@ -546,12 +546,54 @@ called directly."
 
 (when (and (emacs-buffer-builtins--standalone-p)
            (fboundp 'nelisp-insert))
-  (dolist (entry '((nelisp-insert . emacs-buffer-builtins--indirect-insert)
-                   (nelisp-insert-before-markers . emacs-buffer-builtins--indirect-insert-before-markers)
-                   (nelisp-delete-region . emacs-buffer-builtins--indirect-delete)
-                   (nelisp-erase-buffer . emacs-buffer-builtins--indirect-erase)
-                   (nelisp-kill-buffer . emacs-buffer-builtins--indirect-kill)))
-    (advice-add (car entry) :around (cdr entry)))
+  ;; Named wrappers installed in place of the edit primitives rather than
+  ;; :around advice, whose generic dispatch cost about 5 us per edit.  Each
+  ;; primitive is captured once, so loading this file again does not wrap
+  ;; the wrapper.
+  (unless (fboundp 'emacs-buffer-builtins--native-nelisp-insert)
+    (defalias 'emacs-buffer-builtins--native-nelisp-insert
+      (symbol-function 'nelisp-insert))
+    (defalias 'emacs-buffer-builtins--native-nelisp-insert-before-markers
+      (symbol-function 'nelisp-insert-before-markers))
+    (defalias 'emacs-buffer-builtins--native-nelisp-delete-region
+      (symbol-function 'nelisp-delete-region))
+    (defalias 'emacs-buffer-builtins--native-nelisp-erase-buffer
+      (symbol-function 'nelisp-erase-buffer))
+    (defalias 'emacs-buffer-builtins--native-nelisp-kill-buffer
+      (symbol-function 'nelisp-kill-buffer)))
+  (defun emacs-buffer-builtins--nelisp-insert (text &optional buf)
+    "Insert TEXT into BUF, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'insert #'emacs-buffer-builtins--native-nelisp-insert (list text buf)))
+  (defalias 'nelisp-insert
+    (symbol-function 'emacs-buffer-builtins--nelisp-insert))
+  (defun emacs-buffer-builtins--nelisp-insert-before-markers (text &optional buf)
+    "Insert TEXT into BUF before markers, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'insert-before-markers
+     #'emacs-buffer-builtins--native-nelisp-insert-before-markers
+     (list text buf)))
+  (defalias 'nelisp-insert-before-markers
+    (symbol-function 'emacs-buffer-builtins--nelisp-insert-before-markers))
+  (defun emacs-buffer-builtins--nelisp-delete-region (start end &optional buf)
+    "Delete START..END in BUF, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'delete #'emacs-buffer-builtins--native-nelisp-delete-region
+     (list start end buf)))
+  (defalias 'nelisp-delete-region
+    (symbol-function 'emacs-buffer-builtins--nelisp-delete-region))
+  (defun emacs-buffer-builtins--nelisp-erase-buffer (&optional buf)
+    "Erase BUF, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'erase #'emacs-buffer-builtins--native-nelisp-erase-buffer (list buf)))
+  (defalias 'nelisp-erase-buffer
+    (symbol-function 'emacs-buffer-builtins--nelisp-erase-buffer))
+  (defun emacs-buffer-builtins--nelisp-kill-buffer (buf)
+    "Kill BUF and, for a base buffer, its indirect children."
+    (emacs-buffer-builtins--indirect-kill
+     #'emacs-buffer-builtins--native-nelisp-kill-buffer buf))
+  (defalias 'nelisp-kill-buffer
+    (symbol-function 'emacs-buffer-builtins--nelisp-kill-buffer))
   (advice-add 'nelisp-buffer-set-modified :after
               #'emacs-buffer-builtins--indirect-set-modified)
   (dolist (function '(insert insert-before-markers delete-region erase-buffer))
