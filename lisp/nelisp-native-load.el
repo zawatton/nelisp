@@ -716,7 +716,7 @@ so a new switch cannot be forgotten.")
             (nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers)
             (nelisp-aot-compiler-buffer-leaves)
             (nelisp-aot-compiler-buffer-leaves-inline))
-    :compiler-sha256 "65440e0986e5fde7dd50aabe832df2be1045bf090933578b945875d35761172c")
+    :compiler-sha256 "d61ddbf35f8a78d2d533828a661693cedf724efe44541ec9776a03d5fb93fdb7")
   "Codegen settings and compiler source hash a loader without the compiler enforces.
 Generated from the default session of `nelisp-aot-compiler'.  A host test fails
 when this drifts from the compiler (regenerate with
