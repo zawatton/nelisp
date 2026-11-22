@@ -1348,6 +1348,18 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
 (when (files--install-fallback-function-p 'current-indentation)
   (defun current-indentation ()
     "Return the indentation column of the current line (leading whitespace)."
+    ;; gnu562: an unnarrowed native buffer is scanned in place from
+    ;; `pos-bol'; the general path below copies the whole buffer twice
+    ;; (the text, then again to find the line start: about 80 us).
+    (if (and (fboundp 'pos-bol)
+             (files--host-buffer-available-p)
+             (eq (point-min) 1)
+             (eq (point-max) (1+ (buffer-size))))
+        (let ((tw (files--tab-width)) (p (pos-bol)) (col 0) ch)
+          (while (and (setq ch (char-after p)) (or (eq ch ?\s) (eq ch ?\t)))
+            (setq col (if (eq ch ?\t) (* (1+ (/ col tw)) tw) (1+ col))
+                  p (1+ p)))
+          col)
     (let* ((content (files--buffer-string-value))
            (len (files--string-length content))
            (tw (files--tab-width))
@@ -1359,7 +1371,7 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
                       (* (1+ (/ col tw)) tw)
                     (1+ col)))
         (setq i (1+ i)))
-      col)))
+      col))))
 
 (when (files--install-fallback-function-p 'move-to-column)
   (defun move-to-column (column &optional force)
