@@ -36497,15 +36497,20 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; emacs-char-table--topology-node-p (eq (type-of object) BRAND), the
     ;; record's type word must BE that symbol: a user record with another
     ;; uninterned tag stays a scalar leaf.  An unbound brand declines.
+    ;; The brand variable's value, 0 when the name is not interned or the
+    ;; variable is void.  The lookup does not allocate (no symbol object is
+    ;; built per call, unlike `nl_alloc_symbol').
     (defun nl_lct_brand_word (env)
-      (let* ((buf (alloc-bytes 40 8)) (slot (alloc-bytes 32 8)))
+      (let* ((buf (alloc-bytes 40 8)))
         (seq (ptr-write-u64 buf 0 7521905776250678629)
              (ptr-write-u64 (+ buf 8) 0 7308324466015957601)
              (ptr-write-u64 (+ buf 16) 0 8028914764391656749)
              (ptr-write-u64 (+ buf 24) 0 3271131134107154791)
              (ptr-write-u64 (+ buf 32) 0 431348609634)
-             (nl_alloc_symbol buf 37 slot)
-             (nl_sym_find_value_w env slot 0))))
+             (let* ((w (nl_intern_lookup_w buf 37 0)))
+               (if (= w 3) 0
+                 (let* ((v (nl_sym_find_value_w env (nl_symobj_of w) 0)))
+                   (if (= v 2) 0 v)))))))
     (defun nl_lct_node_typed_p (node env)
       (let* ((tw (nl_record_type_word node)))
         (if (= (nl_so_p tw) 1)
