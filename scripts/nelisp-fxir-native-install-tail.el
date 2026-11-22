@@ -6,15 +6,36 @@
 (when (and (boundp 'nelisp-nc--table) nelisp-nc--table (fboundp 'nelisp--fx-active-p)
            (nelisp--fx-active-p) (not (fboundp 'nelisp-nc--orig-register-fn)))
   (fset 'nelisp-nc--orig-register-fn (symbol-function 'nelisp--fx-register-fn))
+  ;; Native code calls a closure callee without the first-call hook, so a
+  ;; callee that has no record would stay interpreted (F43/F50): register the
+  ;; callees of a converted function now (each goes through the wrapper below,
+  ;; so a row callee is converted and its own callees follow).
+  (defun nelisp-nc--register-callees (name)
+    "Register the closure callees of NAME's native row that have no record."
+    (let ((row (nelisp-nc--row name)) (seen nil))
+      (when row
+        (dolist (c (nth 2 row))
+          (unless (or (memq c seen) (eq c name))
+            (push c seen)
+            (let ((cf (and (fboundp c) (nelisp--closure-cons (symbol-function c)))))
+              (when (and (eq (car-safe cf) 'closure)
+                         (null (gethash (nthcdr 3 cf) nelisp--fx-table)))
+                (remhash (nthcdr 3 cf) nelisp--fx-pending)
+                (nelisp--fx-register c))))))))
   (fset 'nelisp--fx-register-fn
         (lambda (name fn &optional force)
           (prog1 (nelisp-nc--orig-register-fn name fn force)
             (when (and name (assq name nelisp-nc--table))
-              (condition-case nil (nelisp-nc--convert name fn) (error nil))))))
+              (condition-case nil
+                  (when (nelisp-nc--convert name fn) (nelisp-nc--register-callees name))
+                (error nil))))))
   (dolist (row nelisp-nc--table)
     (let ((name (car row)))
       (when (and (fboundp name) (not (memq :mutant row)))
-        (condition-case nil (nelisp-nc--convert name (symbol-function name)) (error nil))))))
+        (condition-case nil
+            (when (nelisp-nc--convert name (symbol-function name))
+              (nelisp-nc--register-callees name))
+          (error nil))))))
 
 ;; A normal boot (runtime-image replay, `exec-runtime-image') never ran
 ;; `nelisp--fx-register-prelude', which only the cold-image dump calls: a row
