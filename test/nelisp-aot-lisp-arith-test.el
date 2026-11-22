@@ -172,6 +172,73 @@ differential would otherwise report green without having run."
           (should-not (nelisp-aot-lisp-arith-test--lines-equal want got)))
       (delete-directory dir t))))
 
+;; Further mutants of the lowering.  Each is a deliberate defect in one
+;; guard; the in-image differential must notice (lines differ from GNU).
+(defun nelisp-aot-lisp-arith-test--mutant-detected (mutate tag)
+  "Compile the cases with MUTATE (a function taking a thunk) and return non-nil
+when the image's answers differ from GNU's, or the mutant does not even finish."
+  (let ((dir (make-temp-file "lad-" t)))
+    (unwind-protect
+        (let* ((neln (funcall mutate
+                              (lambda ()
+                                (nelisp-aot-lisp-arith-test--compile
+                                 nelisp-aot-lisp-arith-cases-source dir tag))))
+               (want (nelisp-aot-lisp-arith-test--gnu-lines))
+               (got (condition-case nil
+                        (nelisp-aot-lisp-arith-test--image-lines
+                         neln (nelisp-aot-lisp-arith-test--home))
+                      ;; A crash before DT-DONE also counts as detected.
+                      (error :crashed))))
+          (or (eq got :crashed)
+              (not (nelisp-aot-lisp-arith-test--lines-equal want got))))
+      (delete-directory dir t))))
+
+(ert-deftest nelisp-aot-lisp-arith/mutant-range-check ()
+  "Control: a range check that always passes is caught."
+  (skip-unless (nelisp-aot-lisp-arith-test--home))
+  (should (nelisp-aot-lisp-arith-test--mutant-detected
+           (lambda (thunk)
+             (cl-letf (((symbol-function 'nelisp-aot-compiler--lisp-fixnum-range-form)
+                        (lambda (_v) '(nelisp-aot--raw-op = 0 0))))
+               (funcall thunk)))
+           "mrange")))
+
+(ert-deftest nelisp-aot-lisp-arith/mutant-word-test ()
+  "Control: a word fixnum test that admits tag 3 (nil, t) is caught."
+  (skip-unless (nelisp-aot-lisp-arith-test--home))
+  (should (nelisp-aot-lisp-arith-test--mutant-detected
+           (lambda (thunk)
+             (cl-letf (((symbol-function 'nelisp-aot-compiler--lisp-word-fixnum-form)
+                        (lambda (var)
+                          `(= (logand (nelisp-aot--word-bits ,var) 1) 1))))
+               (funcall thunk)))
+           "mword")))
+
+(ert-deftest nelisp-aot-lisp-arith/mutant-incdec ()
+  "Control: (1+ X) lowered as an unchecked raw add is caught."
+  (skip-unless (nelisp-aot-lisp-arith-test--home))
+  (let ((orig-op (symbol-function 'nelisp-aot-compiler--lisp-numeric-op))
+        (orig-res (symbol-function 'nelisp-aot-compiler--lisp-fixnum-result-form)))
+    (should (nelisp-aot-lisp-arith-test--mutant-detected
+             (lambda (thunk)
+               (cl-letf (((symbol-function 'nelisp-aot-compiler--lisp-numeric-op)
+                          (lambda (op a b env fenv defuns)
+                            (if (and (memq op '(+ -))
+                                     (eq (nelisp-aot-compiler--ir-kind b) 'imm)
+                                     (eql (nelisp-aot-compiler--ir-get b :value) 1))
+                                (cl-letf (((symbol-function
+                                            'nelisp-aot-compiler--lisp-fixnum-result-form)
+                                           (lambda (op2 a2 b2 _fb &optional word)
+                                             (if word
+                                                 `(nelisp-aot--raw-as-word
+                                                   (logior (shl (nelisp-aot--raw-op ,op2 ,a2 ,b2) 2) 1))
+                                               `(nelisp-aot--raw-op ,op2 ,a2 ,b2)))))
+                                  (funcall orig-op op a b env fenv defuns))
+                              (funcall orig-op op a b env fenv defuns)))))
+                 (funcall thunk)))
+             "minc"))
+    (ignore orig-res)))
+
 (ert-deftest nelisp-aot-lisp-arith/diff-home-unusable-is-loud ()
   "A set but unusable NELISP_AOT_DIFF_HOME is an error, an unset one is nil."
   (let ((process-environment (cons "NELISP_AOT_DIFF_HOME=/nonexistent-nelisp-home"
