@@ -329,32 +329,41 @@ Skip escaped syntax and vertical-bar-quoted symbol names."
     (funcall orig object noescape overrides))
    (t (funcall orig object))))
 
-(defun emacs-cc-print-1--prin1-to-string-around
-    (orig object &optional noescape overrides)
-  "Preserve managed properties and forward NOESCAPE and OVERRIDES."
+(defun emacs-cc-print-1--prin1-to-string-managed
+    (orig object noescape overrides)
+  "Print OBJECT, whose strings carry managed properties, through ORIG."
   (let ((native (lambda (value)
                   (emacs-cc-print-1--call-native
-                   orig value noescape overrides))))
-    (if (or noescape overrides
-            (not (fboundp 'emacs-buffer-string-text-property)))
-        (funcall native object)
-      (let* ((strings (if (stringp object)
-                          (list object)
-                        (emacs-cc-print-1--collect-strings object)))
-             (managed nil))
-        (while strings
-          (when (emacs-buffer-string-text-property 'runs (car strings))
-            (setq managed t))
-          (setq strings (cdr strings)))
-        (if (not managed)
-            (funcall native object)
-          (let ((leaves (if (stringp object)
-                            (list object)
-                          (emacs-cc-print-1--collect-strings object))))
-            (if leaves
-                (emacs-cc-print-1--replace-string-literals
-                 native object leaves)
-              (funcall native object))))))))
+                   orig value noescape overrides)))
+        (leaves (if (stringp object)
+                    (list object)
+                  (emacs-cc-print-1--collect-strings object))))
+    (if leaves
+        (emacs-cc-print-1--replace-string-literals native object leaves)
+      (funcall native object))))
+
+(defun emacs-cc-print-1--prin1-to-string-around
+    (orig object &optional noescape overrides)
+  "Preserve managed properties and forward NOESCAPE and OVERRIDES.
+The closure for managed strings lives in
+`emacs-cc-print-1--prin1-to-string-managed': on the standalone VM a
+function that builds a closure over its arguments runs several times
+slower even when it takes the other branch."
+  (if (or noescape overrides
+          (not (fboundp 'emacs-buffer-string-text-property)))
+      (emacs-cc-print-1--call-native orig object noescape overrides)
+    (let ((strings (if (stringp object)
+                       (list object)
+                     (emacs-cc-print-1--collect-strings object)))
+          (managed nil))
+      (while strings
+        (when (emacs-buffer-string-text-property 'runs (car strings))
+          (setq managed t))
+        (setq strings (cdr strings)))
+      (if (not managed)
+          (emacs-cc-print-1--call-native orig object noescape overrides)
+        (emacs-cc-print-1--prin1-to-string-managed
+         orig object noescape overrides)))))
 
 (defun emacs-cc-print-1--prn-to-string-around
     (orig object escape &optional depth)

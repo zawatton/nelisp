@@ -27401,8 +27401,14 @@ sat at/after that position (elisp manual, `Output Streams'); else stdout."
   (let ((s (or stream standard-output)))
     (if (or (null s) (eq s t))
         (nelisp--native-princ object)
+      ;; A string without text properties prints as itself; skip the
+      ;; copy `prin1-to-string' would make.
       (nelisp--emit-to-stream
-       (prin1-to-string object t) s)))
+       (if (and (stringp object)
+                (null (gethash object nelisp--tp-string-properties)))
+           object
+         (prin1-to-string object t))
+       s)))
   object)
 
 (defun prin1 (object &optional stream overrides)

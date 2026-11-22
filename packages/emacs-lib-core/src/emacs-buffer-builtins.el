@@ -286,6 +286,71 @@ adjusts those positions before calling this function."
                 (nelisp-buffer-pend buffer) nil)
           (nelisp-goto-char position buffer))))))
 
+(defun emacs-buffer-builtins--indirect-edit-family
+    (operation orig args buffer family marker-length marker-start)
+  "Run OPERATION through ORIG for BUFFER, a member of indirect FAMILY.
+Part of `emacs-buffer-builtins--indirect-edit', kept apart so that the
+ordinary-buffer path does not share a function with the closure below:
+the standalone VM runs such a function several times slower."
+  (let* ((insert-p (memq operation '(insert insert-before-markers)))
+         (start (cond (insert-p (nelisp-point buffer))
+                      ((eq operation 'erase) 1)
+                      (t (min (car args) (cadr args)))))
+         (end (cond (insert-p start)
+                    ((eq operation 'erase) (1+ (nelisp-buffer-size buffer)))
+                    (t (max (car args) (cadr args)))))
+         (size (if insert-p (length (car args)) (- start end)))
+         (positions nil))
+    (dolist (peer family)
+      (when (and (not (eq peer buffer)) (buffer-live-p peer))
+        (push (cons peer (nelisp-point peer)) positions)))
+    (prog1 (apply orig args)
+      (dolist (entry positions)
+        (let* ((peer (car entry))
+               (map-position
+                (lambda (pos)
+                  (if insert-p
+                      (if (> pos start) (+ pos size) pos)
+                    (cond ((<= pos start) pos)
+                          ((>= pos end) (+ pos size))
+                          (t start)))))
+               (position (funcall map-position (cdr entry))))
+          (when (nelisp-buffer-narrow-start peer)
+            (setf (nelisp-buffer-narrow-start peer)
+                  (funcall map-position (nelisp-buffer-narrow-start peer))))
+          (when (nelisp-buffer-narrow-end peer)
+            (setf (nelisp-buffer-narrow-end peer)
+                  (if (and insert-p (>= (nelisp-buffer-narrow-end peer) start))
+                      (+ (nelisp-buffer-narrow-end peer) size)
+                    (funcall map-position (nelisp-buffer-narrow-end peer)))))
+          (if insert-p
+              (progn
+                (if (eq operation 'insert-before-markers)
+                    (nelisp-buffer--shift-markers-on-insert-before-markers
+                     peer start size)
+                  (nelisp-buffer--shift-markers-on-insert peer start size))
+                (nelisp-buffer--shift-overlays-on-insert peer start size))
+            (nelisp-buffer--shift-markers-on-delete peer start end)
+            (nelisp-buffer--shift-overlays-on-delete peer start end))
+          ;; Record the mapped point without clamping to the old text size.
+          (setf (nelisp-buffer-pend peer) position)))
+      (when (and marker-length (> marker-length 0)
+                 (buffer-live-p buffer))
+        (let* ((ext (emacs-buffer--ensure-text-property-ext buffer))
+               (mapping
+                (emacs-buffer--tp-after-insert
+                 (emacs-buffer--ext-text-props ext)
+                 marker-start marker-length)))
+          (emacs-buffer--set-ext-text-props ext mapping)
+          (emacs-buffer--insert-string-properties
+           ext marker-start (list (car args)))))
+      (emacs-buffer-builtins--share-text buffer)
+      (when (buffer-live-p buffer)
+        (let ((ext (gethash buffer emacs-buffer--state)))
+          (emacs-buffer--native-property-text-commit
+           buffer (nelisp-buffer-size buffer)
+           (and ext (emacs-buffer--ext-text-props ext))))))))
+
 (defun emacs-buffer-builtins--indirect-edit (operation orig &rest args)
   "Run text OPERATION through ORIG and adjust indirect sibling positions."
   (let* ((buffer (nelisp-buffer--ambient
@@ -312,64 +377,8 @@ adjusts those positions before calling this function."
               (emacs-buffer--native-property-text-commit
                buffer (nelisp-buffer-size buffer)
                (and ext (emacs-buffer--ext-text-props ext))))))
-      (let* ((insert-p (memq operation '(insert insert-before-markers)))
-             (start (cond (insert-p (nelisp-point buffer))
-                          ((eq operation 'erase) 1)
-                          (t (min (car args) (cadr args)))))
-             (end (cond (insert-p start)
-                        ((eq operation 'erase) (1+ (nelisp-buffer-size buffer)))
-                        (t (max (car args) (cadr args)))))
-             (size (if insert-p (length (car args)) (- start end)))
-             (positions nil))
-        (dolist (peer family)
-          (when (and (not (eq peer buffer)) (buffer-live-p peer))
-            (push (cons peer (nelisp-point peer)) positions)))
-        (prog1 (apply orig args)
-          (dolist (entry positions)
-            (let* ((peer (car entry))
-                   (map-position
-                    (lambda (pos)
-                      (if insert-p
-                          (if (> pos start) (+ pos size) pos)
-                        (cond ((<= pos start) pos)
-                              ((>= pos end) (+ pos size))
-                              (t start)))))
-                   (position (funcall map-position (cdr entry))))
-              (when (nelisp-buffer-narrow-start peer)
-                (setf (nelisp-buffer-narrow-start peer)
-                      (funcall map-position (nelisp-buffer-narrow-start peer))))
-              (when (nelisp-buffer-narrow-end peer)
-                (setf (nelisp-buffer-narrow-end peer)
-                      (if (and insert-p (>= (nelisp-buffer-narrow-end peer) start))
-                          (+ (nelisp-buffer-narrow-end peer) size)
-                        (funcall map-position (nelisp-buffer-narrow-end peer)))))
-              (if insert-p
-                  (progn
-                    (if (eq operation 'insert-before-markers)
-                        (nelisp-buffer--shift-markers-on-insert-before-markers
-                         peer start size)
-                      (nelisp-buffer--shift-markers-on-insert peer start size))
-                    (nelisp-buffer--shift-overlays-on-insert peer start size))
-                (nelisp-buffer--shift-markers-on-delete peer start end)
-                (nelisp-buffer--shift-overlays-on-delete peer start end))
-              ;; Record the mapped point without clamping to the old text size.
-              (setf (nelisp-buffer-pend peer) position)))
-          (when (and marker-length (> marker-length 0)
-                     (buffer-live-p buffer))
-            (let* ((ext (emacs-buffer--ensure-text-property-ext buffer))
-                   (mapping
-                    (emacs-buffer--tp-after-insert
-                     (emacs-buffer--ext-text-props ext)
-                     marker-start marker-length)))
-              (emacs-buffer--set-ext-text-props ext mapping)
-              (emacs-buffer--insert-string-properties
-               ext marker-start (list (car args)))))
-          (emacs-buffer-builtins--share-text buffer)
-          (when (buffer-live-p buffer)
-            (let ((ext (gethash buffer emacs-buffer--state)))
-              (emacs-buffer--native-property-text-commit
-               buffer (nelisp-buffer-size buffer)
-               (and ext (emacs-buffer--ext-text-props ext))))))))))
+      (emacs-buffer-builtins--indirect-edit-family
+       operation orig args buffer family marker-length marker-start))))
 
 ;; The change-hook variables are C-level in GNU Emacs, so nothing in Lisp
 ;; defines them.  `emacs-buffer-builtins--change-edit' reads them on every

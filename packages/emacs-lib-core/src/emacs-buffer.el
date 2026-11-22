@@ -1327,6 +1327,8 @@ when neither carries PROP."
 
 (defun emacs-buffer--tp-after-insert (intervals pos length)
   "Return INTERVALS adjusted after inserting LENGTH chars at POS."
+  (if (null intervals)
+      nil
   (let (out)
     (dolist (cell intervals)
       (let ((s (emacs-buffer--tp-start cell))
@@ -1341,7 +1343,7 @@ when neither carries PROP."
           (push cell out)))))
     (sort (nreverse out) (lambda (a b)
                            (< (emacs-buffer--tp-start a)
-                              (emacs-buffer--tp-start b))))))
+                              (emacs-buffer--tp-start b)))))))
 
 (defun emacs-buffer--tp-after-delete (intervals start end)
   "Return INTERVALS adjusted after deleting [START, END)."
@@ -2094,7 +2096,15 @@ reflects every text-content mutation)."
     (dolist (string strings)
       (when string
         (let ((text (if (integerp string) (string string) string)))
-          (when (stringp string)
+          (when (and (stringp string)
+                     ;; The standalone keeps a string's own properties in
+                     ;; `nelisp--tp-string-properties' and managed ones in
+                     ;; `emacs-buffer--string-state'; a string in neither
+                     ;; has no runs to copy.
+                     (not (and (boundp 'nelisp--tp-string-properties)
+                               (null (gethash string emacs-buffer--string-state))
+                               (null (gethash string
+                                              nelisp--tp-string-properties)))))
             (let ((runs (and (fboundp 'emacs-buffer-string-text-property)
                              (emacs-buffer-string-text-property
                               'runs string))))
@@ -2181,11 +2191,10 @@ Checks read-only text and shifts/expands text-property intervals."
           (emacs-buffer--insert-string-properties ext start strings)
           (emacs-buffer--increment-ext-modified-tick ext)))
       (when (and (fboundp 'buffer-live-p) (buffer-live-p buffer))
-        (with-current-buffer buffer
-          (let ((ext (gethash buffer emacs-buffer--state)))
-            (emacs-buffer--native-property-text-commit
-             buffer (buffer-size)
-             (and ext (emacs-buffer--ext-text-props ext)))))))))
+        (let ((ext (gethash buffer emacs-buffer--state)))
+          (emacs-buffer--native-property-text-commit
+           buffer (buffer-size buffer)
+           (and ext (emacs-buffer--ext-text-props ext))))))))
 
 (defun emacs-buffer--property-current-buffer ()
   "Return the active native buffer owner, falling back to the compat owner."
@@ -2362,17 +2371,16 @@ read back after a subsequent insertion.  Failed erasures retain their state."
   (let ((buffer (current-buffer)))
     (prog1 (apply orig args)
       (when (and (fboundp 'buffer-live-p) (buffer-live-p buffer))
-        (with-current-buffer buffer
-          (let* ((ext (gethash buffer emacs-buffer--state))
-                 (full-size (buffer-size))
-                 (mapping (and ext (emacs-buffer--ext-text-props ext))))
-            (when ext
-              (when (zerop full-size)
-                (emacs-buffer--set-ext-text-props ext nil))
-              (emacs-buffer--increment-ext-modified-tick ext)
-              (cl-incf (emacs-buffer--ext-text-tick ext)))
-            (emacs-buffer--native-property-text-commit
-             buffer full-size (if (zerop full-size) nil mapping))))))))
+        (let* ((ext (gethash buffer emacs-buffer--state))
+               (full-size (buffer-size buffer))
+               (mapping (and ext (emacs-buffer--ext-text-props ext))))
+          (when ext
+            (when (zerop full-size)
+              (emacs-buffer--set-ext-text-props ext nil))
+            (emacs-buffer--increment-ext-modified-tick ext)
+            (cl-incf (emacs-buffer--ext-text-tick ext)))
+          (emacs-buffer--native-property-text-commit
+           buffer full-size (if (zerop full-size) nil mapping)))))))
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'erase-buffer))
