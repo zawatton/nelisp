@@ -2839,7 +2839,12 @@ Return an edit plist.  A zero-width range returns a no-op plist with
 
 (defun emacs-edit--word-constituent-p (position)
   "Return whether POSITION has word syntax in the current buffer."
-  (let* ((entry (and (fboundp 'syntax-after) (syntax-after position)))
+  (let* ((entry (and (fboundp 'syntax-after)
+                     ;; Without syntax-table text properties the entry is the
+                     ;; table's, which `char-syntax' reads more cheaply.
+                     (or (not (boundp 'parse-sexp-lookup-properties))
+                         parse-sexp-lookup-properties)
+                     (syntax-after position)))
          (syntax (if (consp entry)
                      (aref " .w_()'\"$\\/<>@!|" (logand (car entry) 255))
                    (char-syntax (char-after position)))))
@@ -2913,6 +2918,11 @@ the rule unless `word-combining-categories' matches."
          (lcode (emacs-edit--word-data-code left))
          (rcode (emacs-edit--word-data-code right)))
     (cond
+     ;; ASCII is all one script (latin) with none of the categories the
+     ;; default separating pairs name, so two ASCII characters never break.
+     ((and (< left 128) (< right 128)
+           (equal word-separating-categories '((?H . ?K))))
+      nil)
      ;; Generated GNU data: script identity and categories are exact.
      ((and lcode rcode)
       (if (= (ash lcode -4) (ash rcode -4))
@@ -2927,6 +2937,18 @@ the rule unless `word-combining-categories' matches."
           (emacs-edit--word-category-match-p left right word-separating-categories)
         (not (emacs-edit--word-category-match-p left right word-combining-categories))))
      (t nil))))
+
+(defun emacs-edit--word-no-fields-p ()
+  "Return non-nil when the current buffer cannot have fields.
+A buffer whose property sidecar holds neither text properties nor overlays
+has no `field' property, so field constraints leave motion unchanged."
+  (and (boundp 'emacs-buffer--state) (hash-table-p emacs-buffer--state)
+       (fboundp 'emacs-buffer--ext-text-props)
+       (fboundp 'emacs-buffer--ext-overlays)
+       (let ((ext (gethash (current-buffer) emacs-buffer--state)))
+         (or (null ext)
+             (and (null (emacs-buffer--ext-text-props ext))
+                  (null (emacs-buffer--ext-overlays ext)))))))
 
 (defun emacs-edit--word-field-at (position)
   "Return the field property at POSITION, including overlays when available."
@@ -3020,7 +3042,9 @@ if all requested words were traversed, nil at a buffer or field edge."
                             (not (emacs-edit--word-boundary-p position)))
                   (setq position (+ position (if forward 1 -1)))))
               (setq remaining (1- remaining)))))
-        (let ((constrained (emacs-edit--word-field-position position start)))
+        (let ((constrained (if (emacs-edit--word-no-fields-p)
+                               position
+                             (emacs-edit--word-field-position position start))))
           (goto-char constrained)
           (and complete (= constrained position)))))))
 
