@@ -32028,6 +32028,66 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun m5_fx_fix (n)
       (if (> n 2305843009213693951) -1
         (if (< n -2305843009213693952) -1 (+ (shl n 2) 1))))
+    ;; gnu562: the float arm of the arithmetic opcodes (GNU arith_driver /
+    ;; arithcompare once an operand is a float): + - < = > on two operands
+    ;; (and, for the interpreter's primitives, * as op 100, <= 101, >= 102)
+    ;; that are each a float or an immediate fixnum, at least one a float.
+    ;; The fixnum is converted as XFIXNUM -> double; for a comparison it must
+    ;; be exact as a double (|n| <= 2^53), since GNU compares exactly.  NaN
+    ;; compares false; = is (<= and >=), so -0.0 = 0.0.  The result bits are
+    ;; computed before the safepoint and the new float is made after it, as
+    ;; `m5_fx_intrinsic_slow' polls once before its call.  -1: not handled
+    ;; (the operands' words are untouched), the generic call runs.
+    (defun m5_fx_float_p (w)
+      (if (= (logand w 7) 6)
+          (if (< w 4096) 0 (if (= (logand (heap-read-u8 (- w 6) 0) 63) 3) 1 0))
+        0))
+    (defun m5_fx_f64_operand_bits (w f)
+      (if (= f 1) (nl_float_bits w) (f64-bits (i64-to-f64 (sar w 2)))))
+    (defun m5_fx_float_box (bits)
+      (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+           (nl_float_object bits)))
+    (defun m5_fx_float_arith (op a b)
+      (let* ((fa (m5_fx_float_p a)) (fb (m5_fx_float_p b)))
+        (if (= (+ fa fb) 0) -1
+          (if (if (= fa 1) 0 (/= (logand a 3) 1)) -1
+            (if (if (= fb 1) 0 (/= (logand b 3) 1)) -1
+              (if (if (if (= op 4) 1 (if (= op 5) 1 (= op 100))) 0
+                    (if (if (= fa 1) 0 (> (sar a 2) 9007199254740992)) 1
+                      (if (if (= fa 1) 0 (< (sar a 2) -9007199254740992)) 1
+                        (if (if (= fb 1) 0 (> (sar b 2) 9007199254740992)) 1
+                          (if (if (= fb 1) 0 (< (sar b 2) -9007199254740992)) 1 0)))))
+                  -1
+                (let* ((x (m5_fx_f64_operand_bits a fa))
+                       (y (m5_fx_f64_operand_bits b fb)))
+                  (if (= op 4)
+                      (m5_fx_float_box (f64-bits (f64-add (bits-to-f64 x) (bits-to-f64 y))))
+                  (if (= op 100)
+                      (m5_fx_float_box (f64-bits (f64-mul (bits-to-f64 x) (bits-to-f64 y))))
+                  (if (= op 101)
+                      (if (= (f64-le (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                  (if (= op 102)
+                      (if (= (f64-ge (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                    (if (= op 5)
+                        (m5_fx_float_box (f64-bits (f64-sub (bits-to-f64 x) (bits-to-f64 y))))
+                      (if (= op 6)
+                          (if (= (f64-lt (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                        (if (= op 14)
+                            (if (= (f64-gt (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                          (if (= op 13)
+                              (if (= (f64-le (bits-to-f64 x) (bits-to-f64 y)) 1)
+                                  (if (= (f64-ge (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                                3)
+                            -1)))))))))))))))
+    ;; The same for 1+ (op 7) and 1- (op 15) of a float.
+    (defun m5_fx_float_incdec (op a)
+      (if (= (m5_fx_float_p a) 0) -1
+        (let* ((x (nl_float_bits a)))
+          (if (= op 7)
+              (m5_fx_float_box (f64-bits (f64-add (bits-to-f64 x) (i64-to-f64 1))))
+            (if (= op 15)
+                (m5_fx_float_box (f64-bits (f64-sub (bits-to-f64 x) (i64-to-f64 1))))
+              -1)))))
     ;; Private carrier for the existing builtin adapter. The cadr is a string,
     ;; so constructing it does not intern a symbol or inspect a function cell.
     ;; XW belongs to the caller; five temporary WORD roots hold the original
@@ -32974,7 +33034,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                      (if (= op 14) (if (> (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
                                        (m5_fx_fix (if (= op 4) (+ (wf_bytecode_w_int a) (wf_bytecode_w_int b))
                                                     (- (wf_bytecode_w_int a) (wf_bytecode_w_int b)))))))
-                               -1))
+                               (m5_fx_float_arith op a b)))
                      (if (= r -1)
                          (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw (+ resw 8) oslot)))
                        (seq (ptr-write-u64 resw 0 r) (setq r 0)))
@@ -32986,7 +33046,7 @@ bytes are written into a fresh 8-byte buffer instead."
                 (seq (setq a (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq r (if (= (m5_fx_int_p a) 1)
                                  (m5_fx_fix (if (= op 7) (+ (wf_bytecode_w_int a) 1) (- (wf_bytecode_w_int a) 1)))
-                               -1))
+                               (m5_fx_float_incdec op a)))
                      (if (= r -1)
                          (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw (+ resw 8) oslot)))
                        (seq (ptr-write-u64 resw 0 r) (setq r 0)))
@@ -67551,7 +67611,8 @@ two flag bits 20 and 21."
         (if (<= id 19)
             (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                    (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
-                   (r (nl_eic_prim_arith id a b argc)))
+                   (r0 (nl_eic_prim_arith id a b argc))
+                   (r (if (= r0 -1) (nl_eic_prim_float id a b argc) r0)))
               (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))
           (if (>= id 27)
               (if (= id 31) (nl_directcall_run 27 base argc resw 0)
@@ -67572,11 +67633,28 @@ two flag bits 20 and 21."
                     st)))
           (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
-               (r (if (<= id 23) (nl_eic_prim_compare id a b)
+               (r (if (<= id 23)
+                      (let* ((c (nl_eic_prim_compare id a b)))
+                        (if (= c -1) (nl_eic_prim_float id a b argc) c))
                       (if (= id 24) (nelisp_cons_construct_w a b 0)
                         (if (= id 25) (nl_eic_prim_list base argc resw)
                           (if (= id 26) (nl_eic_prim_make_vector a b) -1))))))
           (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))))
+      ;; gnu562: + - * 1+ 1- = > <= >= with a float operand, computed in place
+      ;; (`m5_fx_float_arith'); -1 declines as before.
+      (defun nl_eic_prim_float (id a b argc)
+        (if (= argc 2)
+            (if (= id 15) (m5_fx_float_arith 4 a b)
+              (if (= id 16) (m5_fx_float_arith 5 a b)
+                (if (= id 17) (m5_fx_float_arith 100 a b)
+                  (if (= id 20) (m5_fx_float_arith 13 a b)
+                    (if (= id 21) (m5_fx_float_arith 14 a b)
+                      (if (= id 22) (m5_fx_float_arith 101 a b)
+                        (if (= id 23) (m5_fx_float_arith 102 a b) -1)))))))
+          (if (= argc 1)
+              (if (= id 18) (m5_fx_float_incdec 7 a)
+                (if (= id 19) (m5_fx_float_incdec 15 a) -1))
+            -1)))
       ;; The fixnum WORD of S, or -1 when S does not fit.
       (defun nl_eic_fix_wrap (s)
         (if (= (sar (shl s 2) 2) s) (+ (shl s 2) 1) -1))
