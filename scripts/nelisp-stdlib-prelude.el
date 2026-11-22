@@ -23732,51 +23732,12 @@ processors not available."
             (if raw
                 (cons (expand-file-name dir)
                       (nelisp--readdir-scan-raw raw nil t))
-              nil))))
-  ;; fset directory-files: override the misc.el version (which calls
-  ;; nelisp--syscall-readdir, itself deferred) with one that calls
-  ;; nelisp--syscall-readdir-names directly.  The common no-FULL/no-MATCH
-  ;; case returns the native decoder's list as-is, avoiding a second
-  ;; interpreted traversal and reversal.
-  ;; fix/directory-files-count: COUNT (Emacs's 5th, optional argument) was
-  ;; missing entirely -- any caller passing it (the standard idiom
-  ;; `(directory-files DIR t MATCH t COUNT)') hit `wrong-number-of-
-  ;; arguments' on this fset closure.  Clip to the first COUNT entries via
-  ;; `seq-take' (a no-op when COUNT >= the entry count), post-filter, same
-  ;; as lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
-  (fset 'directory-files
-        (lambda (directory &optional full match _nosort count)
-          (unless (stringp directory)
-            (signal 'wrong-type-argument (list 'stringp directory)))
-          (when (or match count)
-            (nelisp--w101-directory-arguments directory match count))
-          (let ((raw (nelisp--syscall-readdir-names directory t)))
-            ;; GNU validates MATCH even when COUNT is zero.
-            (when match
-              (nelisp--cc03-validate-regexp match)
-              (string-match-p match ""))
-            (if raw
-                (let ((names (nelisp--readdir-scan-raw raw t t))
-                      (out nil))
-                  (if (if full t match)
-                      (progn
-                        (while names
-                          (let ((name (car names)))
-                            (if match
-                                (if (string-match-p match name)
-                                    (setq out (cons (if full
-                                                        (expand-file-name name directory)
-                                                      name)
-                                                    out)))
-                              (setq out (cons (if full
-                                                  (expand-file-name name directory)
-                                                name)
-                                              out))))
-                          (setq names (cdr names)))
-                        (setq out (nreverse out))
-                        (if count (seq-take out count) out))
-                    (if count (seq-take names count) names)))
               nil)))))
+;; gnu562: `directory-files' is defined further down (search for
+;; `nelisp--directory-files-candidates').  The fset closure that used to live
+;; here ignored NOSORT, always dropped "." and "..", and answered nil for a
+;; missing directory; because it ran first, it also kept that GNU-shaped
+;; definition from ever being installed.
 (unless (fboundp 'file-exists-p)
   ;; The stat classifier first performs this same F_OK test. Existence does
   ;; not require its second syscall or its file/directory classification.
@@ -24294,7 +24255,12 @@ Keep the original precision rather than reducing a timestamp's frequency."
          (doe (+ (* yoe 365) (/ yoe 4) (- (/ yoe 100)) doy)))
     (+ (* era 146097) doe -719468)))
 
-(unless (fboundp 'directory-files)
+;; On the standalone reader `directory-files' can already be bound when this
+;; runs (lisp/nelisp-stdlib-misc.el's copy, built on the deferred
+;; `nelisp--syscall-readdir'), so install this one whenever the native
+;; readdir primitive exists.
+(when (or (not (fboundp 'directory-files))
+          (fboundp 'nelisp--syscall-readdir-names))
   (progn
     (defun nelisp--directory-files-match-p (name match)
       (if (not match)
@@ -24305,6 +24271,46 @@ Keep the original precision rather than reducing a timestamp's frequency."
                         match)))
           (and (>= (length name) (length prefix))
                (equal (substring name 0 (length prefix)) prefix)))))
+    ;; gnu562: an anchored MATCH such as "\\`env\\'" can only match names that
+    ;; start with its literal ASCII head, so search the NUL-separated
+    ;; snapshot for NUL+HEAD and run the regexp on those names only (about
+    ;; 4 us per `string-match-p' call otherwise, for every entry).  Any \\|
+    ;; disables this, since \\` would bind to the first alternative only.
+    (defun nelisp--directory-files-literal-head (match)
+      "Return the literal ASCII text every match of MATCH starts with, or nil."
+      (when (and match (> (length match) 2)
+                 (= (aref match 0) 92) (= (aref match 1) 96)
+                 (not (string-search "\\|" match)))
+        (let ((idx 2) (len (length match)) (stop nil))
+          (while (and (< idx len) (not stop))
+            (let ((c (aref match idx)))
+              (if (or (>= c 128) (memq c '(46 42 43 63 91 94 36 92)))
+                  (setq stop c)
+                (setq idx (1+ idx)))))
+          ;; A postfix operator (* + ? or \\{) applies to the last char.
+          (when (and stop (< idx len)
+                     (or (memq stop '(42 43 63))
+                         (and (= stop 92) (< (1+ idx) len)
+                              (= (aref match (1+ idx)) 123))))
+            (setq idx (1- idx)))
+          (when (> idx 2) (substring match 2 idx)))))
+    (defun nelisp--directory-files-candidates (raw match)
+      "Return the names in RAW, in order, that MATCH could match."
+      (let ((head (and (fboundp 'nelisp--string-search)
+                       (nelisp--directory-files-literal-head match))))
+        (if (not head)
+            (nelisp--readdir-scan-raw raw nil t)
+          (let* ((text (concat "\0" raw))
+                 (needle (concat "\0" head))
+                 (skip (length head))
+                 (pos (nelisp--string-search needle text 0))
+                 (out nil))
+            (while pos
+              (let* ((start (1+ pos))
+                     (end (nelisp--string-search "\0" text (+ start skip))))
+                (setq out (cons (substring text start end) out))
+                (setq pos (and end (nelisp--string-search needle text end)))))
+            (nreverse out)))))
     ;; fix/directory-files-count: COUNT (Emacs's 5th, optional argument) was
     ;; missing here too; clip to the first COUNT entries via `seq-take' (a
     ;; no-op when COUNT >= the entry count), post-filter, same as
@@ -24329,7 +24335,7 @@ directory's enumeration order instead of sorting with `string-lessp'."
         (when match
           (nelisp--cc03-validate-regexp match)
           (string-match-p match ""))
-        (let ((names (nelisp--readdir-scan-raw raw nil t))
+        (let ((names (nelisp--directory-files-candidates raw match))
               (prefix (and full (file-name-as-directory path)))
               (remaining count) (case-fold-search nil))
           (while (and names (or (null remaining) (> remaining 0)))
