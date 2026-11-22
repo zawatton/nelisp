@@ -1,0 +1,6 @@
+(defun pfs-leaf (n) (let ((i 0) (a 0)) (while (< i n) (setq a (+ a i) i (1+ i))) a))
+(defun pfs-rec (d) (if (<= d 0) (pfs-leaf 300) (+ (pfs-leaf 100) (pfs-rec (1- d)))))
+(defun pfs-thrower () (pfs-leaf 200) (throw 'pfs-tag 7))
+(defun pfs-signal () (pfs-leaf 200) (error "pfs boom"))
+(defun pfs-mid () (list (catch 'pfs-tag (pfs-thrower)) (condition-case nil (pfs-signal) (error 'e))))
+(defun pfs-top () (pfs-rec 4) (pfs-mid) (pfs-leaf 50))
