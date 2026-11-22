@@ -1191,6 +1191,21 @@ etc.) is silently re-shadowed before the binding step."
         (format "Cannot open doc string file \"%s\"\n" (car doc)))))
    (t nil)))
 
+(defun emacs-help--function-documentation (function)
+  "Return `function-documentation' of FUNCTION.
+A `lambda' or `autoload' list is answered here exactly as the generic's
+default method in simple.el answers it (no method specializes on a
+cons), skipping the ~120 us generic dispatch; anything else goes to the
+generic."
+  (if (and (consp function)
+           (memq (car function) '(lambda autoload))
+           (consp (cdr function))
+           (not (closurep function)))
+      (let ((doc (car (cddr function))))
+        (when (or (stringp doc) (fixnump doc) (fixnump (cdr-safe doc)))
+          doc))
+    (function-documentation function)))
+
 (unless (fboundp 'documentation)
   (defun documentation (function &optional raw)
     "Return the documentation string of FUNCTION.
@@ -1209,9 +1224,11 @@ Unless RAW is non-nil, pass the string through `substitute-command-keys'."
           (unless function
             (signal 'void-function (list original))))
         (setq doc (emacs-help--resolve-function-doc
-                   (function-documentation function)))
+                   (emacs-help--function-documentation function)))
         (if (and (stringp doc) (not raw))
-            (substitute-command-keys doc)
+            (if (fboundp 'emacs-cc-census-other-w301--substitute-keys)
+                (emacs-cc-census-other-w301--substitute-keys doc)
+              (substitute-command-keys doc))
           doc)))))
 (unless (fboundp 'help-function-arglist)
   (defun help-function-arglist (def &optional _preserve-names)

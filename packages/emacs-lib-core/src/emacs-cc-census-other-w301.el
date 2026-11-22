@@ -16,11 +16,28 @@
         (format "Cannot open doc string file \"%s\"\n" (car value)))))
    (t (eval value))))
 
+(defun emacs-cc-census-other-w301--substitute-keys (string)
+  "Return STRING as `substitute-command-keys' would.
+Its temporary-buffer pass costs about 0.6 ms on the standalone image.
+Without a backslash nothing but the quotes can change: a string with no
+quotes comes back as a copy (text properties kept, as the buffer pass
+keeps them), and a property-free one has its quotes curved by
+`nelisp--substitute-quotes', which follows the same `text-quoting-style'
+rule."
+  (cond ((string-search "\\" string) (substitute-command-keys string))
+        ((not (or (string-search "`" string) (string-search "'" string)))
+         (copy-sequence string))
+        ((and (fboundp 'nelisp--substitute-quotes)
+              (fboundp 'object-intervals)
+              (null (object-intervals string)))
+         (nelisp--substitute-quotes string))
+        (t (substitute-command-keys string))))
+
 (defun emacs-cc-census-other-w301--doc-result (value raw)
   "Apply command key substitution to VALUE unless RAW is non-nil."
   (if (and (stringp value) (not raw)
            (fboundp 'substitute-command-keys))
-      (substitute-command-keys value)
+      (emacs-cc-census-other-w301--substitute-keys value)
     value))
 
 (unless (fboundp 'documentation-property)
