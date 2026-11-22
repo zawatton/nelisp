@@ -54171,7 +54171,9 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
    '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
      "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
    ;; S4.5 exports an existing VM helper; no reader builtin is added.
-   '("wf_bytecode_condition_matches"))
+   '("wf_bytecode_condition_matches")
+   ;; The pending exit's WORD pair (link symbol), for the loader's stash read.
+   '("nl_exit_values"))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',
