@@ -422,21 +422,43 @@ about 1e-16 relative for |X| below roughly 1e10."
     (cons n r)))
 
 (defun emacs-numeric--sin-kernel (r)
-  "Taylor series of sin(R) for |R| <= pi/4."
-  (let* ((r2 (* r r)) (term r) (sum r) (i 1))
-    (while (<= i 13)
-      (setq term (/ (* (- term) r2) (* (* 2 i) (1+ (* 2 i)))))
-      (setq sum (+ sum term))
-      (setq i (1+ i)))
+  "Taylor series of sin(R) for |R| <= pi/4, its 13 terms unrolled.
+Each term is the previous one times R^2 over a negative constant: the
+same value and rounding as negating it first, without a negation call."
+  (let* ((r2 (* r r)) (term r) (sum r))
+    (setq term (/ (* term r2) -6.0) sum (+ sum term))
+    (setq term (/ (* term r2) -20.0) sum (+ sum term))
+    (setq term (/ (* term r2) -42.0) sum (+ sum term))
+    (setq term (/ (* term r2) -72.0) sum (+ sum term))
+    (setq term (/ (* term r2) -110.0) sum (+ sum term))
+    (setq term (/ (* term r2) -156.0) sum (+ sum term))
+    (setq term (/ (* term r2) -210.0) sum (+ sum term))
+    (setq term (/ (* term r2) -272.0) sum (+ sum term))
+    (setq term (/ (* term r2) -342.0) sum (+ sum term))
+    (setq term (/ (* term r2) -420.0) sum (+ sum term))
+    (setq term (/ (* term r2) -506.0) sum (+ sum term))
+    (setq term (/ (* term r2) -600.0) sum (+ sum term))
+    (setq term (/ (* term r2) -702.0) sum (+ sum term))
     sum))
 
 (defun emacs-numeric--cos-kernel (r)
-  "Taylor series of cos(R) for |R| <= pi/4."
-  (let* ((r2 (* r r)) (term 1.0) (sum 1.0) (i 1))
-    (while (<= i 13)
-      (setq term (/ (* (- term) r2) (* (1- (* 2 i)) (* 2 i))))
-      (setq sum (+ sum term))
-      (setq i (1+ i)))
+  "Taylor series of cos(R) for |R| <= pi/4, its 13 terms unrolled.
+Each term is the previous one times R^2 over a negative constant: the
+same value and rounding as negating it first, without a negation call."
+  (let* ((r2 (* r r)) (term 1.0) (sum 1.0))
+    (setq term (/ (* term r2) -2.0) sum (+ sum term))
+    (setq term (/ (* term r2) -12.0) sum (+ sum term))
+    (setq term (/ (* term r2) -30.0) sum (+ sum term))
+    (setq term (/ (* term r2) -56.0) sum (+ sum term))
+    (setq term (/ (* term r2) -90.0) sum (+ sum term))
+    (setq term (/ (* term r2) -132.0) sum (+ sum term))
+    (setq term (/ (* term r2) -182.0) sum (+ sum term))
+    (setq term (/ (* term r2) -240.0) sum (+ sum term))
+    (setq term (/ (* term r2) -306.0) sum (+ sum term))
+    (setq term (/ (* term r2) -380.0) sum (+ sum term))
+    (setq term (/ (* term r2) -462.0) sum (+ sum term))
+    (setq term (/ (* term r2) -552.0) sum (+ sum term))
+    (setq term (/ (* term r2) -650.0) sum (+ sum term))
     sum))
 
 (defun emacs-numeric--trig (x cos-p)
