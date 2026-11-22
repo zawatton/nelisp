@@ -54172,6 +54172,8 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
      "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
    ;; S4.5 exports an existing VM helper; no reader builtin is added.
    '("wf_bytecode_condition_matches")
+   ;; The pending exit's WORD pair (link symbol), for the loader's stash read.
+   '("nl_exit_values")
    ;; Step D (pending batch build): buffer leaves for native code, provided by
    ;; `nl_native_buf_leaf' in nelisp-cc-fx-call-primitives.  Appended.
    '("nl_native_buf_leaf" "nl_native_buf_rec"))

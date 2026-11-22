@@ -78,11 +78,12 @@
   "Each leaf in a defun that has the AOT boundary params.")
 
 (ert-deftest nelisp-aot-buffer-leaf-bridge-contract ()
-  "The extern is in the bridge list, last, so every earlier index is unchanged."
-  (should (equal (last nelisp-native-load-bridgeable-symbols 2) '("nl_native_buf_leaf" "nl_native_buf_rec")))
+  "The externs are appended last (after aot-regs' `nl_exit_values'), so every earlier index is unchanged."
+  (should (equal (last nelisp-native-load-bridgeable-symbols 3)
+                 '("nl_exit_values" "nl_native_buf_leaf" "nl_native_buf_rec")))
   (should (equal (cl-position "wf_bytecode_condition_matches"
                               nelisp-native-load-bridgeable-symbols :test #'equal)
-                 (- (length nelisp-native-load-bridgeable-symbols) 3))))
+                 (- (length nelisp-native-load-bridgeable-symbols) 4))))
 
 (ert-deftest nelisp-aot-buffer-leaf-extern-emitted ()
   (skip-unless (nelisp-aot-buffer-leaf-test--tools-p))
@@ -200,8 +201,8 @@ arm is the generic call on the same already evaluated argument."
       (let ((names (cl-remove-if-not (lambda (x) (string-match-p "\\`[a-z_0-9]+\\'" x))
                                      (nelisp-aot-buffer-leaf-test--strings (read (current-buffer))))))
         ;; the computed middle of both lists is not readable here: compare the tails
-        (should (equal (last names 3) '("wf_bytecode_condition_matches" "nl_native_buf_leaf" "nl_native_buf_rec")))
-        (should (equal (last nelisp-native-load-bridgeable-symbols 3) (last names 3)))
+        (should (equal (last names 4) '("wf_bytecode_condition_matches" "nl_exit_values" "nl_native_buf_leaf" "nl_native_buf_rec")))
+        (should (equal (last nelisp-native-load-bridgeable-symbols 4) (last names 4)))
         (should (member "nl_native_buf_leaf" names))
         ))))
 
