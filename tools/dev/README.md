@@ -116,3 +116,31 @@ Examples (`nl-prof-examples/`):
         --functions insert erase-buffer --runs 3000
     tools/dev/nl-prof.sh nl-prof-examples/forward-word-form.el --setup nl-prof-examples/forward-word-setup.el \
         --prefix emacs-syntax- --prefix emacs-edit --prefix char- --prefix syntax- --functions forward-word
+
+## gen-bundle.py (bootstrap bundle generator and audit)
+
+    tools/dev/gen-bundle.py gen   --tree DIR [--rev REV] --out OUT --name vN [--overlay DIR --overlay-file REL ...] [--ref BUNDLE] [--cpus 9,25]
+    tools/dev/gen-bundle.py check --bundle B --tree DIR [--rev REV] [--overlay DIR --overlay-file REL ...] [--cpus 9,25]
+
+The gnu562-style image bundle (`process-runtime-chartab-repair-v1.el`) is the unmodified output of
+`scripts/build-nelisp-bootstrap.el` (`make build-nelisp-bootstrap`, about 12 s). Members sit between
+`;;; >>> LOGICAL` and `;;; <<< LOGICAL` lines (`src/X.el` maps to `packages/*/src/X.el`); the text outside them
+(prologue, load-path with the seed root, canonical-provider seam) is generator output too. Measured on
+bundle-v67 and bundle-v9: no hand-written glue exists, so nothing needs keeping verbatim; hand patches
+(mkbundle.py hunks) show up only as member differences.
+
+`gen` snapshots TREE (working tree, or `--rev`) into `OUT/seed-NAME` (dirs packages scripts lisp src vendor mk plus
+Makefile), runs that tree's own generator there (host emacs, `ulimit -v 8388608`, timeout, stdin closed) and writes
+`OUT/bundle-NAME/<bundle>.el` and `OUT/gen-NAME.json` (commit, dirty files, sha256). Both output paths must be new.
+The bundle embeds the seed path, so two runs are byte-identical after path normalisation. Use `--overlay DIR
+--overlay-file F` to take single files from another checkout. `--ref BUNDLE` compares the result as `check` does.
+
+`check` regenerates into a temp dir and reports, between what runs (bundle) and what you read (tree): glue
+differences, members only in either side, member order, and per divergent member the changed (`~`), bundle-only
+(`B`) and tree-only (`T`) top-level forms (a form is a column-0 `(`; defs key on name, other forms on their first
+line). Exit 0 identical, 1 divergent, 2 failure. It never writes inside the tree or next to the bundle.
+
+Measured: bundle-v9 vs `4983f92c7` 353/356 members identical (3 explained hand patches); bundle-v67 vs its seed 352/356
+(buffer-builtins, process-buffer, cc-aggregate-arity-1, cc-print-1: patch on one side only); bundle-v67 vs
+`origin/feat/emacs-lib-import` 324/354 with `emacs-buffer-builtins--change-edit` (no PUBLIC arg, no `--run-edit`) listed.
+An image built from a regenerated bundle ran the casebench public batch with matching results on every case.
