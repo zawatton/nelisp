@@ -665,7 +665,11 @@ comments.  Whitespace is skipped only while looking for the next comment."
 (when (emacs-syntax-table--install-function-p 'char-syntax)
   (defun char-syntax (char)
     "Return the syntax class designator character for CHAR (current table)."
-    (emacs-syntax-table-char-syntax char)))
+    (emacs-syntax-table-char-syntax char))
+  ;; gnu562: recognized by the prelude's `capitalize' / `upcase-initials'
+  ;; fast path, which then fetches the current table once per string.
+  (defvar emacs-syntax-table--char-syntax-def (symbol-function 'char-syntax)
+    "The `char-syntax' this file installed."))
 
 (when (emacs-syntax-table--install-function-p 'standard-syntax-table)
   (defun standard-syntax-table ()

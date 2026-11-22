@@ -2186,7 +2186,16 @@ is built like the general path builds it."
                                   nelisp--char-syntax-prelude-def)
                               (or (gethash nelisp--current-buffer
                                            nelisp--syntax-buffer-tables)
-                                  nelisp--buffer-defaults-syntax-table))))
+                                  nelisp--buffer-defaults-syntax-table)))
+                   ;; gnu562: when emacs-lib's syntax tables own `char-syntax',
+                   ;; fetch the current table once instead of once per
+                   ;; character (about 6.6 us each); it cannot change here.
+                   (etab (and (not stab)
+                              (boundp 'emacs-syntax-table--char-syntax-def)
+                              (eq (symbol-function 'char-syntax)
+                                  (symbol-value
+                                   'emacs-syntax-table--char-syntax-def))
+                              (emacs-syntax-table-current))))
               (while (< i n)
                 (let ((c (aref object i)))
                   (if inword
@@ -2204,7 +2213,9 @@ is built like the general path builds it."
                             (let ((entry (aref stab c)))
                               (setq entry (if (consp entry) (logand (car entry) 255) 0))
                               (or (eq entry 2) (and csw (eq entry 3))))
-                          (let ((sx (char-syntax c)))
+                          (let ((sx (if etab
+                                        (emacs-syntax-table-char-syntax c etab)
+                                      (char-syntax c))))
                             (or (eq sx ?w) (and csw (eq sx ?_)))))
                         i (1+ i))))
               result)))))))
