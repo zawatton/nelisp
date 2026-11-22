@@ -446,6 +446,8 @@ answer, then accept symbols with function bindings and (closure ...) /
      ((symbolp f) (fboundp f))
      ((consp f) (if (memq (car f) '(lambda closure builtin)) t nil))
      (t nil)))
+  (defvar emacs-network-syscall-shim--functionp-def (symbol-function 'functionp)
+    "The `functionp' polyfill this file installed (see emacs-parity-misc).")
   ;; NeLisp v1.1.0 (Doc 200) ships a real `string-bytes' that counts
   ;; encoded bytes, so the polyfill below would now under-count every
   ;; multibyte string it is asked about: a three-character Japanese
