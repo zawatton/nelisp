@@ -94,10 +94,24 @@ A missing source disables caching rather than creating an incomplete key."
             (error (setq nelisp-native-cache--disabled-reason err) nil))))
   nelisp-native-cache--compiler-revision)
 
+(defconst nelisp-native-cache--compiler-flag-symbols
+  '(nelisp-aot-compiler-fixnum-loops nelisp-aot-compiler-fixnum-loop-budget
+    nelisp-aot-compiler-fixnum-loop-quit-poll
+    nelisp-aot-compiler-lisp-inline-incdec nelisp-aot-compiler-buffer-leaves)
+  "Dynamic compiler switches that change the code generated for one source.")
+
+(defun nelisp-native-cache--compiler-flags ()
+  "Return the current values of the compiler switches, for the cache key.
+A flag that is not defined (its module is not loaded) reads as `unbound'.
+Without this an A/B run could be served the other setting's artifact."
+  (mapcar (lambda (sym) (cons sym (if (boundp sym) (symbol-value sym) 'unbound)))
+          nelisp-native-cache--compiler-flag-symbols))
+
 (defun nelisp-native-cache--abi-components ()
   "Return every runtime ABI component required by the cache protocol."
   (append
-   (list (nelisp-native-load-running-binary-sha256)
+   (list (nelisp-native-cache--compiler-flags)
+         (nelisp-native-load-running-binary-sha256)
         (nelisp-native-load--raw-v2-contract-hash)
         nelisp-bytecode-native-rooted-cfg-contract-version
         nelisp-bytecode-native-rooted-cfg-contract-shared-version

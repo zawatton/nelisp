@@ -1685,6 +1685,32 @@
          (if (= (nl_buf_leaf_run id stk (if (> argc 2) 0 argc) (if (> argc 2) 0 argc) res env) 0)
              (heap-read-u64 res 0)
            (nl_buf_slow_w id args env))))))
+    ;; Bridged entry for native (AOT) artifacts (step D, pending batch build):
+    ;; nl_native_buf_leaf(ENV ID ARGC A) runs the buffer leaf ID (40 point, 41
+    ;; point-min, 42 point-max, 43 goto-char, 46 bobp, 47 eobp, 50 char-after,
+    ;; 51 char-before, 52 following-char, 53 preceding-char) on ARGC (0 or 1)
+    ;; argument word A through `nl_buf_leaf_run', the body the interpreter's
+    ;; builtin and the VM run -- same narrowing, gap, nil-position and
+    ;; goto-char `wf_dirty' behaviour.  Answers the result WORD, or 0 when the
+    ;; leaf declines (marker, float, out-of-range goto-char, multibyte text,
+    ;; unusual record: nothing was changed) and the caller makes the generic
+    ;; call.  0 is never a value word (fixnum 4N+1, nil 3, t 7).
+    ;; nl_native_buf_rec(ENV): the current buffer's record pointer (the payload
+    ;; the leaves read at +64 narrow-start, +72 narrow-end, +104 pend, +112 blen,
+    ;; +120 len), or 0.  Valid only until the next call: the caller reads it at
+    ;; once and re-fetches after any call (compaction moves objects).
+    (defun nl_native_buf_rec (env)
+      (let* ((b (nl_buf_current env)))
+        (if (= b 0) 0 (- b 6))))
+    (defun nl_native_buf_leaf (env id argc a)
+      (let* ((stk (alloc-bytes 16 8)) (res (alloc-bytes 8 8)))
+        (seq
+         (ptr-write-u64 stk 0 a)
+         (ptr-write-u64 stk 8 3)
+         (if (= (nl_buf_leaf_run id stk argc argc res env) 0)
+             (heap-read-u64 res 0)
+           0))))
+    
     ;; Primitive ID on the ARGC words ending at STK[SP-1]: 0 with the value
     ;; in RESW, -3 when it declines (a type it leaves to the full builtin).
     (defun m5_fx_primitive_run (id stk sp argc resw env scratch)

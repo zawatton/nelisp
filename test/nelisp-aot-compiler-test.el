@@ -1188,7 +1188,10 @@ integration step."
           (with-temp-file src
             (insert "(defun inc1 (x) (1+ x))\n(provide 'inc1)\n"))
           (load src nil t)
-          (nelisp-artifact-compile-file src out nil nil nil nil nil 'neln)
+          ;; The mechanism needs the per-call `nelisp_aot_funcall1' provider;
+          ;; the inline lowering of 1+ (Doc 229) does not call it.
+          (let ((nelisp-aot-compiler-lisp-inline-incdec nil))
+            (nelisp-artifact-compile-file src out nil nil nil nil nil 'neln))
           (let* ((native (plist-get (nelisp-artifact--read-payload out) :native))
                  (defun0 (car (plist-get native :defuns)))
                  (text-bytes (string-to-list

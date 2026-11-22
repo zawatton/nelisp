@@ -1946,6 +1946,8 @@ by hand.  Recorded here and reported in the manifest instead.")
           ;; Doc 229 S4.2: the quoted constants, printed, read once at load.
           :constants (plist-get unit :constants)
           :compile-report compile-report
+          :codegen-settings (progn (require 'nelisp-native-load)
+                                   (nelisp-native-load-codegen-settings))
           :defuns (mapcar #'nelisp-artifact--native-defun-entry
                           (plist-get unit :defuns)))))
 
@@ -5017,6 +5019,24 @@ harness builds the string ones in the scratch elements the code reads."
      "      neln_fail(\"logand expects argc=2\");\n"
      "    }\n"
      "    neln_write_int(out, (int64_t)((uint64_t)a0 & (uint64_t)a1));\n"
+     "    return out;\n"
+     "  }\n"
+     "  if (argc == 2 && (strcmp(builtin, \"+\") == 0 || strcmp(builtin, \"-\") == 0)) {\n"
+     "    /* Doc 229: (1+ X) and (1- X) are (+ X 1) and (- X 1); this is the\n"
+     "     * generic fallback of their guarded fast path.  Fixnum operands only. */\n"
+     "    int64_t x = neln_raw_to_int(a0);\n"
+     "    int64_t y = neln_raw_to_int(a1);\n"
+     "    neln_write_int(out, builtin[0] == '+' ? x + y : x - y);\n"
+     "    return out;\n"
+     "  }\n"
+     "  if (argc == 2 && (strcmp(builtin, \"<\") == 0 || strcmp(builtin, \">\") == 0\n"
+     "                    || strcmp(builtin, \"<=\") == 0 || strcmp(builtin, \">=\") == 0\n"
+     "                    || strcmp(builtin, \"=\") == 0)) {\n"
+     "    int64_t x = neln_raw_to_int(a0);\n"
+     "    int64_t y = neln_raw_to_int(a1);\n"
+     "    int r = strcmp(builtin, \"<\") == 0 ? x < y : strcmp(builtin, \">\") == 0 ? x > y\n"
+     "          : strcmp(builtin, \"<=\") == 0 ? x <= y : strcmp(builtin, \">=\") == 0 ? x >= y : x == y;\n"
+     "    if (r) neln_write_t(out); else neln_write_nil(out);\n"
      "    return out;\n"
      "  }\n"
      "  neln_fail(\"unsupported builtinn in host proof\");\n"
