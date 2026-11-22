@@ -36492,14 +36492,26 @@ bytes are written into a fresh 8-byte buffer instead."
       (let ((view (alloc-bytes 32 8)))
         (seq (nl_sexp_clone_into (nl_record_type_word state) view)
              (sexp-name-eq view "emacs-char-table--owner-state"))))
-    ;; The node brand is an UNINTERNED symbol (make-symbol), so a same-named
-    ;; interned user record stays a scalar leaf, as in
-    ;; emacs-char-table--topology-node-p.  Natively that is the symbol-object
-    ;; kind 16; identity with the brand itself is not tested.
-    (defun nl_lct_node_typed_p (node)
+    ;; The node brand is an UNINTERNED symbol (make-symbol) held in
+    ;; emacs-char-table--topology-node-brand.  As in
+    ;; emacs-char-table--topology-node-p (eq (type-of object) BRAND), the
+    ;; record's type word must BE that symbol: a user record with another
+    ;; uninterned tag stays a scalar leaf.  An unbound brand declines.
+    (defun nl_lct_brand_word (env)
+      (let* ((buf (alloc-bytes 40 8)) (slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 7521905776250678629)
+             (ptr-write-u64 (+ buf 8) 0 7308324466015957601)
+             (ptr-write-u64 (+ buf 16) 0 8028914764391656749)
+             (ptr-write-u64 (+ buf 24) 0 3271131134107154791)
+             (ptr-write-u64 (+ buf 32) 0 431348609634)
+             (nl_alloc_symbol buf 37 slot)
+             (nl_sym_find_value_w env slot 0))))
+    (defun nl_lct_node_typed_p (node env)
       (let* ((tw (nl_record_type_word node)))
         (if (= (nl_so_p tw) 1)
-            (if (= (logand (heap-read-u64 (- tw 6) 0) 63) 16) 1 0)
+            (if (= (logand (heap-read-u64 (- tw 6) 0) 63) 16)
+                (if (= tw (nl_lct_brand_word env)) 1 0)
+              0)
           0)))
     (defun nl_lct_owner_cache (ct)
       (let* ((state (nl_vector_slot_word ct 7)))
@@ -36514,11 +36526,11 @@ bytes are written into a fresh 8-byte buffer instead."
               0)
           0)))
     ;; The 128-slot node CONTENTS when the cache is a node, 0 otherwise.
-    (defun nl_lct_owner_contents (ct)
+    (defun nl_lct_owner_contents (ct env)
       (let* ((cache (nl_lct_owner_cache ct)))
         (if (= cache 0) 0
           (if (= (nl_val_tag cache) 12)
-              (if (if (= (record-slot-count cache) 1) (nl_lct_node_typed_p cache) 0)
+              (if (if (= (record-slot-count cache) 1) (nl_lct_node_typed_p cache env) 0)
                   (let* ((cont (nl_record_slot_word cache 0)))
                     (if (= (nl_val_tag cont) 8)
                         (if (= (vector-len cont) 128) cont 0)
@@ -36528,12 +36540,12 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; The ASCII value of C, or 0 to leave the call to the library.  An
     ;; unset entry follows emacs-char-table--fallback: own default, then the
     ;; parent (owned library table, legacy library table or native table).
-    (defun nl_lct_owner_ref_depth (ct c depth)
+    (defun nl_lct_owner_ref_depth (ct c depth env)
       (if (< c 128)
           (if (> depth 64) 0
             (let* ((cache (nl_lct_owner_cache ct)))
               (if (= cache 0) 0
-                (let* ((cont (nl_lct_owner_contents ct))
+                (let* ((cont (nl_lct_owner_contents ct env))
                        (v (if (/= cont 0) (nl_vector_slot_word cont c)
                             (if (= (nl_val_tag cache) 12) 0 cache))))
                   (if (= v 0) 0
@@ -36544,16 +36556,16 @@ bytes are written into a fresh 8-byte buffer instead."
                           (if (= (nl_val_tag parent) 0) 3
                             (if (= (nl_val_tag parent) 8)
                                 (if (= (bf_nemacs_char_table_owned_vector_p parent) 1)
-                                    (nl_lct_owner_ref_depth parent c (+ depth 1))
+                                    (nl_lct_owner_ref_depth parent c (+ depth 1) env)
                                   0)
                               0)))))))))))
         0))
-    (defun nl_lct_owner_ref (ct c) (nl_lct_owner_ref_depth ct c 0))
+    (defun nl_lct_owner_ref (ct c env) (nl_lct_owner_ref_depth ct c 0 env))
     ;; Single ASCII store: the node slot and the compatibility ASCII vector
     ;; (slot 4), exactly what emacs-char-table--owner-set-char publishes.
-    (defun nl_lct_owner_set_try (ct c val)
-      (if (< c 128)
-          (let* ((cont (nl_lct_owner_contents ct)))
+    (defun nl_lct_owner_set_try (ct c val env)
+      (if (if (= (nl_ct_char_ok c) 1) (< c 128) 0)
+          (let* ((cont (nl_lct_owner_contents ct env)))
             (if (= cont 0) 0
               (let* ((ascii (nl_vector_slot_word ct 4)))
                 (if (= (nl_val_tag ascii) 8)
@@ -36579,7 +36591,8 @@ bytes are written into a fresh 8-byte buffer instead."
           (if (= (bf_nemacs_char_table_owned_vector_p (wf_arg_ptr args 0)) 1)
               (let* ((r (if (= (nl_ct_char_ok (nl_word_payload (wf_arg_word args 1))) 1)
                             (nl_lct_owner_ref (wf_arg_ptr args 0)
-                                              (nl_word_payload (wf_arg_word args 1)))
+                                              (nl_word_payload (wf_arg_word args 1))
+                                              env)
                           0)))
                 (if (= r 0)
                     (nl_argframe_list_only
@@ -36615,7 +36628,8 @@ bytes are written into a fresh 8-byte buffer instead."
           (if (= (bf_nemacs_char_table_owned_vector_p (wf_arg_ptr args 0)) 1)
               (if (= (nl_lct_owner_set_try (wf_arg_ptr args 0)
                                            (nl_word_payload (wf_arg_word args 1))
-                                           (wf_arg_word args 2)) 1)
+                                           (wf_arg_word args 2)
+                                           env) 1)
                   (nl_g4arm_copy_w 0 (wf_arg_word args 2))
                 (bf_nemacs_char_table_call_w args env 0 499918266669))
             (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)

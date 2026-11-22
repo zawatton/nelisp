@@ -591,10 +591,57 @@ until a later ASCII write, while a copy is built from the current topology."
     (let ((decoy (record 'not-a-node (make-vector 128 'inner))))
       (let ((d (make-char-table 'emacs-char-table-test--fast decoy)))
         (should (eq (aref d ?a) decoy))))
-    ;; Speed: the Lisp fallback costs hundreds of microseconds per call.
-    (let ((n 2000) (i 0) (t0 (float-time)))
-      (while (< i n) (aref ct ?z) (aset ct ?z 'zed) (setq i (1+ i)))
-      (should (< (/ (* 1e6 (- (float-time) t0)) n) 50.0)))))
+    ;; Path, not speed: the native bridge never enters the library
+    ;; functions for a present ASCII entry (the Lisp fallback costs hundreds
+    ;; of microseconds per call).  Count calls to them around native aref/aset.
+    (let ((calls 0)
+          (orig-ref (symbol-function 'emacs-char-table-ref))
+          (orig-set (symbol-function 'emacs-char-table-set)))
+      (unwind-protect
+          (progn
+            (fset 'emacs-char-table-ref
+                  (lambda (&rest a) (setq calls (1+ calls)) (apply orig-ref a)))
+            (fset 'emacs-char-table-set
+                  (lambda (&rest a) (setq calls (1+ calls)) (apply orig-set a)))
+            (let ((i 0))
+              (while (< i 20) (aref ct ?z) (aset ct ?z 'zed) (setq i (1+ i)))))
+        (fset 'emacs-char-table-ref orig-ref)
+        (fset 'emacs-char-table-set orig-set))
+      (should (= calls 0)))))
+
+(ert-deftest emacs-char-table-test/owned-ascii-out-of-range-aset-matches-gnu ()
+  ;; GNU CHAR_TABLE_SET checks CHARACTERP: a negative or over-range index
+  ;; signals (wrong-type-argument characterp N) and leaves the table alone.
+  (skip-unless (emacs-char-table--standalone-p))
+  (let ((ct (make-char-table 'emacs-char-table-test--fast 'dflt)))
+    (skip-unless (emacs-char-table--owned-p ct))
+    (aset ct ?a 'kept)
+    (dolist (bad '(-1 -100 #x400000 #x7fffffff))
+      (should (equal (condition-case e (aset ct bad 'x) (error e))
+                     (list 'wrong-type-argument 'characterp bad)))
+      (should (equal (condition-case e (aref ct bad) (error e))
+                     (list 'wrong-type-argument 'characterp bad))))
+    (should (eq (aref ct ?a) 'kept))
+    (should (eq (aref ct ?b) 'dflt))
+    (should (eq (aref ct 0) 'dflt))
+    (should (eq (aref ct 127) 'dflt))))
+
+(ert-deftest emacs-char-table-test/owned-ascii-uninterned-decoy-node ()
+  ;; A user record with ANOTHER uninterned tag, holding a 128-slot vector,
+  ;; stored as the table's value is a scalar: aref returns the record and
+  ;; aset never writes into its vector.
+  (skip-unless (emacs-char-table--standalone-p))
+  (let* ((tag (make-symbol "emacs-char-table--topology-node"))
+         (vec (make-vector 128 'inner))
+         (decoy (record tag vec))
+         (d (make-char-table 'emacs-char-table-test--fast decoy)))
+    (skip-unless (emacs-char-table--owned-p d))
+    (should (eq (aref d ?a) decoy))
+    (aset d ?a 'new)
+    (should (eq (aref d ?a) 'new))
+    (should (eq (aref d ?b) decoy))
+    (should (equal vec (make-vector 128 'inner)))
+    (should (eq (aref decoy 1) vec))))
 
 (provide 'emacs-char-table-test)
 
