@@ -596,8 +596,42 @@ called directly."
     (symbol-function 'emacs-buffer-builtins--nelisp-kill-buffer))
   (advice-add 'nelisp-buffer-set-modified :after
               #'emacs-buffer-builtins--indirect-set-modified)
-  (dolist (function '(insert insert-before-markers delete-region erase-buffer))
-    (advice-add function :after #'emacs-buffer-builtins--share-current-text)))
+  ;; Named wrappers in place of the edit functions rather than :after
+  ;; advice, whose dispatch cost about 5 us per edit.  Each function found
+  ;; here is captured once.
+  (unless (fboundp 'emacs-buffer-builtins--unshared-insert)
+    (defalias 'emacs-buffer-builtins--unshared-insert
+      (symbol-function 'insert))
+    (defalias 'emacs-buffer-builtins--unshared-insert-before-markers
+      (symbol-function 'insert-before-markers))
+    (defalias 'emacs-buffer-builtins--unshared-delete-region
+      (symbol-function 'delete-region))
+    (defalias 'emacs-buffer-builtins--unshared-erase-buffer
+      (symbol-function 'erase-buffer)))
+  (defun emacs-buffer-builtins--shared-insert (&rest args)
+    "`insert' that publishes the edit to indirect siblings."
+    (prog1 (apply #'emacs-buffer-builtins--unshared-insert args)
+      (emacs-buffer-builtins--share-current-text)))
+  (defun emacs-buffer-builtins--shared-insert-before-markers (&rest args)
+    "`insert-before-markers' that publishes the edit to indirect siblings."
+    (prog1 (apply #'emacs-buffer-builtins--unshared-insert-before-markers args)
+      (emacs-buffer-builtins--share-current-text)))
+  (defun emacs-buffer-builtins--shared-delete-region (start end)
+    "`delete-region' that publishes the edit to indirect siblings."
+    (prog1 (emacs-buffer-builtins--unshared-delete-region start end)
+      (emacs-buffer-builtins--share-current-text)))
+  (defun emacs-buffer-builtins--shared-erase-buffer ()
+    "`erase-buffer' that publishes the edit to indirect siblings."
+    (prog1 (emacs-buffer-builtins--unshared-erase-buffer)
+      (emacs-buffer-builtins--share-current-text)))
+  (defalias 'insert
+    (symbol-function 'emacs-buffer-builtins--shared-insert))
+  (defalias 'insert-before-markers
+    (symbol-function 'emacs-buffer-builtins--shared-insert-before-markers))
+  (defalias 'delete-region
+    (symbol-function 'emacs-buffer-builtins--shared-delete-region))
+  (defalias 'erase-buffer
+    (symbol-function 'emacs-buffer-builtins--shared-erase-buffer)))
 
 ;;;; --- change hooks for the user-visible edit primitives ------------------
 ;; GNU runs `before-change-functions' / `after-change-functions' from the C

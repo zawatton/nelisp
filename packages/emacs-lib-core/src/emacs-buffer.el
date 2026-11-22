@@ -2081,7 +2081,8 @@ reflects every text-content mutation)."
       (cond
        ((stringp s) (setq n (+ n (length s))))
        ((characterp s) (setq n (1+ n)))
-       (t (signal 'wrong-type-argument (list 'string-or-char-p s)))))
+       ;; GNU's insdel.c names the predicate char-or-string-p.
+       (t (signal 'wrong-type-argument (list 'char-or-string-p s)))))
     n))
 
 (defun emacs-buffer--insert-read-only-end (pos length)
@@ -2340,6 +2341,21 @@ with sidecar text properties gets them copied to the result."
            result (emacs-buffer-string-text-property 'runs string) lo hi)))
       result)))
 
+(defun emacs-buffer--delete-region (start end)
+  "Native `delete-region' that checks read-only text and moves intervals."
+  (emacs-buffer--delete-region-around-advice
+   #'emacs-buffer--native-delete-region start end))
+
+(defun emacs-buffer--erase-buffer ()
+  "Native `erase-buffer' that clears the buffer's property sidecar."
+  (emacs-buffer--native-erase-around-advice
+   #'emacs-buffer--native-erase-buffer))
+
+(defun emacs-buffer--insert (&rest strings)
+  "Native `insert' that tracks sidecar properties of STRINGS."
+  (apply #'emacs-buffer--native-insert-around-advice
+         #'emacs-buffer--native-insert strings))
+
 (defun emacs-buffer--delete-region-around-advice (orig start end)
   "Around-advice for compatibility and native region deletion.
 Checks read-only text and shifts/shrinks text-property intervals."
@@ -2383,7 +2399,12 @@ Checks read-only text and shifts/shrinks text-property intervals."
            (fboundp 'nelisp-ec-delete-region)
            (not (eq (indirect-function 'delete-region)
                     (indirect-function 'nelisp-ec-delete-region))))
-  (advice-add 'delete-region :around #'emacs-buffer--delete-region-around-advice))
+  ;; A named wrapper in place of the native rather than :around advice, whose
+  ;; dispatch cost about 5 us per edit; the native is captured once.
+  (unless (fboundp 'emacs-buffer--native-delete-region)
+    (defalias 'emacs-buffer--native-delete-region
+      (symbol-function 'delete-region)))
+  (defalias 'delete-region (symbol-function 'emacs-buffer--delete-region)))
 
 (defun emacs-buffer--plain-sidecar (buffer)
   "BUFFER's sidecar when it holds no intervals and BUFFER is no indirect child.
@@ -2441,7 +2462,10 @@ read back after a subsequent insertion.  Failed erasures retain their state."
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'erase-buffer))
-  (advice-add 'erase-buffer :around #'emacs-buffer--native-erase-around-advice))
+  (unless (fboundp 'emacs-buffer--native-erase-buffer)
+    (defalias 'emacs-buffer--native-erase-buffer
+      (symbol-function 'erase-buffer)))
+  (defalias 'erase-buffer (symbol-function 'emacs-buffer--erase-buffer)))
 
 ;; The standalone runtime may retain its native `insert' primitive while the
 ;; compatibility implementation lives under `nelisp-ec-insert'.  In that
@@ -2455,7 +2479,9 @@ read back after a subsequent insertion.  Failed erasures retain their state."
            (fboundp 'nelisp-ec-insert)
            (not (eq (indirect-function 'insert)
                     (indirect-function 'nelisp-ec-insert))))
-  (advice-add 'insert :around #'emacs-buffer--native-insert-around-advice))
+  (unless (fboundp 'emacs-buffer--native-insert)
+    (defalias 'emacs-buffer--native-insert (symbol-function 'insert)))
+  (defalias 'insert (symbol-function 'emacs-buffer--insert)))
 
 ;; A native `propertize' can attach properties that the standalone sidecar
 ;; cannot enumerate.  Mirror its explicit property arguments around the native
