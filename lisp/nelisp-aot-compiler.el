@@ -1837,6 +1837,111 @@ Bind to nil to get the three-way tag decode of every operand.")
   "Non-nil: lower (1+ X) and (1- X) as (+ X 1) and (- X 1) in Lisp mode.
 Bind to nil to get the per-call function-cell delegation back.")
 
+;; Step D (pending batch build): buffer leaves called through the bridged
+;; `nl_native_buf_leaf' instead of the per-call function-cell dispatch.
+(defvar nelisp-aot-compiler--buffer-leaf-new nil)
+(defvar nelisp-aot-compiler-buffer-leaves nil
+  "Non-nil: lower point, point-min, point-max, bobp, eobp, following-char,
+preceding-char, char-after and goto-char in Lisp mode to the bridged
+`nl_native_buf_leaf'.  Default OFF until the batch build verifies it: the
+extern exists only in a binary built with it, so an artifact compiled with
+this flag is refused (\"unbridgeable\") by an older runtime.")
+
+(defconst nelisp-aot-compiler--buffer-leaves
+  '((point 40 0 0) (point-min 41 0 0) (point-max 42 0 0)
+    (bobp 46 0 0) (eobp 47 0 0)
+    (following-char 52 0 0) (preceding-char 53 0 0)
+    (char-after 50 0 1) (char-before 51 0 1) (goto-char 43 1 1)
+    (bolp 56 0 0) (eolp 57 0 0) (buffer-size 45 0 0))
+  "Buffer leaves lowered by `nelisp-aot-compiler-buffer-leaves'.
+Entries are (NAME LEAF-ID MIN-ARGS MAX-ARGS), the ids of `nl_buf_leaf_run'.
+These are the names GNU's byte compiler inlines: bytecode.c has opcodes for
+point, point-min, point-max, bobp, eobp, bolp, eolp, buffer-size,
+following-char, preceding-char, char-after and goto-char, and byte-opt.el
+rewrites char-before to char-after of 1- point (verified on emacs 31.1), so
+a user redefinition of any of them is ignored by GNU bytecode and by this
+lowering alike.  Not lowered: forward-char and forward-line (opcodes exist,
+no leaf; they move point through the full builtin).
+KNOWN LIMIT: when the leaf declines (marker, float, multibyte text, odd
+record) the fallback is a call of the function cell, as the VM's builtin
+route is (`nl_buf_slow_w' delegates to the prelude defun by name); a
+redefined function is then called, so behaviour depends on the buffer state.
+There is no pristine implementation to call at run time until the prelude
+keeps the original under another name (batch-build item).")
+
+;; Step D, call-free inline read (pending batch build, default off).
+(defvar nelisp-aot-compiler-buffer-leaves-inline nil
+  "Non-nil: lower point, point-min and point-max to a record read.
+The buffer record is fetched per use by the bridged `nl_native_buf_rec'
+(a record pointer is stale after any call, compaction moves objects, so it
+is never held across one) and pend / narrow-start / narrow-end are read in
+place with the leaf's own guards (fixnum or nil, else the generic call).
+Default OFF until the batch build verifies it.  goto-char and char-after
+stay on the bridged leaf: goto-char stores (and bumps the mutation epoch
+through `wf_dirty'), char-after needs the gap-buffer validation.")
+
+(defun nelisp-aot-compiler--buffer-leaf-inline-rewrite (sexp)
+  "Return SEXP, a no-argument point/point-min/point-max, as an inline read, or nil."
+  (when (and (memq (car sexp) '(point point-min point-max)) (null (cdr sexp)))
+    (let* ((name (car sexp))
+           (r (nelisp-aot-compiler--gensym "buf-rec"))
+           (w (nelisp-aot-compiler--gensym "buf-word"))
+           (x (nelisp-aot-compiler--gensym "buf-x"))
+           (y (nelisp-aot-compiler--gensym "buf-y"))
+           (generic `(nelisp-aot--generic-call ,name))
+           (rd (lambda (off) `(nelisp-aot--word-bits (ptr-read-u64 ,r ,off))))
+           (fix (lambda (v) `(nelisp-aot--raw-op = (nelisp-aot--raw-op logand ,v 3) 1)))
+           ;; X is the slot (pend / narrow-start / narrow-end); Y the word
+           ;; added to when X is nil: (offset-of-Y . delta) as in the leaf.
+           (spec (pcase name
+                   ('point '(104 112 4 nil))
+                   ('point-min '(64 nil 0 5))
+                   (_ '(72 120 4 nil))))
+           (off (nth 0 spec)) (yoff (nth 1 spec)) (delta (nth 2 spec)) (nilval (nth 3 spec))
+           (nil-arm (if yoff
+                        `(let ((,y ,(funcall rd yoff)))
+                           (if ,(funcall fix y)
+                               (nelisp-aot--raw-op + ,y ,delta)
+                             0))
+                      nilval)))
+      `(let ((,r (nelisp-aot--rec-extern)))
+         (let ((,w (if (nelisp-aot--raw-op /= ,r 0)
+                       (let ((,x ,(funcall rd off)))
+                         (if (nelisp-aot--raw-op = ,x 3)
+                             ,nil-arm
+                           (if ,(funcall fix x) ,x 0)))
+                     0)))
+           (if (nelisp-aot--raw-op /= ,w 0)
+               (nelisp-aot--raw-as-word ,w)
+             ,generic))))))
+
+(defun nelisp-aot-compiler--buffer-leaf-rewrite (sexp)
+  "Return SEXP, a buffer leaf call, as guarded source, or nil.
+Every guard runs before the extern (which itself declines without effect
+on a marker, float, out-of-range goto-char, multibyte text or an odd
+record, answering 0, never a value word), and the fallback is the
+generic call on the already evaluated argument, so the argument is
+evaluated once and the effect happens once."
+  (let* ((entry (assq (car sexp) nelisp-aot-compiler--buffer-leaves))
+         (args (cdr sexp))
+         (argc (length args)))
+    (when (and entry (<= (nth 2 entry) argc) (<= argc (nth 3 entry)))
+      (let* ((name (car entry)) (id (nth 1 entry))
+             (w (nelisp-aot-compiler--gensym "buf-leaf"))
+             (ta (nelisp-aot-compiler--gensym "buf-leaf-arg"))
+             (generic `(nelisp-aot--generic-call ,name ,@(and args (list ta))))
+             (run (lambda (argword)
+                    `(let ((,w (nelisp-aot--leaf-extern ,id ,argc ,argword)))
+                       (if (nelisp-aot--raw-op /= ,w 0)
+                           (nelisp-aot--raw-as-word ,w)
+                         ,generic)))))
+        (if (null args)
+            (funcall run 3)
+          `(let ((,ta (nelisp-aot--as-word ,(car args))))
+             (if ,(nelisp-aot-compiler--lisp-word-fixnum-form ta)
+                 ,(funcall run `(nelisp-aot--word-bits ,ta))
+               ,generic)))))))
+
 (defun nelisp-aot-compiler--lisp-imm-fixnum-p (node)
   "Non-nil when NODE is a constant raw integer inside the 62-bit fixnum range."
   (and (eq (nelisp-aot-compiler--ir-kind node) 'imm)
@@ -12126,6 +12231,33 @@ functions `((NAME . ARITY) ...)'."
                     `(if (< ,tree ,arg) ,tree ,arg)
                   `(if (> ,tree ,arg) ,tree ,arg))))
         (nelisp-aot-compiler--parse-value tree env fenv defuns))))
+   ;; Step D: the bridged call of `nl_native_buf_leaf' (flag, default off).
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--leaf-extern))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--parse-value
+      `(extern-call nl_native_buf_leaf mirror ,(nth 1 sexp) ,(nth 2 sexp)
+                    ,(nth 3 sexp))
+      env fenv defuns)
+     :repr 'raw-i64))
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--rec-extern))
+    (nelisp-aot-compiler--ir-with
+     (nelisp-aot-compiler--parse-value
+      '(extern-call nl_native_buf_rec mirror) env fenv defuns)
+     :repr 'raw-i64))
+   ((and (consp sexp) (or nelisp-aot-compiler-buffer-leaves
+                          nelisp-aot-compiler-buffer-leaves-inline)
+         (assq (car sexp) nelisp-aot-compiler--buffer-leaves)
+         (not (assq (car sexp) defuns))
+         (nelisp-aot-compiler--lisp-values-p)
+         fenv
+         (nelisp-aot-compiler--aot-builtin-boundary-available-p fenv)
+         (setq nelisp-aot-compiler--buffer-leaf-new
+               (or (and nelisp-aot-compiler-buffer-leaves-inline
+                        (nelisp-aot-compiler--buffer-leaf-inline-rewrite sexp))
+                   (and nelisp-aot-compiler-buffer-leaves
+                        (nelisp-aot-compiler--buffer-leaf-rewrite sexp)))))
+    (nelisp-aot-compiler--parse-value
+     nelisp-aot-compiler--buffer-leaf-new env fenv defuns))
    ;; GNU Badd1/Bsub1 are Bplus/Bdiff with the constant 1 (bytecode.c):
    ;; lower (1+ X) and (1- X) as (+ X 1) and (- X 1) so a native artifact
    ;; inlines them instead of calling the function cell per iteration.

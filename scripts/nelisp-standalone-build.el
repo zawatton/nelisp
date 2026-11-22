@@ -54171,7 +54171,10 @@ the original chunk defuns, using CHUNK-BYTES (default 2048)."
    '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
      "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
    ;; S4.5 exports an existing VM helper; no reader builtin is added.
-   '("wf_bytecode_condition_matches"))
+   '("wf_bytecode_condition_matches")
+   ;; Step D (pending batch build): buffer leaves for native code, provided by
+   ;; `nl_native_buf_leaf' in nelisp-cc-fx-call-primitives.  Appended.
+   '("nl_native_buf_leaf" "nl_native_buf_rec"))
   "Runtime symbols the in-process loader can point a stub at.
 
 A stub is `movabs rax, ADDR; jmp rax', and ADDR comes from `data-addr',

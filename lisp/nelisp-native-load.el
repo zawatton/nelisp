@@ -125,7 +125,10 @@ equality test and the port-count test both check it.")
    '("nelisp_aot_funcall1" "nelisp_aot_funcall2" "nelisp_aot_funcall3"
      "nelisp_aot_funcalln" "nelisp_aot_apply" "nelisp_aot_applyn")
    ;; S4.5 reuses the existing VM condition hierarchy matcher.
-   '("wf_bytecode_condition_matches"))
+   '("wf_bytecode_condition_matches")
+   ;; Step D (pending batch build): buffer leaves for native code, provided by
+   ;; `nl_native_buf_leaf' in nelisp-cc-fx-call-primitives.  Appended.
+   '("nl_native_buf_leaf" "nl_native_buf_rec"))
   "Runtime symbols a stub can be pointed at, in `nelisp--native-symbol-addr' order.
 
 The index is the contract: the builtin selects from a chain of
