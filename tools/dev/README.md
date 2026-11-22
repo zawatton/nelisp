@@ -144,3 +144,59 @@ Measured: bundle-v9 vs `4983f92c7` 353/356 members identical (3 explained hand p
 (buffer-builtins, process-buffer, cc-aggregate-arity-1, cc-print-1: patch on one side only); bundle-v67 vs
 `origin/feat/emacs-lib-import` 324/354 with `emacs-buffer-builtins--change-edit` (no PUBLIC arg, no `--run-edit`) listed.
 An image built from a regenerated bundle ran the casebench public batch with matching results on every case.
+
+## nl-compare (GNU vs NeLisp result comparison, known differences)
+
+    NL_BIN=.../target/nelisp NL_DUMP=.../rt.dump tools/dev/nl-compare FORMS.el [--known known-diffs.tsv]
+    tools/dev/nl-compare --rows-el FILE.el [--call '(gg-run)' --norm gg] [--tag T]   # file prints "R NAME VALUE" rows
+    tools/dev/nl-compare --rows GNU.txt NELISP.txt                                   # two existing R-row files
+
+* FORMS.el is just top-level forms (any layout, comments allowed); no `princ`, no `R %S` rewriting.  Each engine
+  reads and evaluates each form in a fresh temp buffer (`nl-compare.d/driver.el`, identical text on both) and prints one
+  record per form: index, `ok`|`err`, `prin1` value or `(error-symbol . data)`, form.  Records are one ASCII line
+  (`\\ \n \t \r \x{..}` escapes, hex built from a table, not `%02x`), so grep and diff cannot break and a multi-line
+  result cannot shift later rows.  `--rows-el` rows get the same treatment (continuation lines are joined).
+* Output is only the differing rows (TSV, or `--format json`; `--all` adds agreeing rows).  A form the NeLisp
+  process never reached prints `<no record: engine stopped before this form>`.
+* Runs: NeLisp flat dump (`--cold-load-from DUMP`, `nemacs-runtime-dump-reinit`) and `emacs-31.1 -Q --batch`,
+  each under `ulimit -v 8388608`, `timeout`, `taskset -c 9,25` (refuses 11,13,14,15), stdin closed, throwaway cwd.
+* `--known known-diffs.tsv` classifies each differing row: KNOWN if its id (`f:SHA1(form)` or `r:TAG:NAME`) and
+  signature (SHA1 of the GNU and NeLisp values) are listed, NEW otherwise (also NEW when the id is listed but the
+  divergence changed: the row says so).  Exit 1 only for NEW rows; 2 if an engine produced nothing; stderr names known
+  entries that now agree (stale).  `--add-known FILE --reason TEXT --commit SHA` appends the NEW rows.
+* `known-diffs.tsv` is seeded from the current syntax-parity corpus (17 rows: 16 forward-word/backward-word
+  script-transition rows, 1 find-word-boundary-function-table row; gg-driver: 0 differences).
+  `first_seen_commit` is the commit the row was first recorded at, not a bisected introduction.
+* Corpus check: `nl-compare --rows-el overlay-corpus/syntax-parity.el --known known-diffs.tsv` (0.3 s),
+  `--rows-el overlay-corpus/gg-driver.el --call '(gg-run)' --norm gg --known known-diffs.tsv` (52 s).
+
+## nl-elcheck (edit checks on host Emacs)
+
+    tools/dev/nl-elcheck [--no-bytecomp] [--strict] [-L DIR] FILE...      tools/dev/nl-elcheck-selftest.sh
+
+Uses the real reader plus `syntax-ppss`, prints `FILE:LINE:COL: error|warning: [kind] message`: `read-error`
+(stray `)`, invalid syntax), `unclosed-paren`, `unterminated-string` (where the string opened), `swallowed-form` (a
+column-0 definition nested inside another definition or inside a string: the previous form lost a paren or a quote;
+a `(let`/`(progn` wrapper around defuns is accepted when the file reads cleanly), `defun-count` (column-0 definitions
+vs top-level def forms the reader produced), `docstring-quote` (a string closing or opening directly against a symbol
+character: an unescaped `"` inside a docstring), `string-col0-paren` (warning: `(` at column 0 inside a string),
+`bytecomp` (warnings from `byte-compile-file` on a temp copy; skipped when a read-level error exists).  Exit 1 on
+errors (and on warnings with `--strict`).  `nl-elcheck-selftest.sh` runs the negative controls in
+`nl-elcheck-tests/` (one defective file per kind plus a clean file).  Over `lisp/` and `packages/*/src/`: 0 errors.
+
+## nl-changed-rows (run only the rbbench rows a diff can affect)
+
+    tools/dev/nl-changed-rows --repo DIR --range A..B --rb RBDIR [--select-only] [--nl-bin B --dump D] [--reps 3] [--depth 2]
+
+Changed lines of `git diff -U0 A B` (`*.el`) are mapped to their enclosing definitions (by indentation, so a defun
+inside a top-level `(when ...)` wrapper counts); a reverse-call index of the B sources (git blobs, no checkout) gives
+the callers up to `--depth` (symbols with more than `--hub` callers are not expanded); each case block of
+`RBDIR/drivers3/*.el` that mentions a symbol of the closure is selected.  Non-Lisp changes force all drivers
+(`--native none` to skip).  Without `--select-only` the selected drivers run on GNU and on NeLisp through
+`nl-rbbench.py` (a copy of the notes-97 `rbbench.py` that accepts `nl:BIN:DUMP`, applies `ulimit -v`, closes stdin;
+RBDIR itself is only read) and the output lists result agreement and ns/call per case.  Measured on 82359c5da
+(string-as-multibyte): 2 changed definitions, 3 of 92 drivers, 4 of 625 rows, 80 s; the full suite for that image
+step (v56 vs v55) showed `buffer:string-as-multibyte` and `buffer:decode-coding-string`, both selected.  Over the
+four commits d48a4fa43^..82359c5da: 8 drivers, 13 rows, covering every row the full suite moved by more than 15%
+except `query:menu-or-popup-active-p`.  The run compares the engines of the image you pass; it does not by itself say
+whether a row changed between two images (run it once per image and diff).

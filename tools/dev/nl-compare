@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""nl-compare: run Lisp forms on NeLisp (flat dump) and on GNU emacs, print only the rows
+that differ, and classify each as KNOWN (listed in known-diffs.tsv) or NEW.
+
+  nl-compare FORMS.el [options]           forms: any number of top-level forms, read by each
+                                          engine's own reader, evaluated one at a time
+  nl-compare --rows-el FILE.el [options]  FILE.el prints 'R NAME VALUE' lines (syntax-parity
+                                          style); run on both engines, keyed by NAME
+  nl-compare --rows A.txt B.txt           compare two existing R-row files (A=GNU, B=NeLisp)
+
+Options:
+  --known TSV      classify against a known-differences file; exit 1 only if a NEW row exists
+  --format tsv|json   (default tsv)   --out FILE   (default stdout)   --all   also list agreeing rows
+  --nl-bin PATH --dump FILE --emacs PATH --cpus LIST --timeout SEC   (defaults: env NL_BIN,
+      NL_DUMP, EMACS_BIN, 9,25, 900).  Engines run under ulimit -v 8388608, stdin closed, taskset,
+      in a throwaway cwd.
+  --add-known TSV --reason TEXT --commit SHA   append every NEW row to TSV and exit 0
+
+Record per form (see nl-compare.d/driver.el): index, ok|err, value or (error-symbol . data),
+one physical ASCII line each, so grep/diff never break.  Exit: 0 no NEW diffs, 1 NEW diff(s),
+2 engine failed to produce any complete result.
+known-diffs.tsv columns: id, sig, label, reason, first_seen_commit.  id = f:SHA1(form text) or
+r:TAG:NAME; sig = SHA1(gnu value, nelisp value).  Same id but a different sig = NEW (the divergence
+itself changed)."""
+import argparse, hashlib, json, os, shlex, subprocess, sys, tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DRIVER = os.path.join(HERE, 'nl-compare.d', 'driver.el')
+
+def sha(*parts):
+    return hashlib.sha1('\0'.join(parts).encode('utf-8', 'replace')).hexdigest()[:10]
+
+def run_engine(argv, timeout, cpus, cwd):
+    cmd = 'ulimit -v 8388608; exec timeout %d taskset -c %s %s' % (
+        timeout, cpus, ' '.join(shlex.quote(a) for a in argv))
+    p = subprocess.run(['bash', '-c', cmd], stdin=subprocess.DEVNULL, capture_output=True,
+                       cwd=cwd, timeout=timeout + 30)
+    return p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace'), p.returncode
+
+def engines(a, expr_tail):
+    """expr_tail: Lisp text run after the driver is loaded."""
+    nl = [a.nl_bin, '--cold-load-from', a.dump, '--eval',
+          '(progn (nemacs-runtime-dump-reinit) %s)' % expr_tail]
+    gnu = [a.emacs, '-Q', '--batch', '--eval', '(progn %s)' % expr_tail]
+    return nl, gnu
+
+def lq(s):
+    return '"%s"' % s.replace('\\', '\\\\').replace('"', '\\"')
+
+def parse_forms(out):
+    recs, done = {}, False
+    for l in out.split('\n'):
+        if l.startswith('NLC\t'):
+            f = l.split('\t')
+            if len(f) == 5:
+                recs[int(f[1])] = (f[2], f[3], f[4])
+        elif l.startswith('NLC-DONE'):
+            done = True
+    return recs, done
+
+def norm_gg(out):
+    r = []
+    for l in out.split('\n'):
+        f = l.split(' ', 4)
+        if l.startswith('GG ') and len(f) == 5:
+            r.append('R %s/%s %s' % (f[1], f[2], f[4]))
+    return '\n'.join(r)
+
+def parse_rows(out):
+    """R rows; a line not starting with 'R ' continues the previous row (newline kept as \\n)."""
+    rows, order, cur = {}, [], None
+    for l in out.split('\n'):
+        if l.startswith('R '):
+            name, _, val = l[2:].partition(' ')
+            cur = name
+            if name not in rows:
+                order.append(name)
+            rows[name] = val
+        elif l.startswith('SP-DONE') or l.startswith('NLC-DONE'):
+            cur = None
+        elif cur is not None and l != '':
+            rows[cur] += '\\n' + l
+    return rows, order
+
+def load_known(path):
+    k = {}
+    if path and os.path.exists(path):
+        for l in open(path, encoding='utf-8'):
+            if l.startswith('#') or not l.strip():
+                continue
+            f = l.rstrip('\n').split('\t')
+            if f[0] == 'id':
+                continue
+            f += [''] * (5 - len(f))
+            k[f[0]] = dict(sig=f[1], label=f[2], reason=f[3], commit=f[4])
+    return k
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True, description=__doc__.split('\n')[0])
+    ap.add_argument('files', nargs='*')
+    ap.add_argument('--rows-el'); ap.add_argument('--rows', nargs=2)
+    ap.add_argument('--tag', default=None, help='row-id namespace (default: --rows-el basename)')
+    ap.add_argument('--call', default='', help='Lisp form run after loading --rows-el')
+    ap.add_argument('--norm', choices=['gg'], help='gg: turn "GG NAME N SECONDS RESULT" into "R NAME/N RESULT"')
+    ap.add_argument('--known'); ap.add_argument('--format', default='tsv')
+    ap.add_argument('--out'); ap.add_argument('--all', action='store_true')
+    ap.add_argument('--nl-bin', default=os.environ.get('NL_BIN'))
+    ap.add_argument('--dump', default=os.environ.get('NL_DUMP'))
+    ap.add_argument('--emacs', default=os.environ.get('EMACS_BIN', 'emacs-31.1'))
+    ap.add_argument('--cpus', default='9,25'); ap.add_argument('--timeout', type=int, default=900)
+    ap.add_argument('--add-known'); ap.add_argument('--reason', default='')
+    ap.add_argument('--commit', default='')
+    a = ap.parse_args()
+    for c in ('11', '13', '14', '15'):
+        if c in a.cpus.split(','):
+            sys.exit('nl-compare: cpus must not include 11,13,14,15')
+    tag = a.tag if a.tag is not None else (os.path.basename(a.rows_el)[:-3] if a.rows_el else 'rows')
+    work = tempfile.mkdtemp(prefix='nlc-')
+    rows = []          # dicts: id label gnu nl status(agree|diff) kind
+    complete = True
+    if a.rows:
+        g, go = parse_rows(open(a.rows[0], encoding='utf-8', errors='replace').read())
+        n, no = parse_rows(open(a.rows[1], encoding='utf-8', errors='replace').read())
+        for name in list(go) + [x for x in no if x not in g]:
+            rows.append(dict(id='r:%s:%s' % (tag, name), label=name, gnu=g.get(name, '<no row>'),
+                             nl=n.get(name, '<no row>')))
+    else:
+        if not (a.nl_bin and a.dump):
+            sys.exit('nl-compare: need --nl-bin and --dump (or NL_BIN / NL_DUMP)')
+        if a.rows_el:
+            tail = '(progn (load %s nil t t) %s)' % (lq(os.path.abspath(a.rows_el)), a.call)
+        elif len(a.files) == 1:
+            tail = '(progn (setq nlc-forms-file %s) (load %s nil t t) (nlc-run))' % (
+                lq(os.path.abspath(a.files[0])), lq(DRIVER))
+        else:
+            ap.error('give exactly one FORMS file, or --rows-el, or --rows')
+        if not a.rows_el:
+            tail = tail  # driver is loaded inside tail
+        nl_argv, gnu_argv = engines(a, tail)
+        out = {}
+        for name, argv in (('gnu', gnu_argv), ('nl', nl_argv)):
+            o, e, rc = run_engine(argv, a.timeout, a.cpus, work)
+            out[name] = (o, e, rc)
+        if a.rows_el:
+            nf = norm_gg if a.norm == 'gg' else (lambda x: x)
+            g, go = parse_rows(nf(out['gnu'][0])); n, no = parse_rows(nf(out['nl'][0]))
+            if not g or not n:
+                complete = False
+            for name in list(go) + [x for x in no if x not in g]:
+                rows.append(dict(id='r:%s:%s' % (tag, name), label=name, gnu=g.get(name, '<no row>'),
+                                 nl=n.get(name, '<no row>')))
+        else:
+            g, gd = parse_forms(out['gnu'][0]); n, nd = parse_forms(out['nl'][0])
+            if not g or not gd:
+                complete = False
+            for i in sorted(g):
+                form = g[i][2]
+                gv = g[i][0] + ' ' + g[i][1]
+                nv = (n[i][0] + ' ' + n[i][1]) if i in n else '<no record: engine stopped before this form>'
+                rows.append(dict(id='f:' + sha(form), label=form, idx=i, gnu=gv, nl=nv))
+            if not nd:
+                sys.stderr.write('nl-compare: NeLisp run incomplete (rc=%d) %s\n' % (
+                    out['nl'][2], out['nl'][1][-300:]))
+            if not gd:
+                sys.stderr.write('nl-compare: GNU run incomplete (rc=%d) %s\n' % (
+                    out['gnu'][2], out['gnu'][1][-300:]))
+    known = load_known(a.known)
+    res = []
+    seen_ids = set()
+    for r in rows:
+        r['status'] = 'agree' if r['gnu'] == r['nl'] else 'diff'
+        r['sig'] = sha(r['gnu'], r['nl'])
+        seen_ids.add(r['id'])
+        if r['status'] == 'diff':
+            k = known.get(r['id'])
+            if k and k['sig'] == r['sig']:
+                r['class'] = 'KNOWN'; r['reason'] = k['reason']; r['first_seen'] = k['commit']
+            elif k:
+                r['class'] = 'NEW'; r['reason'] = 'known id but the divergence changed (was sig %s)' % k['sig']
+            else:
+                r['class'] = 'NEW'; r['reason'] = ''
+        else:
+            r['class'] = 'AGREE'
+        res.append(r)
+    fixed = [i for i, k in known.items() if i in seen_ids and
+             next(x for x in res if x['id'] == i)['status'] == 'agree']
+    shown = [r for r in res if a.all or r['status'] == 'diff']
+    o = open(a.out, 'w') if a.out else sys.stdout
+    if a.format == 'json':
+        json.dump(dict(rows=shown, fixed_known=fixed), o, indent=1); o.write('\n')
+    else:
+        o.write('class\tid\tidx\tgnu\tnelisp\tlabel\treason\n')
+        for r in shown:
+            o.write('\t'.join([r['class'], r['id'], str(r.get('idx', '')), r['gnu'], r['nl'],
+                               r['label'], r.get('reason', '')]) + '\n')
+    if a.out:
+        o.close()
+    nd = sum(r['status'] == 'diff' for r in res)
+    nn = sum(r['class'] == 'NEW' for r in res)
+    sys.stderr.write('nl-compare: %d rows, %d differ (%d KNOWN, %d NEW)%s\n' % (
+        len(res), nd, nd - nn, nn,
+        ('; %d known entries now agree (stale: %s)' % (len(fixed), ','.join(fixed[:5]))) if fixed else ''))
+    if a.add_known:
+        new = [r for r in res if r['class'] == 'NEW']
+        with open(a.add_known, 'a', encoding='utf-8') as f:
+            for r in new:
+                f.write('\t'.join([r['id'], r['sig'], r['label'].replace('\t', ' '),
+                                   a.reason, a.commit]) + '\n')
+        sys.stderr.write('nl-compare: appended %d rows to %s\n' % (len(new), a.add_known))
+        return 0
+    if not complete:
+        return 2
+    return 1 if nn else 0
+
+if __name__ == '__main__':
+    sys.exit(main())

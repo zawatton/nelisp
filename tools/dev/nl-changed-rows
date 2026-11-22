@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""nl-changed-rows: run only the rbbench driver rows that a git diff range can affect.
+
+  nl-changed-rows --repo DIR --range A..B --rb RBDIR [--select-only]
+                  [--nl-bin BIN --dump FLAT.dump] [--emacs emacs-31.1] [--cpu 9] [--reps 3]
+                  [--depth 2] [--hub 150] [--out DIR]
+
+1. Changed symbols: `git diff -U0 A B` over *.el; every changed line (added lines in B, removed
+   lines in A) is attributed to its enclosing definition by indentation (defun/defmacro/defsubst/
+   defalias/defvar/defconst/defcustom/cl-def*/define-*, also (fset 'NAME) at any nesting depth), so a
+   defun inside a top-level (when ...) wrapper is found.  Non-.el changes (native code, scripts)
+   are reported: they cannot be mapped to rows, so --native all|none decides (default: all).
+2. Reverse-call index from the *B* sources (git blobs of lisp/ packages/*/src scripts/*.el, i.e.
+   what the worktree at B contains): a definition is a caller of every symbol token in its body
+   (strings and comments stripped).  Closure over callers up to --depth; a symbol with more than
+   --hub callers is not expanded further (listed as HUB).
+3. Row selection in RBDIR/drivers3: a case (BENCH-CASE block) is selected when its code contains
+   a closure symbol; a driver is selected when it has a selected case.  RBDIR is only read.
+4. Unless --select-only: the selected drivers run on GNU and on NeLisp (flat dump) through
+   nl-rbbench.py (a copy of rbbench.py), then results are compared per case (result agreement
+   between engines) and ns/call (two-trip-count slope) reported.
+"""
+import argparse, collections, json, os, re, subprocess, statistics, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFRE = re.compile(r"""^(\s*)\(\s*(?:cl-)?(?:defun|defmacro|defsubst|defalias|defvar|defconst|defcustom|defgeneric|defmethod|defstruct|defclass|define-[a-z0-9-]+|fset)\s+(?:#?')?([^\s()']+)""")
+TOKRE = re.compile(r"[A-Za-z0-9_+*/<>=!?:%&$^~.-]+")
+STRRE = re.compile(r'"(?:[^"\\]|\\.)*"', re.S)
+SRC_GLOBS = ('lisp/', 'packages/', 'scripts/')
+
+def git(repo, *a):
+    return subprocess.run(['git', '-C', repo] + list(a), capture_output=True, text=True, check=True).stdout
+
+def show(repo, rev, path):
+    r = subprocess.run(['git', '-C', repo, 'show', '%s:%s' % (rev, path)], capture_output=True)
+    return r.stdout.decode('utf-8', 'replace') if r.returncode == 0 else None
+
+def blank_strings(text):
+    """string contents -> empty lines, keeping the line count, so docstring text that starts with
+    ( in column 0 is not mistaken for code."""
+    return STRRE.sub(lambda m: '"' + '\n' * m.group(0).count('\n') + '"', text)
+
+def indent(line):
+    return len(line) - len(line.lstrip(' '))
+
+def enclosing(lines, ln):
+    """name of the definition enclosing 1-based line ln, or None."""
+    i = ln - 1
+    if i >= len(lines):
+        return None
+    m = DEFRE.match(lines[i])
+    if m:
+        return m.group(2)
+    cur = indent(lines[i]) if lines[i].strip() else 10**6
+    if cur == 0:
+        return None
+    for j in range(i - 1, -1, -1):
+        m = DEFRE.match(lines[j])
+        if m and len(m.group(1)) < cur:
+            return m.group(2)
+        if lines[j].startswith('(') and not m and cur > 0:
+            return None   # an enclosing non-def top-level form
+    return None
+
+def changed_symbols(repo, a, b):
+    names, native = set(), []
+    stat = git(repo, 'diff', '--name-only', a, b).split('\n')
+    for f in stat:
+        if f and not f.endswith('.el') and not f.endswith(('.md', '.org', '.txt', '.tsv', '.json', '.sh', '.py')) \
+           and not f.startswith(('test/', 'tests/', 'docs/', 'doc/', 'tools/')):
+            native.append(f)
+    diff = git(repo, 'diff', '-U0', '--no-color', a, b, '--', '*.el')
+    cur, old_lines, new_lines = None, None, None
+    toplevel = set()
+    for l in diff.split('\n'):
+        if l.startswith('diff --git'):
+            cur = l.split(' b/', 1)[1]
+            old_lines = blank_strings(show(repo, a, cur) or '').split('\n')
+            new_lines = blank_strings(show(repo, b, cur) or '').split('\n')
+        elif l.startswith('@@'):
+            m = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', l)
+            oa, ob, na, nb = int(m.group(1)), int(m.group(2) or 1), int(m.group(3)), int(m.group(4) or 1)
+            for ln in range(na, na + nb):
+                n = enclosing(new_lines, ln)
+                (names.add(n) if n else toplevel.add(cur))
+            for ln in range(oa, oa + ob):
+                n = enclosing(old_lines, ln)
+                (names.add(n) if n else toplevel.add(cur))
+    return names, native, sorted(toplevel)
+
+def build_index(repo, rev):
+    """defname -> set(tokens)."""
+    files = [f for f in git(repo, 'ls-tree', '-r', '--name-only', rev).split('\n')
+             if f.endswith('.el') and f.startswith(SRC_GLOBS) and '/test' not in f]
+    body = collections.defaultdict(set)
+    p = subprocess.Popen(['git', '-C', repo, 'cat-file', '--batch'], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE)
+    for f in files:
+        p.stdin.write(('%s:%s\n' % (rev, f)).encode()); p.stdin.flush()
+        hdr = p.stdout.readline().decode().split()
+        if len(hdr) < 3 or hdr[1] != 'blob':
+            continue
+        data = p.stdout.read(int(hdr[2]) + 1)[:-1].decode('utf-8', 'replace')
+        data = STRRE.sub('""', data)
+        lines = data.split('\n')
+        cur, curind = None, 0
+        for ln in lines:
+            m = DEFRE.match(ln)
+            if m:
+                cur, curind = m.group(2), len(m.group(1))
+            elif ln.strip() and cur is not None and indent(ln) <= curind and not ln.lstrip().startswith(')'):
+                cur = None
+            if cur is not None:
+                code = ln.split(';', 1)[0] if '?;' not in ln else ln
+                body[cur].update(TOKRE.findall(code))
+    p.stdin.close(); p.wait()
+    return body
+
+def closure(changed, body, depth, hub):
+    rev = collections.defaultdict(set)
+    for name, toks in body.items():
+        for t in toks:
+            rev[t].add(name)
+    seen = {s: 0 for s in changed}
+    hubs = set()
+    frontier = list(changed)
+    for d in range(1, depth + 1):
+        nxt = []
+        for s in frontier:
+            cs = rev.get(s, ())
+            if len(cs) > hub:
+                hubs.add(s); continue
+            for c in cs:
+                if c not in seen:
+                    seen[c] = d; nxt.append(c)
+        frontier = nxt
+    return seen, hubs
+
+CASEHDR = re.compile(r'BENCH-CASE case=(\S+)')
+def scan_drivers(rb, syms):
+    sel = {}
+    ddir = os.path.join(rb, 'drivers3')
+    for fn in sorted(os.listdir(ddir)):
+        if not fn.endswith('.el'):
+            continue
+        txt = open(os.path.join(ddir, fn), encoding='utf-8', errors='replace').read()
+        # blocks: text ending at each BENCH-CASE line, starting after the previous one
+        starts = [m.start() for m in re.finditer(r'\(let \(\(n \(\* bench-mult', txt)]
+        cases, allc = {}, []
+        for m in CASEHDR.finditer(txt):
+            prev = [x for x in starts if x < m.start()]
+            blk = txt[prev[-1]:m.end()] if prev else txt[max(0, m.start() - 600):m.end()]
+            allc.append(m.group(1))
+            blk = re.sub(r'(?m)^\s*;.*$', '', STRRE.sub('""', blk))
+            toks = set(TOKRE.findall(blk))
+            toks.add(m.group(1).split(':', 1)[-1])
+            toks -= {'driver', 'nil', 't', 'progn', 'apply', 'let', 'n', 'setq', 'princ', 'format', 'float-time'}
+            hit = sorted(toks & syms)
+            if hit:
+                cases[m.group(1)] = hit
+        if cases:
+            sel[fn] = dict(cases=cases, total=len(allc))
+    return sel
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--repo', required=True); ap.add_argument('--range', required=True)
+    ap.add_argument('--rb', required=True); ap.add_argument('--select-only', action='store_true')
+    ap.add_argument('--nl-bin', default=os.environ.get('NL_BIN')); ap.add_argument('--dump', default=os.environ.get('NL_DUMP'))
+    ap.add_argument('--emacs', default=os.environ.get('EMACS_BIN', '/usr/local/bin/emacs-31.1'))
+    ap.add_argument('--cpu', type=int, default=9); ap.add_argument('--reps', type=int, default=3)
+    ap.add_argument('--mults', default='1,4'); ap.add_argument('--depth', type=int, default=2)
+    ap.add_argument('--hub', type=int, default=150); ap.add_argument('--native', default='all', choices=['all', 'none'])
+    ap.add_argument('--out', default=None); ap.add_argument('--allow-busy', action='store_true')
+    a = ap.parse_args()
+    if a.cpu in (11, 13, 14, 15, 6, 22) or a.cpu + 16 in (11, 13, 14, 15, 6, 22):
+        sys.exit('nl-changed-rows: cpu must not be 11,13,14,15,6,22 (or their siblings)')
+    A, B = a.range.split('..') if '..' in a.range else (a.range + '~1', a.range)
+    t0 = time.time()
+    names, native, toplevel = changed_symbols(a.repo, A, B)
+    body = build_index(a.repo, B)
+    clos, hubs = closure(names, body, a.depth, a.hub)
+    sel = scan_drivers(a.rb, set(clos))
+    ncases = sum(len(v['cases']) for v in sel.values())
+    total_d = len([f for f in os.listdir(os.path.join(a.rb, 'drivers3')) if f.endswith('.el')])
+    print('range %s..%s: %d changed definitions, %d with callers (depth %d), %d hubs; index %d defs; %.1fs'
+          % (A[:9], B[:9], len(names), len(clos), a.depth, len(hubs), len(body), time.time() - t0))
+    print('changed: %s' % ' '.join(sorted(names)))
+    if toplevel:
+        print('note: changes outside any definition (top-level forms) in: %s' % ' '.join(toplevel))
+    if hubs:
+        print('HUB (not expanded): %s' % ' '.join(sorted(hubs)))
+    if native:
+        print('note: non-Lisp changes cannot be mapped to rows: %s' % ' '.join(native))
+        if a.native == 'all':
+            print('--native all: selecting every driver'); sel = {f: dict(cases={}, total=0)
+                for f in os.listdir(os.path.join(a.rb, 'drivers3')) if f.endswith('.el')}
+    print('selected %d of %d drivers, %d rows' % (len(sel), total_d, ncases))
+    for fn, v in sel.items():
+        for c, hit in v['cases'].items():
+            print('  row %-12s %-40s via %s' % (fn, c, ','.join(hit[:4])))
+    if a.select_only or not sel:
+        return 0
+    if not (a.nl_bin and a.dump):
+        sys.exit('need --nl-bin and --dump to run (or --select-only)')
+    out = a.out or os.path.join(os.getcwd(), 'nl-changed-rows-out'); os.makedirs(out, exist_ok=True)
+    lst = os.path.join(out, 'drivers.txt')
+    open(lst, 'w').write('\n'.join(os.path.join(a.rb, 'drivers3', f) for f in sel) + '\n')
+    cmd = [sys.executable, '-I', os.path.join(HERE, 'nl-rbbench.py'), '--engine', 'gnu=' + a.emacs,
+           '--engine', 'nl=nl:%s:%s' % (a.nl_bin, a.dump), '--drivers', lst, '--mults', a.mults,
+           '--reps', str(a.reps), '--cpu', str(a.cpu), '--out', out]
+    if a.allow_busy:
+        cmd.append('--allow-busy')
+    t1 = time.time()
+    r = subprocess.run(cmd, stdin=subprocess.DEVNULL)
+    if r.returncode:
+        sys.exit('rbbench failed rc=%d' % r.returncode)
+    raw = json.load(open(os.path.join(out, 'raw.json')))['raw']
+    lo, hi = min(int(x) for x in a.mults.split(',')), max(int(x) for x in a.mults.split(','))
+    by = collections.defaultdict(lambda: collections.defaultdict(lambda: collections.defaultdict(dict)))
+    results = collections.defaultdict(lambda: collections.defaultdict(set))
+    errs = collections.defaultdict(set)
+    for x in raw:
+        drv = os.path.basename(x['driver'])
+        if '_error' in x['cases']:
+            errs[(drv, x['engine'])].add(str(x['cases']['_error'])[:120])
+        for c, d in x['cases'].items():
+            if c == '_error':
+                continue
+            by[(drv, c)][x['engine']][x['rep']][x['mult']] = d
+            if x['mult'] == lo:
+                results[(drv, c)][x['engine']].add(d['result'])
+    print('\nrun %.0fs; per case (matched rows marked *): result agreement and ns/call (slope of n,t between mults %d and %d, median over reps)' % (time.time() - t1, lo, hi))
+    print('%-3s %-12s %-42s %-8s %10s %10s %7s' % ('', 'driver', 'case', 'results', 'gnu_ns', 'nl_ns', 'nl/gnu'))
+    bad = 0
+    for (drv, c) in sorted(by):
+        slopes = {}
+        for e in ('gnu', 'nl'):
+            v = []
+            for rep, m in by[(drv, c)][e].items():
+                if lo in m and hi in m and m[hi]['n'] > m[lo]['n']:
+                    v.append((m[hi]['t'] - m[lo]['t']) / (m[hi]['n'] - m[lo]['n']) * 1e9)
+            slopes[e] = statistics.median(v) if v else None
+        rg, rn = results[(drv, c)]['gnu'], results[(drv, c)]['nl']
+        agree = 'agree' if rg == rn else 'DIFFER'
+        bad += agree == 'DIFFER'
+        mark = '*' if c in sel.get(drv, {}).get('cases', {}) else ' '
+        ratio = '%.2f' % (slopes['nl'] / slopes['gnu']) if slopes['nl'] and slopes['gnu'] and slopes['gnu'] > 0 else '-'
+        if mark == '*' or agree == 'DIFFER':
+            print('%-3s %-12s %-42s %-8s %10s %10s %7s' % (mark, drv, c, agree,
+                  '%.0f' % slopes['gnu'] if slopes['gnu'] else '-', '%.0f' % slopes['nl'] if slopes['nl'] else '-', ratio))
+    for k, v in errs.items():
+        print('ENGINE ERROR %s %s: %s' % (k[0], k[1], ' | '.join(sorted(v))[:200]))
+    print('%d cases run in %d drivers; %d result disagreement(s) GNU vs NeLisp' % (len(by), len(sel), bad))
+    return 1 if bad else 0
+
+if __name__ == '__main__':
+    sys.exit(main())

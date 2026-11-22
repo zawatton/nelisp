@@ -1,0 +1,20 @@
+id	sig	label	reason	first_seen_commit
+# Known GNU-vs-NeLisp differences. first_seen_commit = the NeLisp commit the row was first recorded at (seeded, not bisected; the real introduction may be older).
+r:syntax-parity:mw-hira-han	6be7ad06b4	mw-hira-han	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-hira-han	f5ef27f2fc	mwb-hira-han	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mw-han-kata	4783c5b244	mw-han-kata	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-han-kata	47675aaf56	mwb-han-kata	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mw-kata-hira	4783c5b244	mw-kata-hira	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-kata-hira	47675aaf56	mwb-kata-hira	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mw-hang-latin	6be7ad06b4	mw-hang-latin	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-hang-latin	f5ef27f2fc	mwb-hang-latin	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mw-choon-only	4783c5b244	mw-choon-only	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-choon-only	47675aaf56	mwb-choon-only	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mw-han-okuri2	cbd5646e15	mw-han-okuri2	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-han-okuri2	973bb0ab86	mwb-han-okuri2	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mw-greek-latin	6be7ad06b4	mw-greek-latin	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-greek-latin	f5ef27f2fc	mwb-greek-latin	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mw-mixed-sent	d6ce747ff2	mw-mixed-sent	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:mwb-mixed-sent	bd2c9fef15	mwb-mixed-sent	forward-word/backward-word break at different script transitions than GNU (word-combining/separating category rules differ)	46ba34469
+r:syntax-parity:nw-fwbt-unbound-entry	b384abf784	nw-fwbt-unbound-entry	forward-word with find-word-boundary-function-table holding a non-function entry (t): GNU ignores it and returns (t 3); NeLisp signals void-function	46ba34469
+f:1772c23cdc	82c5f7d6ba	(let ((find-word-boundary-function-table (make-char-table nil))) (aset find-word-boundary-function-table 97 t) (with-temp-buffer (insert "ab cd") (goto-char 1) (list (forward-word 1) (point))))	find-word-boundary-function-table entry t: GNU ignores a non-function entry, NeLisp calls it (void-function t)	46ba34469
