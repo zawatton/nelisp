@@ -42,3 +42,45 @@ a mutated overlay file.
 
 Not covered: speed/tier, GC-root and stack behaviour, load order of baked files (the overlay is loaded after
 the bake), functions called by direct linked symbol. Those need the final batch build.
+
+# nl-prof: function profiler for code in the emacs-lib runtime image
+
+Build-free (Lisp only). One run gives, per wrapped function: calls, inclusive and exclusive ns, ns/call and the
+top caller->callee edges, for any form run in the image booted from a flat dump (0.03 s boot).
+
+    tools/dev/nl-prof.sh FORM-FILE [--prefix P]... [--functions F...] [--runs N] [--warmup N] [--top K]
+                         [--setup FILE] [--log-slots N] [--bin PATH] [--dump FILE] [--cpus LIST] [--timeout S]
+
+Env: `NL_PROF_BIN` (default `target/nelisp`), `NL_PROF_DUMP` (default `$NEMACS_RUNTIME_DUMP` or
+`build/nemacs-runtime.dump`; bake: mk/emacs-lib.mk `bake-runtime-dump`), `NL_PROF_CPUS` (default 9,25).
+Runs under `ulimit -v 8388608`, timeout, stdin closed, `taskset`.
+
+* FORM-FILE: forms evaluated N times (after `--warmup` unprofiled runs so the fx tier has compiled them).
+  `--setup FILE` is evaluated once first (define functions, create the buffer). Forms run from a top-level
+  `eval`, never inside a `load`, so the in-load trap (F95, ~5x slower) does not apply. Do not `load` timed code.
+* Selection: `--prefix P` wraps every fboundp symbol starting with P (via `nelisp--intern-table-symbols`;
+  `mapatoms` is unsupported in the image); `--functions` names them. Macros, special forms, autoloads and the
+  profiler's own dependencies are skipped. Wrapping many functions is fine (589 in the forward-word example).
+* Method: each function's symbol cell gets a wrapper `(lambda (&rest args) (nl-prof--call ID 'orig args))`
+  built with `eval` so it has no captured variables (a closure over variables runs in the slow interpreter).
+  The hot path only stores (id, `nelisp--monotonic-ns`) at enter and exit into a preallocated vector; exit is in an
+  `unwind-protect` cleanup so throw/signal stay nested; all arithmetic is offline. Recursion: inclusive time counts
+  the outermost activation only. Everything is restored afterwards, also when the form signals.
+* Overhead: an empty wrapped leaf is calibrated each run (about 0.9 us inside + 1.4 us outside the window per call)
+  and subtracted. Because nested wrappers cost more in real code, the same forms are also timed unwrapped and the
+  overhead is scaled so the predicted total equals measured instrumented minus unprofiled wall time (scale printed,
+  only trusted when the overhead is >30% of the run; CAUTION if scale <=0.5 or >=2.5). Percentages are of the
+  unprofiled run. Rows with <1 us/call are at the noise floor of the correction.
+* Blind spots: calls through a captured function object or a function-valued variable (`files--native-insert`
+  is applied that way, so the native part of `insert` shows as insert's exclusive time), and primitives the VM
+  calls directly. Exclusive ns/call of tiny leaves carries a few hundred ns of error.
+* Validation (state-perf F172): counts exact through recursion/throw/signal (`nl-prof-selftest.sh`, with a negative
+  control), insert/erase-buffer within 20% of a hand probe, forward-word inclusive 2.78 ms vs hand 2.74-2.80 ms.
+* GNU `elp.el` is not usable here: `elp-results` signals `unsupported-feature`, and elp has no exclusive time.
+
+Examples (`nl-prof-examples/`):
+
+    tools/dev/nl-prof.sh nl-prof-examples/insert-erase-form.el --setup nl-prof-examples/insert-erase-setup.el \
+        --functions insert erase-buffer --runs 3000
+    tools/dev/nl-prof.sh nl-prof-examples/forward-word-form.el --setup nl-prof-examples/forward-word-setup.el \
+        --prefix emacs-syntax- --prefix emacs-edit --prefix char- --prefix syntax- --functions forward-word
