@@ -19,6 +19,16 @@
                   i (1+ i)))
           v)))))
 
+(defvar emacs-cc-floatfns--libm-path nil
+  "The path `nl-ffi-loader--resolve-soname' found for libm.so.6, once found.")
+
+(defun emacs-cc-floatfns--libm-path (&optional again)
+  "Return libm's path, resolved on first use or when AGAIN is non-nil.
+Resolving searches the library directories, about 120 us a call."
+  (or (and (not again) emacs-cc-floatfns--libm-path)
+      (setq emacs-cc-floatfns--libm-path
+            (nl-ffi-loader--resolve-soname "libm.so.6" nil))))
+
 (defun emacs-cc-floatfns--typed-libm (operation arg)
   "Call OPERATION in libm with numeric ARG through the typed FFI."
   (unless (numberp arg)
@@ -31,10 +41,18 @@
                (fboundp 'nl-ffi--invoke)
                (boundp 'nl-ffi--library-order))
     (signal 'nelisp-unsupported-primitive (list operation)))
-  (let ((path (nl-ffi-loader--resolve-soname "libm.so.6" nil)))
+  (let ((path (emacs-cc-floatfns--libm-path)))
     (unless path
       (signal 'nelisp-unsupported-primitive (list operation)))
-    (ffi:library path)
+    ;; A remembered path that no longer opens (an image restored on another
+    ;; system) is resolved again once.
+    (condition-case nil
+        (ffi:library path)
+      (error
+       (setq path (emacs-cc-floatfns--libm-path t))
+       (unless path
+         (signal 'nelisp-unsupported-primitive (list operation)))
+       (ffi:library path)))
     (let ((nl-ffi--library-order (list path)))
       (nl-ffi--invoke operation (symbol-name operation)
                       '(:double) :double (list arg)))))
