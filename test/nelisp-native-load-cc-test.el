@@ -34,14 +34,17 @@
                       "(defun cc-ok (a) (condition-case e (+ a 1) (error 'bad)))\n"
                       ;; the inner pad declines (no arith-error), the outer one catches
                       "(defun cc-nested (a) (condition-case e (condition-case e2 (+ a 1) (arith-error 'inner)) (error (list 'outer (car e)))))\n"
-                      "(defun cc-inner (a) (condition-case e (condition-case e2 (+ a 1) (wrong-type-argument (list 'inner (cdr e2)))) (error 'outer)))\n"))
+                      "(defun cc-inner (a) (condition-case e (condition-case e2 (+ a 1) (wrong-type-argument (list 'inner (cdr e2)))) (error 'outer)))\n"
+                      ;; atom data and nil data: GNU gives (error . 5) and (error)
+                      "(defun cc-sig5 (a) (condition-case e (signal 'error a) (error e)))\n"
+                      "(defun cc-signil (a) (condition-case e (signal 'error nil) (error e)))\n"))
             (nelisp-artifact-compile-file src art nil nil nil nil nil 'neln 'required)
             (with-temp-file probe
               (insert (format "(load %S nil t)\n" (expand-file-name "nelisp-native-load.el" lisp)))
               ;; The image enforces the settings the artifact was built with.
               (insert (format "(setq nelisp-native-load-expected-codegen-settings '%S)\n"
                               (nelisp-native-load-codegen-settings)))
-              (dolist (c '(("cc-try" x) ("cc-data" x) ("cc-ok" 1) ("cc-nested" x) ("cc-inner" x)))
+              (dolist (c '(("cc-try" x) ("cc-data" x) ("cc-ok" 1) ("cc-nested" x) ("cc-inner" x) ("cc-sig5" 5) ("cc-signil" 0)))
                 (insert (format "(princ (format \"R %%S\\n\" (condition-case e (nelisp-native-load-call (nelisp-native-load-artifact %S %S) (list '%S)) (error (list 'ESCAPED (car e))))))\n"
                                 art (car c) (cadr c)))))
             (let ((out (with-temp-buffer
@@ -55,7 +58,9 @@
               (should (string-match-p "^R (wrong-type-argument number-or-marker-p x)$" out))
               (should (string-match-p "^R 2$" out))
               (should (string-match-p "^R (outer wrong-type-argument)$" out))
-              (should (string-match-p "^R (inner (number-or-marker-p x))$" out))))
+              (should (string-match-p "^R (inner (number-or-marker-p x))$" out))
+              (should (string-match-p "^R (error \\. 5)$" out))
+              (should (string-match-p "^R (error)$" out))))
         (delete-directory dir t)))))
 
 (provide 'nelisp-native-load-cc-test)

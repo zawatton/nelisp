@@ -66,3 +66,7 @@
 (with-temp-buffer (insert "abcdef") (goto-char 4) (condition-case e (list 'ok (funcall (quote char-after) -1) (point)) (error (list 'err e))))
 (with-temp-buffer (insert "abcdef") (goto-char 4) (condition-case e (list 'ok (funcall (quote char-after) 7) (point)) (error (list 'err e))))
 (with-temp-buffer (insert "abcdef") (goto-char 4) (condition-case e (list 'ok (funcall (quote char-after) 100) (point)) (error (list 'err e))))
+;; default-text-properties is a GNU C DEFVAR (special): let binds it dynamically.
+(list (special-variable-p 'default-text-properties) (boundp 'default-text-properties) (default-value 'default-text-properties))
+(let ((default-text-properties '(field x))) (symbol-value 'default-text-properties))
+(progn (defun dtp-probe () default-text-properties) (let ((default-text-properties '(face bold))) (dtp-probe)))
