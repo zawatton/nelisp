@@ -128,8 +128,8 @@ The same arithmetic as `emacs-symbol--hash-combine', on two variables."
                          #xffffffff)
              ,lo (logand ,sum #xffffffff)))))
 
-(defun emacs-symbol--bucket-index (name bits)
-  "Return NAME's GNU Emacs 31.1 bucket index for BITS index bits.
+(defun emacs-symbol--name-reduced (name)
+  "Return NAME's GNU Emacs 31.1 symbol hash, folded to 32 bits.
 Hash at most nine words using native byte access, without copying NAME.
 The 64-bit hash is kept as two 32-bit halves in variables, not a pair."
   (let* ((length (string-bytes name))
@@ -154,13 +154,31 @@ The 64-bit hash is kept as two 32-bit halves in variables, not a pair."
         (when (< offset length)
           (setq tail (+ (ash tail 8) (string-byte name offset))))
         (emacs-symbol--hash-step hi lo (ash tail -32) (logand tail #xffffffff))))
-    (let* ((reduced (logxor hi lo))
-           (low (logand reduced #xffff)) (high (ash reduced -16))
-           ;; Low 32 bits of multiplication by Knuth's 2654435769.
-           (product (logand (+ (* low 31161)
-                               (ash (+ (* low 40503) (* high 31161)) 16))
-                            #xffffffff)))
-      (ash product (- bits 32)))))
+    (logxor hi lo)))
+
+(defvar emacs-symbol--reduced-cache (make-hash-table :test 'equal :size 256)
+  "Folded name hashes by name, for names whose length is their byte count.
+Hashing a name runs interpreted (about 28 us); intern, unintern and
+growth of the same names reuse it.  Only such names are cached, so two
+`equal' keys always have the same bytes.  Cleared beyond 4096 entries.")
+
+(defun emacs-symbol--bucket-index (name bits)
+  "Return NAME's GNU Emacs 31.1 bucket index for BITS index bits."
+  (let* ((plain (= (length name) (string-bytes name)))
+         (reduced (or (and plain (gethash name emacs-symbol--reduced-cache))
+                      (let ((value (emacs-symbol--name-reduced name)))
+                        (when plain
+                          (when (> (hash-table-count emacs-symbol--reduced-cache) 4096)
+                            (clrhash emacs-symbol--reduced-cache))
+                          (puthash (copy-sequence name) value
+                                   emacs-symbol--reduced-cache))
+                        value)))
+         (low (logand reduced #xffff)) (high (ash reduced -16))
+         ;; Low 32 bits of multiplication by Knuth's 2654435769.
+         (product (logand (+ (* low 31161)
+                             (ash (+ (* low 40503) (* high 31161)) 16))
+                          #xffffffff)))
+    (ash product (- bits 32))))
 
 (defun emacs-symbol--grow-obarray (state)
   "Double STATE's bucket count, rehashing chains in GNU's traversal order."
