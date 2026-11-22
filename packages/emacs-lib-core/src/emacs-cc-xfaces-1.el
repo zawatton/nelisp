@@ -142,8 +142,15 @@
 
   (defun emacs-cc-xfaces-1--frame-store (frame)
     "Return FRAME's face tables, initializing from new-frame defaults."
-    (setq frame (or frame (selected-frame)))
-    (nelisp--check-live-frame frame)
+    ;; gnu562: the selected frame is live (`emacs-frame--ensure-initial'),
+    ;; so when the shared frame model owns the liveness check, a nil FRAME
+    ;; skips it (about 10 us per face lookup).
+    (if (and (null frame)
+             (eq (symbol-function 'nelisp--check-live-frame)
+                 'emacs-frame-builtins--check-live-frame))
+        (setq frame (selected-frame))
+      (setq frame (or frame (selected-frame)))
+      (nelisp--check-live-frame frame))
     (or (gethash frame emacs-cc-xfaces-1--frame-stores)
         (let ((store (make-hash-table :test 'eq))
               (public (make-hash-table :test 'eq)))
