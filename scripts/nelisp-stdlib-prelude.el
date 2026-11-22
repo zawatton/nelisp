@@ -31456,6 +31456,25 @@ still running, not an anonymous lambda.")
   "Function -> weak set of anonymous closure bodies whose code calls it.
 The anonymous counterpart of `nelisp--fx-callees' (which holds names).")
 
+(defvar nelisp--fx-retry-tries (make-hash-table :test 'eq :weakness 'key)
+  "Body -> failed-or-deferred compile attempts so far (bounded retry policy).
+A first call that neither queued nor compiled a body used to write a
+permanent `none'.  Now the body gets a countdown in `nelisp--fx-table'
+(decremented natively like an anonymous lambda's); when it expires the
+body is compiled from the applied closure.  After `nelisp--fx-retry-max'
+attempts the final `none' is written.")
+
+(defconst nelisp--fx-retry-max 6
+  "Attempts a never-queued body gets before it stays `none'.")
+
+(defun nelisp--fx-retry-delay (tries ready)
+  "Calls to wait before attempt number TRIES+1: 32 while the compile
+machinery is not ready, else 32 * 4^TRIES (32 .. 32768)."
+  (if ready (ash 32 (* 2 tries)) 32))
+
+(defun nelisp--fx-retry-ready-p ()
+  (and nelisp--fx-anon-ready (nelisp--fx-active-p) (fboundp 'nelisp--fx-run)))
+
 (defun nelisp--fx-first-call (body &optional captured formals)
   "Compile BODY, a closure body just applied for the first time.
 Called by the runtime with re-entry blocked; leaves BODY in
@@ -31511,9 +31530,39 @@ and `nelisp--fx-register-fn' repeats the check."
                    nil trace t 'silent)
                 (error nil))))))
     (error nil))
+  ;; Retry policy (replaces the unconditional permanent `none').  A body
+  ;; with a retry record that a direct call counted down keeps counting.
+  (condition-case nil
+      (when (and counting (gethash body nelisp--fx-retry-tries)
+                 (not (gethash body nelisp--fx-table)))
+        (puthash body counting nelisp--fx-table)
+        (setq first-sight t))
+    (error nil))
+  ;; An expired retry of a named body (the anonymous branch above skips it):
+  ;; compile from the applied closure, as the anonymous path does.
+  (condition-case nil
+      (when (and expired (gethash body nelisp--fx-retry-tries)
+                 (not (gethash body nelisp--fx-table))
+                 (consp body) (listp formals) (nelisp--fx-retry-ready-p))
+        (nelisp--fx-register-fn
+         nil (cons 'closure (cons captured (cons formals body)))))
+    (error nil))
   (condition-case nil
       (unless (or first-sight (gethash body nelisp--fx-table))
-        (puthash body 'none nelisp--fx-table))
+        (let* ((tries (gethash body nelisp--fx-retry-tries 0))
+               (ready (nelisp--fx-retry-ready-p))
+               ;; With the machinery ready, a body the VM can never take
+               ;; (odd arglist, closure over variables) is final at once.
+               (takeable (or (not ready)
+                             (and (consp body) (listp formals)
+                                  (nelisp--fx-arglist-shape formals)
+                                  (or (nelisp--fx-env-ok-p captured)
+                                      (nelisp--fx-cap-names captured))))))
+          (if (and takeable (< tries nelisp--fx-retry-max))
+              (progn (puthash body (1+ tries) nelisp--fx-retry-tries)
+                     (puthash body (nelisp--fx-retry-delay tries ready)
+                              nelisp--fx-table))
+            (puthash body 'none nelisp--fx-table))))
     (error nil))
   nil))
 
