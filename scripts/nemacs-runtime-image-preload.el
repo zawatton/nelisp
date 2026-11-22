@@ -103,7 +103,66 @@ batch entry is still unavailable."
         nil 'no-message t t)
   (nemacs-runtime-image-preload--install-daily-driver-core)
   (nemacs-runtime-image-preload--reassert-process-bridge)
+  (nemacs-runtime-image-preload--retry-stale-fx)
   t)
+
+(defun nemacs-runtime-image-preload--retry-stale-fx-pass ()
+  "One pass over every closure function; answer how many it repaired.
+A `none' entry is compiled again; an entry absent from the table and not
+queued for compilation is queued."
+  (let ((recovered 0))
+    (dolist (sym (nelisp--intern-table-symbols))
+      (condition-case nil
+          (when (fboundp sym)
+            (let* ((fn (symbol-function sym))
+                   (cell (and (nelisp--closure-p fn) (not (subrp fn))
+                              (nelisp--closure-cons fn))))
+              (when (and (consp cell) (eq (car cell) 'closure))
+                (let* ((body (nthcdr 3 cell))
+                       (state (gethash body nelisp--fx-table 'nemacs--fxr-absent)))
+                  (cond
+                   ((eq state 'none)
+                    (nelisp--fx-register-fn sym fn t)
+                    (when (vectorp (gethash body nelisp--fx-table))
+                      (setq recovered (1+ recovered))))
+                   ;; Never compiled and not queued either: its first call
+                   ;; would record `none'.  Queue it so that call compiles.
+                   ((and (eq state 'nemacs--fxr-absent)
+                         (fboundp 'nelisp--fx-defer)
+                         (not (gethash body nelisp--fx-pending)))
+                    (nelisp--fx-defer sym)
+                    (when (gethash body nelisp--fx-pending)
+                      (setq recovered (1+ recovered)))))))))
+        (error nil)))
+    recovered))
+
+(defun nemacs-runtime-image-preload--retry-stale-fx ()
+  "Repair stale word-VM entries of named functions.
+`nelisp--fx-first-call' ends by recording `none' for a body it neither
+queued nor compiled (a function first called before the compile machinery
+was ready, or defined after the registration hooks and first called while a
+precondition failed), and nothing retries it: the function then runs in the
+interpreter for the whole life of the image, while an anonymous clone of the
+same body compiles and runs 1.4x faster (closure gap, state-perf F210).  A
+runtime-image replay never runs `nelisp--fx-warm-for-dump', so it kept ~200
+such entries (forward-word 1.6x slower than the flat dump, F212).  A body
+never compiled and not queued (`nelisp--fx-pending') gets the same `none' at
+its first call, so it is queued instead.  Force one registration per `none'
+function; bodies the VM still declines stay `none'.  The compiler applies helper functions while it runs, which can
+record a fresh `none' behind the pass, so repeat (at most 4 passes) until a
+pass recovers nothing.  Answer the total recovered, or nil off the NeLisp
+runtime."
+  (when (and (fboundp 'nelisp--intern-table-symbols)
+             (fboundp 'nelisp--fx-register-fn)
+             (fboundp 'nelisp--closure-cons)
+             (boundp 'nelisp--fx-table)
+             (hash-table-p nelisp--fx-table))
+    (let ((total 0) (pass 0) (n 1))
+      (while (and (> n 0) (< pass 4))
+        (setq n (nemacs-runtime-image-preload--retry-stale-fx-pass)
+              total (+ total n)
+              pass (1+ pass)))
+      total)))
 
 (defun nemacs-runtime-image-preload--reassert-process-bridge ()
   "Re-point the public process entry points at the `emacs-process' facade.
