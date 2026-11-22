@@ -1946,6 +1946,8 @@ by hand.  Recorded here and reported in the manifest instead.")
           ;; Doc 229 S4.2: the quoted constants, printed, read once at load.
           :constants (plist-get unit :constants)
           :compile-report compile-report
+          :codegen-settings (progn (require 'nelisp-native-load)
+                                   (nelisp-native-load-codegen-settings))
           :defuns (mapcar #'nelisp-artifact--native-defun-entry
                           (plist-get unit :defuns)))))
 

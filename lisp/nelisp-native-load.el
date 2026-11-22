@@ -668,6 +668,81 @@ The file is one `;;;' header line followed by a single readable plist."
       (setq rest (cdr rest)))
     found))
 
+;;;; Codegen settings record ------------------------------------------
+
+(defconst nelisp-native-load-codegen-flag-symbols
+  '(nelisp-aot-compiler-alignhot-perturb nelisp-aot-compiler-cold-layout
+    nelisp-aot-compiler-fixnum-loop-budget nelisp-aot-compiler-fixnum-loops
+    nelisp-aot-compiler--fxloop-mutation
+    nelisp-aot-compiler-hot-alignment nelisp-aot-compiler-lisp-inline-incdec
+    nelisp-aot-compiler-lisp-open-defects nelisp-aot-compiler-lisp-word-fixnum-test
+    nelisp-aot-compiler-regalloc nelisp-aot-compiler-regraw
+    nelisp-aot-compiler-spillcall nelisp-aot-compiler-tco-enabled
+    nelisp-aot-compiler-threaded-dispatch
+    nelisp-aot-compiler-threaded-dispatch-functions
+    nelisp-aot-compiler-vm-register-functions
+    nelisp-aot-compiler-wasm-genuine-alloc
+    nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers
+    nelisp-aot-compiler-buffer-leaves nelisp-aot-compiler-buffer-leaves-inline)
+  "Every compiler switch that changes generated code.
+A host test checks this against every bound `nelisp-aot-compiler-*' variable,
+so a new switch cannot be forgotten.")
+
+(defvar nelisp-native-load-expected-codegen-settings nil
+  "Settings plist a loader without the compiler must enforce, or nil.
+A process that has loaded `nelisp-aot-compiler' compares against its live
+settings; one that has not (the runtime image) has none, and enforces this
+value when it is non-nil.  Same shape as
+`nelisp-native-load-codegen-settings'.")
+
+(defvar nelisp-native-load--compiler-source-sha nil)
+
+(defun nelisp-native-load--compiler-source-sha256 ()
+  "Return the sha256 of the loaded compiler source, or nil without a compiler."
+  (when (featurep 'nelisp-aot-compiler)
+    (or nelisp-native-load--compiler-source-sha
+        (let ((file (and (fboundp 'locate-library)
+                         (locate-library "nelisp-aot-compiler.el"))))
+          (when file
+            (setq nelisp-native-load--compiler-source-sha
+                  (with-temp-buffer
+                    (set-buffer-multibyte nil)
+                    (insert-file-contents-literally file)
+                    (secure-hash 'sha256 (current-buffer)))))))))
+
+(defun nelisp-native-load-codegen-settings ()
+  "Return the live codegen settings: every switch plus the compiler source hash.
+A switch that is not bound reads as `:unbound'."
+  (list :flags (mapcar (lambda (sym)
+                         (cons sym (if (boundp sym) (symbol-value sym) :unbound)))
+                       nelisp-native-load-codegen-flag-symbols)
+        :compiler-sha256 (nelisp-native-load--compiler-source-sha256)))
+
+(defun nelisp-native-load--codegen-problems (record)
+  "Return reasons the codegen RECORD of an artifact is not usable here."
+  (let ((want (cond ((featurep 'nelisp-aot-compiler)
+                     (nelisp-native-load-codegen-settings))
+                    (t nelisp-native-load-expected-codegen-settings))))
+    (cond
+     ((not (and (consp record) (plist-get record :flags)
+                (stringp (plist-get record :compiler-sha256))))
+      (list (list :codegen-settings-missing)))
+     ((null want) nil)
+     (t
+      (let ((diffs nil))
+        (dolist (cell (plist-get want :flags))
+          (let ((have (assq (car cell) (plist-get record :flags))))
+            (unless (and have (equal (cdr have) (cdr cell)))
+              (push (list (car cell) :built (and have (cdr have))
+                          :now (cdr cell))
+                    diffs))))
+        (unless (equal (plist-get want :compiler-sha256)
+                       (plist-get record :compiler-sha256))
+          (push (list :compiler-sha256 :built (plist-get record :compiler-sha256)
+                      :now (plist-get want :compiler-sha256))
+                diffs))
+        (and diffs (list (cons :codegen-settings-mismatch (nreverse diffs)))))))))
+
 ;;;; Pre-flight -------------------------------------------------------
 
 (defun nelisp-native-load-check (manifest name)
@@ -689,6 +764,10 @@ every problem at once rather than the first one hit."
       (setq problems (cons (list :artifact-format (plist-get manifest :format))
                            problems)))
     (when native
+      (setq problems
+            (append (nelisp-native-load--codegen-problems
+                     (plist-get native :codegen-settings))
+                    problems))
       (unless (equal (plist-get native :arch) "x86_64")
         (setq problems (cons (list :arch (plist-get native :arch)) problems)))
       (unless (equal (plist-get native :object-format)
