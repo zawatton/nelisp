@@ -512,6 +512,8 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-parity-vars3.el"
     ;; `char-script-table' for GNU fill.el, which reads it at load time.
     "charscript.el"
+    ;; GNU script/category runs consulted by word_boundary_p (forward-word).
+    "emacs-word-boundary-data.el"
     ;; Runtime primitive repairs belong late: their dependencies have loaded,
     ;; while package/user-init consumers have not run yet.
     "emacs-parity-regex-charclass.el"

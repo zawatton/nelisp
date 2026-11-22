@@ -2847,59 +2847,86 @@ Return an edit plist.  A zero-width range returns a no-op plist with
         (and (boundp 'words-include-escapes) words-include-escapes
              (memq syntax '(?\\ ?/))))))
 
+(defvar word-combining-categories
+  '((nil . ?^) (?^) (?C . ?H) (?C . ?K))
+  "List of pairs of categories that should not be broken into words.
+GNU default, set by characters.el.")
+
+(defvar word-separating-categories '((?H . ?K))
+  "List of pairs of categories that should be broken into words.
+GNU default, set by characters.el.")
+
+(defun emacs-edit--word-data-code (char)
+  "Return the generated script/category code of CHAR, or nil without data.
+The data (emacs-word-boundary-data.el) is generated from GNU's own
+`char-script-table' and category tables; see scripts/gen-word-boundary-data.el."
+  (when (boundp 'emacs-word-boundary-data-starts)
+    (if (> char #x10ffff) 0
+      (let* ((starts emacs-word-boundary-data-starts)
+             (lo 0) (hi (1- (length starts))))
+        (while (< lo hi)
+          (let ((mid (/ (+ lo hi 1) 2)))
+            (if (<= (aref starts mid) char) (setq lo mid) (setq hi (1- mid)))))
+        (aref emacs-word-boundary-data-codes lo)))))
+
+(defun emacs-edit--word-has-category-p (code set category)
+  "Return non-nil when a character is in CATEGORY.
+CODE is its generated script/category code (categories ^, C, H and K), or
+nil, in which case SET is its category set."
+  (if code
+      (let ((bit (cdr (assq category '((?^ . 1) (?C . 2) (?H . 4) (?K . 8))))))
+        (and bit (/= (logand code bit) 0)))
+    (aref set category)))
+
 (defun emacs-edit--word-category-match-p (left right pairs)
   "Return whether LEFT and RIGHT match a category pair in PAIRS."
-  (let (matched)
-    (when (and (fboundp 'char-category-set)
-               (not (get 'char-category-set 'emacs-stub-bulk)))
-      (let ((left-set (char-category-set left))
-            (right-set (char-category-set right)))
+  (let ((left-code (emacs-edit--word-data-code left))
+        (right-code (emacs-edit--word-data-code right))
+        matched)
+    (when (or (and left-code right-code)
+              (and (fboundp 'char-category-set)
+                   (not (get 'char-category-set 'emacs-stub-bulk))))
+      (let ((left-set (and (not left-code) (char-category-set left)))
+            (right-set (and (not right-code) (char-category-set right))))
         (while (and pairs (not matched))
           (let ((a (caar pairs)) (b (cdar pairs)))
             (setq matched
-                  (and (or (null a) (aref left-set a))
-                       (or (null b) (aref right-set b))
-                       (or (null b) (not (aref left-set b)))
-                       (or (null a) (not (aref right-set a))))))
+                  (and (or (null a)
+                           (emacs-edit--word-has-category-p left-code left-set a))
+                       (or (null b)
+                           (emacs-edit--word-has-category-p right-code right-set b))
+                       (or (null b)
+                           (not (emacs-edit--word-has-category-p left-code left-set b)))
+                       (or (null a)
+                           (not (emacs-edit--word-has-category-p
+                                 right-code right-set a))))))
           (setq pairs (cdr pairs)))))
     matched))
 
-(defun emacs-edit--word-fallback-class (char)
-  "Coarse script class of CHAR for word boundaries without category tables."
-  (cond ((and (<= #x30a0 char) (<= char #x30ff)) 'katakana)
-        ((or (and (<= #x3040 char) (<= char #x309f))
-             (and (<= #x3400 char) (<= char #x9fff)))
-         'han)
-        (t 'other)))
-
 (defun emacs-edit--word-boundary-p (position)
   "Return whether adjacent word characters separate at POSITION.
-Use the script and category tables when supplied by the runtime."
-  (if (or (not (fboundp 'char-category-set))
-          (get 'char-category-set 'emacs-stub-bulk)
-          (not (boundp 'char-script-table))
-          (not (char-table-p char-script-table))
-          ;; The runtime's script table can be present but empty.
-          (null (aref char-script-table (char-before position))))
-      ;; No category tables: split Katakana from Han/Hiragana runs, as GNU's
-      ;; default `word-separating-categories' does for these scripts.
-      (let ((left (char-before position)) (right (char-after position)))
-        (and left right
-             (not (eq (emacs-edit--word-fallback-class left)
-                      (emacs-edit--word-fallback-class right)))))
-  (when (and (boundp 'char-script-table)
-             (char-table-p char-script-table))
-    (let* ((left (char-before position))
-           (right (char-after position))
-           (same-script (eq (aref char-script-table left)
-                            (aref char-script-table right))))
-      (if same-script
-          (and (boundp 'word-separating-categories)
-               (emacs-edit--word-category-match-p
-                left right word-separating-categories))
-        (not (and (boundp 'word-combining-categories)
-                  (emacs-edit--word-category-match-p
-                   left right word-combining-categories))))))))
+GNU `word_boundary_p' (syntax.c): within one script only
+`word-separating-categories' break a word; across scripts a break is
+the rule unless `word-combining-categories' matches."
+  (let* ((left (char-before position))
+         (right (char-after position))
+         (lcode (emacs-edit--word-data-code left))
+         (rcode (emacs-edit--word-data-code right)))
+    (cond
+     ;; Generated GNU data: script identity and categories are exact.
+     ((and lcode rcode)
+      (if (= (ash lcode -4) (ash rcode -4))
+          (emacs-edit--word-category-match-p left right word-separating-categories)
+        (not (emacs-edit--word-category-match-p left right word-combining-categories))))
+     ;; No data: use the runtime tables when they are populated.
+     ((and (boundp 'char-script-table) (char-table-p char-script-table)
+           (fboundp 'char-category-set)
+           (not (get 'char-category-set 'emacs-stub-bulk))
+           (aref char-script-table left))
+      (if (eq (aref char-script-table left) (aref char-script-table right))
+          (emacs-edit--word-category-match-p left right word-separating-categories)
+        (not (emacs-edit--word-category-match-p left right word-combining-categories))))
+     (t nil))))
 
 (defun emacs-edit--word-field-at (position)
   "Return the field property at POSITION, including overlays when available."

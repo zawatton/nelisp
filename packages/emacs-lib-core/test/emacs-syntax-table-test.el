@@ -139,6 +139,46 @@ string face."
     (should (eq 'font-lock-string-face
                 (emacs-buffer-get-text-property 9 'face b)))))
 
+(ert-deftest emacs-syntax-table-test/forward-word-mixed-script-gnu ()
+  ;; Expected values recorded from GNU Emacs 31.1 (word_boundary_p: same
+  ;; script -> word-separating-categories, different script ->
+  ;; word-combining-categories).  Each row is (TEXT FORWARD-FROM-BOB
+  ;; BACKWARD-FROM-EOB), every element a list of (RETURN POINT) over four calls.
+  (dolist (row '(
+    ("あ漢" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("漢ア" ((t 3) (nil 3) (nil 3) (nil 3)) ((t 1) (nil 1) (nil 1) (nil 1)))
+    ("アあ" ((t 3) (nil 3) (nil 3) (nil 3)) ((t 1) (nil 1) (nil 1) (nil 1)))
+    ("aя" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("한a" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("abc123 x1y" ((t 7) (t 11) (nil 11) (nil 11)) ((t 8) (t 1) (nil 1) (nil 1)))
+    ("한漢" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("漢한" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("カー漢" ((t 3) (t 4) (nil 4) (nil 4)) ((t 3) (t 1) (nil 1) (nil 1)))
+    ("ーあ" ((t 3) (nil 3) (nil 3) (nil 3)) ((t 1) (nil 1) (nil 1) (nil 1)))
+    ("書く" ((t 3) (nil 3) (nil 3) (nil 3)) ((t 1) (nil 1) (nil 1) (nil 1)))
+    ("書き込む" ((t 3) (t 5) (nil 5) (nil 5)) ((t 3) (t 1) (nil 1) (nil 1)))
+    ("Ａｂｃ xＹ" ((t 4) (t 6) (t 7) (nil 7)) ((t 6) (t 5) (t 1) (nil 1)))
+    ("aＡ" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("αa" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("ひらカタ漢字" ((t 3) (t 5) (t 7) (nil 7)) ((t 5) (t 3) (t 1) (nil 1)))
+    ("aあ" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("あa" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("漢a" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("a漢" ((t 2) (t 3) (nil 3) (nil 3)) ((t 2) (t 1) (nil 1) (nil 1)))
+    ("日本語のtext混在テスト" ((t 5) (t 9) (t 14) (nil 14)) ((t 9) (t 5) (t 1) (nil 1)))))
+    (let ((text (car row)))
+      (with-temp-buffer
+        (insert text)
+        (goto-char 1)
+        (let (r)
+          (dotimes (_ 4) (push (list (forward-word 1) (point)) r))
+          (should (equal (cons text (nreverse r)) (cons text (nth 1 row))))))
+      (with-temp-buffer
+        (insert text)
+        (let (r)
+          (dotimes (_ 4) (push (list (forward-word -1) (point)) r))
+          (should (equal (cons text (nreverse r)) (cons text (nth 2 row)))))))))
+
 (provide 'emacs-syntax-table-test)
 
 ;;; emacs-syntax-table-test.el ends here
