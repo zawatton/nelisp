@@ -171,6 +171,13 @@ when it is loaded without the full font-lock implementation."
   (defvar char-property-alias-alist nil
     "Alist mapping character properties to their aliases."))
 
+;; GNU textprop.c DEFVAR_LISP: special, default nil.  The native
+;; `forward-word' leaf and `get-char-property' fallback read it, and a
+;; `let' of it must bind dynamically (a lexical binding would hide it).
+(unless (boundp 'default-text-properties)
+  (defvar default-text-properties nil
+    "Property-list used as default props for all characters."))
+
 (unless (boundp 'jit-lock-functions)
   (defvar jit-lock-functions nil
     "Functions registered for jit-lock fontification."))
