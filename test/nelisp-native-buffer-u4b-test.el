@@ -84,9 +84,9 @@
          (form (with-temp-buffer
                  (insert-file-contents source)
                  (goto-char (point-min))
-                 (search-forward "(unless (fboundp 'forward-word)")
+                 (search-forward "(defun nelisp--forward-word-reference")
                  (goto-char (match-beginning 0))
-                 (caddr (read (current-buffer)))))
+                 (read (current-buffer))))
          (provider (eval (cons 'lambda (cddr form)) t))
          (nelisp--current-buffer nil))
     (cl-letf (((symbol-function 'nelisp-point) (lambda (_) (point)))

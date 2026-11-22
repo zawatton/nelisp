@@ -13867,6 +13867,8 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "forward-line") :word . (nl_buf_prim_w 64 args env))
     ((:lit "insert-char") :word . (nl_buf_prim_w 65 args env))
     ((:lit "delete-char") :word . (nl_buf_prim_w 66 args env))
+    ;; native word scan (explicit user instruction; GNU: syntax.c Fforward_word/scan_words)
+    ((:lit "forward-word") :word . (nl_fw_prim_w 67 args env))
     ((:lit "nelisp--gb-count-lines") :word . (nl_gb_wprim_w 79 args env))
     ((:lit "nelisp--gb-column") :word . (nl_gb_wprim_w 80 args env))
     ((:lit "buffer-substring") :word . (nl_gb_bufsub_w 62 args env))
@@ -42448,7 +42450,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--target-os-code nelisp-process-async-ready-p nl-current-unix-time
       nl-unix-time-usec nelisp--monotonic-ns nelisp--boot-phase-ns nelisp--region-stats nelisp--function-epoch)
     ((0 . 1)
-      buffer-size forward-line char-after char-before line-beginning-position line-end-position pos-bol pos-eol
+      buffer-size forward-line forward-word char-after char-before line-beginning-position line-end-position pos-bol pos-eol
       exit float-time nelisp--exit-process)
     ((0 . many)
       * + - append bool-vector concat fetch-bytecode insert list logand logior logxor
@@ -48831,7 +48833,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; bufedit: the gap buffer text
     "char-after" "char-before" "following-char" "preceding-char" "line-beginning-position"
     "line-end-position" "bolp" "eolp" "insert" "pos-bol" "pos-eol" "delete-region"
-    "buffer-substring" "buffer-substring-no-properties" "forward-line" "nelisp--gb-count-lines" "nelisp--gb-column" "insert-char" "delete-char"
+    "buffer-substring" "buffer-substring-no-properties" "forward-line" "forward-word" "nelisp--gb-count-lines" "nelisp--gb-column" "insert-char" "delete-char"
     "nelisp--gb-char" "nelisp--gb-move" "nelisp--gb-reserve" "nelisp--gb-insert" "nelisp--gb-delete"
     "nelisp--gb-substring" "nelisp--gb-find-char" "nelisp--gb-count-nl" "nelisp--gb-overwrite" "nelisp--gb-insert-file"
     ;; List search hot paths
