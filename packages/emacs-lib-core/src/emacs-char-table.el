@@ -885,16 +885,46 @@ identity.  This query does not modify either table."
      (parent (emacs-char-table-ref parent char))
      (t nil))))
 
+(defun emacs-char-table--owned-ascii-ref (ct char)
+  "CT's cached value for CHAR below 128 when CT is an owned vector table.
+The checks of `emacs-char-table--owned-p' and the read of
+`emacs-char-table--owner-cache-ref', done once with direct slot reads where
+the native vector bridge is active.  Answers `emacs-char-table--unset' when
+that does not apply, leaving CT to the general path."
+  (if (and (vectorp ct)
+           (> (length ct) emacs-char-table--i-owner-state)
+           (emacs-char-table--native-vector-bridge-p)
+           (eq (nelisp--raw-aref ct 0) emacs-char-table--tag))
+      (let ((state (nelisp--raw-aref ct emacs-char-table--i-owner-state)))
+        (if (emacs-char-table--owner-state-p state)
+            (let* ((current (if (and (= (length state) 4)
+                                     (>= (aref state 3)
+                                         emacs-char-table--owner-state-version))
+                                state
+                              (emacs-char-table--owner-current-state ct)))
+                   (cache (aref current 2)))
+              (if (emacs-char-table--topology-node-p cache)
+                  (aref (aref cache 1) char)
+                cache))
+          'emacs-char-table--unset))
+    'emacs-char-table--unset))
+
 (defun emacs-char-table-ref (ct char)
   "Return CT's value for character CHAR (with default / parent fallback)."
   (cond
    ((emacs-char-table--native-p ct) (emacs-char-table--native-ref ct char))
    ((not (integerp char)) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
    ((and (>= char 0) (< char emacs-char-table--ascii-size))
-    (let ((v (if (and (< char 128) (emacs-char-table--owned-p ct))
-                 (emacs-char-table--owner-cache-ref ct char)
-               (emacs-char-table--raw-ref
-                (emacs-char-table--raw-ref ct emacs-char-table--i-ascii) char))))
+    (let ((v (let ((fast (if (< char 128)
+                             (emacs-char-table--owned-ascii-ref ct char)
+                           'emacs-char-table--unset)))
+               (if (not (eq fast 'emacs-char-table--unset))
+                   fast
+                 (if (and (< char 128) (emacs-char-table--owned-p ct))
+                     (emacs-char-table--owner-cache-ref ct char)
+                   (emacs-char-table--raw-ref
+                    (emacs-char-table--raw-ref ct emacs-char-table--i-ascii)
+                    char))))))
       (if v v (emacs-char-table--fallback ct char))))
    ((and (integerp char) (>= char emacs-char-table--ascii-size)
          (emacs-char-table--owned-p ct))
