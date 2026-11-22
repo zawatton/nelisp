@@ -112,13 +112,20 @@ Resolving searches the library directories, about 120 us a call."
 ;; log2 are IFUNC symbols, which the FFI loader cannot resolve).  Calling them
 ;; gives GNU's results to the last bit at about 14 us a call, against the
 ;; double-double series' 56-118 us.  An operation whose FFI call fails is
-;; turned off for the session and takes the definition installed before
-;; (`emacs-cc-floatfns--lisp-exp' / `--lisp-log').  Type errors are signalled
-;; first, as GNU does; like GNU's extract_float, a bignum goes in as the
-;; nearest double.  Log to base 2 keeps the Lisp definition (GNU uses log2).  Where `nl-ffi-call' itself
-;; reaches libm (the reader's native arms are live), nothing is wrapped.
+;; turned off and takes the definition installed before
+;; (`emacs-cc-floatfns--lisp-exp' / `--lisp-log'): an unresolved symbol turns
+;; off that operation, any other FFI failure (libm does not open) all of
+;; them.  Type errors are signalled first, as GNU does; like GNU's
+;; extract_float, a bignum goes in as the nearest double.  Log to base 2
+;; keeps the Lisp definition (GNU uses log2).
+;; Only the static reader is wrapped: the one whose `nl-ffi-call' signals
+;; (nelisp-unsupported-primitive nl-ffi-call) because its native libm arms
+;; are not linked.
 (defvar emacs-cc-floatfns--libm-off nil
-  "libm operations whose FFI call failed in this session.")
+  "libm operations whose symbol the FFI could not resolve in this session.")
+
+(defvar emacs-cc-floatfns--libm-unusable nil
+  "Non-nil once libm could not be used through the FFI in this session.")
 
 (defun emacs-cc-floatfns--libm-arg-p (x)
   "Non-nil when X goes to libm: a number, converted as GNU's extract_float."
@@ -126,13 +133,19 @@ Resolving searches the library directories, about 120 us a call."
 
 (defun emacs-cc-floatfns--libm (operation arg)
   "OPERATION of the number ARG in libm, or nil when that call is unavailable."
-  (unless (memq operation emacs-cc-floatfns--libm-off)
-    (let ((value (condition-case nil
-                     (emacs-cc-floatfns--typed-libm operation (float arg))
-                   (error nil))))
-      (if (floatp value) value
-        (push operation emacs-cc-floatfns--libm-off)
-        nil))))
+  (unless (or emacs-cc-floatfns--libm-unusable
+              (memq operation emacs-cc-floatfns--libm-off))
+    (let* ((x (float arg))
+           (value (condition-case nil
+                      (emacs-cc-floatfns--typed-libm operation x)
+                    (nl-ffi-unresolved-symbol
+                     (push operation emacs-cc-floatfns--libm-off)
+                     nil)
+                    (error
+                     (setq emacs-cc-floatfns--libm-unusable t)
+                     nil))))
+      (cond ((floatp value) value)
+            (value (push operation emacs-cc-floatfns--libm-off) nil)))))
 
 (defun emacs-cc-floatfns--exp (arg)
   "Return the exponential base e of ARG, through libm when available.\n\n(fn ARG)"
@@ -163,7 +176,10 @@ as GNU's Flog does.\n\n(fn ARG &optional BASE)"
 
 (when (and (fboundp 'nl-ffi--invoke)
            (fboundp 'nl-ffi-call)
-           (not (condition-case nil (numberp (nl-ffi-call "exp" 0.0)) (error nil))))
+           (condition-case err
+               (progn (nl-ffi-call "exp" 0.0) nil)
+             (nelisp-unsupported-primitive (equal (cdr err) '(nl-ffi-call)))
+             (error nil)))
   (unless (fboundp 'emacs-cc-floatfns--lisp-exp)
     (defalias 'emacs-cc-floatfns--lisp-exp (symbol-function 'exp)))
   (defalias 'exp (symbol-function 'emacs-cc-floatfns--exp))
