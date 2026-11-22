@@ -93,7 +93,10 @@
 ;; target/nelisp).
 (ert-deftest nelisp-native-load-codegen/image-refuses-stale-artifact ()
   (let ((home (getenv "NELISP_AOT_DIFF_HOME")))
-    (skip-unless (and home (file-executable-p (expand-file-name "target/nelisp" home))))
+    (skip-unless (and home (not (string-empty-p home))))
+    ;; Set but unusable: fail loudly, never skip.
+    (unless (file-executable-p (expand-file-name "target/nelisp" home))
+      (error "NELISP_AOT_DIFF_HOME=%s has no executable target/nelisp" home))
     (let* ((dir (make-temp-file "cgi" t))
            (src (expand-file-name "m.el" dir))
            (art (expand-file-name "on.neln" dir))

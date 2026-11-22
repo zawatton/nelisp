@@ -111,8 +111,16 @@
         (nreverse out)))))
 
 (defun nelisp-aot-lisp-arith-test--home ()
+  "Return NELISP_AOT_DIFF_HOME when set and usable, nil when unset.
+A set but unusable value is an error, never a silent skip: the image
+differential would otherwise report green without having run."
   (let ((h (getenv "NELISP_AOT_DIFF_HOME")))
-    (and h (file-executable-p (expand-file-name "target/nelisp" h)) h)))
+    (when (and h (not (string-empty-p h)))
+      (unless (file-executable-p (expand-file-name "target/nelisp" h))
+        (error "NELISP_AOT_DIFF_HOME=%s has no executable target/nelisp" h))
+      (unless (file-readable-p (expand-file-name "build/nemacs-runtime.nlri" h))
+        (error "NELISP_AOT_DIFF_HOME=%s has no build/nemacs-runtime.nlri" h))
+      h)))
 
 (ert-deftest nelisp-aot-lisp-arith/lowering-has-no-per-call-builtin ()
   "A native loop on 1+ carries no one-argument builtin delegation."
@@ -163,6 +171,20 @@
                      neln (nelisp-aot-lisp-arith-test--home))))
           (should-not (nelisp-aot-lisp-arith-test--lines-equal want got)))
       (delete-directory dir t))))
+
+(ert-deftest nelisp-aot-lisp-arith/diff-home-unusable-is-loud ()
+  "A set but unusable NELISP_AOT_DIFF_HOME is an error, an unset one is nil."
+  (let ((process-environment (cons "NELISP_AOT_DIFF_HOME=/nonexistent-nelisp-home"
+                                   process-environment)))
+    (should-error (nelisp-aot-lisp-arith-test--home)))
+  (let ((dir (make-temp-file "dh" t)))
+    (unwind-protect
+        (let ((process-environment (cons (concat "NELISP_AOT_DIFF_HOME=" dir)
+                                         process-environment)))
+          (should-error (nelisp-aot-lisp-arith-test--home)))
+      (delete-directory dir t)))
+  (let ((process-environment (cons "NELISP_AOT_DIFF_HOME" process-environment)))
+    (should-not (nelisp-aot-lisp-arith-test--home))))
 
 (provide 'nelisp-aot-lisp-arith-test)
 ;;; nelisp-aot-lisp-arith-test.el ends here

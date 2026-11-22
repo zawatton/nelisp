@@ -234,8 +234,9 @@
 ;; stops after one budget slice; without the poll it runs to completion.
 (ert-deftest nelisp-aot-fxloop/quit-is-serviced-in-a-long-fast-loop ()
   (let ((home (getenv "NELISP_AOT_DIFF_HOME")))
-    (skip-unless home)
-    (should (file-executable-p (expand-file-name "target/nelisp" home)))
+    (skip-unless (and home (not (string-empty-p home))))
+    (unless (file-executable-p (expand-file-name "target/nelisp" home))
+      (error "NELISP_AOT_DIFF_HOME=%s has no executable target/nelisp" home))
     (let ((out (nelisp-aot-fxloop-test--quit-run home nil)))
       (should (string-match-p "^quit QUIT flag=nil$" out))
       (should (string-match-p "^inhibit 300000 flag=t$" out))
@@ -244,8 +245,9 @@
 (ert-deftest nelisp-aot-fxloop/mutation-no-poll-is-detected ()
   "Control: with no poll the same loop runs to completion and ignores the quit."
   (let ((home (getenv "NELISP_AOT_DIFF_HOME")))
-    (skip-unless home)
-    (should (file-executable-p (expand-file-name "target/nelisp" home)))
+    (skip-unless (and home (not (string-empty-p home))))
+    (unless (file-executable-p (expand-file-name "target/nelisp" home))
+      (error "NELISP_AOT_DIFF_HOME=%s has no executable target/nelisp" home))
     (let ((out (nelisp-aot-fxloop-test--quit-run home 'no-poll)))
       (should-not (string-match-p "^quit QUIT" out))
       (should (string-match-p "^quit 2000000000 flag=t$" out)))))
