@@ -337,6 +337,16 @@ killed buffers' state.")
 
 (defun emacs-buffer--native-property-text-commit (buf full-size mapping)
   "Publish MAPPING after a successful text operation on native BUF."
+  ;; gnu562: a non-empty buffer whose own sidecar (it has no base buffer,
+  ;; so it is also the owner's) holds no intervals and gets none: the
+  ;; general path below would store nil over nil in that one sidecar and
+  ;; leave the root flag alone.  Skip it (about 20 us per insert).
+  (unless (and (null mapping)
+               (not (zerop full-size))
+               (let ((ext (gethash buf emacs-buffer--state)))
+                 (and ext
+                      (null (emacs-buffer--ext-text-props ext))
+                      (null (emacs-buffer--ext-base-buffer ext)))))
   (when (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buf)
              (fboundp 'buffer-live-p) (buffer-live-p buf))
     (let* ((target-ext (emacs-buffer--ensure-text-property-ext buf))
@@ -348,8 +358,8 @@ killed buffers' state.")
        ((zerop full-size)
         (setf (emacs-buffer--ext-interval-root-present owner-ext) nil))
        (mapping
-        (setf (emacs-buffer--ext-interval-root-present owner-ext) t))))
-    nil))
+        (setf (emacs-buffer--ext-interval-root-present owner-ext) t))))))
+  nil)
 
 (defun emacs-buffer--native-buffer-text-property-mutation
     (operation buf start end &rest payload)
