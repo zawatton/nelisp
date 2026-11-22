@@ -204,16 +204,21 @@
          (src (expand-file-name "spin.el" dir))
          (art (expand-file-name "spin.neln" dir))
          (probe (expand-file-name "probe.el" dir))
+         (settings nil)
          (lisp (file-name-directory (locate-library "nelisp-native-load.el"))))
     (unwind-protect
         (progn
           (with-temp-file src
             (insert "(defun fx-spin (n) (let ((i 0)) (while (< i n) (setq i (1+ i))) i))\n"))
-          (let ((nelisp-aot-compiler-fixnum-loops t)
-                (nelisp-aot-compiler--fxloop-mutation mutation))
-            (nelisp-artifact-compile-file src art nil nil nil nil nil 'neln 'required))
+          (let* ((nelisp-aot-compiler-fixnum-loops t)
+                 (nelisp-aot-compiler--fxloop-mutation mutation))
+            (nelisp-artifact-compile-file src art nil nil nil nil nil 'neln 'required)
+            (setq settings (nelisp-native-load-codegen-settings)))
           (with-temp-file probe
             (insert (format "(load %S nil t)\n" (expand-file-name "nelisp-native-load.el" lisp)))
+            ;; The image has no compiler, so it enforces the defaults unless told
+            ;; what this artifact was built with (the non-default flags are the point).
+            (insert (format "(setq nelisp-native-load-expected-codegen-settings '%S)\n" settings))
             (insert (format "(defun qt (tag n pre inh) (setq quit-flag pre) (setq inhibit-quit inh)
   (princ (format \"%%s %%S flag=%%S\\n\" tag
     (condition-case e (nelisp-native-load-call (nelisp-native-load-artifact %S \"fx-spin\") (list n)) (quit 'QUIT) (error (list 'ERR e)))
@@ -224,8 +229,15 @@
           (with-temp-buffer
             (let ((default-directory (file-name-as-directory home)))
               (call-process "bash" nil t nil "-c"
-                            (format "ulimit -v 8388608; exec timeout 300 target/nelisp --load %s -- < /dev/null"
-                                    (shell-quote-argument probe))))
+                            (let ((dump (getenv "NELISP_AOT_FLAT_DUMP")))
+                              (if (and dump (not (string-empty-p dump)))
+                                  ;; Flat heap-snapshot boot (the image has the prelude).
+                                  (format "ulimit -v 8388608; exec timeout 300 taskset -c 6,22 target/nelisp --cold-load-from %s --eval %s < /dev/null"
+                                          (shell-quote-argument dump)
+                                          (shell-quote-argument
+                                           (format "(progn (nemacs-runtime-dump-reinit) (load %S nil t))" probe)))
+                                (format "ulimit -v 8388608; exec timeout 300 target/nelisp --load %s -- < /dev/null"
+                                        (shell-quote-argument probe))))))
             (buffer-string)))
       (delete-directory dir t))))
 

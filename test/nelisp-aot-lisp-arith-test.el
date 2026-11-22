@@ -100,8 +100,15 @@
             (process-environment (cons (concat "NELISP_HOME=" home)
                                        process-environment)))
         (call-process "bash" nil t nil "-c"
-                      (format "ulimit -v 8388608; exec timeout 900 target/nelisp exec-runtime-image build/nemacs-runtime.nlri '(load \"%s\" nil t t)' < /dev/null"
-                              script)))
+                      (let ((dump (getenv "NELISP_AOT_FLAT_DUMP")))
+                        (if (and dump (not (string-empty-p dump)))
+                            ;; Flat heap-snapshot boot (no .nlri needed).
+                            (format "ulimit -v 8388608; exec timeout 900 taskset -c 6,22 target/nelisp --cold-load-from %s --eval %s < /dev/null"
+                                    (shell-quote-argument dump)
+                                    (shell-quote-argument
+                                     (format "(progn (nemacs-runtime-dump-reinit) (load %S nil t t))" script)))
+                          (format "ulimit -v 8388608; exec timeout 900 target/nelisp exec-runtime-image build/nemacs-runtime.nlri '(load \"%s\" nil t t)' < /dev/null"
+                                  script)))))
       (goto-char (point-min))
       (should (search-forward "DT-DONE" nil t))
       (let (out)
@@ -118,7 +125,8 @@ differential would otherwise report green without having run."
     (when (and h (not (string-empty-p h)))
       (unless (file-executable-p (expand-file-name "target/nelisp" h))
         (error "NELISP_AOT_DIFF_HOME=%s has no executable target/nelisp" h))
-      (unless (file-readable-p (expand-file-name "build/nemacs-runtime.nlri" h))
+      (unless (or (let ((d (getenv "NELISP_AOT_FLAT_DUMP"))) (and d (file-readable-p d)))
+                  (file-readable-p (expand-file-name "build/nemacs-runtime.nlri" h)))
         (error "NELISP_AOT_DIFF_HOME=%s has no build/nemacs-runtime.nlri" h))
       h)))
 
