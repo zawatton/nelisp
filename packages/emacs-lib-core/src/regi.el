@@ -150,7 +150,10 @@ invisibility property, and every character but a tab is one column."
 Expand tabs using `tab-width' and count character display widths.
 With `selective-display' equal to t, carriage return starts a new line.
 Invisible text without ellipses occupies no columns."
-    (let* ((start (line-beginning-position))
+    ;; gnu562: GNU's current_column scans back to the newline
+    ;; (find_newline), not to a field boundary as `line-beginning-position'
+    ;; does; `pos-bol' is that scan (and about 20 us cheaper).
+    (let* ((start (if (fboundp 'pos-bol) (pos-bol) (line-beginning-position)))
            (text (buffer-substring-no-properties start (point)))
            (tab-size (if (and (boundp 'tab-width) (integerp tab-width)
                               (> tab-width 0) (<= tab-width 1000))
