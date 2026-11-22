@@ -1199,6 +1199,11 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_gc_until_base"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 8)
                               :section 'bss :bind 'global :type 'object))
+    ;; `nl_lct_brand_cache': the char-table node brand symbol WORD, filled on the first
+    ;; successful lookup (never 0), in the unused bytes after `nl_gc_until_base'.
+    (list (nelisp-link-symbol "nl_lct_brand_cache"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 16)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_conserv_seen"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64)
                               :section 'bss :bind 'global :type 'object))
@@ -36499,7 +36504,10 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; emacs-char-table--topology-node-p (eq (type-of object) BRAND), the
     ;; record's type word must BE that symbol: a user record with another
     ;; uninterned tag stays a scalar leaf.  An unbound brand declines.
-    (defun nl_lct_brand_word (env)
+    ;; The uncached lookup (allocates the name buffer and an uninterned-name probe).
+    ;; Refreshes `nl_lct_brand_cache' whenever it finds a non-zero word; a miss
+    ;; (0, unbound brand) is never cached.
+    (defun nl_lct_brand_lookup (env)
       (let* ((buf (alloc-bytes 40 8)) (slot (alloc-bytes 32 8)))
         (seq (ptr-write-u64 buf 0 7521905776250678629)
              (ptr-write-u64 (+ buf 8) 0 7308324466015957601)
@@ -36507,12 +36515,21 @@ bytes are written into a fresh 8-byte buffer instead."
              (ptr-write-u64 (+ buf 24) 0 3271131134107154791)
              (ptr-write-u64 (+ buf 32) 0 431348609634)
              (nl_alloc_symbol buf 37 slot)
-             (nl_sym_find_value_w env slot 0))))
+             (let* ((w (nl_sym_find_value_w env slot 0)))
+               (seq (if (= w 0) 0 (ptr-write-u64 (data-addr nl_lct_brand_cache) 0 w))
+                    w)))))
+    ;; Cached brand word: one BSS load on the hot path, 0 when not yet found.
+    (defun nl_lct_brand_word (env)
+      (let* ((c (heap-read-u64 (data-addr nl_lct_brand_cache) 0)))
+        (if (= c 0) (nl_lct_brand_lookup env) c)))
     (defun nl_lct_node_typed_p (node env)
       (let* ((tw (nl_record_type_word node)))
         (if (= (nl_so_p tw) 1)
             (if (= (logand (heap-read-u64 (- tw 6) 0) 63) 16)
-                (if (= tw (nl_lct_brand_word env)) 1 0)
+                (if (= tw (nl_lct_brand_word env)) 1
+                  ;; Miss: the cached word may be stale (rebound brand, reloaded image) or the
+                  ;; tag a decoy; re-resolve once and compare against the fresh word.
+                  (if (= tw (nl_lct_brand_lookup env)) 1 0))
               0)
           0)))
     (defun nl_lct_owner_cache (ct)
