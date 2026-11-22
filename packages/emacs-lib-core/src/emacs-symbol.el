@@ -108,53 +108,53 @@ the underlying NeLisp runtime has no native property-cell.")
   (when (= (nelisp--record-length array) 4)
     (nelisp--record-ref array 2)))
 
-(defun emacs-symbol--byte-word (string offset count)
-  "Read COUNT little-endian bytes of STRING at OFFSET, at most four."
-  (let ((word 0) (i 0))
-    (while (< i count)
-      (setq word (logior word (ash (string-byte string (+ offset i)) (* 8 i)))
-            i (1+ i)))
-    word))
+(defmacro emacs-symbol--word-at (name offset count)
+  "Little-endian word of COUNT (2 or 4) bytes of NAME at OFFSET, inline."
+  (if (= count 4)
+      `(logior (string-byte ,name ,offset)
+               (ash (string-byte ,name (+ ,offset 1)) 8)
+               (ash (string-byte ,name (+ ,offset 2)) 16)
+               (ash (string-byte ,name (+ ,offset 3)) 24))
+    `(logior (string-byte ,name ,offset)
+             (ash (string-byte ,name (+ ,offset 1)) 8))))
 
-(defun emacs-symbol--hash-combine (hash high low)
-  "Combine unsigned 64-bit HASH with the HIGH and LOW halves of a word.
-Represent HASH as a pair of 32-bit halves, avoiding bignum arithmetic."
-  (let* ((old-high (car hash)) (old-low (cdr hash))
-         (sum (+ (logand (ash old-low 4) #xffffffff)
-                 (ash old-high -28) low)))
-    (cons (logand (+ (ash old-high 4) (ash old-low -28) high
-                     (ash sum -32))
-                  #xffffffff)
-          (logand sum #xffffffff))))
+(defmacro emacs-symbol--hash-step (hi lo high low)
+  "Combine the 64-bit hash held as 32-bit halves HI / LO with HIGH / LOW.
+The same arithmetic as `emacs-symbol--hash-combine', on two variables."
+  (let ((sum (make-symbol "sum")) (h (make-symbol "high")) (l (make-symbol "low")))
+    `(let* ((,h ,high) (,l ,low)
+            (,sum (+ (logand (ash ,lo 4) #xffffffff) (ash ,hi -28) ,l)))
+       (setq ,hi (logand (+ (ash ,hi 4) (ash ,lo -28) ,h (ash ,sum -32))
+                         #xffffffff)
+             ,lo (logand ,sum #xffffffff)))))
 
 (defun emacs-symbol--bucket-index (name bits)
   "Return NAME's GNU Emacs 31.1 bucket index for BITS index bits.
-Hash at most nine words using native byte access, without copying NAME."
+Hash at most nine words using native byte access, without copying NAME.
+The 64-bit hash is kept as two 32-bit halves in variables, not a pair."
   (let* ((length (string-bytes name))
-         (hash (cons 0 length)) (offset 0)
+         (hi 0) (lo length) (offset 0)
          (step (max 8 (ash length -3))))
     (if (>= length 8)
         (progn
           (while (<= (+ offset 8) length)
-            (setq hash (emacs-symbol--hash-combine
-                        hash (emacs-symbol--byte-word name (+ offset 4) 4)
-                        (emacs-symbol--byte-word name offset 4))
-                  offset (+ offset step)))
-          (setq hash (emacs-symbol--hash-combine
-                      hash (emacs-symbol--byte-word name (- length 4) 4)
-                      (emacs-symbol--byte-word name (- length 8) 4))))
+            (emacs-symbol--hash-step
+             hi lo (emacs-symbol--word-at name (+ offset 4) 4)
+             (emacs-symbol--word-at name offset 4))
+            (setq offset (+ offset step)))
+          (emacs-symbol--hash-step
+           hi lo (emacs-symbol--word-at name (- length 4) 4)
+           (emacs-symbol--word-at name (- length 8) 4)))
       (let ((tail 0))
         (when (>= length 4)
-          (setq tail (emacs-symbol--byte-word name 0 4) offset 4))
+          (setq tail (emacs-symbol--word-at name 0 4) offset 4))
         (when (>= (- length offset) 2)
-          (setq tail (+ (ash tail 16)
-                        (emacs-symbol--byte-word name offset 2))
+          (setq tail (+ (ash tail 16) (emacs-symbol--word-at name offset 2))
                 offset (+ offset 2)))
         (when (< offset length)
           (setq tail (+ (ash tail 8) (string-byte name offset))))
-        (setq hash (emacs-symbol--hash-combine
-                    hash (ash tail -32) (logand tail #xffffffff)))))
-    (let* ((reduced (logxor (car hash) (cdr hash)))
+        (emacs-symbol--hash-step hi lo (ash tail -32) (logand tail #xffffffff))))
+    (let* ((reduced (logxor hi lo))
            (low (logand reduced #xffff)) (high (ash reduced -16))
            ;; Low 32 bits of multiplication by Knuth's 2654435769.
            (product (logand (+ (* low 31161)
