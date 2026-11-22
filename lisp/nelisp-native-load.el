@@ -689,12 +689,42 @@ The file is one `;;;' header line followed by a single readable plist."
 A host test checks this against every bound `nelisp-aot-compiler-*' variable,
 so a new switch cannot be forgotten.")
 
+(defconst nelisp-native-load-default-codegen-settings
+  '(:flags ((nelisp-aot-compiler-alignhot-perturb)
+            (nelisp-aot-compiler-cold-layout . t)
+            (nelisp-aot-compiler-fixnum-loop-budget . 65536)
+            (nelisp-aot-compiler-fixnum-loops)
+            (nelisp-aot-compiler-fixnum-loop-quit-poll . t)
+            (nelisp-aot-compiler--fxloop-mutation)
+            (nelisp-aot-compiler-hot-alignment :entry 64 :arm 32 :loop 32 :unit-tail 64)
+            (nelisp-aot-compiler-lisp-inline-incdec . t)
+            (nelisp-aot-compiler-lisp-open-defects)
+            (nelisp-aot-compiler-lisp-word-fixnum-test . t)
+            (nelisp-aot-compiler-regalloc . t)
+            (nelisp-aot-compiler-regraw . t)
+            (nelisp-aot-compiler-spillcall . t)
+            (nelisp-aot-compiler-tco-enabled)
+            (nelisp-aot-compiler-threaded-dispatch . t)
+            (nelisp-aot-compiler-threaded-dispatch-functions wf_bytecode_w_fast_run)
+            (nelisp-aot-compiler-vm-register-functions
+             (wf_bytecode_w_fast_run pc sp raw data mem length go depth)
+             (wf_bytecode_execute_frame pc sp done depth))
+            (nelisp-aot-compiler-wasm-genuine-alloc)
+            (nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers)
+            (nelisp-aot-compiler-buffer-leaves . :unbound)
+            (nelisp-aot-compiler-buffer-leaves-inline . :unbound))
+    :compiler-sha256 "c6822dc2810f6bc82d60e88839247efea136e2cf1e583106f035f24ce63d27cf")
+  "Codegen settings and compiler source hash a loader without the compiler enforces.
+Generated from the default session of `nelisp-aot-compiler'.  A host test fails
+when this drifts from the compiler (regenerate with
+`nelisp-native-load-codegen-settings' after loading it).  A process that has
+loaded the compiler uses its live settings instead.")
+
 (defvar nelisp-native-load-expected-codegen-settings nil
-  "Settings plist a loader without the compiler must enforce, or nil.
-A process that has loaded `nelisp-aot-compiler' compares against its live
-settings; one that has not (the runtime image) has none, and enforces this
-value when it is non-nil.  Same shape as
-`nelisp-native-load-codegen-settings'.")
+  "Settings plist overriding `nelisp-native-load-default-codegen-settings'.
+Consulted only by a loader without the compiler (the runtime image); a process
+that has loaded `nelisp-aot-compiler' compares against its live settings.  Same
+shape as `nelisp-native-load-codegen-settings'.  Nil means use the defaults.")
 
 (defvar nelisp-native-load--compiler-source-sha nil)
 
@@ -723,12 +753,12 @@ A switch that is not bound reads as `:unbound'."
   "Return reasons the codegen RECORD of an artifact is not usable here."
   (let ((want (cond ((featurep 'nelisp-aot-compiler)
                      (nelisp-native-load-codegen-settings))
-                    (t nelisp-native-load-expected-codegen-settings))))
+                    (t (or nelisp-native-load-expected-codegen-settings
+                           nelisp-native-load-default-codegen-settings)))))
     (cond
      ((not (and (consp record) (plist-get record :flags)
                 (stringp (plist-get record :compiler-sha256))))
       (list (list :codegen-settings-missing)))
-     ((null want) nil)
      (t
       (let ((diffs nil))
         (dolist (cell (plist-get want :flags))

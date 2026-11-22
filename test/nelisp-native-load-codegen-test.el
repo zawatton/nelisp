@@ -122,4 +122,49 @@
         (should (string-match-p "^C 4950$" out)))
       (delete-directory dir t))))
 
+;; The loader's built-in defaults must equal what the compiler really is.
+(ert-deftest nelisp-native-load-codegen/defaults-match-compiler ()
+  (should (equal (nelisp-native-load-codegen-settings)
+                 nelisp-native-load-default-codegen-settings)))
+
+;; In-image, no expected-settings variable set: an artifact built with a
+;; non-default flag is refused, a default-built one runs, and with the check
+;; removed the stale one runs (negative control).  Uses the flat dump
+;; NELISP_AOT_FLAT_DUMP booted by NELISP_AOT_DIFF_HOME/target/nelisp.
+(ert-deftest nelisp-native-load-codegen/image-defaults-refuse-nondefault ()
+  (let ((home (getenv "NELISP_AOT_DIFF_HOME"))
+        (dump (getenv "NELISP_AOT_FLAT_DUMP")))
+    (skip-unless (and home (not (string-empty-p home))
+                      dump (not (string-empty-p dump))))
+    (unless (file-executable-p (expand-file-name "target/nelisp" home))
+      (error "NELISP_AOT_DIFF_HOME=%s has no executable target/nelisp" home))
+    (let* ((dir (make-temp-file "cgd" t))
+           (src (expand-file-name "m.el" dir))
+           (on (expand-file-name "on.neln" dir))
+           (off (expand-file-name "off.neln" dir))
+           (probe (expand-file-name "probe.el" dir)))
+      (with-temp-file src
+        (insert "(defun cgs-sum (n) (let ((i 0) (s 0)) (while (< i n) (setq s (+ s i)) (setq i (1+ i))) s))\n"))
+      (let ((nelisp-aot-compiler-fixnum-loops t))
+        (nelisp-artifact-compile-file src on nil nil nil nil nil 'neln 'required))
+      (nelisp-artifact-compile-file src off nil nil nil nil nil 'neln 'required)
+      (with-temp-file probe
+        (insert (format "(load %S nil t)\n" (locate-library "nelisp-native-load.el")))
+        (insert "(defvar cgd-x nelisp-native-load-expected-codegen-settings)\n(princ (format \"X %S\\n\" cgd-x))\n")
+        (insert (format "(defun cg-try (tag f) (princ (format \"%%s %%S\\n\" tag (condition-case e (nelisp-native-load-call (nelisp-native-load-artifact f \"cgs-sum\") '(100)) (error 'REFUSED)))))\n"))
+        (insert (format "(cg-try \"OFF\" %S)\n(cg-try \"ON\" %S)\n(defun nelisp-native-load--codegen-problems (r) nil)\n(cg-try \"ONC\" %S)\n" off on on)))
+      (let ((out (with-temp-buffer
+                   (let ((default-directory (file-name-as-directory home)))
+                     (call-process "bash" nil t nil "-c"
+                                   (format "ulimit -v 8388608; exec timeout 300 taskset -c 6,22 target/nelisp --cold-load-from %s --eval %s < /dev/null 2>&1"
+                                           (shell-quote-argument dump)
+                                           (shell-quote-argument
+                                            (format "(progn (nemacs-runtime-dump-reinit) (load %S nil t))" probe)))))
+                   (buffer-string))))
+        (should (string-match-p "^X nil$" out))
+        (should (string-match-p "^OFF 4950$" out))
+        (should (string-match-p "^ON REFUSED$" out))
+        (should (string-match-p "^ONC 4950$" out)))
+      (delete-directory dir t))))
+
 (provide 'nelisp-native-load-codegen-test)
