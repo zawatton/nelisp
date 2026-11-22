@@ -673,6 +673,7 @@ The file is one `;;;' header line followed by a single readable plist."
 (defconst nelisp-native-load-codegen-flag-symbols
   '(nelisp-aot-compiler-alignhot-perturb nelisp-aot-compiler-cold-layout
     nelisp-aot-compiler-fixnum-loop-budget nelisp-aot-compiler-fixnum-loops
+    nelisp-aot-compiler-fixnum-loop-quit-poll
     nelisp-aot-compiler--fxloop-mutation
     nelisp-aot-compiler-hot-alignment nelisp-aot-compiler-lisp-inline-incdec
     nelisp-aot-compiler-lisp-open-defects nelisp-aot-compiler-lisp-word-fixnum-test

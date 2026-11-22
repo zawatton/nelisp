@@ -96,6 +96,7 @@ A missing source disables caching rather than creating an incomplete key."
 
 (defconst nelisp-native-cache--compiler-flag-symbols
   '(nelisp-aot-compiler-fixnum-loops nelisp-aot-compiler-fixnum-loop-budget
+    nelisp-aot-compiler-fixnum-loop-quit-poll
     nelisp-aot-compiler-lisp-inline-incdec nelisp-aot-compiler-buffer-leaves)
   "Dynamic compiler switches that change the code generated for one source.")
 

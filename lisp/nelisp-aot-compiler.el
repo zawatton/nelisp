@@ -11492,6 +11492,9 @@ for direct calls."
 (defvar nelisp-aot-compiler-fixnum-loops nil
   "Non-nil enables the fixnum-loop rewrite of Lisp-mode `while' (aot-regs).")
 
+(defvar nelisp-aot-compiler-fixnum-loop-quit-poll t
+  "Non-nil makes the fast-loop poll service `quit-flag' (else a plain call).")
+
 (defvar nelisp-aot-compiler-fixnum-loop-budget 65536
   "Iterations a fast fixnum loop runs before the interrupt poll.")
 
@@ -11728,7 +11731,22 @@ contains \"closure\"."
                                       ,(if (eq nelisp-aot-compiler--fxloop-mutation 'no-poll)
                                            nil
                                          `(if (nelisp-aot--raw-op = ,budget 0)
-                                              (seq (nelisp-aot--generic-call 1+ 0) nil)
+                                              ;; GNU maybe_quit: a pending `quit-flag' (and no
+                                              ;; `inhibit-quit') clears itself and signals `quit'.
+                                              ;; The builtins go through `funcall' of a computed
+                                              ;; name: a literal one would name an extern the
+                                              ;; loader cannot bridge.  The form holds quoted
+                                              ;; constants, which the host-only exec harness
+                                              ;; cannot run: it binds the switch to nil.
+                                              ,(if nelisp-aot-compiler-fixnum-loop-quit-poll
+                                                   '(if (and (funcall (car '(boundp)) 'quit-flag)
+                                                             (funcall (car '(symbol-value)) 'quit-flag)
+                                                             (not (and (funcall (car '(boundp)) 'inhibit-quit)
+                                                                       (funcall (car '(symbol-value)) 'inhibit-quit))))
+                                                        (seq (funcall (car '(set)) 'quit-flag nil)
+                                                             (signal 'quit nil) nil)
+                                                      nil)
+                                                 '(seq (nelisp-aot--generic-call 1+ 0) nil))
                                             nil))
                                       nil))
                                   nil)

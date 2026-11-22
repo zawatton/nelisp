@@ -24,6 +24,7 @@
          (src (expand-file-name (concat tag ".el") dir))
          (art (concat src ".neln"))
          (nelisp-aot-compiler-fixnum-loops flag)
+         (nelisp-aot-compiler-fixnum-loop-quit-poll nil) ; host exec cannot run quoted constants
          (nelisp-aot-compiler--fxloop-mutation mutation)
          (nelisp-aot-compiler--fxloop-log nil))
     (with-temp-file src (insert source))
@@ -196,5 +197,57 @@
                                                    "clm" t 'ignore-closures))))
     (should (member '(fxc-before applied nil) log))
     (should (member '(fxc-sets applied nil) log))))
+
+(defun nelisp-aot-fxloop-test--quit-run (home mutation)
+  "Run a 2e9-iteration fast loop with `quit-flag' set in HOME's image; return the output."
+  (let* ((dir (make-temp-file "fxq" t))
+         (src (expand-file-name "spin.el" dir))
+         (art (expand-file-name "spin.neln" dir))
+         (probe (expand-file-name "probe.el" dir))
+         (lisp (file-name-directory (locate-library "nelisp-native-load.el"))))
+    (unwind-protect
+        (progn
+          (with-temp-file src
+            (insert "(defun fx-spin (n) (let ((i 0)) (while (< i n) (setq i (1+ i))) i))\n"))
+          (let ((nelisp-aot-compiler-fixnum-loops t)
+                (nelisp-aot-compiler--fxloop-mutation mutation))
+            (nelisp-artifact-compile-file src art nil nil nil nil nil 'neln 'required))
+          (with-temp-file probe
+            (insert (format "(load %S nil t)\n" (expand-file-name "nelisp-native-load.el" lisp)))
+            (insert (format "(defun qt (tag n pre inh) (setq quit-flag pre) (setq inhibit-quit inh)
+  (princ (format \"%%s %%S flag=%%S\\n\" tag
+    (condition-case e (nelisp-native-load-call (nelisp-native-load-artifact %S \"fx-spin\") (list n)) (quit 'QUIT) (error (list 'ERR e)))
+    quit-flag)))
+(qt \"quit\" 2000000000 t nil)
+(qt \"inhibit\" 300000 t t)
+(qt \"clear\" 300000 nil nil)\n" art)))
+          (with-temp-buffer
+            (let ((default-directory (file-name-as-directory home)))
+              (call-process "bash" nil t nil "-c"
+                            (format "ulimit -v 8388608; exec timeout 300 target/nelisp --load %s -- < /dev/null"
+                                    (shell-quote-argument probe))))
+            (buffer-string)))
+      (delete-directory dir t))))
+
+;; Needs NELISP_AOT_DIFF_HOME (a checkout with target/nelisp).  A pending
+;; `quit-flag' is serviced at the first poll, so a 2e9-iteration fast loop
+;; stops after one budget slice; without the poll it runs to completion.
+(ert-deftest nelisp-aot-fxloop/quit-is-serviced-in-a-long-fast-loop ()
+  (let ((home (getenv "NELISP_AOT_DIFF_HOME")))
+    (skip-unless home)
+    (should (file-executable-p (expand-file-name "target/nelisp" home)))
+    (let ((out (nelisp-aot-fxloop-test--quit-run home nil)))
+      (should (string-match-p "^quit QUIT flag=nil$" out))
+      (should (string-match-p "^inhibit 300000 flag=t$" out))
+      (should (string-match-p "^clear 300000 flag=nil$" out)))))
+
+(ert-deftest nelisp-aot-fxloop/mutation-no-poll-is-detected ()
+  "Control: with no poll the same loop runs to completion and ignores the quit."
+  (let ((home (getenv "NELISP_AOT_DIFF_HOME")))
+    (skip-unless home)
+    (should (file-executable-p (expand-file-name "target/nelisp" home)))
+    (let ((out (nelisp-aot-fxloop-test--quit-run home 'no-poll)))
+      (should-not (string-match-p "^quit QUIT" out))
+      (should (string-match-p "^quit 2000000000 flag=t$" out)))))
 
 (provide 'nelisp-aot-fxloop-test)
