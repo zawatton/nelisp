@@ -11396,6 +11396,238 @@ for direct calls."
         (plist-get signature :fixed-count)
         (plist-get signature :arity))))
 
+;;; Fixnum loops (aot-regs, step C) -------------------------------------
+;;
+;; A `while' whose test and body are pure fixnum code over plain frame
+;; variables is rewritten, in Lisp mode, into
+;;
+;;   (let ((go 1))
+;;     (while (= go 1)
+;;       (if GUARD                        ; every variable is a fixnum
+;;           (let ((RV (untag V)) ... (b BUDGET))
+;;             (nelisp-aot--fxwhile ...)  ; raw loop, call free (CG3 registers)
+;;             (setq V (as-word RV)) ...  ; carried variables back to words
+;;             (if (= b 0) POLL))
+;;         nil)
+;;       (if TEST (seq BODY... nil) (setq go 0))))   ; ONE generic iteration
+;;
+;; The fast loop commits an iteration only when every result is in fixnum
+;; range, so on overflow or an exhausted budget the registers hold the
+;; state at the start of the iteration and the generic copy re-runs it with
+;; the exact GNU semantics (bignums, errors).  The region has no call, no
+;; allocation and no safepoint: raw words are never seen by the collector.
+
+(defvar nelisp-aot-compiler-fixnum-loops nil
+  "Non-nil enables the fixnum-loop rewrite of Lisp-mode `while' (aot-regs).")
+
+(defvar nelisp-aot-compiler-fixnum-loop-budget 65536
+  "Iterations a fast fixnum loop runs before the interrupt poll.")
+
+(defvar nelisp-aot-compiler--fxloop-off nil
+  "Non-nil while parsing the rewrite's own output (recursion guard).")
+(defvar nelisp-aot-compiler--fxloop-new nil)
+(defvar nelisp-aot-compiler--fxloop-mutation nil
+  "Test hook: one of old-temps per-setq-commit drop-guard drop-check no-poll, else nil.
+Each deliberately breaks the rewrite so a test can prove it detects the defect.")
+(defvar nelisp-aot-compiler--while-id-stem nil)
+(defvar nelisp-aot-compiler--fxloop-log nil
+  "List of (DEFUN-NAME KIND DETAIL), KIND applied, declined or allocator.")
+(defconst nelisp-aot-compiler--fxloop-leaf-cap 4
+  "Leaves per expression: 4 values of 62 bits cannot wrap a 64-bit word.")
+
+(defun nelisp-aot-compiler--fxloop-fixnum-literal-p (x)
+  (and (integerp x) (<= (- (ash 1 61)) x (1- (ash 1 61)))))
+
+(defun nelisp-aot-compiler--fxloop-var-ok (var fenv)
+  "Non-nil when VAR is a plain GP frame variable of the enclosing function."
+  (let ((cell (assq var fenv)))
+    (and cell (symbolp var) var (not (eq var t))
+         (not (nelisp-aot-compiler--special-var-p var))
+         (not (string-prefix-p "nelisp-aot--" (symbol-name var)))
+         (integerp (plist-get (cdr cell) :slot))
+         (eq (or (plist-get (cdr cell) :class) 'gp) 'gp)
+         (memq (plist-get (cdr cell) :repr) '(word raw-i64 sexp-ptr)))))
+
+(defun nelisp-aot-compiler--fxloop-expr (e fenv vars map)
+  "Return (SEXP . LEAVES) for fixnum expression E or signal `fxloop-decline'.
+VARS is a cons cell whose car collects the variables read; MAP renames
+a variable to its latest raw temporary.  Positive whitelist only."
+  (cl-flet ((bad (why) (throw 'fxloop-decline why))
+            (leaf (v) (cons v 1)))
+    (cond
+     ((integerp e)
+      (unless (nelisp-aot-compiler--fxloop-fixnum-literal-p e) (bad 'literal-range))
+      (leaf e))
+     ((and e (symbolp e))
+      (unless (nelisp-aot-compiler--fxloop-var-ok e fenv) (bad (list 'variable e)))
+      (cl-pushnew e (car vars))
+      (leaf (or (cdr (assq e map)) (bad 'internal-map))))
+     ((and (consp e) (memq (car e) '(+ -)) (= (length e) 3))
+      (let ((a (nelisp-aot-compiler--fxloop-expr (nth 1 e) fenv vars map))
+            (b (nelisp-aot-compiler--fxloop-expr (nth 2 e) fenv vars map)))
+        (cons `(nelisp-aot--raw-op ,(car e) ,(car a) ,(car b)) (+ (cdr a) (cdr b)))))
+     ((and (consp e) (eq (car e) '-) (= (length e) 2))
+      (let ((a (nelisp-aot-compiler--fxloop-expr (nth 1 e) fenv vars map)))
+        (cons `(nelisp-aot--raw-op - 0 ,(car a)) (cdr a))))
+     ((and (consp e) (memq (car e) '(1+ 1-)) (= (length e) 2))
+      (let ((a (nelisp-aot-compiler--fxloop-expr (nth 1 e) fenv vars map)))
+        (cons `(nelisp-aot--raw-op ,(if (eq (car e) '1+) '+ '-) ,(car a) 1)
+              (1+ (cdr a)))))
+     (t (bad (list 'form (if (consp e) (car e) e)))))))
+
+(defun nelisp-aot-compiler--fxloop-capped (e fenv vars map)
+  (let ((r (nelisp-aot-compiler--fxloop-expr e fenv vars map)))
+    (when (> (cdr r) nelisp-aot-compiler--fxloop-leaf-cap)
+      (throw 'fxloop-decline 'leaf-cap))
+    r))
+
+(defun nelisp-aot-compiler--fxloop-test (e fenv vars map)
+  "Return the raw boolean sexp for test E over the raw cells in MAP."
+  (cond
+   ((eq e t) '(nelisp-aot--raw-op = 0 0))
+   ((and (consp e) (memq (car e) nelisp-aot-compiler--cmp-ops) (= (length e) 3))
+    `(nelisp-aot--raw-op ,(car e)
+                         ,(car (nelisp-aot-compiler--fxloop-capped (nth 1 e) fenv vars map))
+                         ,(car (nelisp-aot-compiler--fxloop-capped (nth 2 e) fenv vars map))))
+   ((and (consp e) (memq (car e) '(and or)) (cdr e))
+    (let ((parts (mapcar (lambda (x) (nelisp-aot-compiler--fxloop-test x fenv vars map))
+                         (cdr e))))
+      (if (cdr parts) (cons (car e) parts) (car parts))))
+   ((and (consp e) (memq (car e) '(not null)) (= (length e) 2))
+    (let ((x (nth 1 e)))
+      (cond
+       ((and (consp x) (assq (car x) '((< . >=) (> . <=) (<= . >) (>= . <) (= . /=) (/= . =)))
+             (= (length x) 3))
+        (nelisp-aot-compiler--fxloop-test
+         (list (cdr (assq (car x) '((< . >=) (> . <=) (<= . >) (>= . <) (= . /=) (/= . =))))
+               (nth 1 x) (nth 2 x))
+         fenv vars map))
+       (t (throw 'fxloop-decline 'not-form)))))
+   (t (throw 'fxloop-decline (list 'test (if (consp e) (car e) e))))))
+
+(defun nelisp-aot-compiler--fxloop-rewrite (sexp fenv)
+  "Return the fast-loop rewrite of while SEXP, or nil (reason logged)."
+  (let* ((test (nth 1 sexp))
+         (forms (cddr sexp))
+         (why
+          (catch 'fxloop-decline
+            (let* ((vars (list nil))
+                   (pairs nil))
+              ;; Positive whitelist: every body form is a setq of variable/expr pairs.
+              (dolist (f forms)
+                (unless (and (consp f) (eq (car f) 'setq) (cdr f)
+                             (cl-evenp (length (cdr f))))
+                  (throw 'fxloop-decline (list 'body-form (if (consp f) (car f) f))))
+                (let ((p (cdr f)))
+                  (while p
+                    (unless (nelisp-aot-compiler--fxloop-var-ok (car p) fenv)
+                      (throw 'fxloop-decline (list 'setq-target (car p))))
+                    (push (cons (car p) (cadr p)) pairs)
+                    (setq p (cddr p)))))
+              (setq pairs (nreverse pairs))
+              ;; First pass over names only: collect variables to allocate raw cells.
+              (let* ((names nil))
+                (cl-labels ((scan (x)
+                              (cond ((integerp x) nil)
+                                    ((and x (symbolp x)) (cl-pushnew x names))
+                                    ((consp x) (mapc #'scan (cdr x))))))
+                  (scan test)
+                  (dolist (p pairs) (cl-pushnew (car p) names) (scan (cdr p))))
+                (setq names (nreverse names))
+                (dolist (n names)
+                  (unless (or (eq n t) (nelisp-aot-compiler--fxloop-var-ok n fenv))
+                    (throw 'fxloop-decline (list 'variable n))))
+                (setq names (delq t names))
+                (let* ((cells (mapcar (lambda (n) (cons n (nelisp-aot-compiler--gensym "fxr")))
+                                      names))
+                       (budget (nelisp-aot-compiler--gensym "fxb"))
+                       (go (nelisp-aot-compiler--gensym "fxgo"))
+                       (map0 (copy-sequence cells))
+                       (map map0)
+                       (checks nil) (carried nil) (lets nil))
+                  (dolist (p pairs)
+                    (let* ((r (nelisp-aot-compiler--fxloop-capped
+                               (cdr p) fenv vars
+                               (if (eq nelisp-aot-compiler--fxloop-mutation 'old-temps) map0 map)))
+                           (tmp (nelisp-aot-compiler--gensym "fxt")))
+                      (push (cons tmp (car r)) lets)
+                      (push `(nelisp-aot--raw-op = (sar (shl ,tmp 2) 2) ,tmp) checks)
+                      (setq map (cons (cons (car p) tmp)
+                                      (cl-remove (car p) map :key #'car)))
+                      (cl-pushnew (car p) carried)))
+                  (setq lets (nreverse lets) checks (nreverse checks))
+                  (when (and (eq nelisp-aot-compiler--fxloop-mutation 'drop-check) checks)
+                    (setq checks (cdr checks)))
+                  (let* ((fast-test
+                          `(and (nelisp-aot--raw-op > ,budget 0)
+                                ,(nelisp-aot-compiler--fxloop-test test fenv vars map0)))
+                         (commit
+                          (append
+                           (mapcar (lambda (v)
+                                     `(setq ,(cdr (assq v map0)) ,(cdr (assq v map))))
+                                   (reverse carried))
+                           `((setq ,budget (nelisp-aot--raw-op - ,budget 1)))))
+                         (inner
+                          (let ((body (if (eq nelisp-aot-compiler--fxloop-mutation 'per-setq-commit)
+                                          `(if ,(if (cdr checks) (cons 'and checks) (or (car checks) '(nelisp-aot--raw-op = 0 0)))
+                                               (seq (setq ,budget (nelisp-aot--raw-op - ,budget 1)) nil)
+                                             (seq (setq ,budget 0) nil))
+                                        (if checks
+                                          `(if ,(if (cdr checks) (cons 'and checks) (car checks))
+                                               (seq ,@commit nil)
+                                             (seq (setq ,budget 0) nil))
+                                        `(seq ,@commit nil)))))
+                            (dolist (l (reverse lets))
+                              (setq body
+                                    (if (eq nelisp-aot-compiler--fxloop-mutation 'per-setq-commit)
+                                        (let ((v (car (rassq (car l) map))))
+                                          `(let ((,(car l) ,(cdr l)))
+                                             (seq ,@(and v `((setq ,(cdr (assq v map0)) ,(car l))))
+                                                  ,body nil)))
+                                      `(let ((,(car l) ,(cdr l))) (seq ,body nil)))))
+                            body))
+                         (guard
+                          (let ((g (mapcan (lambda (n)
+                                             (list `(nelisp-aot--fixnump ,n)
+                                                   `(nelisp-aot--raw-op
+                                                     = (sar (shl (nelisp-aot--raw-op + ,n 0) 2) 2)
+                                                     (nelisp-aot--raw-op + ,n 0))))
+                                           names)))
+                            (if (eq nelisp-aot-compiler--fxloop-mutation 'drop-guard)
+                                '(nelisp-aot--raw-op = 0 0)
+                              (if (cdr g) (cons 'and g) (car g)))))
+                         (raw-binds (mapcar (lambda (n) `(,(cdr (assq n map0))
+                                                          (nelisp-aot--raw-op + ,n 0)))
+                                            names)))
+                    (unless guard (throw 'fxloop-decline 'no-variables))
+                    (cons :ok
+                           `(let ((,go 1))
+                              (seq
+                              (while (nelisp-aot--raw-op = ,go 1)
+                                (if ,guard
+                                    (let (,@raw-binds
+                                          (,budget ,nelisp-aot-compiler-fixnum-loop-budget))
+                                      (seq
+                                      (nelisp-aot--fxwhile ,fast-test ,inner)
+                                      ,@(mapcar (lambda (v)
+                                                  `(setq ,v (nelisp-aot--as-word ,(cdr (assq v map0)))))
+                                                (reverse carried))
+                                      ,(if (eq nelisp-aot-compiler--fxloop-mutation 'no-poll)
+                                           nil
+                                         `(if (nelisp-aot--raw-op = ,budget 0)
+                                              (seq (nelisp-aot--generic-call 1+ 0) nil)
+                                            nil))
+                                      nil))
+                                  nil)
+                                (if ,test (seq ,@forms nil) (seq (setq ,go 0) nil)))
+                              nil))))))))))
+    (let ((name nelisp-aot-compiler--current-defun-name))
+      (if (eq (car-safe why) :ok)
+          (progn (push (list name 'applied nil) nelisp-aot-compiler--fxloop-log)
+                 (cdr why))
+        (push (list name 'declined why) nelisp-aot-compiler--fxloop-log)
+        nil))))
+
 (defun nelisp-aot-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -11425,6 +11657,21 @@ functions `((NAME . ARITY) ...)'."
   (cond
    ((and (consp sexp) (eq (car sexp) 'defalias))
     (signal 'nelisp-aot-compiler-error (list :nested-native-defalias sexp)))
+   ;; aot-regs: the fast loop of a rewritten fixnum `while'.
+   ((and (consp sexp) (eq (car sexp) 'nelisp-aot--fxwhile))
+    (let ((nelisp-aot-compiler--fxloop-off t)
+          (nelisp-aot-compiler--while-id-stem "fxwhile"))
+      (nelisp-aot-compiler--parse-value (cons 'while (cdr sexp)) env fenv defuns)))
+   ;; aot-regs: a pure fixnum `while' becomes a guarded raw loop.
+   ((and (consp sexp) (eq (car sexp) 'while)
+         nelisp-aot-compiler-fixnum-loops
+         (not nelisp-aot-compiler--fxloop-off)
+         (nelisp-aot-compiler--lisp-values-p)
+         fenv
+         (setq nelisp-aot-compiler--fxloop-new
+               (nelisp-aot-compiler--fxloop-rewrite sexp fenv)))
+    (let ((nelisp-aot-compiler--fxloop-off t))
+      (nelisp-aot-compiler--parse-value nelisp-aot-compiler--fxloop-new env fenv defuns)))
    ;; Doc 229: an already parsed IR node spliced into a source form.
    ((and (consp sexp) (eq (car sexp) 'nelisp-aot--parsed-ir))
     (cadr sexp))
@@ -12023,7 +12270,7 @@ functions `((NAME . ARITY) ...)'."
       (if (null raw)
           (nelisp-aot-compiler--lisp-with-repr
            (nelisp-aot-compiler--make-ir 'while
-                 :id (nelisp-aot-compiler--gensym "while")
+                 :id (nelisp-aot-compiler--gensym (or nelisp-aot-compiler--while-id-stem "while"))
                  :test (car parsed)
                  :body (funcall tail-box (cdr parsed)))
            ;; A loop's value is nil.
@@ -12040,7 +12287,7 @@ functions `((NAME . ARITY) ...)'."
                (again (funcall parse))
                (node (nelisp-aot-compiler--lisp-with-repr
                       (nelisp-aot-compiler--make-ir 'while
-                            :id (nelisp-aot-compiler--gensym "while")
+                            :id (nelisp-aot-compiler--gensym (or nelisp-aot-compiler--while-id-stem "while"))
                             :test (car again)
                             :body (funcall tail-box (cdr again)))
                       '(raw-bool))))
@@ -27981,6 +28228,21 @@ Layout:
         (nelisp-aot-compiler--emit-promoted-loop-x86
          node buf
          (lambda ()
+           ;; aot-regs diagnostic: a rewritten fixnum loop whose cells did
+           ;; not all get a register runs partly from frame slots.
+           (when (string-prefix-p "fxwhile" (symbol-name id))
+             (let ((total (length (nelisp-aot-compiler--x86-path-slot-counts node)))
+                   (got (length nelisp-aot-compiler--promoted-slots)))
+               (push (list (or (and nelisp-aot-compiler--vm-reg-owner
+                                    (nelisp-aot-compiler--ir-get
+                                     nelisp-aot-compiler--vm-reg-owner :name))
+                               nelisp-aot-compiler--current-defun-name)
+                           (if (< got total) 'allocator 'promoted)
+                           (list got total))
+                     nelisp-aot-compiler--fxloop-log)
+               (when (< got total)
+                 (message "nelisp-fxloop: %s: allocator promoted %d of %d loop slots"
+                          (car (car nelisp-aot-compiler--fxloop-log)) got total))))
            (nelisp-asm-x86_64-jmp-rel32 buf test-lbl)
            ;; Adapt GCC -O2 loop-head alignment to our fixed-width jumps.
            (nelisp-aot-compiler--hot-align buf :loop 16)
