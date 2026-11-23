@@ -69378,7 +69378,8 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
   "Skip key of BINARY's cold image: binary bytes + bake inputs + flags (design2 C)."
   (nelisp-standalone-cachekey-sidecar-key
    binary
-   (nelisp-standalone--bake-input-digest)
+   (concat (nelisp-standalone--bake-input-digest) "\0native="
+           (nelisp-standalone--cold-native-input-digest))
    (append nelisp-standalone-cachekey-env-names
            '("NELISP_STANDALONE_NATIVE_COMPILER_COLD" "NELISP_STANDALONE_COLD_IMAGE"
              "NELISP_STANDALONE_COLD_RUNNER" "NELISP_BOX_CENSUS"))))
@@ -69393,10 +69394,57 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
              (mapcar (lambda (d) (expand-file-name d nelisp-standalone--repo-root))
                      '("lisp" "src" "vendor" "packages"))
              (list (format "revision=%s" nelisp-standalone--build-source-revision)
-                   (let ((defs (car (nelisp-standalone-cachekey--read-script nelisp-standalone--this-file))))
-                     (prin1-to-string
-                      (mapcar (lambda (n) (gethash (intern (concat "nelisp-standalone--" n)) defs))
-                              '("build-cold-image-1" "cold-image-path" "cold-skip-key")))))))))
+                   (nelisp-standalone--cold-dump-body-text))))))
+
+(defun nelisp-standalone--cold-dump-body-text ()
+  "Printed source of every definition the cold dump runs (design2 C, R2).
+Covers the wrapper, the unconditional dump, the real dump body
+`build-cold-image-2', the path and environment helpers and the host check.
+Signals an error when one is missing so the caller does not skip."
+  (let* ((defs (car (nelisp-standalone-cachekey--read-script nelisp-standalone--this-file)))
+         (names nil))
+    (maphash (lambda (k _v)
+               (when (string-match-p
+                      "\\`nelisp-standalone--\\(build-cold-image\\|cold-\\|bake-input-digest\\)" (symbol-name k))
+                 (push (symbol-name k) names)))
+             defs)
+    (setq names (sort (cons "nelisp-standalone--target-runnable-on-host-p" names) #'string<))
+    (unless (member "nelisp-standalone--build-cold-image-2" names)
+      (error "cold dump body not found in %s" nelisp-standalone--this-file))
+    (mapconcat (lambda (n)
+                 (let ((d (gethash (intern n) defs)))
+                   (unless d (error "cold dump definition %s not found" n))
+                   (prin1-to-string d)))
+               names "\n")))
+
+(defun nelisp-standalone--cold-native-input-digest ()
+  "Digest of the files the NATIVE_COMPILER_COLD dump loads, or \"none\" when off.
+These are the bytecode generator scripts and the generated target bytecode
+files and directories read by `build-cold-image-2'."
+  (if (not (member (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") '("1" "template")))
+      "none"
+    (let ((root nelisp-standalone--repo-root) files)
+      (dolist (f '("scripts/nelisp-native-template-bytecode.el"
+                   "scripts/nelisp-native-optimizer-bytecode.el"
+                   "scripts/nelisp-prelude-bytecode.el"))
+        (push (expand-file-name f root) files))
+      (let ((target (expand-file-name "target" root)))
+        (when (file-directory-p target)
+          (dolist (f (directory-files target t "\\`nelisp-.*bytecode.*"))
+            (if (file-directory-p f)
+                (setq files (append (directory-files-recursively f "\\.el\\'") files))
+              (push f files)))))
+      (secure-hash
+       'sha1
+       (mapconcat
+        (lambda (f)
+          (concat (file-relative-name f root) ":"
+                  (if (file-readable-p f)
+                      (with-temp-buffer (set-buffer-multibyte nil)
+                                        (insert-file-contents-literally f)
+                                        (secure-hash 'sha1 (current-buffer)))
+                    "absent")))
+        (sort (delete-dups files) #'string<) "\n")))))
 
 (defun nelisp-standalone--build-cold-image-1 (binary image skip-key)
   "Dump BINARY's cold IMAGE unconditionally and record SKIP-KEY beside it."

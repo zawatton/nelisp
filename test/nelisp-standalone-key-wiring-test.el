@@ -163,6 +163,55 @@ Runs the real bake digest (no memo bound), so a broken accessor fails here."
        (should (= dumps 2))
        (should (seq-some (lambda (m) (string-match-p "skip key unavailable" m)) msgs))))))
 
+(ert-deftest nl-kw-bake-digest-covers-every-input-class ()
+  "An edit to each class of bake input changes the digest."
+  (nl-kw--with-cold-root
+   (nl-kw--write root "scripts/nelisp-native-template-bytecode.el" "(t 1)")
+   (nl-kw--write root "scripts/nelisp-native-optimizer-bytecode.el" "(o 1)")
+   (nl-kw--write root "scripts/nelisp-prelude-bytecode.el" "(p 1)")
+   (nl-kw--write root "target/nelisp-template-bytecode.el" "(tb 1)")
+   (make-directory (expand-file-name "target/nelisp-compiler-bytecode" root) t)
+   (nl-kw--write root "target/nelisp-compiler-bytecode/c.el" "(c 1)")
+   (let ((process-environment (cons "NELISP_STANDALONE_NATIVE_COMPILER_COLD=1" process-environment)))
+     (cl-flet ((digest ()
+                 (setq nelisp-standalone--bake-input-memo nil)
+                 (concat (nelisp-standalone--bake-input-digest) "|"
+                         (nelisp-standalone--cold-native-input-digest))))
+       (let ((base (digest)) (seen nil))
+         (push base seen)
+         (dolist (edit '(("lisp/a.el" . "(a 9)")
+                         ("scripts/nelisp-native-template-bytecode.el" . "(t 9)")
+                         ("scripts/nelisp-native-optimizer-bytecode.el" . "(o 9)")
+                         ("scripts/nelisp-prelude-bytecode.el" . "(p 9)")
+                         ("target/nelisp-template-bytecode.el" . "(tb 9)")
+                         ("target/nelisp-compiler-bytecode/c.el" . "(c 9)")))
+           (nl-kw--write root (car edit) (cdr edit))
+           (let ((d (digest)))
+             (should-not (member d seen))
+             (push d seen))))
+       ;; Revision and flag-off are inputs too.
+       (let ((a (digest)) (nelisp-standalone--build-source-revision "rev-2"))
+         (should-not (equal a (digest))))
+       (let ((a (digest))
+             (process-environment (cons "NELISP_STANDALONE_NATIVE_COMPILER_COLD=0" process-environment)))
+         (should-not (equal a (digest))))))))
+
+(ert-deftest nl-kw-bake-digest-covers-dump-body ()
+  "An edit of the real dump body (build-cold-image-2) changes the bake digest."
+  (let ((tmp (make-temp-file "nl-kw" nil ".el")) (before nil) (after nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmp
+            (insert-file-contents nl-kw--src)
+            (let ((n (search-forward "(message \"[standalone-reader] cold image skipped\")" nil t)))
+              (should n)
+              (replace-match "(message \"[standalone-reader] cold image skipped!\")" t t)))
+          (setq before (nelisp-standalone--cold-dump-body-text))
+          (let ((nelisp-standalone--this-file tmp))
+            (setq after (nelisp-standalone--cold-dump-body-text)))
+          (should-not (equal before after)))
+      (delete-file tmp))))
+
 (provide 'nelisp-standalone-key-wiring-test)
 
 (ert-deftest nl-kw-install-linked-binary-cutoff ()
