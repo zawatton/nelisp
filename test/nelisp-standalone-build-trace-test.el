@@ -346,7 +346,7 @@
                      ((symbol-function 'nelisp-standalone--reader-units)
                       (lambda () (list (nelisp-standalone--cached-unit "test.o" '(original))
                                        (nelisp-standalone--cached-unit "test.o" '(original)))))
-                     ((symbol-function 'nelisp-link-units) (lambda (&rest _) (with-temp-file output)))
+                     ((symbol-function 'nelisp-link-units) (lambda (out &rest _) (with-temp-file out)))
                      ((symbol-function 'nelisp-standalone--reader-src) (lambda () "test"))
                      ((symbol-function 'nelisp-standalone--stamp-build-digest) (lambda (_) "digest"))
                      ((symbol-function 'nelisp-standalone--build-cold-image) (lambda (_) (cl-incf cold)))
