@@ -145,6 +145,8 @@ envelope.")
     ;; GNU comint's input path (RET in shell, ielm and every comint mode);
     ;; the NeLisp comint shim used to stand in for it.
     comint-send-input
+    ;; GNU shell.el's `shell' command (4211 printed characters).
+    shell
     ;; The baked regex bridge calls this on every string/buffer match.
     ;; Eliding it to a nil stub silently kills the whole regex surface.
     nelisp-rx--match-from

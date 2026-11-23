@@ -328,6 +328,26 @@ Thin helper so callers do not need to know the builtins' state table."
     (emacs-fileio--apply-buffer-state buffer)
     buffer))
 
+;; GNU window.el's internal `display-buffer' actions, verbatim (window.el
+;; is preloaded in GNU and not vendored here yet).  shell.el, ielm.el and
+;; other GNU commands append them to their `pop-to-buffer' ACTION.
+(defvar display-buffer--same-window-action
+  '(display-buffer-same-window
+    (inhibit-same-window . nil))
+  "A `display-buffer' action for displaying in the same window.
+Specifies to call `display-buffer-same-window'.")
+(put 'display-buffer--same-window-action 'risky-local-variable t)
+
+(defvar display-buffer--other-frame-action
+  '((display-buffer-reuse-window
+     display-buffer-pop-up-frame)
+    (reusable-frames . 0)
+    (inhibit-same-window . t))
+  "A `display-buffer' action for displaying in another frame.
+Specifies to call `display-buffer-reuse-window', and if that
+fails, call `display-buffer-pop-up-frame'.")
+(put 'display-buffer--other-frame-action 'risky-local-variable t)
+
 ;; The legacy window shim aliases this entry point to `pop-to-buffer',
 ;; which both splits windows and accepts only compatibility buffers.  The
 ;; file/buffer boundary already resolves both buffer families.  Use the

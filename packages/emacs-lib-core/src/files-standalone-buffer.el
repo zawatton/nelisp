@@ -285,6 +285,9 @@ done (relative, `~', or containing `.'/`..'/`//')."
       (when key
         (set alist (cons (cons key value) (symbol-value alist)))))))
 
+;; GNU files.el `null-device', verbatim (shell.el and compile.el read it).
+(defvar null-device "/dev/null" "The system null device.")
+
 (defun files--buffer-string-value (&optional buffer)
   "Return BUFFER's fallback text."
   (if (and files--native-buffer-string (files--host-buffer-available-p))

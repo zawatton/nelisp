@@ -421,6 +421,8 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
   "Install minimal shell/eshell daily-driver facades."
   (unless (featurep 'emacs-symbol)
     (require 'emacs-symbol))
+  ;; `shell' and `shell-mode' are GNU shell.el's (autoloaded from
+  ;; loaddefs); only the emacs-shell names are wrapped here.
   (unless (featurep 'shell)
     (unless (boundp 'emacs-shell-buffer-name)
       (defvar emacs-shell-buffer-name "*shell*"))
@@ -429,12 +431,7 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
     (nemacs-runtime-image-preload--install-module-command
      'emacs-shell-mode 'emacs-shell 'emacs-shell-mode)
     (nemacs-runtime-image-preload--install-module-command
-     'emacs-shell-send-input 'emacs-shell 'emacs-shell-send-input)
-    (nemacs-runtime-image-preload--install-module-command
-     'shell 'emacs-shell 'emacs-shell)
-    (nemacs-runtime-image-preload--install-module-command
-     'shell-mode 'emacs-shell 'emacs-shell-mode)
-    (provide 'shell))
+     'emacs-shell-send-input 'emacs-shell 'emacs-shell-send-input))
   (unless (featurep 'eshell)
     (unless (boundp 'eshell-buffer-name)
       (defvar eshell-buffer-name "*eshell*"))
