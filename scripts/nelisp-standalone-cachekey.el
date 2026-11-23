@@ -75,6 +75,36 @@ are included), which can only cost a miss, never a stale hit."
                 (push (match-string 1) queue))))))))
     (append (sort files (lambda (a b) (string< (file-name-nondirectory a) (file-name-nondirectory b)))) (mapcar (lambda (m) (concat "?" m)) (sort missing #'string<)))))
 
+(defun nelisp-standalone-cachekey-file-requires (file)
+  "Features FILE requires at top level (a line starting with \"(require '\")."
+  (let (r)
+    (with-temp-buffer
+      (insert-file-contents-literally file)
+      (goto-char (point-min))
+      (while (re-search-forward "^(require[ \t]+'\\([^ \t\n()]+\\)" nil t)
+        (push (match-string 1) r)))
+    (delete-dups (nreverse r))))
+
+(defconst nelisp-standalone-cachekey-opaque-dep-regexp
+  (concat "^[ \t]*(\\(load[ \t\n]+\"\\|require[ \t\n]+(\\|autoload[ \t\n]+'\\)"
+          "\\|^[ \t]*(require[ \t\n]+[a-z]")
+  "Dependency forms the textual closure cannot follow.")
+
+(defun nelisp-standalone-cachekey-opaque-deps (files)
+  "Return \"file:line\" for each form in FILES that loads code the closure cannot see.
+`(load \"x\")', `(require (quote x))', `(require VAR)' and `(autoload ...)'
+add dependencies that the scan for `(require 'x)' misses, so a source tree
+that uses them would let an edit go unkeyed."
+  (let (hits)
+    (dolist (f files)
+      (unless (string-prefix-p "?" f)
+        (with-temp-buffer
+          (insert-file-contents-literally f)
+          (goto-char (point-min))
+          (while (re-search-forward nelisp-standalone-cachekey-opaque-dep-regexp nil t)
+            (push (format "%s:%d" (file-name-nondirectory f) (line-number-at-pos)) hits)))))
+    (nreverse hits)))
+
 (defun nelisp-standalone-cachekey-files-digest (files)
   "Digest FILES by repository-relative name and content (sha1 hex)."
   (secure-hash

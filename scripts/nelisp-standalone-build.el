@@ -575,7 +575,10 @@ nelisp-sexp-layout (:113), nelisp-cc-fxir-rows/effects
 `nelisp-standalone--compile-to-unit' smap1 at this file) were missing before."
   (cons nelisp-standalone--this-file
         (nelisp-standalone-cachekey-require-closure
-         nelisp-standalone-cachekey-root-features
+         ;; The libraries this script itself requires (cc-sort, string-blocks,
+         ;; ...) are roots too: their tables can be read after the key is taken.
+         (append nelisp-standalone-cachekey-root-features
+                 (nelisp-standalone-cachekey-file-requires nelisp-standalone--this-file))
          nelisp-standalone--repo-root load-path)))
 
 

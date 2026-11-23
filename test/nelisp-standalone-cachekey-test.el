@@ -65,6 +65,44 @@
     ;; Only Emacs stdlib features may stay unresolved (they live outside the repo).
     (should-not (seq-some (lambda (n) (string-prefix-p "?nelisp" n)) names))))
 
+(ert-deftest nelisp-cachekey-build-script-requires-are-roots ()
+  "Libraries required by the build script itself are in the toolchain closure."
+  (let* ((bf (expand-file-name "scripts/nelisp-standalone-build.el" nelisp-cachekey-test--root))
+         (feats (nelisp-standalone-cachekey-file-requires bf))
+         (load-path (mapcar (lambda (d) (expand-file-name d nelisp-cachekey-test--root))
+                            '("lisp" "src" "scripts")))
+         (with (nelisp-cachekey-test--names
+                (nelisp-standalone-cachekey-require-closure
+                 (append nelisp-standalone-cachekey-root-features feats)
+                 nelisp-cachekey-test--root load-path)))
+         (without (nelisp-cachekey-test--names (nelisp-cachekey-test--real-closure))))
+    (should (member "nelisp-cc-sort" feats))
+    (dolist (n '("nelisp-cc-sort.el" "nelisp-cc-string-blocks.el" "nelisp-cc-string-compare.el"))
+      (should (member n with)))
+    ;; Negative control: the root list alone does not reach them.
+    (should-not (member "nelisp-cc-sort.el" without))
+    ;; The build script's own requires never leave a repository feature unresolved.
+    (should-not (seq-some (lambda (n) (string-prefix-p "?nelisp" n)) with))))
+
+(ert-deftest nelisp-cachekey-closure-has-no-opaque-deps ()
+  "The closure uses only `(require 'x)', which the digest follows."
+  (let ((hits (nelisp-standalone-cachekey-opaque-deps (nelisp-cachekey-test--real-closure))))
+    ;; The one allowed hit emits a require form inside quoted generated code.
+    (should (equal (seq-remove (lambda (h) (string-prefix-p "nelisp-aot-compiler.el:" h)) hits)
+                   nil))
+    (should (<= (length hits) 1))))
+
+(ert-deftest nelisp-cachekey-opaque-deps-detects-forms ()
+  "Negative control: each form the scan cannot follow is reported."
+  (nelisp-cachekey-test--with-tree
+   (dolist (form '("(load \"data.el\")" "(require (quote b))" "(require feat)"
+                   "(autoload 'foo \"b\")"))
+     (with-temp-file (expand-file-name "lisp/a.el" dir) (insert form "\n"))
+     (should (nelisp-standalone-cachekey-opaque-deps (list (expand-file-name "lisp/a.el" dir)))))
+   ;; The plain quoted require is fine.
+   (with-temp-file (expand-file-name "lisp/a.el" dir) (insert "(require 'b)\n"))
+   (should-not (nelisp-standalone-cachekey-opaque-deps (list (expand-file-name "lisp/a.el" dir))))))
+
 (ert-deftest nelisp-cachekey-old-dep-list-misses-the-assembler ()
   "Negative control: the pre-audit list (8 libraries, no closure) lacks them."
   (let* ((load-path (mapcar (lambda (d) (expand-file-name d nelisp-cachekey-test--root))
