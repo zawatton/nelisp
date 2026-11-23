@@ -19,3 +19,13 @@
       (princ (format "PERFGATE %s ratio=%.2f plain=%.3f us big=%.3f us n=%d %s\n" label ratio (car m) (cdr m) (length al) (if (<= ratio 2.0) "OK" "FAIL"))))))
 (pcs-row "markers-only" '(t) (append (pcs-names 400) '(pcs-ns1 pcs-ns2 t)))
 (pcs-row "pair+markers" '((x . 1) t) (append '((x . 1)) (pcs-names 400) '(pcs-ns1 pcs-ns2 t)))
+;; F298 nested-create row (informational, regime A): a 600-name closure whose body creates (lambda () 1) per call.
+;; Creation expands the env sentinel, O(|env|) conses as before b665d7f30, so expect ~80-90 us/call, only on creation.
+(let* ((names (pcs-names 600))
+       (f (eval '(lambda () (lambda () 1)) (append names '(t))))
+       (n 3000))
+  (dotimes (_ 100) (funcall f)) (garbage-collect)
+  (let ((s (float-time)))
+    (dotimes (_ n) (funcall f))
+    (princ (format "PERFINFO nested-create names=600 %.3f us/call view-len=%d\n"
+                   (/ (* 1e6 (- (float-time) s)) n) (length (aref (funcall f) 2))))))

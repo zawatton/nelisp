@@ -317,8 +317,13 @@
                  (saved (if (= (logand item 7) 2)
                             (nl_sb_migrated_default_vector item) 0))
                  (sym-ptr (if (= saved 0) item (nl_vector_slot_word saved 0))))
+            ;; A direct cons WORD (low bits 010) that is not a migrated
+            ;; default carrier is the closure-env sentinel of frame slot 3
+            ;; (see `nelisp_frame_captured_decls'); it is no name, never a match.
             (if (if (= (logand sym-ptr 1) 0)
-                    (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1)
+                    (if (= (logand sym-ptr 7) 2)
+                        0
+                      (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1))
                   0)
                 1
               (nl_capture_filter_contains
@@ -499,32 +504,52 @@
     ;; The bare declarations of a shared environment, recorded on the top
     ;; frame as `nl_push_captured_walk' does.
     (defun nelisp_frame_captured_decls (al frames)
+      ;; Answers 1 when a globally special name was skipped (the caller then
+      ;; prepends the env-view sentinel, see `nl_env_push_captured'), else 0.
       (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
           0
-        (let* ((p (nl_cons_car_word al)))
-          (seq (if (= (logand p 1) 1)
-                   0
-                 (if (if (= (sexp-tag p) 4)
-                         ;; Call-time cost: a globally special interned name
-                         ;; needs no frame marker (a let of it is dynamic
-                         ;; anyway), so the per-call install skips it.  The
-                         ;; stored env view is unchanged.  frames = env+32,
-                         ;; the mirror is env+0 (same as nl_n3_eval_bind_pairs).
-                         (if (= (extern-call bf_declared_special_p (- frames 32) p) 1)
-                             0
-                           1)
-                       (if (or (= (nelisp_frame_stack_find_word_name_p p) 1)
-                               (= (sexp-tag p) 6)
-                               (= (sexp-tag p) 15))
-                           1
-                         0))
-                     (nelisp_frame_local_prepend_fresh
-                      (vector-ref-ptr
-                       (nl_record_slot_word frames 0)
-                       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
-                      p)
-                   0))
-               (nelisp_frame_captured_decls (nl_cons_cdr_word al) frames)))))
+        (let* ((p (nl_cons_car_word al))
+               (skip (if (= (logand p 1) 1) 0
+                       (if (= (sexp-tag p) 4)
+                           ;; Call-time cost: a globally special interned name
+                           ;; needs no frame marker (a let of it is dynamic
+                           ;; anyway), so the per-call install skips it.  The
+                           ;; nested-closure env view is restored from the
+                           ;; sentinel.  frames = env+32, the mirror is env+0
+                           ;; (same as nl_n3_eval_bind_pairs).
+                           (if (= (extern-call bf_declared_special_p (- frames 32) p) 1) 1 0)
+                         0))))
+          (seq (if (= skip 1) 0
+                 (if (= (logand p 1) 1) 0
+                   (if (if (= (sexp-tag p) 4) 1
+                         (if (or (= (nelisp_frame_stack_find_word_name_p p) 1)
+                                 (= (sexp-tag p) 6)
+                                 (= (sexp-tag p) 15))
+                             1
+                           0))
+                       (nelisp_frame_local_prepend_fresh
+                        (vector-ref-ptr
+                         (nl_record_slot_word frames 0)
+                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
+                        p)
+                     0)))
+               (let* ((rest (nelisp_frame_captured_decls (nl_cons_cdr_word al) frames)))
+                 (if (= skip 1) 1 rest))))))
+
+    ;; Env-view sentinel.  After the per-call install, when any special name
+    ;; was skipped (SKIPPED = 1), prepend the closure's env list AL itself, as
+    ;; one direct-cons element, to slot 3 of the fresh frame.  Slot 3 is then
+    ;; [body defvars] S [installed names]; `nl_capture_local_names_w' expands S
+    ;; into the full env in the pre-b665d7f30 order.  Returns 0.
+    (defun nelisp_frame_captured_sentinel (frames al skipped)
+      (if (= skipped 1)
+          (seq (nelisp_frame_local_prepend_fresh
+                (vector-ref-ptr
+                 (nl_record_slot_word frames 0)
+                 (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
+                al)
+               0)
+        0))
 
     ;; Unconditional prepend, no membership test.  Only for the FRESH frame
     ;; `nl_env_push_captured' has just pushed (slot 3 is Nil, nothing else
@@ -574,16 +599,55 @@
       (nelisp_frame_local_special_walk (nl_record_slot_word frames 0)
        (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1) name))
 
-    (defun nl_capture_local_names_w (names acc roots)
+    ;; Frame slot 3 holds [body defvars, newest first] and, when the call
+    ;; install skipped a special name, the env sentinel (a direct cons element,
+    ;; see `nelisp_frame_captured_sentinel') followed by the installed names.
+    ;; LMODE 2 answers 1 when the sentinel is present.  LMODE 0 (no sentinel)
+    ;; conses each element onto ACC, head first (the established order).  LMODE
+    ;; 3 (sentinel present) conses the defvars AFTER the expanded env so they
+    ;; lead the view like GNU's defvar pushes: view = defvars ++ env ++ ACC; at
+    ;; the sentinel it switches to LMODE 1 on the closure env list and drops the
+    ;; installed names (a subset of the env).  LMODE 1 conses the env cdr first
+    ;; so the view keeps the env's own order, duplicates and special names, as
+    ;; the pre-b665d7f30 install produced; the install predicate of
+    ;; `nelisp_frame_captured_decls' minus its special test filters pairs,
+    ;; immediates and non-names.  No allocation outside the conses.
+    (defun nl_capture_local_names_w (names acc roots lmode)
       (if (= (nl_val_tag names) 7)
-          (let* ((word (nelisp_cons_construct_w (nl_cons_car_word names) acc 0)))
-            (nl_capture_root_set_word roots 0 word)
-            (nl_capture_local_names_w (nl_cons_cdr_word names) word roots))
-        acc))
+          (let* ((item (nl_cons_car_word names)))
+            (if (= lmode 2)
+                (if (= (nl_val_tag item) 7) 1
+                  (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 2))
+              (if (= lmode 1)
+                  (let* ((rest (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 1)))
+                    (if (if (= (logand item 1) 1) 0
+                          (if (= (sexp-tag item) 4) 1
+                            (if (or (= (nelisp_frame_stack_find_word_name_p item) 1)
+                                    (= (sexp-tag item) 6)
+                                    (= (sexp-tag item) 15))
+                                1
+                              0)))
+                        (let* ((word (nelisp_cons_construct_w item rest 0)))
+                          (nl_capture_root_set_word roots 0 word)
+                          word)
+                      rest))
+                (if (= lmode 3)
+                    (if (= (nl_val_tag item) 7)
+                        (nl_capture_local_names_w item acc roots 1)
+                      (let* ((rest (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 3))
+                             (word (nelisp_cons_construct_w item rest 0)))
+                        (nl_capture_root_set_word roots 0 word)
+                        word))
+                  (let* ((word (nelisp_cons_construct_w item acc 0)))
+                    (nl_capture_root_set_word roots 0 word)
+                    (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 0))))))
+        (if (= lmode 2) 0 acc)))
 
     (defun nl_capture_local_declarations_w (frame acc roots)
       (let* ((names (nelisp_frame_local_names frame)))
-        (if (= names 0) acc (nl_capture_local_names_w names acc roots))))
+        (if (= names 0) acc
+          (nl_capture_local_names_w names acc roots
+            (if (= (nl_capture_local_names_w names acc roots 2) 1) 3 0)))))
 
     (defun nelisp_frame_scope_mark (frames-ptr)
       (let* ((depth (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2)))

@@ -61197,9 +61197,21 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                       (if (= (nl_bf_bind_sym env name_ptr elem_ptr) 0) -1 (+ idx 1))))))
               ((eq (cadr form) 'nl_push_captured_walk)
                '(defun nl_push_captured_walk (alist_ptr mirror_ptr frames_ptr unbound_ptr)
+                  ;; Answers 1 when a globally special name was skipped (see
+                  ;; nelisp_frame_captured_decls); nl_env_push_captured then
+                  ;; prepends the env-view sentinel.
                   (if (= (sexp-tag alist_ptr) 7)
                       (let* ((pair_ptr (nl_cons_car_ptr alist_ptr))
-                             (rest_ptr (nl_cons_cdr_ptr alist_ptr)))
+                             (rest_ptr (nl_cons_cdr_ptr alist_ptr))
+                             ;; A globally special interned name needs no
+                             ;; per-call frame marker; the name WORD is the
+                             ;; car of the alist cell.
+                             (skip (if (= (sexp-tag pair_ptr) 4)
+                                       (if (= (bf_declared_special_p
+                                               mirror_ptr (nl_cons_car_word alist_ptr)) 1)
+                                           1
+                                         0)
+                                     0)))
                         (seq
                          (if (= (sexp-tag pair_ptr) 7)
                              (nl_pc_bind_one frames_ptr (nl_cons_car_ptr pair_ptr)
@@ -61207,26 +61219,21 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                            ;; Bare declarations use the same identity/name
                            ;; keys as frame lookup, including tag-16 symbols
                            ;; and inline or boxed strings from source capture.
-                           (if (if (= (sexp-tag pair_ptr) 4)
-                                   ;; A globally special interned name needs
-                                   ;; no per-call frame marker (see
-                                   ;; nelisp_frame_captured_decls); the name
-                                   ;; WORD is the car of the alist cell.
-                                   (if (= (bf_declared_special_p
-                                           mirror_ptr (nl_cons_car_word alist_ptr)) 1)
-                                       0
-                                     1)
-                                 (if (or (= (extern-call nelisp_frame_stack_find_word_name_p
-                                                         pair_ptr) 1)
-                                         (= (sexp-tag pair_ptr) 6)
-                                         (= (sexp-tag pair_ptr) 15))
+                           (if (if (= skip 1) 0
+                                 (if (= (sexp-tag pair_ptr) 4)
                                      1
-                                   0))
+                                   (if (or (= (extern-call nelisp_frame_stack_find_word_name_p
+                                                           pair_ptr) 1)
+                                           (= (sexp-tag pair_ptr) 6)
+                                           (= (sexp-tag pair_ptr) 15))
+                                       1
+                                     0)))
                                (nelisp_frame_local_prepend_fresh
                                 (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
                                  (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))
                                 pair_ptr) 0))
-                         (nl_push_captured_walk rest_ptr mirror_ptr frames_ptr unbound_ptr)))
+                         (let* ((later (nl_push_captured_walk rest_ptr mirror_ptr frames_ptr unbound_ptr)))
+                           (if (= skip 1) 1 later))))
                     0)))
               ((eq (cadr form) 'nelisp_env_bind_local)
                `(defun ,(cadr form) ,(caddr form)
