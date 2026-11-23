@@ -366,6 +366,13 @@ if OBJECT does not identify a displayed buffer or a live window."
   (defvar last-event-frame nil
     "The frame in which the most recently read event occurred."))
 
+;; GNU term.c `system-uses-terminfo' (DEFVAR_BOOL; 1 on TERMINFO builds,
+;; which includes GNU/Linux).  comint.el reads it when it builds the
+;; TERM/TERMINFO environment of a subprocess.
+(unless (boundp 'system-uses-terminfo)
+  (defvar system-uses-terminfo t
+    "Non-nil means the system uses terminfo rather than termcap."))
+
 (provide 'emacs-parity-core-vars)
 
 ;;; emacs-parity-core-vars.el ends here

@@ -142,6 +142,9 @@ envelope.")
     ;; Every VC backend command (`vc-diff', `vc-print-log', ...) runs through
     ;; `vc-do-command'; an elided body makes the VC workflow unusable.
     vc-do-command
+    ;; GNU comint's input path (RET in shell, ielm and every comint mode);
+    ;; the NeLisp comint shim used to stand in for it.
+    comint-send-input
     ;; The baked regex bridge calls this on every string/buffer match.
     ;; Eliding it to a nil stub silently kills the whole regex surface.
     nelisp-rx--match-from
