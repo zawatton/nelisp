@@ -61258,16 +61258,16 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                (ptr-write-u64 cell 16 13107)))
                         (nelisp_frame_bind frames (nl_cons_car_ptr pair) cell
                                            (+ cell 32) (+ cell 64) (+ cell 96)) 0))
-               ;; A bare symbol that is already declared special needs no
-               ;; local marker (its let is dynamic anyway): skip the O(k)
-               ;; dedupe walk.  `eval-and-compile' passes the whole file's
-               ;; `macroexp--dynvars' here (hundreds, ~90% special).
-               (if (if (= (sexp-tag pair) 4)
-                       (if (= (bf_declared_special_p (- frames 32)
-                                                     (nl_cons_car_word alist)) 1)
-                           0 1)
-                     (if (= (sexp-tag pair) 16) 1 0))
-                   (nelisp_frame_local_declare_one
+               ;; Every bare symbol stays in the frame's declaration list
+               ;; (slot 3), special or not, in alist order and with
+               ;; duplicates, as GNU's installed alist shows them in
+               ;; `(aref closure 2)'.  The scope frame was pushed fresh by
+               ;; the caller and only this loop writes its slot 3, so the
+               ;; unconditional prepend (no O(k) contains walk) is exact.
+               ;; `eval-and-compile' passes the whole file's
+               ;; `macroexp--dynvars' here (hundreds of entries).
+               (if (or (= (sexp-tag pair) 4) (= (sexp-tag pair) 16))
+                   (nelisp_frame_local_prepend_fresh
                     (vector-ref-ptr (nl_record_slot_word frames 0)
                      (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)) pair)
                  0))))

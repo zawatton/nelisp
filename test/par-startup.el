@@ -17,6 +17,17 @@
 (row "c eval alist nonspecial" (eval '(let ((st-ns4 8)) (symbol-value 'st-ns4)) '(st-sp1 st-ns4 st-ns4 t)))
 (row "c eval alist pair+marker" (eval '(let ((st-ns5 8)) (list x (symbol-value 'st-ns5))) '(st-sp1 (x . 1) st-ns5 t)))
 (row "c uninterned same name" (let ((u (make-symbol "st-sp1"))) (eval `(let ((,u 8)) (condition-case nil (symbol-value ',u) (void-variable 'void))) (list u t))))
+;; F281 env view of a closure made under an alist eval: specials stay, order and duplicates as given.
+;; "n" rows drop the trailing t (the pre-existing divergence: NeLisp omits it); "raw" rows are KNOWN-DIV
+;; against GNU (trailing t; cconv trims bare names when a lexical pair is present), recorded, not asserted.
+(defun st-view (al) (aref (eval '(lambda () 1) al) 2))
+(row "f env n special+ns" (delq t (st-view '(st-sp1 st-ns t))))
+(row "f env n order" (delq t (st-view '(st-ns st-sp1 st-ns7 st-sp2 t))))
+(row "f env n dups" (delq t (st-view '(st-ns st-sp1 st-ns st-sp1 st-sp1 t))))
+(row "f env n mixed" (delq t (st-view '(st-sp1 st-ns8 st-sp2 st-ns9 st-sp1 st-ns8 t))))
+(row "f env raw special+ns" (st-view '(st-sp1 st-ns t)))
+(row "g env raw lexical pairs" (st-view '(st-sp1 (x . 1) st-ns t)))
+(row "g env raw mixed pairs" (st-view '(st-sp1 st-ns (x . 1) st-sp2 (y . 2) st-ns t)))
 ;; defvar made special AFTER the alist eval must not leave a stale decision
 (row "c special after" (list (eval '(let ((st-late 1)) (condition-case nil (symbol-value 'st-late) (void-variable 'void))) '(st-late t)) (progn (defvar st-late 0) (eval '(let ((st-late 2)) (symbol-value 'st-late)) '(st-late t)))))
 ;; eval-and-compile style: long macroexp--dynvars-like alist (mostly special) then a closure made inside

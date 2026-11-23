@@ -166,6 +166,8 @@ CASES = [
     ("(let ((f (let () (defvar st-sp1) (defvar st-ns3) (lambda () (let ((st-sp1 3) (st-ns3 4)) (list (symbol-value 'st-sp1) (symbol-value 'st-ns3))))))) (list (funcall f) (funcall f) st-sp1))", '((3 4) (3 4) 1)'),
     ("(list (eval '(let ((st-sp1 8)) (symbol-value 'st-sp1)) '(st-sp1 st-sp2 st-ns4 t)) (eval '(let ((st-ns5 8)) (list x (symbol-value 'st-ns5))) '(st-sp1 (x . 1) st-ns5 t)))", '(8 (1 8))'),
     ('(let* ((al (append (mapcar (lambda (i) (intern (format "st-d%d" (1+ (% i 3))))) (number-sequence 1 60)) \'(st-ns6 t))) (f (progn (defvar st-d1 1) (defvar st-d2 2) (defvar st-d3 3) (eval \'(lambda () (let ((st-ns6 6) (st-d1 7)) (list (symbol-value \'st-ns6) (symbol-value \'st-d1)))) al)))) (list (funcall f) (funcall f) st-d1))', '((6 7) (6 7) 1)'),
+    # F281: closure env view under an alist eval keeps special names, order and duplicates (trailing t dropped: NeLisp omits it).
+    ("(progn (defvar st-sp1 1) (defvar st-sp2 2) (list (delq t (aref (eval '(lambda () 1) '(st-sp1 st-ns t)) 2)) (delq t (aref (eval '(lambda () 1) '(st-ns st-sp1 st-ns st-sp1 st-sp1 t)) 2)) (delq t (aref (eval '(lambda () 1) '(st-sp1 st-ns8 st-sp2 st-ns9 st-sp1 st-ns8 t)) 2))))", '((st-sp1 st-ns) (st-ns st-sp1 st-ns st-sp1 st-sp1) (st-sp1 st-ns8 st-sp2 st-ns9 st-sp1 st-ns8))'),
 ]
 
 
