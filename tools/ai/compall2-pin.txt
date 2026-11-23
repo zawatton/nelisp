@@ -146,6 +146,10 @@ nelisp--path-slashify
 file-name-as-directory
 nlre--re-search-forward
 nlre--nat-bsearch
+nlre--re-search-forward-cls
+nlre--nat-bsearch-cls
+nlre--nat-bsearch-back
+nlre--nat-entry-ready
 nlre--nat-layout-ok
 nlre--nat-buffer-text
 nelisp--record-type

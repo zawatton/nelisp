@@ -1,0 +1,80 @@
+;;; -*- lexical-binding: t; -*-
+;; F418: re-search-forward / re-search-backward / search-forward-regexp with syntax-class atoms
+;; (\w \W \sC \SC \< \> \_< \_>) on the native matcher: groups, bound, noerror nil/t/other,
+;; count 1, 2 and negative, narrowing, case-fold, match-data, non-ASCII text (declines), raw aset
+;; on a syntax table.  Spec = GNU 31.1 (par-rx-research.gnu).  Run on the old binary with the new
+;; regexp Lisp loaded (class route gated off by caps 332) and again on the final build.
+;; Not covered: \= (the library compiles it as a literal "=", pre-existing, all paths), and the
+;; point left after a failed search with |count| > 1 (the Lisp path leaves point at the last
+;; match, GNU leaves it unchanged), so the point is left out of those error rows.
+(set-syntax-table (standard-syntax-table))
+(defmacro row (n f) `(princ (format "%-34s %S\n" ,n (condition-case e ,f (error (list 'ERR (car e)))))))
+(defvar rx-pats '("\\w" "\\W" "\\s-" "\\S-" "\\sw" "\\s_" "\\s." "\\s(" "\\w+" "\\W+" "\\s-+\\w"
+                  "\\(\\w+\\)" "\\(\\w\\)\\(\\s-\\)" "a\\W*b" "\\<\\w" "\\w\\>" "\\_<\\w+" "\\w+\\_>"
+                  "\\w\\{2\\}" "x" "ab" "[a-c]+" "\\`\\w" "\\w\\'" "^\\w" "\\w$"
+                  "\\(?:foo\\|\\w\\{3\\}\\)" "\\(\\w+\\)\\1"))
+(defvar rx-texts '("foo-bar baz_qux (quux) 12.5" "a" "" "  \t x  y" "ab ab" "xx_yy zz"))
+(defun rx-md () (let ((md (match-data t)) (l nil))
+  (while (and md (or (integerp (car md)) (null (car md))))
+    (setq l (append l (list (car md) (cadr md))) md (cddr md)))
+  (while (and l (null (car (last l)))) (setq l (butlast l 2))) l))
+(defun rx-sum (x) (let ((h 0)) (mapc (lambda (c) (setq h (% (+ (* h 31) c) 1000003))) (format "%S" x)) h))
+(defun rx-one (dir re text pt bound ne count)
+  (with-temp-buffer
+    (insert text) (goto-char pt) (set-match-data nil)
+    (let ((fn (if (eq dir 'f) #'re-search-forward #'re-search-backward)))
+      ;; Warm the native text memo (it is built on the second search of an unchanged buffer).
+      (dotimes (_ 2) (ignore-errors (funcall fn re bound ne count)) (goto-char pt))
+      (set-match-data nil)
+      (condition-case e
+          (let ((r (funcall fn re bound ne count))) (list r (point) (and r (rx-md))))
+        (error (if (and (integerp count) (> (abs count) 1)) (list 'ERR (car e))
+                 (list 'ERR (car e) (point))))))))
+(defun rx-sweep (dir fold ne count)
+  (let ((case-fold-search fold) (out nil))
+    (dolist (re rx-pats)
+      (dolist (text rx-texts)
+        (let* ((n (length text)) (pts (delete-dups (list 1 (min 2 (1+ n)) (1+ (/ n 2)) (1+ n)))))
+          (dolist (pt pts)
+            (dolist (bd (if (eq dir 'f) (list nil (min (1+ n) (+ pt 3))) (list nil (max 1 (- pt 3)))))
+              (push (rx-one dir re text pt bd ne count) out))))))
+    (nreverse out)))
+(dolist (dir '(f b))
+  (dolist (fold '(nil t))
+    (dolist (ne '(nil t other))
+      (dolist (count '(nil 2 -1))
+        (let ((r (rx-sweep dir fold ne count)))
+          (row (format "%s fold=%S ne=%S count=%S" dir fold ne count) (list (length r) (rx-sum r) (seq-take (delete-dups (copy-sequence r)) 6))))))))
+(row "search-forward-regexp \\w" (with-temp-buffer (insert "ab-cd ef") (goto-char 3) (list (search-forward-regexp "\\w+" nil t) (point) (match-beginning 0))))
+(row "search-forward-regexp neg count" (with-temp-buffer (insert "ab-cd ef") (goto-char 8) (list (search-forward-regexp "\\w+" nil t -1) (point) (match-beginning 0))))
+(row "search-backward-regexp alias" (with-temp-buffer (insert "ab-cd ef") (goto-char 8) (list (re-search-backward "\\w+" nil t) (point) (match-end 0))))
+(row "match-data groups back" (with-temp-buffer (insert "foo bar baz") (goto-char 12) (list (re-search-backward "\\(\\w\\)\\(\\w+\\)\\s-" nil t) (rx-md))))
+(row "match-data groups fwd" (with-temp-buffer (insert "foo bar baz") (goto-char 1) (list (re-search-forward "\\(\\w+\\)\\s-\\(\\w\\)" nil t) (rx-md))))
+(row "failed search keeps match-data" (with-temp-buffer (insert "foo bar") (goto-char 1) (re-search-forward "\\(o\\)" nil t) (list (re-search-forward "\\(\\w\\)q" nil t) (rx-md) (re-search-backward "\\(\\s_\\)\\w" nil t) (rx-md))))
+(row "narrowed back" (with-temp-buffer (insert "ab cd ef gh") (narrow-to-region 4 9) (goto-char 9) (list (re-search-backward "\\w+" nil t) (point) (re-search-backward "\\<\\w" nil t) (point))))
+(row "narrowed fwd" (with-temp-buffer (insert "ab cd ef gh") (narrow-to-region 4 9) (goto-char 4) (list (re-search-forward "\\w+\\>" nil t) (point) (re-search-forward "\\sw" nil t) (point))))
+(row "non-ASCII fwd" (with-temp-buffer (insert "あい foo う") (goto-char 1) (list (re-search-forward "\\w+" nil t) (point) (re-search-forward "\\s-\\w" nil t) (point))))
+(row "non-ASCII back" (with-temp-buffer (insert "あい foo う") (goto-char (point-max)) (list (re-search-backward "\\w+" nil t) (point) (re-search-backward "\\s-" nil t) (point))))
+(row "non-ASCII after the scan" (with-temp-buffer (insert "foo bar あ") (goto-char 1) (list (re-search-forward "\\(\\w+\\)\\s-" nil t) (re-search-forward "\\w+\\s-" nil t) (point))))
+(row "with-syntax-table fwd/back" (let ((st (make-syntax-table))) (modify-syntax-entry ?_ "w" st)
+  (with-temp-buffer (insert "a_b c") (goto-char 1)
+    (list (let ((x (progn (re-search-forward "\\w+" nil t) (point)))) x)
+          (with-syntax-table st (goto-char 1) (progn (re-search-forward "\\w+" nil t) (point)))
+          (with-syntax-table st (goto-char 4) (progn (re-search-backward "\\w+" nil t) (point)))))))
+(row "modify then search" (let ((st (make-syntax-table))) (with-syntax-table st (with-temp-buffer (insert "a_b c") (set-syntax-table st) (goto-char 1)
+  (let ((a (progn (re-search-forward "\\w+" nil t) (point)))) (modify-syntax-entry ?_ "w" st) (goto-char 1)
+    (list a (progn (re-search-forward "\\w+" nil t) (point)) (progn (goto-char 6) (re-search-backward "\\w+" nil t) (point))))))))
+(row "raw aset on syntax table" (let ((st (make-syntax-table))) (with-temp-buffer (insert "a_b c") (set-syntax-table st) (goto-char 1)
+  (let ((a (progn (re-search-forward "\\w+" nil t) (point))) b c)
+    (aset st ?_ (cons 2 nil)) (goto-char 1) (setq b (progn (re-search-forward "\\w+" nil t) (point)))
+    (goto-char 6) (setq c (progn (re-search-backward "\\w+" nil t) (point)))
+    (list a b c)))))
+(row "repeat same re, point moves" (with-temp-buffer (insert "ab cd ef") (goto-char 1)
+  (let (l) (while (re-search-forward "\\w+" nil t) (push (point) l)) (goto-char (point-max)) (while (re-search-backward "\\w+" nil t) (push (point) l)) l)))
+(row "empty match back" (with-temp-buffer (insert "ab cd") (goto-char 4) (list (re-search-backward "\\w*" nil t) (point) (rx-md))))
+(row "back at point-min" (with-temp-buffer (insert "ab") (goto-char 1) (list (re-search-backward "\\w" nil t) (point))))
+(row "back bound error" (with-temp-buffer (insert "ab cd") (goto-char 3) (re-search-backward "\\w" 5 t)))
+(row "fwd bound error" (with-temp-buffer (insert "ab cd") (goto-char 3) (re-search-forward "\\w" 2 t)))
+(row "back match end capped at point" (with-temp-buffer (insert "abcdef") (goto-char 4) (list (re-search-backward "\\w+" nil t) (point) (match-end 0))))
+(row "back \\> at point" (with-temp-buffer (insert "ab cd") (goto-char 3) (list (re-search-backward "\\w\\>" nil t) (point) (match-end 0))))
+(row "back marker bound" (with-temp-buffer (insert "ab cd ef") (goto-char 8) (let ((m (copy-marker 4))) (list (re-search-backward "\\w+" m t) (point)))))

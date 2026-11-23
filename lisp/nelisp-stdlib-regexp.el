@@ -3119,6 +3119,84 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
                          (setq nlre--last-buffer b)
                          'yes))))))))))
 
+;; F418: re-search with class atoms.  `nlre--nat-bsearch' (harvested) declines them,
+;; so the two functions below, which have no harvested row, take over: same
+;; preconditions and result protocol (t = declined, nothing changed).
+(defun nlre--nat-entry-ready (entry)
+  "Ready the syntax maps ENTRY reads; nil when it must not run natively."
+  (if (= 0 (logand (aref (car entry) 8) 32))
+      (progn (unless (= 0 (logand (aref (car entry) 8) 16)) (nlre--nat-syn-ensure)) t)
+    (nlre--nat-cls-ensure entry)))
+
+(defun nlre--nat-bsearch-cls (regexp bound noerror)
+  "Native forward search from point for a class program.  Return t when declined."
+  (let ((b nelisp--current-buffer))
+    (if (or (null b) (not (stringp regexp)) (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
+            search-spaces-regexp
+            (and bound (not (integerp bound)))
+            (and case-fold-search (not (nlre--nat-fold-default-p))))
+        t
+      (let ((entry (and nlre--nat-cls-enable (> (length regexp) 0)
+                        (nlre--nat-program-cls regexp (and case-fold-search t)))))
+        (if (or (null entry) (not (nlre--nat-entry-ready entry))) t
+          (let* ((blen (aref b 13))
+                 (pt (or (aref b 12) (1+ blen)))
+                 (pmax (1+ (aref b 14)))
+                 (lim (if bound (min bound pmax) pmax))
+                 (text (and (>= lim pt) (nlre--nat-buffer-text b))))
+            (if (null text) t
+              (let ((r (nlre--nat-run entry text (1- pt) (1- lim) nil (aref b 14))))
+                (cond
+                 ((eq r t) t)
+                 ((null r)
+                  (cond ((null noerror) (signal 'search-failed (list regexp)))
+                        ((eq noerror t) nil)
+                        (t (aset b 12 (if (= lim (1+ blen)) nil lim)) nil)))
+                 (t
+                  (nlre--nat-publish (cdr entry) 1)
+                  (setq nlre--last-buffer b)
+                  (let ((np (1+ (aref nlre--nat-caps 1))))
+                    (aset b 12 (if (= np (1+ blen)) nil np))
+                    np)))))))))))
+
+(defun nlre--nat-bsearch-back (regexp limit noerror)
+  "Native backward search from point down to LIMIT, one repetition.
+GNU's `re_search_2' with a negative range: the anchored program runs at each
+start from point down to LIMIT, and a match may not end past point.  LIMIT is
+an integer already clamped to the buffer.  Return t when declined."
+  (let ((b nelisp--current-buffer))
+    (if (or (null b) (not (stringp regexp)) (not (integerp limit))
+            (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
+            search-spaces-regexp
+            (and case-fold-search (not (nlre--nat-fold-default-p))))
+        t
+      (let* ((fold (and case-fold-search t))
+             (entry (and (> (length regexp) 0)
+                         (or (nlre--nat-program-syn regexp fold)
+                             (and nlre--nat-cls-enable
+                                  (nlre--nat-program-cls regexp fold))))))
+        (if (or (null entry) (not (nlre--nat-entry-ready entry))) t
+          (let* ((blen (aref b 13))
+                 (pt (or (aref b 12) (1+ blen)))
+                 (text (and (>= pt limit) (nlre--nat-buffer-text b))))
+            (if (null text) t
+              (let ((p pt) (r nil) (end (1- pt)) (n (aref b 14)))
+                (while (and (>= p limit) (null r))
+                  (setq r (nlre--nat-run entry text (1- p) end t n))
+                  (when (null r) (setq p (1- p))))
+                (cond
+                 ((eq r t) t)
+                 ((null r)
+                  (cond ((null noerror) (signal 'search-failed (list regexp)))
+                        ((eq noerror t) nil)
+                        (t (aset b 12 (if (= limit (1+ blen)) nil limit)) nil)))
+                 (t
+                  (nlre--nat-publish (cdr entry) 1)
+                  (setq nlre--last-buffer b)
+                  (let ((np (1+ (aref nlre--nat-caps 0))))
+                    (aset b 12 (if (= np (1+ blen)) nil np))
+                    np)))))))))))
+
 (defvar nlre--nat-layout 'unknown
   "t when `nelisp-buffer' slots are laid out as `nlre--nat-bsearch' expects.")
 (defun nlre--nat-layout-ok (b)
@@ -3720,6 +3798,19 @@ takes the pattern; everything else, including what it declines, is
              t)))
     (if (eq r t) (nlre--re-search-forward-lisp regexp bound noerror count) r)))
 
+(defun nlre--re-search-forward-cls (regexp &optional bound noerror count)
+  "`re-search-forward' with class atoms (\\w \\sC ...) on the native matcher.
+`nlre--re-search-forward' with `nlre--nat-bsearch-cls' tried between the plain
+native attempt and the Lisp path.  The public name and the direct callers use
+this one; `nlre--re-search-forward' stays because its native row is harvested."
+  (let ((r (if (and nlre--nat-have (or (null count) (eq count 1)))
+               (nlre--nat-bsearch regexp bound noerror nil)
+             t)))
+    (when (and (eq r t) nlre--nat-have nlre--nat-cls-enable
+               (or (null count) (eq count 1)))
+      (setq r (nlre--nat-bsearch-cls regexp bound noerror)))
+    (if (eq r t) (nlre--re-search-forward-lisp regexp bound noerror count) r)))
+
 (defun nlre--re-search-forward-lisp (regexp &optional bound noerror count)
   ;; libcomp: GNU `search_command' (search.c), in its order.  COUNT is
   ;; checked as a fixnum before REGEXP is checked as a string.  The
@@ -3928,11 +4019,15 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
                         (max base (min end bound)))
                     (if (> direction 0) end base))))
       (if (> direction 0)
-          (nlre--re-search-forward regexp limit noerror (- 0 count))
+          (nlre--re-search-forward-cls regexp limit noerror (- 0 count))
         ;; Candidates run from the starting point down to LIMIT, and a match
         ;; may not extend past the starting point, so the window ends one
         ;; character past it and grows leftward as the scan goes (see
-        ;; `nlre--window-search').
+        ;; `nlre--window-search').  One repetition is tried natively first.
+        (let ((nat (if (and nlre--nat-have (= count 1))
+                       (nlre--nat-bsearch-back regexp limit noerror)
+                     t)))
+         (if (not (eq nat t)) nat
         (let* ((prepared-regexp (nlre--buffer-search-regexp regexp))
                (old-caps nlre--last-caps)
                (old-buffer nlre--last-buffer)
@@ -3957,7 +4052,7 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
                     (progn (unless (eq noerror t) (funcall nlre--goto-char-function limit)) nil)
                   (signal 'search-failed (list regexp))))
             (setq nlre--last-buffer (funcall nlre--current-buffer-function))
-            (funcall nlre--goto-char-function cursor)))))))
+            (funcall nlre--goto-char-function cursor)))))))))
 
 ;; Public entry points defined here as top-level defuns so the build admits
 ;; them as byte-code; the build's prelude used to define them as interpreted
@@ -4090,7 +4185,7 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
     "Return non-nil if text after point matches REGEXP, leaving match data alone."
     (nlre--looking-at regexp t)))
 (unless (fboundp 're-search-forward)
-  (fset 're-search-forward (symbol-function 'nlre--re-search-forward)))
+  (fset 're-search-forward (symbol-function 'nlre--re-search-forward-cls)))
 (unless (fboundp 're-search-backward)
   (fset 're-search-backward (symbol-function 'nlre--re-search-backward)))
 (unless (fboundp 'set-match-data)

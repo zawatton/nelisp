@@ -29770,9 +29770,9 @@ Text after the value is not examined; the caller decides whether it is an error.
     (nelisp--cc03-validate-regexp regexp)
     (if (< count 0)
         (nlre--re-search-backward regexp bound noerror (- count))
-      (nlre--re-search-forward regexp
-                              (and bound (max (point-min) (min (point-max) bound)))
-                              noerror count))))
+      (nlre--re-search-forward-cls regexp
+                                  (and bound (max (point-min) (min (point-max) bound)))
+                                  noerror count))))
 
 (defun terpri (&optional stream ensure)
   "Output a newline to STREAM, returning t if one was printed.
