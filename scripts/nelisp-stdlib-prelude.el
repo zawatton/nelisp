@@ -26285,7 +26285,63 @@ precision (.N) are applied in elisp, %f/%F honor their .PRECISION via
 `nelisp--fmt-float' (Doc 159 §3), %S uses `prin1-to-string' and the remaining
 conversions are delegated to native `format', which lacks only the
 field-width layer."
-  (nelisp--format-full template args))
+  (or (nelisp--format-plain template args)
+      (nelisp--format-full template args)))
+
+(defun nelisp--format-plain (template args)
+  "TEMPLATE formatted with ARGS, or nil when `nelisp--format-full' is needed.
+gnu562: the full layer costs about 20 us for one %f.  This answers only
+templates whose directives are %%, %s of a property-free string, a
+symbol or an integer, %d of an integer, and %f / %e / %g with at most a
+precision, of a number, with no text properties on TEMPLATE; anything
+else (flags, width, N$, other conversions, missing arguments) answers
+nil.  Pieces are built as the full layer builds them, including its
+final multibyte promotion."
+  (when (and (stringp template)
+             (not (gethash template nelisp--tp-string-properties)))
+    (let ((n (length template)) (i 0) (pieces nil) (argp args)
+          (multibyte (multibyte-string-p template)) (ok t))
+      (dolist (argument args)
+        (when (and (stringp argument) (multibyte-string-p argument))
+          (setq multibyte t)))
+      (while (and ok (< i n))
+        (let ((pct (string-search "%" template i)))
+          (if (null pct)
+              (setq pieces (cons (substring template i) pieces) i n)
+            (when (> pct i) (setq pieces (cons (substring template i pct) pieces)))
+            (let* ((j (1+ pct)) (prec nil) (c (and (< j n) (aref template j))))
+              (when (eq c 46)           ; ?. then digits
+                (let ((k (1+ j)) (p 0))
+                  (while (and (< k n) (nelisp--digit-char-p (aref template k)))
+                    (setq p (+ (* p 10) (- (aref template k) 48)) k (1+ k)))
+                  (setq prec p j k c (and (< k n) (aref template k)))))
+              (let ((arg (car argp)) (piece nil))
+                (cond
+                 ((null c) (setq ok nil))
+                 ((and (= c 37) (not prec)) (setq piece "%"))
+                 ((null argp) (setq ok nil))
+                 ((and (= c 115) (not prec))   ; %s
+                  (cond ((stringp arg)
+                         (if (gethash arg nelisp--tp-string-properties)
+                             (setq ok nil)
+                           (setq piece arg)))
+                        ((symbolp arg) (setq piece (symbol-name arg)))
+                        ((integerp arg) (setq piece (number-to-string arg)))
+                        (t (setq ok nil))))
+                 ((and (= c 100) (not prec) (integerp arg))   ; %d
+                  (setq piece (number-to-string arg)))
+                 ((and (memq c '(102 101 103)) (numberp arg))   ; %f %e %g
+                  (setq piece (nelisp--fmt-float (if (integerp arg) (+ arg 0.0) arg)
+                                                 c (or prec 6))))
+                 (t (setq ok nil)))
+                (when piece
+                  (unless (= c 37) (setq argp (cdr argp)))
+                  (when (multibyte-string-p piece) (setq multibyte t))
+                  (setq pieces (cons piece pieces)
+                        i (1+ j))))))))
+      (when ok
+        (let ((out (apply #'concat (nreverse pieces))))
+          (if multibyte (string-to-multibyte out) out))))))
 
 (defun nelisp--format-princ (arg)
   "Render a %s argument with GNU string-serialization byte escaping."
