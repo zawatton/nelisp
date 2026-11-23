@@ -604,10 +604,11 @@
     ;; see `nelisp_frame_captured_decls' mode 1) followed by the installed names.
     ;; LMODE 2 answers 1 when the sentinel is present.  LMODE 0 (no sentinel)
     ;; conses each element onto ACC, head first (the established order).  LMODE
-    ;; 3 (sentinel present) conses the defvars AFTER the expanded env so they
-    ;; lead the view like GNU's defvar pushes: view = defvars ++ env ++ ACC; at
-    ;; the sentinel it switches to LMODE 1 on the closure env list and drops the
-    ;; installed names (a subset of the env).  LMODE 1 conses the env cdr first
+    ;; 3 (sentinel present) conses the defvars onto ACC head first (so ACC
+    ;; holds them reversed) and at the sentinel switches to LMODE 1 on the
+    ;; closure env list, dropping the installed names (a subset of the env):
+    ;; raw capture = env ++ reverse(defvars) ++ ACC, whose reader view leads
+    ;; with the defvars like GNU's defvar pushes.  LMODE 1 conses the env cdr first
     ;; so the view keeps the env's own order, duplicates and special names, as
     ;; the pre-b665d7f30 install produced; the install predicate of
     ;; `nelisp_frame_captured_decls' minus its special test filters pairs,
@@ -634,10 +635,9 @@
                 (if (= lmode 3)
                     (if (= (nl_val_tag item) 7)
                         (nl_capture_local_names_w item acc roots 1)
-                      (let* ((rest (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 3))
-                             (word (nelisp_cons_construct_w item rest 0)))
+                      (let* ((word (nelisp_cons_construct_w item acc 0)))
                         (nl_capture_root_set_word roots 0 word)
-                        word))
+                        (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 3)))
                   (let* ((word (nelisp_cons_construct_w item acc 0)))
                     (nl_capture_root_set_word roots 0 word)
                     (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 0))))))
