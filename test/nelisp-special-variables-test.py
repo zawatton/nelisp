@@ -158,6 +158,14 @@ CASES = [
      '((void 6))'),
     ("(let ((f (eval '(lambda () (let ((b1-q2 6)) (list (symbol-value 'b1-q2) (mapcar #'identity '(1 2))))) '(b1-q2 b1-q2 b1-q3 t))) r) (dotimes (i 60) (when (= 0 (% i 10)) (garbage-collect)) (push (funcall f) r)) (delete-dups r))",
      '((6 (1 2)))'),
+    # startup fix (F278): bodyless defvar of an already-special var pushes no marker (GNU Fdefvar);
+    # eval with an alist of bare names (eval-and-compile/macroexp--dynvars shape). The special-marker-count row differs on the pre-change binary (1 vs GNU 0); the rest agree before and after.
+    ("(progn (defvar st-sp1 1) (let ((f (let () (defvar st-sp1) (lambda () (let ((st-sp1 7)) (symbol-value 'st-sp1)))))) (list (funcall f) st-sp1)))", '(7 1)'),
+    ('(let ((f (let () (defvar st-sp1) (lambda () 1)))) (let ((n 0)) (dolist (x (aref f 2)) (when (and x (symbolp x) (not (eq x t))) (setq n (1+ n)))) n))', '0'),
+    ('(let ((f (let () (defvar st-ns1) (lambda () 1)))) (let ((n 0)) (dolist (x (aref f 2)) (when (and x (symbolp x) (not (eq x t))) (setq n (1+ n)))) n))', '1'),
+    ("(let ((f (let () (defvar st-sp1) (defvar st-ns3) (lambda () (let ((st-sp1 3) (st-ns3 4)) (list (symbol-value 'st-sp1) (symbol-value 'st-ns3))))))) (list (funcall f) (funcall f) st-sp1))", '((3 4) (3 4) 1)'),
+    ("(list (eval '(let ((st-sp1 8)) (symbol-value 'st-sp1)) '(st-sp1 st-sp2 st-ns4 t)) (eval '(let ((st-ns5 8)) (list x (symbol-value 'st-ns5))) '(st-sp1 (x . 1) st-ns5 t)))", '(8 (1 8))'),
+    ('(let* ((al (append (mapcar (lambda (i) (intern (format "st-d%d" (1+ (% i 3))))) (number-sequence 1 60)) \'(st-ns6 t))) (f (progn (defvar st-d1 1) (defvar st-d2 2) (defvar st-d3 3) (eval \'(lambda () (let ((st-ns6 6) (st-d1 7)) (list (symbol-value \'st-ns6) (symbol-value \'st-d1)))) al)))) (list (funcall f) (funcall f) st-d1))', '((6 7) (6 7) 1)'),
 ]
 
 

@@ -37505,8 +37505,12 @@ bytes are written into a fresh 8-byte buffer instead."
     (if (= rc 0) name (nl_abi_fail rc 0))))
     (defun bf_declare_local_status (env name)
   (if (or (= (nl_val_tag name) 4) (= (nl_val_tag name) 16))
-      (let* ((rc (nelisp_frame_local_declare (+ env 32) name)))
-        (seq (wf_dirty) rc))
+      ;; GNU Fdefvar (eval.c): a bodyless (defvar SYM) pushes a local
+      ;; marker only when SYM is not already declared_special.
+      (if (and (= (nl_val_tag name) 4)
+               (= (bf_declared_special_p (+ env 0) name) 1)) 0
+        (let* ((rc (nelisp_frame_local_declare (+ env 32) name)))
+          (seq (wf_dirty) rc)))
     (if (or (= (nl_val_tag name) 0) (= (nl_val_tag name) 1)) 0
       (bf_wrong_type_symbolp name))))
     (defun bf_declare_local_value (env name out)
@@ -61254,7 +61258,15 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                                (ptr-write-u64 cell 16 13107)))
                         (nelisp_frame_bind frames (nl_cons_car_ptr pair) cell
                                            (+ cell 32) (+ cell 64) (+ cell 96)) 0))
-               (if (or (= (sexp-tag pair) 4) (= (sexp-tag pair) 16))
+               ;; A bare symbol that is already declared special needs no
+               ;; local marker (its let is dynamic anyway): skip the O(k)
+               ;; dedupe walk.  `eval-and-compile' passes the whole file's
+               ;; `macroexp--dynvars' here (hundreds, ~90% special).
+               (if (if (= (sexp-tag pair) 4)
+                       (if (= (bf_declared_special_p (- frames 32)
+                                                     (nl_cons_car_word alist)) 1)
+                           0 1)
+                     (if (= (sexp-tag pair) 16) 1 0))
                    (nelisp_frame_local_declare_one
                     (vector-ref-ptr (nl_record_slot_word frames 0)
                      (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)) pair)
