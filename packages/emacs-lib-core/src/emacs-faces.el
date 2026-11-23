@@ -331,6 +331,13 @@ should pass NO-CONFIRM to `load-theme' from init.el or set this to t.")
     (when (file-directory-p etc)
       (setq data-directory (file-name-as-directory etc)))))
 
+;; GNU's doc-directory (doc.c) is the same etc/ directory; the vendored
+;; etc/DOC holds the C primitives' docstrings.
+(when (and data-directory
+           (or (not (boundp 'doc-directory)) (null doc-directory)))
+  (defvar doc-directory nil)
+  (setq doc-directory data-directory))
+
 (defun custom-theme-name-valid-p (name)
   "Return non-nil when NAME is a valid Custom theme name."
   (and (symbolp name)
