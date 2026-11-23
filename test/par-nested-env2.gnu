@@ -1,0 +1,12 @@
+KD A4b defvar no specials      (nv-late nv-ns1)
+A14 two defvars                (nv-l2 nv-l1 nv-s1 nv-ns1)
+KD A15 two defvars no spec     (nv-l2 nv-l1 nv-ns1)
+A16 defvar dup of defvar       (nv-l1 nv-l1 nv-s1 nv-ns1)
+GC loop nested creation        (300 0 t)
+GC loop 2000 calls             0
+signal caught then nested      (nv-s1 nv-ns1)
+KD B1 let pair                 ((a . 1))
+KD B2 let pair, binds ns1      ((a . 1) nv-ns1)
+KD B3 param call               ((a . 5))
+KD B4 param + let + special    ((b . 2) (a . 5))
+B5 pair value kept             5

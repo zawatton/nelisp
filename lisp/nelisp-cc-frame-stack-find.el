@@ -503,9 +503,24 @@
 
     ;; The bare declarations of a shared environment, recorded on the top
     ;; frame as `nl_push_captured_walk' does.
-    (defun nelisp_frame_captured_decls (al frames)
-      ;; Answers 1 when a globally special name was skipped (the caller then
-      ;; prepends the env-view sentinel, see `nl_env_push_captured'), else 0.
+    ;; MODE 0 walks AL (the recursion always passes 0) and answers 1 when a
+    ;; globally special name was skipped, else 0.  MODE 1 is the env-view
+    ;; sentinel step: SKIPPED is the answer of the install walk; when it is 1,
+    ;; prepend the closure's env list AL itself, as one direct-cons element, to
+    ;; slot 3 of the fresh frame.  Slot 3 is then [body defvars] S [installed
+    ;; names]; `nl_capture_local_names_w' expands S into the full env in the
+    ;; pre-b665d7f30 order.  Folded in here (no separate function) because the
+    ;; F1 prelink closure is bounded at 352 functions.  Answers 0.
+    (defun nelisp_frame_captured_decls (al frames mode skipped)
+      (if (= mode 1)
+          (if (= skipped 1)
+              (seq (nelisp_frame_local_prepend_fresh
+                    (vector-ref-ptr
+                     (nl_record_slot_word frames 0)
+                     (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
+                    al)
+                   0)
+            0)
       (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
           0
         (let* ((p (nl_cons_car_word al))
@@ -533,23 +548,8 @@
                          (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
                         p)
                      0)))
-               (let* ((rest (nelisp_frame_captured_decls (nl_cons_cdr_word al) frames)))
-                 (if (= skip 1) 1 rest))))))
-
-    ;; Env-view sentinel.  After the per-call install, when any special name
-    ;; was skipped (SKIPPED = 1), prepend the closure's env list AL itself, as
-    ;; one direct-cons element, to slot 3 of the fresh frame.  Slot 3 is then
-    ;; [body defvars] S [installed names]; `nl_capture_local_names_w' expands S
-    ;; into the full env in the pre-b665d7f30 order.  Returns 0.
-    (defun nelisp_frame_captured_sentinel (frames al skipped)
-      (if (= skipped 1)
-          (seq (nelisp_frame_local_prepend_fresh
-                (vector-ref-ptr
-                 (nl_record_slot_word frames 0)
-                 (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
-                al)
-               0)
-        0))
+               (let* ((rest (nelisp_frame_captured_decls (nl_cons_cdr_word al) frames 0 0)))
+                 (if (= skip 1) 1 rest)))))))
 
     ;; Unconditional prepend, no membership test.  Only for the FRESH frame
     ;; `nl_env_push_captured' has just pushed (slot 3 is Nil, nothing else
@@ -601,7 +601,7 @@
 
     ;; Frame slot 3 holds [body defvars, newest first] and, when the call
     ;; install skipped a special name, the env sentinel (a direct cons element,
-    ;; see `nelisp_frame_captured_sentinel') followed by the installed names.
+    ;; see `nelisp_frame_captured_decls' mode 1) followed by the installed names.
     ;; LMODE 2 answers 1 when the sentinel is present.  LMODE 0 (no sentinel)
     ;; conses each element onto ACC, head first (the established order).  LMODE
     ;; 3 (sentinel present) conses the defvars AFTER the expanded env so they

@@ -68306,7 +68306,8 @@ two flag bits 20 and 21."
               0)
           0))
       ;; 1 when no frame from the newest to the nearest scope boundary holds a local
-      ;; declaration (the names list in slot 3 is nil), which is what
+      ;; declaration (the names list in slot 3 is nil or holds only the env-view
+      ;; sentinel), which is what
       ;; `nelisp_frame_local_special_walk' asks of each variable; 0 for anything this
       ;; walk does not read (a non-record frame, a non-vector backing).
       (defun nl_eic_let_scope_clean (env)
@@ -68323,7 +68324,18 @@ two flag bits 20 and 21."
                      (let* ((hdr (ptr-read-u64 (- f 6) 0)))
                        (if (/= (logand hdr 63) 12)
                            (seq (setq ok 0) (setq i -1))
-                         (if (if (>= hdr 1024) (/= (ptr-read-u64 f 34) 3) 0)
+                         (if (if (>= hdr 1024)
+                             ;; Slot 3 is clean when nil or when it holds only the
+                             ;; closure env-view sentinel (one direct cons word, no
+                             ;; names): b665d7f30 left slot 3 nil for such a call.
+                             (let* ((w (ptr-read-u64 f 34)))
+                               (if (= w 3) 0
+                                 (if (= (nl_val_tag w) 7)
+                                     (if (= (logand (nl_cons_car_word w) 7) 2)
+                                         (if (= (nl_val_tag (nl_cons_cdr_word w)) 0) 0 1)
+                                       1)
+                                   1)))
+                           0)
                              (seq (setq ok 0) (setq i -1))
                            (if (if (>= hdr 768) (/= (ptr-read-u64 f 26) 3) 0)
                                (setq i -1)

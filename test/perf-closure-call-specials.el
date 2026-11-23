@@ -29,3 +29,15 @@
     (dotimes (_ n) (funcall f))
     (princ (format "PERFINFO nested-create names=600 %.3f us/call view-len=%d\n"
                    (/ (* 1e6 (- (float-time) s)) n) (length (aref (funcall f) 2))))))
+;; F299 closure+let row: a closure whose env is ONLY special names (400, so the call install skips them all
+;; and slot 3 holds only the env-view sentinel) and whose body is (let ((x 1)) x).  nl_eic_let_scope_clean must
+;; accept the lone sentinel so the let fast arm stays on.  Post-build gate: the big/plain ratio (and the absolute
+;; big us) must be no worse than the same file run on a b665d7f30 binary, where slot 3 was nil.
+(defun pcs-let-tm (al) (let ((f (eval '(lambda () (let ((x 1)) x)) al)) (n 20000))
+  (dotimes (_ 500) (funcall f)) (garbage-collect)
+  (let ((s (float-time))) (dotimes (_ n) (funcall f)) (/ (* 1e6 (- (float-time) s)) n))))
+(let ((r nil))
+  (dotimes (_ 5) (let ((p (pcs-let-tm '(t))) (b (pcs-let-tm (append (pcs-names 400) '(t))))) (push (cons p b) r)))
+  (setq r (sort r (lambda (a b) (< (/ (cdr a) (car a)) (/ (cdr b) (car b))))))
+  (let ((m (nth 2 r)))
+    (princ (format "PERFINFO closure-let all-specials plain=%.3f us big=%.3f us ratio=%.2f\n" (car m) (cdr m) (/ (cdr m) (car m))))))
