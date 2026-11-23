@@ -5061,16 +5061,25 @@ The matcher accepts some incomplete expressions; searches must reject them."
   (let ((i 0) (n (length text)) (prevc ?\n)
         (some-multiletter-word nil) (some-lowercase nil)
         (some-nonuppercase-initial nil) (some-uppercase nil))
-    (while (< i n)
+    ;; Every flag only ever turns on, and once SOME-LOWERCASE and
+    ;; SOME-NONUPPERCASE-INITIAL are both set no clause below can pick a
+    ;; conversion, so the scan stops there.  The previous character's
+    ;; syntax is read only when the flag it decides is still unset
+    ;; (gnu562: each `char-syntax' is the cost of this loop).
+    (while (and (< i n) (not (and some-lowercase some-nonuppercase-initial)))
       (let* ((c (aref text i))
              (up (upcase c)) (down (downcase c))
-             (prevc-syntax (char-syntax prevc))
+             (lower (and (/= up down) (= c down)))
+             (upper (and (not lower) (/= down c)))
              (prevc-word
-              (or (eq prevc-syntax ?w)
-                  (and (boundp 'case-symbols-as-words)
-                       case-symbols-as-words (eq prevc-syntax ?_)))))
+              (when (if upper (not some-multiletter-word)
+                      (not some-nonuppercase-initial))
+                (let ((prevc-syntax (char-syntax prevc)))
+                  (or (eq prevc-syntax ?w)
+                      (and (boundp 'case-symbols-as-words)
+                           case-symbols-as-words (eq prevc-syntax ?_)))))))
         (cond
-         ((and (/= up down) (= c down))
+         (lower
           (setq some-lowercase t)
           (if prevc-word
               (setq some-multiletter-word t)
@@ -5078,7 +5087,7 @@ The matcher accepts some incomplete expressions; searches must reject them."
          ;; GNU's `uppercasep' is true when downcasing changes C.  That also
          ;; includes Unicode titlecase characters such as U+01C5, which are
          ;; distinct from both their uppercase and lowercase mappings.
-         ((/= down c)
+         (upper
           (setq some-uppercase t)
           (when prevc-word (setq some-multiletter-word t)))
          ((not prevc-word)
