@@ -129,6 +129,10 @@ never to count a byte-code function's sources."
     (when (file-directory-p "vendor/staged-emacs-lisp")
       (dolist (file (directory-files "vendor/staged-emacs-lisp" t "\\.el\\'"))
         (dolist (form (condition-case nil (compall-gen--read-forms file) (error nil)))
+          ;; `define-inline' (cl-macs.el's cl-struct-slot-value) installs the
+          ;; defun its expansion holds.
+          (when (and (eq (car-safe form) 'define-inline) (fboundp 'define-inline))
+            (setq form (condition-case nil (macroexpand-1 form) (error nil))))
           (compall-gen--defuns form tbl))))
     tbl))
 (defun compall-gen--sources ()
