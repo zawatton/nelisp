@@ -35835,7 +35835,7 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun bf_closure_env_view_rev_w (node acc_word _pad)
   (if (= (nl_val_tag node) 7)
       (let* ((entry (nl_cons_car_ptr node)) (rest (nl_cons_cdr_ptr node)))
-        (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1)
+        (if (= (if (= (heap-sexp-tag-word entry) 7) (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 0) 1)
             (bf_closure_env_view_rev_w rest acc_word 0)
           (let* ((value_word
                   (if (= (heap-sexp-tag-word entry) 7)
@@ -35863,7 +35863,7 @@ bytes are written into a fresh 8-byte buffer instead."
   (if (= (nl_val_tag node) 7)
       (let* ((entry (nl_cons_car_ptr node)) (rest (nl_cons_cdr_ptr node))
              (tail_word (bf_closure_env_view_fwd_w rest 0)))
-        (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1) tail_word
+        (if (= (if (= (heap-sexp-tag-word entry) 7) (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 0) 1) tail_word
           (let* ((value_word
                   (if (= (heap-sexp-tag-word entry) 7)
                       (let* ((word (nl_cons_cdr_word entry)))
