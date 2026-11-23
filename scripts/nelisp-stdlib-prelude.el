@@ -10339,9 +10339,10 @@ for a killed buffer: `marker-buffer' of such a marker answers nil)."
   "Make a marker from the keywords :buffer, :position and :insertion-type."
   (let ((buffer (plist-get args :buffer))
         (position (if (plist-member args :position) (plist-get args :position) 1)))
-    (if (plist-get args :insertion-type)
-        (nelisp-marker-ins--make-plain :buffer buffer :position position)
-      (nelisp-marker--make-plain :buffer buffer :position position))))
+    ;; Positional record, slot order of `nelisp-marker' (buffer, position):
+    ;; the keyword constructors cost about 2 us per marker (F424).
+    (record (if (plist-get args :insertion-type) 'nelisp-marker-ins 'nelisp-marker)
+            buffer position)))
 
 (defun nelisp-marker-insertion-type (marker)
   "Return non-nil when MARKER advances past text inserted at its position."
@@ -18322,8 +18323,11 @@ an integer, and why this is unconditional rather than `unless (fboundp
            (progn ,@body)
          (when (buffer-live-p ,buf)
            (set-buffer ,buf)
-           (goto-char (marker-position ,m)))
-         (set-marker ,m nil)))))
+           ;; The buffer is live, so the saved marker is still attached:
+           ;; the accessor equals `marker-position' without its type check.
+           (goto-char (nelisp-marker-position ,m)))
+         ;; Same as (set-marker M nil), minus its argument dispatch (F424).
+         (nelisp-marker-delete ,m)))))
 
 (defun nelisp--line-number-at (pos buf)
   "1-based line number of POS in BUF, counting newlines from
@@ -18678,25 +18682,28 @@ pointing marker regardless of which buffer happens to be current."
 (unless (fboundp 'point-marker)
   (defun point-marker ()
     "Return value of point, as a marker, in the current buffer."
-    (let ((m (nelisp-marker--make :buffer nelisp--current-buffer
-                                   :position (nelisp-point nelisp--current-buffer))))
-      (nelisp-buffer--chain-marker nelisp--current-buffer m)
+    ;; Positional record (F424): no keyword plist, no struct constructor.
+    (let* ((b nelisp--current-buffer)
+           (m (record 'nelisp-marker b (nelisp-point b))))
+      (nelisp-buffer--chain-marker b m)
       m)))
 
 (unless (fboundp 'point-min-marker)
   (defun point-min-marker ()
     "Return a marker to the minimum permissible value of point."
-    (let ((m (nelisp-marker--make :buffer nelisp--current-buffer
-                                   :position (nelisp-point-min nelisp--current-buffer))))
-      (nelisp-buffer--chain-marker nelisp--current-buffer m)
+    ;; Positional record (F424): no keyword plist, no struct constructor.
+    (let* ((b nelisp--current-buffer)
+           (m (record 'nelisp-marker b (nelisp-point-min b))))
+      (nelisp-buffer--chain-marker b m)
       m)))
 
 (unless (fboundp 'point-max-marker)
   (defun point-max-marker ()
     "Return a marker to the maximum permissible value of point."
-    (let ((m (nelisp-marker--make :buffer nelisp--current-buffer
-                                   :position (nelisp-point-max nelisp--current-buffer))))
-      (nelisp-buffer--chain-marker nelisp--current-buffer m)
+    ;; Positional record (F424): no keyword plist, no struct constructor.
+    (let* ((b nelisp--current-buffer)
+           (m (record 'nelisp-marker b (nelisp-point-max b))))
+      (nelisp-buffer--chain-marker b m)
       m)))
 
 ;; `mark-marker' (editfns.c) is deliberately NOT wired here: it answers
