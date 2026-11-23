@@ -573,13 +573,15 @@ nelisp-sexp-layout (:113), nelisp-cc-fxir-rows/effects
 \(nelisp-cc-fxir-native.el:57-58) and the stack-map emitter (the
 `nelisp-aot-compiler--stackmap-*' code, nelisp-aot-compiler.el:251-259, and
 `nelisp-standalone--compile-to-unit' smap1 at this file) were missing before."
-  (cons nelisp-standalone--this-file
-        (nelisp-standalone-cachekey-require-closure
-         ;; The libraries this script itself requires (cc-sort, string-blocks,
-         ;; ...) are roots too: their tables can be read after the key is taken.
-         (append nelisp-standalone-cachekey-root-features
-                 (nelisp-standalone-cachekey-file-requires nelisp-standalone--this-file))
-         nelisp-standalone--repo-root load-path)))
+  ;; This script itself is NOT listed: its text enters the key as the traced
+  ;; closure digest (`nelisp-standalone--key-closure-term'), or as a whole file
+  ;; only on the global fallback (`nelisp-standalone--toolchain-digest').
+  (nelisp-standalone-cachekey-require-closure
+   ;; The libraries this script itself requires (cc-sort, string-blocks,
+   ;; ...) are roots too: their tables can be read after the key is taken.
+   (append nelisp-standalone-cachekey-root-features
+           (nelisp-standalone-cachekey-file-requires nelisp-standalone--this-file))
+   nelisp-standalone--repo-root load-path))
 
 
 (defun nelisp-standalone--windows-rebase-arena-source (source)
@@ -3620,12 +3622,38 @@ compatibility, while new entries carry base64-encoded byte sections."
 (defvar nelisp-standalone--toolchain-digest nil
   "Memoised SHA-1 over the toolchain sources, computed once per process.")
 
+(defvar nelisp-standalone--key-closure nil
+  "Memoised (DIGEST-or-nil . REASON) of the traced closure of this script.")
+
+(defun nelisp-standalone--key-closure-term ()
+  "Return (DIGEST . INFO): the closure digest of this script, or (nil . REASON).
+DIGEST nil means the global key: the whole-file digest of this script is used
+instead (opaque form in the closure, parse failure, or
+NELISP_STANDALONE_FULL_KEY=1).  Memoised per process; the reason is printed once."
+  (or nelisp-standalone--key-closure
+      (setq nelisp-standalone--key-closure
+            (let* ((info (condition-case err
+                             (nelisp-standalone-cachekey-closure-compute nelisp-standalone--this-file)
+                           (error (list :error err))))
+                   (reason (or (and (plist-get info :error)
+                                    (format "closure scan failed: %S" (plist-get info :error)))
+                               (nelisp-standalone-cachekey-closure-fallback-reason info))))
+              (if reason
+                  (progn (message "[standalone] key: %s, global key" reason)
+                         (cons nil reason))
+                (cons (plist-get info :digest) info))))))
+
 (defun nelisp-standalone--toolchain-digest ()
   "Return a digest of the compiler/linker sources that produce a unit."
   (or nelisp-standalone--toolchain-digest
       (setq nelisp-standalone--toolchain-digest
-            (nelisp-standalone-cachekey-files-digest
-             (nelisp-standalone-cachekey-check-files (nelisp-standalone--dep-files))))))
+            (let* ((closure (nelisp-standalone--key-closure-term))
+                   (files (nelisp-standalone-cachekey-check-files
+                           (nelisp-standalone--dep-files))))
+              ;; Global key: no closure digest, the whole script is hashed.
+              (concat (nelisp-standalone-cachekey-files-digest
+                       (if (car closure) files (cons nelisp-standalone--this-file files)))
+                      "\0closure=" (or (car closure) "global"))))))
 
 (defun nelisp-standalone--codegen-settings-string ()
   "Env, host version and live codegen settings that shape a unit's code.
@@ -3727,6 +3755,9 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                (format "direct-only=%S\0" nelisp-aot-compiler--x86-direct-only-defuns)
                                (format "call-free-regions=%s\0" nelisp-aot-compiler--x86-call-free-regions)
                                (format "affine-addresses=%s\0" nelisp-aot-compiler--x86-affine-addresses)
+                               ;; Driver-bound variables the closure reads (design2 A.4): by value.
+                               (nelisp-standalone-cachekey-dynamic-values
+                                nelisp-standalone-cachekey-dynamic-vars) "\0"
                                (nelisp-standalone--xinline-digest) "\0"
                                (prin1-to-string source)
                                (when (bound-and-true-p nelisp-standalone--inline-import-sources)
