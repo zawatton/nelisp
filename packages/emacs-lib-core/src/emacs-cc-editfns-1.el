@@ -57,10 +57,17 @@
          (before (and (> pos lo) (get-text-property (1- pos) 'field)))
          (value (if (and (/= pos lo) (not (eq at before))) before at))
          (beg pos) (end pos))
-    (while (and (> beg lo) (eq (get-text-property (1- beg) 'field) value))
-      (setq beg (1- beg)))
-    (while (and (< end hi) (eq (get-text-property end 'field) value))
-      (setq end (1+ end)))
+    ;; gnu562: up to eight characters one at a time (a scan costs about
+    ;; three reads, so short runs stay cheaper this way), then one property scan for
+    ;; the rest of the run (it stops at the first value that is not `eq').
+    (let ((steps 9))
+      (while (and (> beg lo) (eq (get-text-property (1- beg) 'field) value))
+        (setq beg (if (> (setq steps (1- steps)) 0) (1- beg)
+                    (previous-single-property-change beg 'field nil lo)))))
+    (let ((steps 9))
+      (while (and (< end hi) (eq (get-text-property end 'field) value))
+        (setq end (if (> (setq steps (1- steps)) 0) (1+ end)
+                    (next-single-property-change end 'field nil hi)))))
     (cons beg end)))
 
 (unless (fboundp 'constrain-to-field)

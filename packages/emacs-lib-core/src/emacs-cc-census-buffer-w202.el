@@ -74,15 +74,21 @@ UNIBYTE is obsolete.  DO-ALLOW-PRINT permits output without PRINTFLAG."
                     (eq (get-char-property cursor 'field) 'boundary))
           (setq cursor (1- cursor)))
         (setq value (get-char-property cursor 'field))))
+    ;; gnu562: up to eight characters one at a time (a scan costs about
+    ;; three reads, so short runs stay cheaper this way), then one property scan for
+    ;; the rest of the run (it stops at the first value that is not `eq').
     (if endp
-        (progn
+        (let ((steps 9))
           (while (and (< cursor hi)
                       (eq (get-char-property cursor 'field) value))
-            (setq cursor (1+ cursor)))
+            (setq cursor (if (> (setq steps (1- steps)) 0) (1+ cursor)
+                           (next-single-char-property-change cursor 'field nil hi))))
           (if bound (min cursor bound) cursor))
-      (while (and (> cursor lo)
-                  (eq (get-char-property (1- cursor) 'field) value))
-        (setq cursor (1- cursor)))
+      (let ((steps 9))
+        (while (and (> cursor lo)
+                    (eq (get-char-property (1- cursor) 'field) value))
+          (setq cursor (if (> (setq steps (1- steps)) 0) (1- cursor)
+                         (previous-single-char-property-change cursor 'field nil lo)))))
       (if bound (max cursor bound) cursor))))
 
 (unless (fboundp 'field-beginning)
