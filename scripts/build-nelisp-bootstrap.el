@@ -449,7 +449,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; standalone reader.
     "emacs-imenu.el"
     "emacs-xref.el"
-    "xref.el"
     "emacs-compile.el"
     "emacs-vc.el"
     "vc.el"
@@ -1293,7 +1292,6 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-project.el" . "project.el")
                     ("emacs-replace.el" . "replace.el")
                     ("emacs-vc.el" . "vc.el")
-                    ("emacs-xref.el" . "xref.el")
                     ("emacs-faces.el" . "emacs-faces-builtins.el")
                     ("emacs-frame.el" . "emacs-frame-builtins.el")
                     ("emacs-window.el" . "emacs-window-builtins.el")

@@ -359,6 +359,8 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
     (nemacs-runtime-image-preload--install-module-command
      'imenu 'emacs-imenu 'emacs-imenu)
     (provide 'imenu))
+  ;; `xref-find-definitions' and friends are GNU xref.el's (autoloaded
+  ;; from loaddefs); only the emacs-xref names are wrapped here.
   (unless (featurep 'xref)
     (nemacs-runtime-image-preload--install-module-command
      'emacs-xref-find-definitions
@@ -367,16 +369,7 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
     (nemacs-runtime-image-preload--install-module-command
      'emacs-xref-pop-marker-stack
      'emacs-xref
-     'emacs-xref-pop-marker-stack)
-    (nemacs-runtime-image-preload--install-module-command
-     'xref-find-definitions
-     'emacs-xref
-     'emacs-xref-find-definitions)
-    (nemacs-runtime-image-preload--install-module-command
-     'xref-pop-marker-stack
-     'emacs-xref
-     'emacs-xref-pop-marker-stack)
-    (provide 'xref))
+     'emacs-xref-pop-marker-stack))
   (unless (featurep 'compile)
     (nemacs-runtime-image-preload--install-module-command
      'emacs-compile-run 'emacs-compile 'emacs-compile-run)
