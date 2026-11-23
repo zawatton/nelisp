@@ -1302,13 +1302,22 @@ character space is never enumerated."
   (let ((boundaries (list 0 (1+ emacs-char-table--max-char)))
         (table ct))
     (while table
-      (let ((vec (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
-            (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
-            (i 1))
+      (let* ((vec (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
+             (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
+             ;; gnu562: resolve the storage once and read it with the same
+             ;; primitive `emacs-char-table--raw-ref' would use per slot
+             ;; (two of its calls per slot made an empty table's map cost
+             ;; ~450 us).
+             (store (if (recordp vec) (emacs-char-table--storage vec) vec))
+             (bridge (emacs-char-table--native-vector-bridge-p))
+             (raw emacs-char-table--raw-aref)
+             (prev (if bridge (nelisp--raw-aref store 0) (funcall raw store 0)))
+             (i 1))
         (while (< i emacs-char-table--ascii-size)
-          (unless (eq (emacs-char-table--raw-ref vec (1- i))
-                      (emacs-char-table--raw-ref vec i))
-            (push i boundaries))
+          (let ((cur (if bridge (nelisp--raw-aref store i) (funcall raw store i))))
+            (unless (eq prev cur)
+              (push i boundaries))
+            (setq prev cur))
           (setq i (1+ i)))
         (push emacs-char-table--ascii-size boundaries)
         (dolist (entry ranges)
