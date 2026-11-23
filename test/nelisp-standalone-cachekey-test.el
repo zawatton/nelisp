@@ -233,6 +233,34 @@
        (should (equal (nelisp-standalone-cachekey-entry-read (expand-file-name "none" dir) k)
                       '(nil . missing)))))))
 
+(ert-deftest nelisp-cachekey-entry-rejects-size-header-truncation ()
+  "Each rejection reason is reachable on its own, with an intact control."
+  (nelisp-cachekey-test--with-dir
+   (let* ((f (expand-file-name "u.unit" dir)) (k nelisp-cachekey-test--key)
+          (text (nelisp-standalone-cachekey-entry-text k "payload-abcdef"))
+          (nl (string-search "\n" text)))
+     (nelisp-cachekey-test--spit f text)
+     (should (equal (nelisp-standalone-cachekey-entry-read f k) '(t . "payload-abcdef")))
+     ;; size: header byte count disagrees, the payload itself (and its sha) is intact.
+     (nelisp-cachekey-test--spit
+      f (replace-regexp-in-string "bytes=14" "bytes=15" text))
+     (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . size)))
+     ;; size: payload cut short while the header is whole.
+     (nelisp-cachekey-test--spit f (substring text 0 (- (length text) 4)))
+     (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . size)))
+     ;; header: file cut inside the header line (no newline yet).
+     (nelisp-cachekey-test--spit f (substring text 0 (- nl 5)))
+     (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . header)))
+     ;; header: empty file (a crash before the first write reached disk).
+     (nelisp-cachekey-test--spit f "")
+     (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . header)))
+     ;; header: right size of garbage.
+     (nelisp-cachekey-test--spit f (make-string (length text) ?x))
+     (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . header)))
+     ;; Negative control: restoring the intact text verifies again.
+     (nelisp-cachekey-test--spit f text)
+     (should (car (nelisp-standalone-cachekey-entry-read f k))))))
+
 (ert-deftest nelisp-cachekey-entry-rejects-poisoned-key ()
   "An entry copied under another key's file name (the stale-hit failure) is refused."
   (nelisp-cachekey-test--with-dir
