@@ -100,5 +100,78 @@ are included), which can only cost a miss, never a stale hit."
   (let ((print-length nil) (print-level nil) (print-circle t))
     (format "settings=%S" alist)))
 
+;;;; Step 4: self-verifying entries.
+
+(defconst nelisp-standalone-cachekey-entry-magic ";nelisp-unit-cache v1")
+
+(defun nelisp-standalone-cachekey-verify-p ()
+  "Non-nil unless NELISP_STANDALONE_UNIT_CACHE_VERIFY=0 (test-only escape)."
+  (not (equal (getenv "NELISP_STANDALONE_UNIT_CACHE_VERIFY") "0")))
+
+(defun nelisp-standalone-cachekey-atomic-write (file text)
+  "Write TEXT (a string) to FILE through a unique temp file and a rename.
+The temp name carries the pid and random bits, so concurrent writers on one
+or several hosts never share it; the destination is replaced atomically."
+  (let ((tmp (format "%s.%d.%06x.tmp" file (emacs-pid) (random #xffffff)))
+        (coding-system-for-write 'utf-8-unix))
+    (make-directory (file-name-directory file) t)
+    (unwind-protect
+        (progn (with-temp-file tmp (insert text))
+               (rename-file tmp file t)
+               (setq tmp nil))
+      (when (and tmp (file-exists-p tmp)) (ignore-errors (delete-file tmp))))))
+
+(defun nelisp-standalone-cachekey-entry-text (key payload)
+  "Entry file text for KEY and PAYLOAD (a string): header line then payload."
+  (format "%s key=%s sha256=%s bytes=%d\n%s"
+          nelisp-standalone-cachekey-entry-magic key
+          (secure-hash 'sha256 payload) (string-bytes payload) payload))
+
+(defun nelisp-standalone-cachekey-entry-write (file key payload)
+  "Atomically write the entry for KEY with PAYLOAD to FILE."
+  (nelisp-standalone-cachekey-atomic-write
+   file (nelisp-standalone-cachekey-entry-text key payload)))
+
+(defun nelisp-standalone-cachekey-entry-read (file key)
+  "Return (OK . PAYLOAD-or-REASON) for the entry FILE expected to hold KEY.
+OK is t with the payload string when the header, key and sha256 all verify,
+else nil with a reason symbol (`missing', `header', `key', `size', `sha').
+A file removed between listing and reading is `missing', never an error.
+With verification off (NELISP_STANDALONE_UNIT_CACHE_VERIFY=0) only the header
+is split off."
+  (condition-case nil
+      (let ((text (with-temp-buffer
+                    (set-buffer-multibyte t)
+                    (let ((coding-system-for-read 'utf-8-unix))
+                      (insert-file-contents file))
+                    (buffer-string))))
+        (if (not (string-match
+                  (concat "\\`" (regexp-quote nelisp-standalone-cachekey-entry-magic)
+                          " key=\\([0-9a-f]+\\) sha256=\\([0-9a-f]+\\) bytes=\\([0-9]+\\)\n")
+                  text))
+            (cons nil 'header)
+          (let ((hkey (match-string 1 text)) (hsha (match-string 2 text))
+                (hbytes (string-to-number (match-string 3 text)))
+                (payload (substring text (match-end 0))))
+            (cond
+             ((not (nelisp-standalone-cachekey-verify-p)) (cons t payload))
+             ((not (equal hkey key)) (cons nil 'key))
+             ((/= hbytes (string-bytes payload)) (cons nil 'size))
+             ((not (equal hsha (secure-hash 'sha256 payload))) (cons nil 'sha))
+             (t (cons t payload))))))
+    (file-missing (cons nil 'missing))
+    (file-error (cons nil 'missing))))
+
+(defun nelisp-standalone-cachekey-prune-p ()
+  "Non-nil when a miss may delete older entries of the same unit name.
+Pruning is safe only in a lane-private directory: in a directory shared
+by lanes it deletes another lane's live entry between its existence check
+and its read.  A directory named by NELISP_STANDALONE_UNIT_CACHE_DIR is
+treated as shared unless NELISP_STANDALONE_UNIT_CACHE_PRUNE=1; NOPRUNE=1
+always disables.  Shared directories are collected by tools/dev/nl-cache-gc.sh."
+  (and (not (equal (getenv "NELISP_STANDALONE_UNIT_CACHE_NOPRUNE") "1"))
+       (or (equal (getenv "NELISP_STANDALONE_UNIT_CACHE_PRUNE") "1")
+           (let ((d (getenv "NELISP_STANDALONE_UNIT_CACHE_DIR"))) (or (null d) (string= d ""))))))
+
 (provide 'nelisp-standalone-cachekey)
 ;;; nelisp-standalone-cachekey.el ends here

@@ -136,5 +136,86 @@
     (should-not (equal base (nelisp-standalone-cachekey-settings-string
                              (nelisp-standalone-cachekey-env-alist '((regalloc . t))))))))
 
+;;;; Step 4: self-verifying entries.
+
+(defmacro nelisp-cachekey-test--with-dir (&rest body)
+  `(let ((dir (make-temp-file "ck-cache-" t)))
+     (unwind-protect (progn ,@body) (delete-directory dir t))))
+
+(defconst nelisp-cachekey-test--key "0123456789abcdef0123456789abcdef01234567")
+(defconst nelisp-cachekey-test--key2 "fedcba9876543210fedcba9876543210fedcba98")
+
+(defun nelisp-cachekey-test--slurp (f)
+  (with-temp-buffer (let ((coding-system-for-read 'utf-8-unix)) (insert-file-contents f)) (buffer-string)))
+(defun nelisp-cachekey-test--spit (f text)
+  (let ((coding-system-for-write 'utf-8-unix)) (with-temp-file f (insert text))))
+
+(ert-deftest nelisp-cachekey-entry-roundtrip ()
+  (nelisp-cachekey-test--with-dir
+   (let ((f (expand-file-name "u.o.K.unit" dir)))
+     (nelisp-standalone-cachekey-entry-write f nelisp-cachekey-test--key "(:sections \"a\\n\")")
+     (should (equal (nelisp-standalone-cachekey-entry-read f nelisp-cachekey-test--key)
+                    '(t . "(:sections \"a\\n\")")))
+     ;; No temp file is left behind.
+     (should (equal (directory-files dir nil "\\.tmp\\'") nil)))))
+
+(ert-deftest nelisp-cachekey-entry-rejects-corruption ()
+  (nelisp-cachekey-test--with-dir
+   (let ((f (expand-file-name "u.unit" dir)) (k nelisp-cachekey-test--key))
+     (nelisp-standalone-cachekey-entry-write f k "payload-1234")
+     (let ((good (nelisp-cachekey-test--slurp f)))
+       ;; Same size, one byte flipped: caught by the sha256, not the size.
+       (nelisp-cachekey-test--spit f (replace-regexp-in-string "payload-1234" "payload-1235" good))
+       (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . sha)))
+       ;; Truncated payload.
+       (nelisp-cachekey-test--spit f (substring good 0 (- (length good) 3)))
+       (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . size)))
+       ;; Header-less (old format) file.
+       (nelisp-cachekey-test--spit f "(:sections nil)")
+       (should (equal (nelisp-standalone-cachekey-entry-read f k) '(nil . header)))
+       ;; Negative control: the intact entry still verifies.
+       (nelisp-cachekey-test--spit f good)
+       (should (car (nelisp-standalone-cachekey-entry-read f k)))
+       ;; Missing file (another lane's prune): a miss, not an error.
+       (should (equal (nelisp-standalone-cachekey-entry-read (expand-file-name "none" dir) k)
+                      '(nil . missing)))))))
+
+(ert-deftest nelisp-cachekey-entry-rejects-poisoned-key ()
+  "An entry copied under another key's file name (the stale-hit failure) is refused."
+  (nelisp-cachekey-test--with-dir
+   (let ((old (expand-file-name "u.OLD.unit" dir)) (new (expand-file-name "u.NEW.unit" dir)))
+     (nelisp-standalone-cachekey-entry-write old nelisp-cachekey-test--key "old-code")
+     (copy-file old new)
+     (should (equal (nelisp-standalone-cachekey-entry-read new nelisp-cachekey-test--key2)
+                    '(nil . key)))
+     ;; Negative control: with verification off the poison is accepted, which
+     ;; is what the full-build gate uses to prove it can go RED.
+     (let ((process-environment (cons "NELISP_STANDALONE_UNIT_CACHE_VERIFY=0" process-environment)))
+       (should (equal (nelisp-standalone-cachekey-entry-read new nelisp-cachekey-test--key2)
+                      '(t . "old-code")))))))
+
+(ert-deftest nelisp-cachekey-atomic-write-unique-temp-names ()
+  (nelisp-cachekey-test--with-dir
+   (let ((f (expand-file-name "x.unit" dir)) (names nil))
+     (cl-letf (((symbol-function 'rename-file)
+                (lambda (from to &rest _) (push from names) (copy-file from to t) (delete-file from))))
+       (dotimes (_ 20) (nelisp-standalone-cachekey-atomic-write f "t")))
+     ;; pid + random bits: 20 writes use (almost surely) distinct names.
+     (should (> (length (delete-dups (copy-sequence names))) 15))
+     (should (cl-every (lambda (n) (string-match-p (format "\\.%d\\.[0-9a-f]+\\.tmp\\'" (emacs-pid)) n)) names)))))
+
+(ert-deftest nelisp-cachekey-prune-only-in-private-dirs ()
+  (let ((process-environment (copy-sequence process-environment)))
+    (setenv "NELISP_STANDALONE_UNIT_CACHE_DIR" nil)
+    (setenv "NELISP_STANDALONE_UNIT_CACHE_NOPRUNE" nil)
+    (setenv "NELISP_STANDALONE_UNIT_CACHE_PRUNE" nil)
+    (should (nelisp-standalone-cachekey-prune-p))
+    (setenv "NELISP_STANDALONE_UNIT_CACHE_DIR" "/some/shared")
+    (should-not (nelisp-standalone-cachekey-prune-p))
+    (setenv "NELISP_STANDALONE_UNIT_CACHE_PRUNE" "1")
+    (should (nelisp-standalone-cachekey-prune-p))
+    (setenv "NELISP_STANDALONE_UNIT_CACHE_NOPRUNE" "1")
+    (should-not (nelisp-standalone-cachekey-prune-p))))
+
 (provide 'nelisp-standalone-cachekey-test)
 ;;; nelisp-standalone-cachekey-test.el ends here

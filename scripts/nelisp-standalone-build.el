@@ -3917,15 +3917,16 @@ Idempotent: a defun whose F_w is already defined in SOURCE is left alone."
                                                                    (file-name-as-directory
                                                                     (expand-file-name d)))))
                                   load-path))))
-           (wrapper (split-string (or (getenv "NELISP_STANDALONE_JOB_WRAPPER") "") " " t)))
+           (wrapper (split-string (or (getenv "NELISP_STANDALONE_JOB_WRAPPER") "") " " t))
+           ;; One private log directory per build: concurrent builds must not
+           ;; share (or delete) each other's logs, which `--prewarm-wait' reads.
+           (log-dir (and (> n 0) (make-temp-file "nelisp-prewarm-" t))))
       (dolist (unit (butlast nelisp-standalone--prewarm-units
                                      (max 0 (- (length nelisp-standalone--prewarm-units) n))))
         ;; Output goes to a log file, not a pipe: the build reads no
         ;; process output while it compiles, and a child blocked on a full
         ;; pipe would stop compiling.
-        (let ((log (expand-file-name (format "nelisp-prewarm-%s.log" unit)
-                                     temporary-file-directory)))
-          (when (file-exists-p log) (delete-file log))
+        (let ((log (expand-file-name (format "%s.log" unit) log-dir)))
           (push (list unit
                       (make-process
                        :name (format "nelisp-prewarm-%s" unit)
@@ -4025,6 +4026,11 @@ directory tracks the tree rather than accumulating every key ever built."
                 (nelisp-standalone--build-trace-phase "cache-key"
                   (nelisp-standalone--unit-cache-key source))))
          (cache (expand-file-name (format "%s.%s.unit" name key) cache-dir))
+         ;; Verified read: header key and payload sha256 must match, and a
+         ;; file deleted by another lane is a miss, not an error.
+         (entry (unless stub (nelisp-standalone-cachekey-entry-read cache key)))
+         (_reject (when (and entry (not (car entry)) (not (eq (cdr entry) 'missing)))
+                    (message "[standalone] cache entry rejected (%s): %s" (cdr entry) cache)))
          ;; Diagnostic: NELISP_STANDALONE_UNIT_SOURCE_DUMP=DIR writes the
          ;; keyed source, inline imports, direct-only list and xinline digest
          ;; of every unit whose name matches the regexp
@@ -4046,44 +4052,37 @@ directory tracks the tree rather than accumulating every key ever built."
                                (current-buffer))))))))
     (cond
      (stub (list :name name :sections nil :nelisp-prewarm-stub t))
-     ((and target (file-exists-p cache))
+     ((and target (car entry))
       (throw 'nelisp-standalone--prewarm-done cache))
-     ((file-exists-p cache)
+     ((car entry)
       ;; A miss is counted inside `nelisp-standalone--compile-to-unit'.
       (nelisp-standalone--box-census-record name source)
       (when nelisp-standalone--build-trace-path
         (cl-incf nelisp-standalone--build-trace-hits))
       (nelisp-standalone--build-trace-phase "cache-decode"
-        (let ((coding-system-for-read 'utf-8-unix))
-          (with-temp-buffer
-            (insert-file-contents cache)
-            (goto-char (point-min))
-            (nelisp-standalone--unit-cache-decode (read (current-buffer)))))))
+        (nelisp-standalone--unit-cache-decode (car (read-from-string (cdr entry))))))
      (t
       (when nelisp-standalone--build-trace-path
         (cl-incf nelisp-standalone--build-trace-misses))
       (let ((unit (nelisp-standalone--build-trace-phase "cache-compile"
-                    (nelisp-standalone--compile-to-unit name source)))
-            ;; Write under a private name and rename: a prewarm child and
-            ;; the build may write the same entry, and a reader must never
-            ;; see a partly written file.
-            (tmp (format "%s.%d.tmp" cache (emacs-pid))))
+                    (nelisp-standalone--compile-to-unit name source))))
+        ;; Self-verifying entry, written under a unique temp name and renamed:
+        ;; a prewarm child, another build or another lane may write the same
+        ;; entry, and a reader must never see a partly written file.
         (make-directory cache-dir t)
-        (let ((coding-system-for-write 'utf-8-unix))
-          (with-temp-file tmp
-            (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
-              (prin1 (nelisp-standalone--unit-cache-encode unit)
-                     (current-buffer)))))
-        (rename-file tmp cache t)
+        (nelisp-standalone-cachekey-entry-write
+         cache key
+         (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
+           (prin1-to-string (nelisp-standalone--unit-cache-encode unit))))
         ;; Only the build prunes older entries of this unit.  A prewarm
         ;; child replays the build with every other unit stubbed, so its
         ;; source -- and key -- can differ from the build's; pruning there
         ;; deleted the build's own entry and cost a full recompile on
         ;; every build (fxir-native.o, ~290 s).
-        (unless target
+        (when (and (not target) (nelisp-standalone-cachekey-prune-p))
           (dolist (old (directory-files cache-dir t
                                         (concat "\\`" (regexp-quote name) "\\(\\.[0-9a-f]+\\)?\\.unit\\'")))
-            (unless (string= old cache) (delete-file old))))
+            (unless (string= old cache) (ignore-errors (delete-file old)))))
         (when target (throw 'nelisp-standalone--prewarm-done cache))
         (push name nelisp-standalone--recompiled)
         unit)))))
