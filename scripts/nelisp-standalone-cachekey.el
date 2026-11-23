@@ -35,7 +35,9 @@ The static `require' closure of these (inside the repository) is added.")
 (defconst nelisp-standalone-cachekey-env-names
   '("NELISP_STACKMAP" "NELISP_ALIGNHOT_PERTURB" "NC2_LAZY" "NELISP_LINUX_ARENA_SIZE"
     "NELISP_XINLINE" "NELISP_INLINE" "NELISP_INLINE_MAX_NODES" "NELISP_TCO"
-    "NELISP_READER_DYNAMIC" "NELISP_REPR_CENSUS")
+    "NELISP_READER_DYNAMIC" "NELISP_REPR_CENSUS"
+    ;; Read by `runtime-reload-enabled-p' (xinline-enabled-p): found by the closure scan.
+    "NELISP_RUNTIME_RELOAD")
   "Environment variables read on the compile path.
 All are part of the key, so a value that changes generated code is a miss.")
 
@@ -229,6 +231,288 @@ always disables.  Shared directories are collected by tools/dev/nl-cache-gc.sh."
   (and (not (equal (getenv "NELISP_STANDALONE_UNIT_CACHE_NOPRUNE") "1"))
        (or (equal (getenv "NELISP_STANDALONE_UNIT_CACHE_PRUNE") "1")
            (let ((d (getenv "NELISP_STANDALONE_UNIT_CACHE_DIR"))) (or (null d) (string= d ""))))))
+
+;;;; Step 2 (design2 A): traced closure digest of the build script.
+;;
+;; A unit key hashes the post-producer source sexp, so build.el text is only
+;; needed in the key for code that runs AFTER the key is taken: the roots
+;; below and everything they reach, cut at the pre-key producers (whose
+;; effect is already in the keyed source).  The closure is a static symbol
+;; BFS over the top-level definitions of the script.  Anything the BFS cannot
+;; follow (computed names, `eval', unlisted `getenv', ...) is an opaque form:
+;; the caller then falls back to the whole-file digest ("global key").
+
+(defconst nelisp-standalone-cachekey-closure-prefix "nelisp-standalone--")
+
+(defconst nelisp-standalone-cachekey-closure-roots
+  '("compile-to-unit" "cached-unit" "unit-cache-key" "toolchain-digest"
+    "codegen-settings-string" "unit-cache-encode" "unit-cache-decode")
+  "Definitions (names without the script prefix) that run at or after the key.")
+
+(defconst nelisp-standalone-cachekey-closure-cut
+  '("unit-inline-imports" "census-instrument" "abi-box-split-source"
+    "xinline-prepare" "xinline-register" "unit-for" "reader-driver-unit"
+    "glue-source" "applyfn-assemble" "applyfn-baked-source" "applyfn-source"
+    "applyfn-split-units" "applyfn-frame-units" "reader-units" "prewarm-wait"
+    "box-census-record")
+  "Pre-key producers: the BFS neither enters nor hashes these.")
+
+(defconst nelisp-standalone-cachekey-bookkeeping-vars
+  '("recompiled" "build-trace-misses" "build-trace-hits" "build-trace-unit" "prewarm-unit" "cache-dir")
+  "Variables writers may set without reaching codegen (not a writer trigger).")
+
+(defconst nelisp-standalone-cachekey-writer-heads
+  '(setq setf push pop puthash cl-incf cl-decf cl-pushnew add-to-list nconc
+    nreverse sort delete aset setcar setcdr remhash clrhash put let let*)
+  "Forms that mutate or rebind a variable: a def outside the closure using
+one of them on a closure variable joins the closure.")
+
+(defconst nelisp-standalone-cachekey-dynamic-vars
+  '(nelisp-aot-compiler--x86-private-continuations
+    nelisp-aot-compiler--allow-external-user-calls
+    nelisp-aot-compiler--x86-direct-only-defuns
+    nelisp-aot-compiler--x86-jump-tables-enabled)
+  "Variables read in the closure that producers `let'-bind around `cached-unit'.
+Their VALUES (not the binding text) enter every key.  A new hit found by the
+scanner without being listed here fails the ERT (and the key refuses).")
+
+(defconst nelisp-standalone-cachekey-opaque-allow
+  '(;; FUNCALL of an arithmetic operator symbol taken from a literal table.
+    (nelisp-standalone--inline-constant-base-case . funcall)
+    (nelisp-standalone--inline-parallel-fold-safe-p . funcall)
+    ;; INTERN builds a fresh local name from the parameter and a counter: a
+    ;; pure function of text already in the closure (names `x__N').
+    (nelisp-standalone--inline-fresh-name . intern)
+    ;; FBOUNDP of `nl-jit-call-out-2' is printed in the key (:native-jit-callout).
+    (nelisp-standalone--inline-parallel-mode-p . fboundp)
+    (nelisp-standalone--inline-wrapper-initializers . fboundp)
+    (nelisp-standalone--unit-cache-key . fboundp)
+    ;; FUNCALL of a local `cl-labels' walker.
+    (nelisp-standalone--inline-wrapper-initializers . funcall)
+    ;; NELISP_RUNTIME_RELOAD is in `-env-names'.
+    (nelisp-standalone--runtime-reload-enabled-p . getenv))
+  "Alist (DEF . HEAD) of opaque sites reviewed as safe (each has a reason above).")
+
+(defconst nelisp-standalone-cachekey-lib-callback-callers
+  '(nelisp-argframe-lower nelisp-argframe-walk-lower)
+  "Library entry points that funcall the build-script callbacks assigned by
+top-level `setq's (argframe-inline-table, helper-defs).  Reaching one from
+the closure makes the callback targets roots: that is reported as opaque, so
+the build takes the global key instead of silently missing them.")
+
+(defun nelisp-standalone-cachekey--read-script (file)
+  "Return (DEFS . TOPS) of FILE: symbol -> definition form, and other top forms."
+  (let ((defs (make-hash-table :test 'eq)) (tops nil))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (let ((f (read (current-buffer))))
+              (if (and (consp f) (memq (car f) '(defun defmacro defconst defvar defsubst))
+                       (symbolp (cadr f)))
+                  (puthash (cadr f) f defs)
+                (push f tops))))
+        (end-of-file nil)))
+    (cons defs (nreverse tops))))
+
+(defun nelisp-standalone-cachekey--form-defs (form defs acc)
+  "Add to hash ACC every symbol of FORM that names a definition in DEFS."
+  (cond ((symbolp form) (when (and form (gethash form defs)) (puthash form t acc)))
+        ((consp form)
+         (nelisp-standalone-cachekey--form-defs (car form) defs acc)
+         (let ((d (cdr form)))
+           (while (consp d)
+             (nelisp-standalone-cachekey--form-defs (car d) defs acc)
+             (setq d (cdr d)))
+           (when d (nelisp-standalone-cachekey--form-defs d defs acc)))))
+  acc)
+
+(defun nelisp-standalone-cachekey--bfs (roots cut defs)
+  (let ((seen (make-hash-table :test 'eq)) (q (copy-sequence roots)))
+    (while q
+      (let ((r (pop q)))
+        (unless (or (gethash r seen) (memq r cut) (not (gethash r defs)))
+          (puthash r t seen)
+          (maphash (lambda (k _) (push k q))
+                   (nelisp-standalone-cachekey--form-defs (gethash r defs) defs
+                                                          (make-hash-table :test 'eq))))))
+    seen))
+
+(defun nelisp-standalone-cachekey--walk (form fn)
+  "Call FN on every cons of FORM (depth first, proper and dotted)."
+  (when (consp form)
+    (funcall fn form)
+    (let ((d form))
+      (while (consp d)
+        (nelisp-standalone-cachekey--walk (car d) fn)
+        (setq d (cdr d))))))
+
+(defun nelisp-standalone-cachekey--opaque-sites (name form)
+  "List of (NAME . HEAD) for forms in FORM the static closure cannot follow."
+  (let (hits)
+    (nelisp-standalone-cachekey--walk
+     form
+     (lambda (x)
+       (let ((h (car x)) (a (car-safe (cdr x))))
+         (cond
+          ((memq h '(intern intern-soft symbol-function symbol-value fset eval
+                     indirect-function))
+           (push (cons name h) hits))
+          ((memq h '(load require autoload))
+           (unless (and (eq h 'require) (eq (car-safe a) 'quote))
+             (push (cons name h) hits)))
+          ((eq h 'fboundp) (push (cons name h) hits))
+          ((memq h nelisp-standalone-cachekey-lib-callback-callers) (push (cons name h) hits))
+          ((eq h 'getenv)
+           (unless (and (stringp a)
+                        (or (member a nelisp-standalone-cachekey-env-names)
+                            (string-prefix-p "NELISP_STANDALONE_" a)))
+             (push (cons name 'getenv) hits)))
+          ((memq h '(funcall apply))
+           ;; A call through a symbol variable can reach a def the BFS never saw.
+           (when (and (symbolp a) a (not (keywordp a)))
+             (push (cons name h) hits)))))))
+    (nreverse hits)))
+
+(defun nelisp-standalone-cachekey--set-var-targets (x)
+  "Variables a writer form X mutates or rebinds (symbols)."
+  (let ((h (car x)))
+    (cond ((memq h '(let let*))
+           (and (listp (car-safe (cdr x)))
+                (mapcar (lambda (b) (if (consp b) (car b) b)) (car-safe (cdr x)))))
+          ((memq h '(setq))
+           (let (r (l (cdr x))) (while (consp l) (push (car l) r) (setq l (cdr-safe (cdr l)))) r))
+          ;; push/puthash/remhash/aset/add-to-list/... put the place in
+          ;; different argument positions: take every symbol of the form.
+          (t (let (r) (nelisp-standalone-cachekey--walk
+                       x (lambda (y) (let ((l y)) (while (consp l) (when (and (symbolp (car l)) (car l)) (push (car l) r)) (setq l (cdr l))))))
+                r)))))
+
+(defun nelisp-standalone-cachekey-closure-compute (file)
+  "Analyse script FILE.  Return a plist:
+:defs sorted closure names, :bytes prin1 size, :digest sha1 or nil,
+:opaque list of (DEF . HEAD), :writers (added defs), :tops hashed top forms."
+  (let* ((rd (nelisp-standalone-cachekey--read-script file))
+         (defs (car rd)) (tops (cdr rd))
+         (pre nelisp-standalone-cachekey-closure-prefix)
+         (sym (lambda (n) (intern (concat pre n))))
+         (roots (mapcar sym nelisp-standalone-cachekey-closure-roots))
+         (cut (mapcar sym nelisp-standalone-cachekey-closure-cut))
+         (book (mapcar sym nelisp-standalone-cachekey-bookkeeping-vars))
+         (set (nelisp-standalone-cachekey--bfs roots cut defs))
+         (hashed-tops nil) (writers nil) (changed t))
+    (when (zerop (hash-table-count set))
+      (setq changed nil))
+    ;; Fixed point: writers of closure variables and top-level forms touching
+    ;; the closure join it (their own symbols are roots too).
+    (while changed
+      (setq changed nil)
+      (maphash
+       (lambda (n f)
+         (unless (or (gethash n set) (memq n cut))
+           (let (hit)
+             (nelisp-standalone-cachekey--walk
+              f (lambda (x)
+                  (when (and (not hit) (memq (car x) nelisp-standalone-cachekey-writer-heads)
+                             (consp (cdr x)) (listp (cdr (last x))))
+                    (dolist (v (nelisp-standalone-cachekey--set-var-targets x))
+                      (when (and (symbolp v) (gethash v set) (not (memq v book))
+                                 (not (string-prefix-p "nelisp-standalone--build-trace-" (symbol-name v)))
+                                 (memq (car (gethash v defs)) '(defvar defconst)))
+                        (setq hit v))))))
+             (when hit
+               (push (cons n hit) writers)
+               ;; The writer's own text joins; its callees do not (a callee
+               ;; that mutates a closure variable is found by this same loop).
+               (puthash n t set) (setq changed t)))))
+       defs)
+      (dolist (tp tops)
+        (when (and (consp tp) (memq (car tp) '(setq when add-to-list put unless if progn))
+                   (not (memq tp hashed-tops)))
+          (let ((m (nelisp-standalone-cachekey--form-defs tp defs (make-hash-table :test 'eq))) touch)
+            (maphash (lambda (k _) (when (gethash k set) (setq touch t))) m)
+            (when touch
+              (push tp hashed-tops) (setq changed t))))))
+    (let* ((names (sort (let (l) (maphash (lambda (k _) (push k l)) set) l)
+                        (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+           (print-length nil) (print-level nil) (print-circle t) (print-escape-nonascii t)
+           (bytes 0) opaque
+           (parts (mapcar (lambda (n)
+                            (let ((s (prin1-to-string (gethash n defs))))
+                              (setq bytes (+ bytes (length s)))
+                              (dolist (o (nelisp-standalone-cachekey--opaque-sites n (gethash n defs)))
+                                (unless (member o nelisp-standalone-cachekey-opaque-allow)
+                                  (push o opaque)))
+                              (concat (symbol-name n) "=" s)))
+                          names))
+           (toptxt (mapcar (lambda (tp)
+                             (dolist (o (nelisp-standalone-cachekey--opaque-sites 'top tp))
+                               (unless (member o nelisp-standalone-cachekey-opaque-allow)
+                                 (push o opaque)))
+                             (prin1-to-string tp))
+                           (reverse hashed-tops))))
+      ;; Top-level assignment of a build-script function to a variable that
+      ;; this script does not define (a library callback) is classified: a
+      ;; target outside the closure is producer-only; inside it is hashed.
+      (list :defs names :bytes bytes :writers (nreverse writers)
+            :tops (nreverse (copy-sequence hashed-tops))
+            :opaque (nreverse opaque)
+            :roots-missing (seq-filter (lambda (r) (not (gethash r defs))) roots)
+            :digest (and names (null opaque)
+                         (secure-hash 'sha1 (mapconcat #'identity (append parts toptxt) "\n")))))))
+
+(defun nelisp-standalone-cachekey-closure-fallback-reason (info)
+  "Reason string when INFO (from `closure-compute') forces the global key, else nil."
+  (cond ((equal (getenv "NELISP_STANDALONE_FULL_KEY") "1") "NELISP_STANDALONE_FULL_KEY=1")
+        ((plist-get info :roots-missing)
+         (format "missing root %S" (plist-get info :roots-missing)))
+        ((null (plist-get info :defs)) "empty closure")
+        ((plist-get info :opaque)
+         (format "opaque form in %s" (car (car (plist-get info :opaque)))))
+        ((null (plist-get info :digest)) "no digest")))
+
+(defconst nelisp-standalone-cachekey-printed-vars
+  '(nelisp-aot-compiler--x86-direct-only-defuns nelisp-aot-compiler--x86-jump-tables-enabled)
+  "Dynamic variables the unit key already prints (see `unit-cache-key').")
+
+(defun nelisp-standalone-cachekey-let-bound-vars (file)
+  "Variables read inside the closure of FILE but `let'-bound by defs outside it.
+Only names containing \"--\" (library or script variables) are reported.  Each
+must be in `-dynamic-vars' or `-printed-vars', else a producer could change a
+codegen input the key never sees."
+  (let* ((info (nelisp-standalone-cachekey-closure-compute file))
+         (rd (nelisp-standalone-cachekey--read-script file))
+         (defs (car rd)) (inside (make-hash-table :test 'eq))
+         (read (make-hash-table :test 'eq)) (res nil))
+    (dolist (n (plist-get info :defs)) (puthash n t inside))
+    (maphash (lambda (n f)
+               (when (gethash n inside)
+                 (let (w) (setq w (lambda (x)
+                                    (cond ((symbolp x) (when x (puthash x t read)))
+                                          ((consp x) (funcall w (car x))
+                                           (let ((d (cdr x))) (while (consp d) (funcall w (car d)) (setq d (cdr d)))
+                                                (when d (funcall w d)))))))
+                      (funcall w f))))
+             defs)
+    (maphash (lambda (n f)
+               (unless (gethash n inside)
+                 (nelisp-standalone-cachekey--walk
+                  f (lambda (x)
+                      (when (and (memq (car x) '(let let*)) (listp (car-safe (cdr x))))
+                        (dolist (b (cadr x))
+                          (let ((v (if (consp b) (car b) b)))
+                            (when (and (symbolp v) (gethash v read) (not (gethash v inside))
+                                       (string-match-p "--" (symbol-name v)))
+                              (cl-pushnew v res)))))))))
+             defs)
+    (sort res (lambda (a b) (string< (symbol-name a) (symbol-name b))))))
+
+(defun nelisp-standalone-cachekey-dynamic-values (vars)
+  "Stable text of the current values of VARS (symbols) for the key."
+  (let ((print-length nil) (print-level nil) (print-circle t))
+    (format "dynamic=%S"
+            (mapcar (lambda (v) (cons v (if (boundp v) (symbol-value v) :unbound))) vars))))
 
 (provide 'nelisp-standalone-cachekey)
 ;;; nelisp-standalone-cachekey.el ends here

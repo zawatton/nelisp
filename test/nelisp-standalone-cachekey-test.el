@@ -319,3 +319,122 @@
 
 (provide 'nelisp-standalone-cachekey-test)
 ;;; nelisp-standalone-cachekey-test.el ends here
+
+;;;; Design2 A1: closure digest of the build script.
+
+(defconst nelisp-cachekey-test--build
+  (expand-file-name "scripts/nelisp-standalone-build.el" nelisp-cachekey-test--root))
+
+(defun nelisp-cachekey-test--closure-after (edits)
+  "Closure info of a temp copy of the build script after EDITS (list of (FROM . TO)).
+Each FROM must occur exactly once: an edit that misses is a test error."
+  (let ((tmp (make-temp-file "nl-closure" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmp
+            (insert-file-contents nelisp-cachekey-test--build)
+            (dolist (e edits)
+              (goto-char (point-min))
+              (should (search-forward (car e) nil t))
+              (should-not (search-forward (car e) nil t))
+              (replace-match (cdr e) t t nil)))
+          (nelisp-standalone-cachekey-closure-compute tmp))
+      (delete-file tmp))))
+
+(defvar nelisp-cachekey-test--base-info nil)
+(defun nelisp-cachekey-test--base ()
+  (or nelisp-cachekey-test--base-info
+      (setq nelisp-cachekey-test--base-info
+            (nelisp-standalone-cachekey-closure-compute nelisp-cachekey-test--build))))
+
+(ert-deftest nelisp-cachekey-closure-shape ()
+  (let* ((i (nelisp-cachekey-test--base)) (defs (plist-get i :defs)))
+    (should (plist-get i :digest))
+    (should-not (plist-get i :opaque))
+    (should (memq 'nelisp-standalone--compile-to-unit defs))
+    (should (memq 'nelisp-standalone--unit-cache-key defs))
+    (dolist (n '("applyfn-assemble" "glue-source" "manifest" "unit-for" "reader-units"
+                 "unit-inline-imports" "xinline-prepare"))
+      (should-not (memq (intern (concat "nelisp-standalone--" n)) defs)))
+    ;; Size cap: a closure that swallows the producers is ~600 KB.
+    (should (< (plist-get i :bytes) 150000))
+    (should (< (length defs) 120))
+    (should-not (nelisp-standalone-cachekey-closure-fallback-reason i))))
+
+(ert-deftest nelisp-cachekey-closure-comment-whitespace-edit-keeps-digest ()
+  (let ((base (plist-get (nelisp-cachekey-test--base) :digest)))
+    (should (equal base (plist-get (nelisp-cachekey-test--closure-after
+                                    '(("(defun nelisp-standalone--unit-cache-key (source)"
+                                       . ";; edited comment\n\n(defun nelisp-standalone--unit-cache-key   (source)")))
+                                   :digest)))
+    ;; Negative controls: a body edit and a docstring edit both rekey.
+    (should-not (equal base (plist-get (nelisp-cachekey-test--closure-after
+                                        '(("(format \"jump-tables=%s\\0\"" . "(format \"jump-tables2=%s\\0\"")))
+                                       :digest)))
+    (should-not (equal base (plist-get (nelisp-cachekey-test--closure-after
+                                        '(("can only make the key MORE discriminating" . "can only make the key more discriminating")))
+                                       :digest)))))
+
+(ert-deftest nelisp-cachekey-closure-producer-edit-keeps-digest ()
+  (let ((base (plist-get (nelisp-cachekey-test--base) :digest)))
+    (should (equal base (plist-get (nelisp-cachekey-test--closure-after
+                                    '(("(defun nelisp-standalone--patch-binding-kinds (source)"
+                                       . "(defun nelisp-standalone--patch-binding-kinds (source) (ignore 42)")))
+                                   :digest)))
+    ;; Negative control: the same kind of edit inside a post-key def rekeys.
+    (should-not (equal base (plist-get (nelisp-cachekey-test--closure-after
+                                        '(("(defun nelisp-standalone--xinline-enabled-p ()"
+                                           . "(defun nelisp-standalone--xinline-enabled-p () (ignore 42)")))
+                                       :digest)))
+    ;; The top-level `setq' of a closure variable is part of C (t4).
+    (should-not (equal base (plist-get (nelisp-cachekey-test--closure-after
+                                        '(("(append nelisp-standalone--inline-boundaries nelisp-cc-fxir-native--boundaries))"
+                                           . "(append nelisp-standalone--inline-boundaries nelisp-cc-fxir-native--boundaries '(zz)))")))
+                                       :digest)))))
+
+(ert-deftest nelisp-cachekey-closure-opaque-forms-fall-back ()
+  (let ((base (nelisp-cachekey-test--base)))
+    (should-not (nelisp-standalone-cachekey-closure-fallback-reason base))
+    (dolist (edit '(("(defun nelisp-standalone--xinline-enabled-p ()" . "(defun nelisp-standalone--xinline-enabled-p () (intern \"x\")")
+                    ("(defun nelisp-standalone--xinline-enabled-p ()" . "(defun nelisp-standalone--xinline-enabled-p () (getenv \"NELISP_UNLISTED\")")
+                    ("(defun nelisp-standalone--xinline-enabled-p ()" . "(defun nelisp-standalone--xinline-enabled-p () (eval '(+ 1 2))")
+                    ("(defun nelisp-standalone--xinline-enabled-p ()" . "(defun nelisp-standalone--xinline-enabled-p () (nelisp-argframe-lower nil)")))
+      (let ((i (nelisp-cachekey-test--closure-after (list edit))))
+        (should (plist-get i :opaque))
+        (should-not (plist-get i :digest))
+        (should (string-match-p "opaque" (nelisp-standalone-cachekey-closure-fallback-reason i)))))
+    ;; Negative control: a listed env name is not opaque.
+    (should (plist-get (nelisp-cachekey-test--closure-after
+                        '(("(defun nelisp-standalone--xinline-enabled-p ()" . "(defun nelisp-standalone--xinline-enabled-p () (getenv \"NELISP_TCO\")")))
+                       :digest))
+    ;; FULL_KEY forces the fallback.
+    (nelisp-cachekey-test--with-env ((NELISP_STANDALONE_FULL_KEY . 1))
+      (should (nelisp-standalone-cachekey-closure-fallback-reason base)))))
+
+(ert-deftest nelisp-cachekey-closure-writer-joins ()
+  "A def outside the closure that mutates a closure variable joins it (t5)."
+  (let* ((base (nelisp-cachekey-test--base))
+         (add (lambda (mut)
+                (nelisp-cachekey-test--closure-after
+                 (list (cons "(defun nelisp-standalone--patch-binding-kinds (source)"
+                             (format "(defun nelisp-standalone--zz-writer () %s)\n(defun nelisp-standalone--patch-binding-kinds (source)" mut)))))))
+    (should-not (memq 'nelisp-standalone--zz-writer (plist-get base :defs)))
+    (dolist (m '("(setq nelisp-standalone--xinline-table nil)"
+                 "(push 1 nelisp-standalone--xinline-table)"
+                 "(nreverse nelisp-standalone--xinline-table)"
+                 "(cl-incf nelisp-standalone--xinline-table)"))
+      (should (memq 'nelisp-standalone--zz-writer (plist-get (funcall add m) :defs))))
+    ;; Negative control: reading, or touching a bookkeeping variable, does not join.
+    (should-not (memq 'nelisp-standalone--zz-writer
+                      (plist-get (funcall add "(car nelisp-standalone--xinline-table)") :defs)))
+    (should-not (memq 'nelisp-standalone--zz-writer
+                      (plist-get (funcall add "(push 1 nelisp-standalone--recompiled)") :defs)))))
+
+(ert-deftest nelisp-cachekey-let-bound-vars-are-covered ()
+  "F5: every variable a producer `let'-binds and the closure reads is in the key."
+  (let ((lb (nelisp-standalone-cachekey-let-bound-vars nelisp-cachekey-test--build))
+        (covered (append nelisp-standalone-cachekey-dynamic-vars nelisp-standalone-cachekey-printed-vars)))
+    (should lb)
+    (should-not (seq-remove (lambda (v) (memq v covered)) lb))
+    ;; Negative control: an unlisted variable would be reported.
+    (should (seq-remove (lambda (v) (memq v (remq (car lb) covered))) lb))))
