@@ -80,17 +80,38 @@ to the string and treated as in `substring'."
     (iso-2022-jp . jis7) (junet . jis7))
   "Japanese coding system names (GNU 31.1 aliases) and their codec family.")
 
+(defvar emacs-cc-coding-3--spec-cache (make-hash-table :test 'eq)
+  "Results of `emacs-cc-coding-3--japanese-spec' by coding-system symbol.")
+(defvar emacs-cc-coding-3--spec-cache-aliases nil
+  "The `emacs-cc-coding-3--japanese-aliases' value the cache was filled from.")
+
 (defun emacs-cc-coding-3--japanese-spec (coding)
   "Return (FAMILY . EOL) when CODING names a Japanese coding system, else nil.
 EOL is `unix', `dos', `mac' or nil when the name has no EOL suffix."
+  ;; gnu562: answered from a per-symbol cache (the parse is a string-match,
+  ;; about 8 us on every encode/decode); the parse runs inside
+  ;; `save-match-data', since GNU's coding functions leave the match data
+  ;; alone.  The cache follows `emacs-cc-coding-3--japanese-aliases'.
   (when (and coding (symbolp coding))
-    (let* ((name (symbol-name coding)) (eol nil))
-      (when (string-match "-\\(unix\\|dos\\|mac\\)\\'" name)
-        (setq eol (intern (match-string 1 name))
-              name (substring name 0 (match-beginning 0))))
-      (let ((family (cdr (assq (intern name)
-                               emacs-cc-coding-3--japanese-aliases))))
-        (and family (cons family eol))))))
+    (unless (eq emacs-cc-coding-3--spec-cache-aliases
+                emacs-cc-coding-3--japanese-aliases)
+      (clrhash emacs-cc-coding-3--spec-cache)
+      (setq emacs-cc-coding-3--spec-cache-aliases
+            emacs-cc-coding-3--japanese-aliases))
+    (let ((hit (gethash coding emacs-cc-coding-3--spec-cache 'miss)))
+      (if (not (eq hit 'miss))
+          hit
+        (puthash
+         coding
+         (save-match-data
+           (let* ((name (symbol-name coding)) (eol nil))
+             (when (string-match "-\\(unix\\|dos\\|mac\\)\\'" name)
+               (setq eol (intern (match-string 1 name))
+                     name (substring name 0 (match-beginning 0))))
+             (let ((family (cdr (assq (intern name)
+                                      emacs-cc-coding-3--japanese-aliases))))
+               (and family (cons family eol)))))
+         emacs-cc-coding-3--spec-cache)))))
 
 (defun emacs-cc-coding-3--bytes (string)
   "Return the byte list of STRING for decoding."
@@ -232,8 +253,28 @@ EOL is `unix', `dos', `mac' or nil when the name has no EOL suffix."
         (emacs-cc-coding-3--japanese-encode string spec)
       (apply original string coding rest))))
 
+;; gnu562: installed as named wrappers over the previous definitions, not as
+;; :around advice; advice dispatch cost about 10 us per call on top of the
+;; inner (latin-1) advice (encode-coding-string 10 -> 31 us with it).
 (when (and (fboundp 'nelisp--repr) (fboundp 'advice-add))
-  (advice-add 'decode-coding-string :around #'emacs-cc-coding-3--advice-decode)
-  (advice-add 'encode-coding-string :around #'emacs-cc-coding-3--advice-encode))
+  (unless (fboundp 'emacs-cc-coding-3--decode-next)
+    (defalias 'emacs-cc-coding-3--decode-next
+      (symbol-function 'decode-coding-string))
+    (defalias 'emacs-cc-coding-3--encode-next
+      (symbol-function 'encode-coding-string)))
+  (defun emacs-cc-coding-3--decode-coding-string (string coding &rest rest)
+    "`decode-coding-string' with the Japanese systems of this file."
+    (let ((spec (and (stringp string) (emacs-cc-coding-3--japanese-spec coding))))
+      (if spec
+          (emacs-cc-coding-3--japanese-decode string spec)
+        (apply #'emacs-cc-coding-3--decode-next string coding rest))))
+  (defun emacs-cc-coding-3--encode-coding-string (string coding &rest rest)
+    "`encode-coding-string' with the Japanese systems of this file."
+    (let ((spec (and (stringp string) (emacs-cc-coding-3--japanese-spec coding))))
+      (if spec
+          (emacs-cc-coding-3--japanese-encode string spec)
+        (apply #'emacs-cc-coding-3--encode-next string coding rest))))
+  (defalias 'decode-coding-string #'emacs-cc-coding-3--decode-coding-string)
+  (defalias 'encode-coding-string #'emacs-cc-coding-3--encode-coding-string))
 
 (provide 'emacs-cc-coding-3)

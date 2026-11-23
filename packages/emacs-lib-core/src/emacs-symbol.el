@@ -60,7 +60,13 @@ the underlying NeLisp runtime has no native property-cell.")
 ;; existing obarray operations, but their discarded size and insertion
 ;; history cannot be recovered by `internal--obarray-buckets'.
 (defun emacs-symbol--obarray-p (object)
-  "Recognize both prelude obarrays and obarrays with bucket state."
+  "Recognize the initial obarray, prelude obarrays and obarrays with bucket state."
+  (or (and (boundp 'nelisp--initial-obarray) object
+           (eq object nelisp--initial-obarray))
+      (emacs-symbol--table-obarray-p object)))
+
+(defun emacs-symbol--table-obarray-p (object)
+  "Non-nil when OBJECT is an obarray record backed by a name hash table."
   (and (recordp object)
        (memq (nelisp--record-length object) '(3 4))
        (eq (nelisp--record-type object) 'obarray)
@@ -95,7 +101,7 @@ the underlying NeLisp runtime has no native property-cell.")
       (when (eq array 0)
         (setq array (emacs-symbol--make-obarray 0))
         (aset object 0 array)))
-    (unless (emacs-symbol--obarray-p array)
+    (unless (emacs-symbol--table-obarray-p array)
       (signal 'wrong-type-argument (list 'obarrayp object)))
     array))
 
@@ -108,59 +114,77 @@ the underlying NeLisp runtime has no native property-cell.")
   (when (= (nelisp--record-length array) 4)
     (nelisp--record-ref array 2)))
 
-(defun emacs-symbol--byte-word (string offset count)
-  "Read COUNT little-endian bytes of STRING at OFFSET, at most four."
-  (let ((word 0) (i 0))
-    (while (< i count)
-      (setq word (logior word (ash (string-byte string (+ offset i)) (* 8 i)))
-            i (1+ i)))
-    word))
+(defmacro emacs-symbol--word-at (name offset count)
+  "Little-endian word of COUNT (2 or 4) bytes of NAME at OFFSET, inline."
+  (if (= count 4)
+      `(logior (string-byte ,name ,offset)
+               (ash (string-byte ,name (+ ,offset 1)) 8)
+               (ash (string-byte ,name (+ ,offset 2)) 16)
+               (ash (string-byte ,name (+ ,offset 3)) 24))
+    `(logior (string-byte ,name ,offset)
+             (ash (string-byte ,name (+ ,offset 1)) 8))))
 
-(defun emacs-symbol--hash-combine (hash high low)
-  "Combine unsigned 64-bit HASH with the HIGH and LOW halves of a word.
-Represent HASH as a pair of 32-bit halves, avoiding bignum arithmetic."
-  (let* ((old-high (car hash)) (old-low (cdr hash))
-         (sum (+ (logand (ash old-low 4) #xffffffff)
-                 (ash old-high -28) low)))
-    (cons (logand (+ (ash old-high 4) (ash old-low -28) high
-                     (ash sum -32))
-                  #xffffffff)
-          (logand sum #xffffffff))))
+(defmacro emacs-symbol--hash-step (hi lo high low)
+  "Combine the 64-bit hash held as 32-bit halves HI / LO with HIGH / LOW.
+The same arithmetic as `emacs-symbol--hash-combine', on two variables."
+  (let ((sum (make-symbol "sum")) (h (make-symbol "high")) (l (make-symbol "low")))
+    `(let* ((,h ,high) (,l ,low)
+            (,sum (+ (logand (ash ,lo 4) #xffffffff) (ash ,hi -28) ,l)))
+       (setq ,hi (logand (+ (ash ,hi 4) (ash ,lo -28) ,h (ash ,sum -32))
+                         #xffffffff)
+             ,lo (logand ,sum #xffffffff)))))
 
-(defun emacs-symbol--bucket-index (name bits)
-  "Return NAME's GNU Emacs 31.1 bucket index for BITS index bits.
-Hash at most nine words using native byte access, without copying NAME."
+(defun emacs-symbol--name-reduced (name)
+  "Return NAME's GNU Emacs 31.1 symbol hash, folded to 32 bits.
+Hash at most nine words using native byte access, without copying NAME.
+The 64-bit hash is kept as two 32-bit halves in variables, not a pair."
   (let* ((length (string-bytes name))
-         (hash (cons 0 length)) (offset 0)
+         (hi 0) (lo length) (offset 0)
          (step (max 8 (ash length -3))))
     (if (>= length 8)
         (progn
           (while (<= (+ offset 8) length)
-            (setq hash (emacs-symbol--hash-combine
-                        hash (emacs-symbol--byte-word name (+ offset 4) 4)
-                        (emacs-symbol--byte-word name offset 4))
-                  offset (+ offset step)))
-          (setq hash (emacs-symbol--hash-combine
-                      hash (emacs-symbol--byte-word name (- length 4) 4)
-                      (emacs-symbol--byte-word name (- length 8) 4))))
+            (emacs-symbol--hash-step
+             hi lo (emacs-symbol--word-at name (+ offset 4) 4)
+             (emacs-symbol--word-at name offset 4))
+            (setq offset (+ offset step)))
+          (emacs-symbol--hash-step
+           hi lo (emacs-symbol--word-at name (- length 4) 4)
+           (emacs-symbol--word-at name (- length 8) 4)))
       (let ((tail 0))
         (when (>= length 4)
-          (setq tail (emacs-symbol--byte-word name 0 4) offset 4))
+          (setq tail (emacs-symbol--word-at name 0 4) offset 4))
         (when (>= (- length offset) 2)
-          (setq tail (+ (ash tail 16)
-                        (emacs-symbol--byte-word name offset 2))
+          (setq tail (+ (ash tail 16) (emacs-symbol--word-at name offset 2))
                 offset (+ offset 2)))
         (when (< offset length)
           (setq tail (+ (ash tail 8) (string-byte name offset))))
-        (setq hash (emacs-symbol--hash-combine
-                    hash (ash tail -32) (logand tail #xffffffff)))))
-    (let* ((reduced (logxor (car hash) (cdr hash)))
-           (low (logand reduced #xffff)) (high (ash reduced -16))
-           ;; Low 32 bits of multiplication by Knuth's 2654435769.
-           (product (logand (+ (* low 31161)
-                               (ash (+ (* low 40503) (* high 31161)) 16))
-                            #xffffffff)))
-      (ash product (- bits 32)))))
+        (emacs-symbol--hash-step hi lo (ash tail -32) (logand tail #xffffffff))))
+    (logxor hi lo)))
+
+(defvar emacs-symbol--reduced-cache (make-hash-table :test 'equal :size 256)
+  "Folded name hashes by name, for names whose length is their byte count.
+Hashing a name runs interpreted (about 28 us); intern, unintern and
+growth of the same names reuse it.  Only such names are cached, so two
+`equal' keys always have the same bytes.  Cleared beyond 4096 entries.")
+
+(defun emacs-symbol--bucket-index (name bits)
+  "Return NAME's GNU Emacs 31.1 bucket index for BITS index bits."
+  (let* ((plain (= (length name) (string-bytes name)))
+         (reduced (or (and plain (gethash name emacs-symbol--reduced-cache))
+                      (let ((value (emacs-symbol--name-reduced name)))
+                        (when plain
+                          (when (> (hash-table-count emacs-symbol--reduced-cache) 4096)
+                            (clrhash emacs-symbol--reduced-cache))
+                          (puthash (copy-sequence name) value
+                                   emacs-symbol--reduced-cache))
+                        value)))
+         (low (logand reduced #xffff)) (high (ash reduced -16))
+         ;; Low 32 bits of multiplication by Knuth's 2654435769.
+         (product (logand (+ (* low 31161)
+                             (ash (+ (* low 40503) (* high 31161)) 16))
+                          #xffffffff)))
+    (ash product (- bits 32))))
 
 (defun emacs-symbol--grow-obarray (state)
   "Double STATE's bucket count, rehashing chains in GNU's traversal order."
@@ -218,7 +242,14 @@ Hash at most nine words using native byte access, without copying NAME."
 
 (defun emacs-symbol--mapatoms (function &optional obarray)
   "Call FUNCTION on every symbol, using bucket order for managed obarrays."
-  (unless obarray (signal 'unsupported-feature '(global-mapatoms)))
+  (if (or (null obarray)
+          (and (boundp 'nelisp--initial-obarray) (eq obarray nelisp--initial-obarray)))
+      ;; The initial obarray, as the prelude's `mapatoms' walks it (GNU
+      ;; lread.c: every symbol, nil and t included).
+      (progn
+        (funcall function nil)
+        (funcall function t)
+        (mapc function (nelisp--intern-table-symbols)))
   (let* ((array (emacs-symbol--obarray-object obarray))
          (state (emacs-symbol--obarray-state array)))
     (if state
@@ -228,7 +259,7 @@ Hash at most nine words using native byte access, without copying NAME."
               (funcall function symbol))
             (setq i (1+ i))))
       (maphash (lambda (_name symbol) (funcall function symbol))
-               (nelisp--record-ref array 1))))
+               (nelisp--record-ref array 1)))))
   nil)
 
 (defun emacs-symbol--obarray-clear (&rest arguments)
@@ -237,7 +268,7 @@ Hash at most nine words using native byte access, without copying NAME."
     (signal 'wrong-number-of-arguments
             (list 'obarray-clear (length arguments))))
   (let ((obarray (car arguments)))
-    (unless (emacs-symbol--obarray-p obarray)
+    (unless (emacs-symbol--table-obarray-p obarray)
       (signal 'wrong-type-argument (list 'obarrayp obarray)))
     (let ((state (emacs-symbol--obarray-state obarray)))
       (clrhash (nelisp--record-ref obarray 1))
@@ -267,7 +298,7 @@ Hash at most nine words using native byte access, without copying NAME."
   (defun intern (name &optional ob)
     "Return the canonical symbol named NAME, interning it if necessary.
 Optional OB is the obarray to intern in."
-    (if (and ob (stringp name) (emacs-symbol--obarray-p ob))
+    (if (and ob (stringp name) (emacs-symbol--table-obarray-p ob))
         (emacs-symbol--obarray-intern name ob)
       (emacs-symbol--native-intern name ob))))
 

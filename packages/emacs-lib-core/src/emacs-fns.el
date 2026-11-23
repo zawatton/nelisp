@@ -73,7 +73,10 @@ Functions registered for FEATURE in `after-load-alist' run each time."
     (setq features (cons feature features)))
   (when subfeatures
     (put feature 'subfeatures subfeatures))
-  (setq current-load-list (cons (cons 'provide feature) current-load-list))
+  (if (fboundp 'nelisp--lh-attach-once)
+      ;; The runtime keys `current-load-list' by the file being loaded.
+      (nelisp--lh-attach-once (cons 'provide feature))
+    (setq current-load-list (cons (cons 'provide feature) current-load-list)))
   (mapc #'funcall (cdr (assq feature after-load-alist)))
   feature)
 
@@ -190,7 +193,24 @@ directory component."
     "Find FILENAME in PATH using optional SUFFIXES and PREDICATE.
 This standalone implementation covers the `require' and batch-test
 lookup path: PATH is a list of directories, SUFFIXES may be nil, a
-string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
+string, or a list of strings, and PREDICATE defaults to `file-exists-p'.
+As in GNU, PREDICATE may also be an access mask or one of the symbols
+`executable', `readable', `writable' and `exists', or a list of them."
+    ;; GNU files.el turns the symbolic forms into an access mask for
+    ;; `locate-file-internal'; test the same bits here.
+    (when (and predicate (not (functionp predicate)))
+      (let ((mask (if (integerp predicate)
+                      predicate
+                    (let ((syms (if (consp predicate) predicate (list predicate))))
+                      (logior (if (memq 'executable syms) 1 0)
+                              (if (memq 'writable syms) 2 0)
+                              (if (memq 'readable syms) 4 0))))))
+        (setq predicate
+              (lambda (file)
+                (and (file-exists-p file)
+                     (or (= 0 (logand mask 1)) (file-executable-p file))
+                     (or (= 0 (logand mask 2)) (file-writable-p file))
+                     (or (= 0 (logand mask 4)) (file-readable-p file)))))))
     (let* ((suffix-list (cond
                          ((null suffixes) (list ""))
                          ((stringp suffixes) (list suffixes))
@@ -323,6 +343,10 @@ branch, `load-file' being a builtin there."
     "Load FEATURE through `load-path' unless it is already provided.
 FILENAME and NOERROR follow the common Emacs `require' surface used by
 batch tests and local runtime modules."
+    ;; GNU Frequire records (require . FEATURE) in load-history even when
+    ;; FEATURE is already provided.
+    (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
+        (nelisp--lh-req feature))
     (if (featurep feature)
         feature
       (let* ((base (or filename (symbol-name feature)))

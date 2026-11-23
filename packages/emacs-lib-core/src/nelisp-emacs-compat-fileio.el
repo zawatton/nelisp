@@ -548,6 +548,18 @@ See `nelisp-ec--posix-path-clean-p'."
 
 ;;;###autoload
 (defun nelisp-ec-expand-file-name (name &optional default-dir)
+  "Convert NAME to an absolute path; see `nelisp-ec--expand-file-name-1'.
+As in GNU's `expand-file-name', a NAME in directory form (ending in a
+slash) gives a result in directory form."
+  (let ((result (nelisp-ec--expand-file-name-1 name default-dir)))
+    (if (and (stringp name) (> (length name) 0)
+             (eq (aref name (1- (length name))) ?/)
+             (> (length result) 0)
+             (not (eq (aref result (1- (length result))) ?/)))
+        (concat result "/")
+      result)))
+
+(defun nelisp-ec--expand-file-name-1 (name &optional default-dir)
   "Convert NAME to an absolute path using host-like string surgery.
 If NAME is already absolute, only `.' / `..' / `//' collapsing is
 performed.  Otherwise NAME is appended to DEFAULT-DIR.  A `~' prefix

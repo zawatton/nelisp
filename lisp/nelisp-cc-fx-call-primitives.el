@@ -1879,6 +1879,10 @@
                            (ptr-read-u64 (- sym 6) 24)
                          0))
                    0)))
+        (m5_fx_call_subr_fn env fn stk sp argc resw)))
+    ;; gnu562: the primitive-id run of `m5_fx_call_subr' for FN itself, a
+    ;; function cell's value or a function value (`m5_fx_call_subr_obj').
+    (defun m5_fx_call_subr_fn (env fn stk sp argc resw)
         (if (= (logand fn 7) 6)
             (if (< fn 4096) -3
               (let* ((hdr (ptr-read-u64 (- fn 6) 0)))
@@ -1898,7 +1902,7 @@
                                 (if (if (>= id 3) (<= id 7) 0) 1 (if (= id 11) 1 0)))))))
                               (m5_fx_primitive_run id stk sp argc resw env 0)
                             -3)))))))))
-          -3)))
+          -3))
     ;; callpath: GNU funcall_subr for every Subr object, not only the primitive ids: the
     ;; primitive above, else the argument-array entry the object carries
     ;; (`m5_fx_subr_argv'), with the operand words as its argv -- no list, no name
@@ -1927,6 +1931,24 @@
                       (if (/= pst -3) pst
                         (m5_fx_subr_argv env sym fn stk sp argc resw)))))
               -3)))))
+    ;; gnu562: `m5_fx_call_subr_any' for FN, a Subr object passed as a value
+    ;; (`funcall' of a captured definition, GNU funcall_general's SUBRP arm):
+    ;; the same primitive id, interpreter primitive or argument-array entry
+    ;; on the operand words, the backtrace naming FN as GNU's names args[0].
+    ;; Was: the name compares of `m5_fx_primitive', the covered-closure
+    ;; lookup, then the generic apply with an argument list.  -3: not
+    ;; handled, nothing happened.
+    (defun m5_fx_call_subr_obj (env fn stk sp argc resw)
+      (if (if (= (logand fn 7) 6)
+              (if (< fn 4096) 0
+                (= (logand (ptr-read-u64 (- fn 6) 0) 63) 20))
+            0)
+          (let* ((st (m5_fx_call_subr_fn env fn stk sp argc resw)))
+            (if (/= st -3) st
+              (let* ((pst (m5_fx_subr_prim2 env fn stk sp argc resw)))
+                (if (/= pst -3) pst
+                  (m5_fx_subr_argv env fn fn stk sp argc resw)))))
+        -3))
     ;; callpath2: the interpreter's primitive of a Subr object on the operand words;
     ;; the reader's definition is generated (`nelisp-standalone--argframe-m5-helpers'),
     ;; the link sets without `nl_eic_prim2_run' have none to run.
@@ -2024,8 +2046,19 @@
                            ;; the chain and detects a cycle.
                            (if (or (= (nl_word_tag64 def) 4) (= (nl_word_tag64 def) 16)) -3
                              (m5_fx_funcall_def cache fn def stk sp argc resw env))))))))
-            (let* ((st (m5_fx_primitive fn stk sp argc resw env ws)))
+            (let* ((sst (if (= ws 0) -3 (m5_fx_call_subr_obj env fn stk sp argc resw)))
+                   (st (if (/= sst -3) sst (m5_fx_primitive fn stk sp argc resw env ws))))
               (if (/= st -3) st
+              ;; gnu562: a `(builtin NAME)' value (what `symbol-function'
+              ;; answers for a primitive, so every captured native) runs as
+              ;; the call-out runs it under a name (`m5_fx_call_list': the
+              ;; argument-array entry by NAME's static id, else the list
+              ;; apply), the frame naming the value; RESW + 16 is the
+              ;; caller's argument-list slot, as for `m5_fx_subr_argv'.  Was:
+              ;; the covered-closure lookup, then the generic apply with an
+              ;; argument list (0.7 us against 0.15 us by name).
+              (if (if (= ws 0) 0 (/= (m5_fx_builtin_name fn 0) 0))
+                  (m5_fx_call_list fn fn stk sp argc env resw (+ resw 16) (+ resw 16))
                 (let* ((rec (m5_fx_covered fn argc env 0)))
                   (if (= rec 0)
                       ;; callpath2: a byte-code function or a Subr object on the
@@ -2036,7 +2069,7 @@
                         (m5_fx_funcall_value fn 0 fn stk sp argc resw env))
                     (seq (if (= cache 0) 0 (m5_fx_funcall_site_fill cache fn rec))
                          (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
-                                           env 0 resw 0))))))))))
+                                           env 0 resw 0)))))))))))
     ;; callpath2: GNU funcall_general for a definition that is no primitive id and
     ;; no covered closure (a Subr object, a byte-code function); the reader's
     ;; definition is generated (`nelisp-standalone--argframe-m5-helpers').

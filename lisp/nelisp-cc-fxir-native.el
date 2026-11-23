@@ -1667,11 +1667,12 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
               (if (= op 14) (if (> (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
                 (m5_fx_fix (if (= op 4) (+ (wf_bytecode_w_int a) (wf_bytecode_w_int b))
                              (- (wf_bytecode_w_int a) (wf_bytecode_w_int b)))))))
-        -1))
+        ;; gnu562: a float operand computes in place (`m5_fx_float_arith').
+        (m5_fx_float_arith op a b)))
     (defun nc_incdec_slow (op a)
       (if (= (m5_fx_int_p a) 1)
           (m5_fx_fix (if (= op 7) (+ (wf_bytecode_w_int a) 1) (- (wf_bytecode_w_int a) 1)))
-        -1)))
+        (m5_fx_float_incdec op a))))
   "Shared out-of-line helpers (inline boundaries, so bodies stay small).")
 
 (defconst nelisp-cc-fxir-native--fixed-boundaries

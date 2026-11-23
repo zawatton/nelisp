@@ -2,8 +2,10 @@
 
 (defun emacs-cc-census-display-b34window02--get (window key default)
   "Read KEY from live WINDOW, returning DEFAULT when unset."
+  ;; gnu562: a nil WINDOW is the selected window, which is always live;
+  ;; only an explicit window is checked (window-live-p about 6 us).
   (let ((target (or window (selected-window))))
-    (unless (window-live-p target)
+    (unless (or (null window) (window-live-p target))
       (signal 'wrong-type-argument (list 'window-live-p target)))
     (let ((value (window-parameter target key)))
       (if (null value) default value))))

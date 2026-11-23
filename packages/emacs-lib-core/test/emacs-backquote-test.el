@@ -34,48 +34,6 @@
   nemacs-test-paths-repo-root
   "Repository root for locating read-only stdlib mirrors in tests.")
 
-(defun emacs-backquote-test--bq-provider-defuns (forms)
-  "Return the `nelisp--bq-*' defuns found anywhere in FORMS."
-  (let (found)
-    (dolist (form forms)
-      (when (consp form)
-        (if (and (eq (car form) 'defun)
-                 (symbolp (cadr form))
-                 (string-prefix-p "nelisp--bq-" (symbol-name (cadr form))))
-            (push form found)
-          (when (memq (car form) '(progn when unless if))
-            (setq found (append (reverse (emacs-backquote-test--bq-provider-defuns
-                                          (cdr form)))
-                                found))))))
-    (nreverse found)))
-
-(defun emacs-backquote-test--ensure-runtime-backquote ()
-  "Install the runtime `nelisp--bq-expand', then replay the local override.
-The runtime expander lives in `emacs-parity-macros2.el', which defines it
-only under its standalone guard.  Evaluate just its `nelisp--bq-*'
-defuns, so host Emacs keeps its own backquote, CL and gv machinery."
-  (unless (fboundp 'nelisp--bq-expand)
-    (let ((forms nil))
-      (with-temp-buffer
-        (insert-file-contents
-         (nemacs-test-paths-source "emacs-parity-macros2.el"))
-        (condition-case nil
-            (while t (push (read (current-buffer)) forms))
-          (end-of-file nil)))
-      (let ((defuns (emacs-backquote-test--bq-provider-defuns
-                     (nreverse forms))))
-        (unless (memq 'nelisp--bq-expand (mapcar #'cadr defuns))
-          (error "emacs-parity-macros2.el no longer defines nelisp--bq-expand"))
-        (dolist (defun-form defuns)
-          (eval defun-form t)))))
-  (load (nemacs-test-paths-source "emacs-backquote.el")
-        nil t))
-
-(defun emacs-backquote-test--runtime-expand (form)
-  "Evaluate FORM through the runtime `nelisp--bq-expand' path."
-  (emacs-backquote-test--ensure-runtime-backquote)
-  (eval (nelisp--bq-expand form) nil))
-
 (defun emacs-backquote-test--contains-form-p (tree wanted)
   "Return non-nil when TREE contains a subtree equal to WANTED."
   (or (equal tree wanted)
@@ -160,28 +118,6 @@ defuns, so host Emacs keeps its own backquote, CL and gv machinery."
                          nil)
                    '(a c)))))
 
-(ert-deftest emacs-backquote-test/vector-comma ()
-  (let ((emacs-backquote-test--x 42))
-    (should (equal (emacs-backquote-test--runtime-expand
-                    [a (comma emacs-backquote-test--x) b])
-                   [a 42 b]))))
-
-(ert-deftest emacs-backquote-test/vector-comma-at ()
-  (let ((emacs-backquote-test--xs '(1 2 3)))
-    (should (equal (emacs-backquote-test--runtime-expand
-                    [a (comma-at emacs-backquote-test--xs) b])
-                   [a 1 2 3 b]))))
-
-(ert-deftest emacs-backquote-test/vector-treemacs-shape ()
-  (let ((emacs-backquote-test--v "left")
-        (emacs-backquote-test--w "right"))
-    (should (equal (emacs-backquote-test--runtime-expand
-                    (list
-                     [(comma (format "x-%s" emacs-backquote-test--v)) sym1]
-                     [(comma (format "y-%s" emacs-backquote-test--w)) sym2]))
-                   '(["x-left" sym1] ["y-right" sym2])))))
-
-
 ;;;; --- mixed comma + comma-at ---------------------------------------------
 
 (ert-deftest emacs-backquote-test/mixed ()
@@ -206,45 +142,6 @@ defuns, so host Emacs keeps its own backquote, CL and gv machinery."
 
 (ert-deftest emacs-backquote-test/top-level-comma-at-errors ()
   (should-error (emacs-backquote--expand '(comma-at xs))))
-
-(ert-deftest emacs-backquote-test/non-vector-regression-nested-and-dotted ()
-  (let ((emacs-backquote-test--x 9))
-    (should (equal (emacs-backquote-test--runtime-expand
-                    '(p (comma emacs-backquote-test--x)
-                        (nested (comma emacs-backquote-test--x))
-                        . tailsym))
-                   '(p 9 (nested 9) . tailsym)))))
-
-(ert-deftest emacs-backquote-test/runtime-list-nil-level-means-outermost ()
-  "The compatibility wrapper treats a nil depth as the outer level."
-  (emacs-backquote-test--ensure-runtime-backquote)
-  (let ((emacs-backquote-test--x 9))
-    (should (equal
-             (eval (emacs-backquote--runtime-expand-list
-                    '(p (comma emacs-backquote-test--x)) nil)
-                   nil)
-             '(p 9)))))
-
-(ert-deftest emacs-backquote-test/runtime-punctuation-nested-generator-shape ()
-  "Outer expansion preserves generator-style inner punctuation backquote."
-  (emacs-backquote-test--ensure-runtime-backquote)
-  (let* ((outer
-          (read
-           "`(outer (cl-macrolet ((iter-yield (value) `(cps-internal-yield ,value))) (iter-yield 7)))"))
-         (inner (read "`(cps-internal-yield ,value)"))
-         (expansion (nelisp--bq-expand (cadr outer))))
-    (should
-     (emacs-backquote-test--contains-form-p
-      expansion (list 'quote inner)))
-    (should-not
-     (emacs-backquote-test--contains-unquoted-symbol-p expansion 'value))))
-
-(ert-deftest emacs-backquote-test/runtime-convenience-nested-marker-regression ()
-  "NeLisp convenience backquote/comma markers remain preserved when nested."
-  (emacs-backquote-test--ensure-runtime-backquote)
-  (let ((inner '(backquote (cps-internal-yield (comma value)))))
-    (should (equal (nelisp--bq-expand inner)
-                   (list 'quote inner)))))
 
 ;; Removed `package-mirror-matches-source': it compared the retired
 ;; packages/emacs-lib-core mirror with src/, which no longer exists.

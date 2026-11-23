@@ -52,9 +52,9 @@
   (with-current-buffer (get-buffer emacs-help--buffer-name)
     (buffer-string)))
 
-(ert-deftest describe-function-renders-signature-and-docstring ()
+(ert-deftest emacs-help-render-function-renders-signature-and-docstring ()
   (emacs-help-test--with-fresh-world
-    (describe-function 'emacs-help-test--sample-function)
+    (emacs-help--render-function 'emacs-help-test--sample-function)
     (let ((text (emacs-help-test--help-string)))
       (should (string-match-p
                "(emacs-help-test--sample-function required &optional optional)"
@@ -62,31 +62,24 @@
       (should (string-match-p "Sample function docstring for help tests\\." text))
       (should (string-match-p "Defined in:" text)))))
 
-(ert-deftest describe-function-handles-undefined-function ()
+(ert-deftest emacs-help-render-function-handles-undefined-function ()
   (emacs-help-test--with-fresh-world
-    (should-error (describe-function 'emacs-help-test--missing-function)
+    (should-error (emacs-help--render-function 'emacs-help-test--missing-function)
                   :type 'user-error)))
 
-(ert-deftest describe-variable-renders-value-and-docstring ()
+(ert-deftest emacs-help-render-variable-renders-value-and-docstring ()
   (emacs-help-test--with-fresh-world
-    (describe-variable 'emacs-help-test--sample-variable)
+    (emacs-help--render-variable 'emacs-help-test--sample-variable)
     (let ((text (emacs-help-test--help-string)))
       (should (string-match-p "emacs-help-test--sample-variable is a variable\\." text))
       (should (string-match-p "(alpha beta)" text))
       (should (string-match-p "Sample variable docstring for help tests\\." text)))))
 
-(ert-deftest describe-variable-handles-unbound-variable ()
+(ert-deftest emacs-help-render-variable-handles-unbound-variable ()
   (emacs-help-test--with-fresh-world
     (makunbound 'emacs-help-test--temporary-unbound)
-    (should-error (describe-variable 'emacs-help-test--temporary-unbound)
+    (should-error (emacs-help--render-variable 'emacs-help-test--temporary-unbound)
                   :type 'user-error)))
-
-(ert-deftest describe-symbol-dispatches-to-function-or-variable ()
-  (emacs-help-test--with-fresh-world
-    (describe-symbol 'emacs-help-test--sample-function)
-    (should (string-match-p "is a function" (emacs-help-test--help-string)))
-    (describe-symbol 'emacs-help-test--sample-variable)
-    (should (string-match-p "is a variable" (emacs-help-test--help-string)))))
 
 (ert-deftest emacs-help-describe-function-text-renders-definition ()
   (let ((text (emacs-help-describe-function-text
@@ -171,27 +164,27 @@
 
 (ert-deftest help-mode-history-commands-report-unavailable ()
   (emacs-help-test--with-fresh-world
-    (should-error (help-go-back) :type 'user-error)
-    (should-error (help-go-forward) :type 'user-error)))
+    (should-error (emacs-help-go-back) :type 'user-error)
+    (should-error (emacs-help-go-forward) :type 'user-error)))
 
 (ert-deftest help-go-back-and-forward-navigate-history ()
   "A4-adjacent: help history (Doc 15 wave A: A3) walks topics back/forward."
   (emacs-help-test--with-fresh-world
-    (describe-function 'emacs-help-test--sample-function) ; topic A
-    (describe-variable 'emacs-help-test--sample-variable) ; topic B (now shown)
+    (emacs-help--render-function 'emacs-help-test--sample-function) ; topic A
+    (emacs-help--render-variable 'emacs-help-test--sample-variable) ; topic B (now shown)
     ;; back -> A
-    (help-go-back)
+    (emacs-help-go-back)
     (should (string-match-p "Sample function docstring"
                             (emacs-help-test--help-string)))
     ;; forward -> B
-    (help-go-forward)
+    (emacs-help-go-forward)
     (should (string-match-p "Sample variable docstring"
                             (emacs-help-test--help-string)))
     ;; nothing past B
-    (should-error (help-go-forward) :type 'user-error)
+    (should-error (emacs-help-go-forward) :type 'user-error)
     ;; back -> A, then nothing before A
-    (help-go-back)
-    (should-error (help-go-back) :type 'user-error)))
+    (emacs-help-go-back)
+    (should-error (emacs-help-go-back) :type 'user-error)))
 
 (ert-deftest describe-key-resolves-binding ()
   (emacs-help-test--with-fresh-world
@@ -608,7 +601,7 @@
 
 (ert-deftest help-mode-q-buries-buffer ()
   (emacs-help-test--with-fresh-world
-    (describe-function 'emacs-help-test--sample-function)
+    (emacs-help--render-function 'emacs-help-test--sample-function)
     (let ((quit-called nil))
       (cl-letf (((symbol-function 'quit-window)
                  (lambda (&rest _)
@@ -624,7 +617,7 @@
                  (lambda (_symbol &optional _raw)
                    (setq calls (1+ calls))
                    (format "render %d" calls))))
-        (describe-function 'emacs-help-test--sample-function)
+        (emacs-help--render-function 'emacs-help-test--sample-function)
         (should (string-match-p "render 1" (emacs-help-test--help-string)))
         (call-interactively (lookup-key help-mode-map (kbd "g")))
         (should (string-match-p "render 2" (emacs-help-test--help-string)))))))
@@ -759,7 +752,7 @@
 
 (ert-deftest emacs-help-needs-review-window-commands ()
   (emacs-help-test--with-fresh-world
-    (describe-function 'emacs-help-test--sample-function)
+    (emacs-help--render-function 'emacs-help-test--sample-function)
     (let ((quit-called nil))
       (cl-letf (((symbol-function 'quit-window)
                  (lambda (&rest _args)
@@ -773,7 +766,7 @@
                  (lambda (_symbol &optional _raw)
                    (setq calls (1+ calls))
                    (format "render %d" calls))))
-        (describe-function 'emacs-help-test--sample-function)
+        (emacs-help--render-function 'emacs-help-test--sample-function)
         (with-current-buffer emacs-help--buffer-name
           (emacs-help-revert-buffer))
         (should (= 2 calls))

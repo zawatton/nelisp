@@ -142,6 +142,11 @@ envelope.")
     ;; Every VC backend command (`vc-diff', `vc-print-log', ...) runs through
     ;; `vc-do-command'; an elided body makes the VC workflow unusable.
     vc-do-command
+    ;; GNU comint's input path (RET in shell, ielm and every comint mode);
+    ;; the NeLisp comint shim used to stand in for it.
+    comint-send-input
+    ;; GNU shell.el's `shell' command (4211 printed characters).
+    shell
     ;; The baked regex bridge calls this on every string/buffer match.
     ;; Eliding it to a nil stub silently kills the whole regex surface.
     nelisp-rx--match-from
@@ -1673,9 +1678,17 @@ runtime meaning."
     (mapcar #'standalone-source-normalize-form (cdr form)))
    ;; Other top-level `eval-when-compile' forms are byte/compiler-only.  The
    ;; standalone loader has no byte compiler, so dropping them avoids pulling
-   ;; in irrelevant compile-time dependencies.
+   ;; in irrelevant compile-time dependencies.  Definitions inside are kept:
+   ;; loading GNU source evaluates the body, and later functions of the same
+   ;; file use those macros unexpanded (compile.el's `compilation-assq').
    ((and (consp form) (eq (car form) 'eval-when-compile))
-    nil)
+    (let ((out nil))
+      (dolist (sub (cdr form))
+        (when (and (consp sub)
+                   (memq (car sub) '(defmacro defun defsubst define-inline
+                                     defconst defvar)))
+          (push (standalone-source-normalize-form sub) out)))
+      (nreverse out)))
    ;; `calendar.el' later passes the two popup menu variables defined by
    ;; cal-menu.el to `easy-menu-binding'.  Keep those symbols bound even
    ;; though standalone replay intentionally drops the actual UI menu wiring.
@@ -1739,11 +1752,10 @@ runtime meaning."
          (memq (cadr form)
                standalone-source-normalize-dropped-defvar-symbols))
     nil)
-   ((and (consp form)
-         (eq (car form) 'defvar)
-         (symbolp (cadr form))
-         (null (cddr form)))
-    nil)
+   ;; A bare `(defvar SYMBOL)' is kept: the standalone evaluator makes
+   ;; SYMBOL dynamically scoped for the forms after it, as GNU does, and
+   ;; code relies on it.  GNU ielm.el's `(let (ielm-input) (comint-send-input)
+   ;; ...)' only sees the value `ielm-input-sender' sets through it.
    ((and (equal standalone-source-normalize-current-file "xterm.el")
          (standalone-source-normalize--keymap-defvar-let-p form))
     (standalone-source-normalize--keymap-defvar-let-forms form))

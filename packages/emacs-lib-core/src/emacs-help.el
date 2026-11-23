@@ -28,12 +28,6 @@
 (require 'emacs-keymap)
 (require 'emacs-mode)
 
-(defvar help-mode-map nil
-  "Keymap for `help-mode'.")
-
-(defvar describe-symbol-backends nil
-  "Backends consulted by callers that extend `describe-symbol'.")
-
 (unless (fboundp 'describe-prefix-bindings)
   (defun describe-prefix-bindings ()
     "Describe the bindings of the prefix used to reach this command."
@@ -50,11 +44,9 @@
                 prefix))))
       (describe-bindings prefix))))
 
-(setq help-mode-map
-      (let ((map (emacs-keymap-make-sparse-keymap)))
-        (emacs-keymap-define-key map (kbd "q") #'emacs-help-quit-window)
-        (emacs-keymap-define-key map (kbd "g") #'emacs-help-revert-buffer)
-        map))
+;; The help buffer uses GNU `help-mode' (vendored help-mode.el) and its
+;; `help-mode-map'; `g' reaches `emacs-help-revert-buffer' through the
+;; buffer's `revert-buffer-function' (see `emacs-help--use-help-mode').
 
 (defvar emacs-help--state (make-hash-table :test 'eq :weakness nil)
   "Hash table mapping help buffers to render metadata.
@@ -290,28 +282,6 @@ KIND is either `function' or `variable'."
             (list symbol "ARGS")))))
     (prin1-to-string signature)))
 
-(defun emacs-help--function-candidates ()
-  "Return a list of function symbols for minibuffer completion."
-  (or (and (fboundp 'apropos-internal)
-           (apropos-internal "" #'fboundp))
-      (let (acc)
-        (mapatoms
-         (lambda (sym)
-           (when (fboundp sym)
-             (push sym acc))))
-        acc)))
-
-(defun emacs-help--variable-candidates ()
-  "Return a list of bound variable symbols for minibuffer completion."
-  (or (and (fboundp 'apropos-internal)
-           (apropos-internal "" #'boundp))
-      (let (acc)
-        (mapatoms
-         (lambda (sym)
-           (when (boundp sym)
-             (push sym acc))))
-        acc)))
-
 (defun emacs-help-prefix-candidates (input names)
   "Return sorted strings from NAMES whose prefix matches INPUT."
   (let ((prefix (or input ""))
@@ -421,26 +391,6 @@ NAMES is an optional alist mapping integer keysyms to display strings."
                 "")))
     (format "%s mods=%d%s" named mods uni)))
 
-(defun emacs-help--read-symbol (prompt candidates predicate)
-  "Read a symbol with PROMPT from CANDIDATES satisfying PREDICATE."
-  (let* ((choice (completing-read prompt candidates predicate t nil nil))
-         (symbol (if (symbolp choice) choice (intern choice))))
-    (unless (funcall predicate symbol)
-      (user-error "%s is not available" choice))
-    symbol))
-
-(defun emacs-help--read-function ()
-  "Read a defined function symbol from the minibuffer."
-  (emacs-help--read-symbol "Describe function: "
-                           (emacs-help--function-candidates)
-                           #'fboundp))
-
-(defun emacs-help--read-variable ()
-  "Read a bound variable symbol from the minibuffer."
-  (emacs-help--read-symbol "Describe variable: "
-                           (emacs-help--variable-candidates)
-                           #'boundp))
-
 (defun emacs-help--insert-section (title body)
   "Insert TITLE followed by BODY and a blank line."
   (insert title "\n")
@@ -461,8 +411,8 @@ NAMES is an optional alist mapping integer keysyms to display strings."
 (defun emacs-help--history-record (rerender)
   "Record RERENDER in the help navigation history.
 A normal topic push moves the current topic onto the back stack and
-clears the forward stack; replays driven by `help-go-back' /
-`help-go-forward' (when `emacs-help--navigating' is non-nil) are not
+clears the forward stack; replays driven by `emacs-help-go-back' /
+`emacs-help-go-forward' (when `emacs-help--navigating' is non-nil) are not
 recorded so navigation stays stable."
   (unless emacs-help--navigating
     (when emacs-help--nav-current
@@ -476,7 +426,7 @@ KIND and SUBJECT describe the current topic.
 RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
   (let ((buffer (emacs-help--buffer)))
     (with-current-buffer buffer
-      (help-mode)
+      (emacs-help--use-help-mode)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (funcall renderer)
@@ -553,7 +503,7 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
   (or (emacs-help-gui--backend-call :show-help-buffer title body)
       (let ((buffer (emacs-help--buffer)))
         (with-current-buffer buffer
-          (help-mode)
+          (emacs-help--use-help-mode)
           (let ((inhibit-read-only t))
             (erase-buffer)
             (insert title "\n\n" body)
@@ -1039,22 +989,14 @@ display core."
      (concat "Apropos documentation search is not yet backed by the full documentation index.\nPattern: "
              arg))))
 
-;;;###autoload
-;; A GNU loaddefs autoload for `help-mode' (file help-mode, the shim that
-;; re-exports this module) is not a definition: the shim would load and leave
-;; it undefined, so it counts as unbound here.
-(unless (and (fboundp 'help-mode)
-             (not (eq (car-safe (symbol-function 'help-mode)) 'autoload)))
-  (defun help-mode ()
-    "Major mode for the shared `*Help*' buffer."
-    (interactive)
-    (emacs-mode-kill-all-local-variables)
-    (emacs-mode-set-major-mode 'help-mode "Help")
-    (setq major-mode 'help-mode)
-    (setq mode-name "Help")
-    (use-local-map help-mode-map)
-    (setq truncate-lines t)
-    nil))
+(defun emacs-help--revert-buffer-function (&rest _ignore)
+  "`revert-buffer-function' of the help buffer: re-render its topic."
+  (emacs-help-revert-buffer))
+
+(defun emacs-help--use-help-mode ()
+  "Put the current buffer in GNU `help-mode', re-rendered by `g'."
+  (help-mode)
+  (setq-local revert-buffer-function #'emacs-help--revert-buffer-function))
 
 ;;;###autoload
 (defun emacs-help-quit-window ()
@@ -1073,7 +1015,7 @@ display core."
       (user-error "Current buffer is not a help buffer"))
     (funcall rerender)))
 
-(defun help-go-back ()
+(defun emacs-help-go-back ()
   "Go back to the previously shown help topic."
   (interactive)
   (unless emacs-help--nav-back
@@ -1083,7 +1025,7 @@ display core."
   (let ((emacs-help--navigating t))
     (funcall emacs-help--nav-current)))
 
-(defun help-go-forward ()
+(defun emacs-help-go-forward ()
   "Go forward to the next help topic in the history."
   (interactive)
   (unless emacs-help--nav-forward
@@ -1094,72 +1036,25 @@ display core."
     (funcall emacs-help--nav-current)))
 
 ;;;###autoload
-(defun describe-function (function)
-  "Render help for FUNCTION in the shared `*Help*' buffer."
-  (interactive (list (emacs-help--read-function)))
-  (emacs-help--render-function function))
-
-;;;###autoload
-(defun describe-variable (variable)
-  "Render help for VARIABLE in the shared `*Help*' buffer."
-  (interactive (list (emacs-help--read-variable)))
-  (emacs-help--render-variable variable))
-
-;;;###autoload
-(defun describe-symbol (symbol)
-  "Render help for SYMBOL as a function or variable."
-  (interactive
-   (list (emacs-help--read-symbol
-          "Describe symbol: "
-          (append (emacs-help--function-candidates)
-                  (emacs-help--variable-candidates))
-          (lambda (sym) (or (fboundp sym) (boundp sym))))))
-  (cond
-   ((fboundp symbol)
-    (describe-function symbol))
-   ((boundp symbol)
-    (describe-variable symbol))
-   (t
-    (user-error "%s is not a defined function or bound variable" symbol))))
-
-;;;###autoload
 (defun describe-key (key &optional buffer)
   "Render help for KEY and its bound command in the shared `*Help*' buffer."
   (interactive (list (read-key-sequence "Describe key: ")))
   (ignore buffer)
   (emacs-help--render-key key))
 
-;; Snapshot our `describe-*' implementations at load time so we can
-;; reassert them later.  Host Emacs's `help-fns' / `help.el' install
-;; their own definitions whenever something autoload-loads them (e.g.
-;; `find-function-library' loads `find-func' which loads `help-fns'),
-;; silently overwriting our polyfills via plain `defun'.  Tests after
-;; that point would otherwise route through host help, breaking the
-;; *Help*-buffer rendering contract this module owns.
-(defvar emacs-help--describe-function-impl
-  (symbol-function 'describe-function)
-  "Captured nelisp-emacs `describe-function' implementation.")
-
-(defvar emacs-help--describe-variable-impl
-  (symbol-function 'describe-variable)
-  "Captured nelisp-emacs `describe-variable' implementation.")
-
+;; `describe-function', `describe-variable' and `describe-symbol' come from
+;; GNU help-fns.el (vendored, autoloaded from loaddefs).  Only `describe-key'
+;; (GNU help.el) is still this module's; snapshot it at load time so a later
+;; load of help.el does not silently replace the *Help* rendering this
+;; module owns.
 (defvar emacs-help--describe-key-impl
   (symbol-function 'describe-key)
   "Captured nelisp-emacs `describe-key' implementation.")
 
-(defvar emacs-help--describe-symbol-impl
-  (symbol-function 'describe-symbol)
-  "Captured nelisp-emacs `describe-symbol' implementation.")
-
 (defun emacs-help--reassert-overrides ()
-  "Reinstall our `describe-*' implementations.
-Run from `emacs-help--ensure-global-bindings' so any host library that
-re-defined these symbols (via `help-fns' autoload, `find-func' load,
-etc.) is silently re-shadowed before the binding step."
-  (fset 'describe-function emacs-help--describe-function-impl)
-  (fset 'describe-variable emacs-help--describe-variable-impl)
-  (fset 'describe-symbol emacs-help--describe-symbol-impl)
+  "Reinstall our `describe-key' implementation.
+Run from `emacs-help--ensure-global-bindings' so a host library that
+re-defined it is re-shadowed before the binding step."
   (fset 'describe-key emacs-help--describe-key-impl))
 
 (defun emacs-help--ensure-global-bindings ()
@@ -1191,6 +1086,21 @@ etc.) is silently re-shadowed before the binding step."
         (format "Cannot open doc string file \"%s\"\n" (car doc)))))
    (t nil)))
 
+(defun emacs-help--function-documentation (function)
+  "Return `function-documentation' of FUNCTION.
+A `lambda' or `autoload' list is answered here exactly as the generic's
+default method in simple.el answers it (no method specializes on a
+cons), skipping the ~120 us generic dispatch; anything else goes to the
+generic."
+  (if (and (consp function)
+           (memq (car function) '(lambda autoload))
+           (consp (cdr function))
+           (not (closurep function)))
+      (let ((doc (car (cddr function))))
+        (when (or (stringp doc) (fixnump doc) (fixnump (cdr-safe doc)))
+          doc))
+    (function-documentation function)))
+
 (unless (fboundp 'documentation)
   (defun documentation (function &optional raw)
     "Return the documentation string of FUNCTION.
@@ -1209,9 +1119,11 @@ Unless RAW is non-nil, pass the string through `substitute-command-keys'."
           (unless function
             (signal 'void-function (list original))))
         (setq doc (emacs-help--resolve-function-doc
-                   (function-documentation function)))
+                   (emacs-help--function-documentation function)))
         (if (and (stringp doc) (not raw))
-            (substitute-command-keys doc)
+            (if (fboundp 'emacs-cc-census-other-w301--substitute-keys)
+                (emacs-cc-census-other-w301--substitute-keys doc)
+              (substitute-command-keys doc))
           doc)))))
 (unless (fboundp 'help-function-arglist)
   (defun help-function-arglist (def &optional _preserve-names)

@@ -23,7 +23,7 @@
 
 (ert-deftest emacs-shell-test/creates-buffer-with-prompt ()
   (emacs-shell-test--with-shell
-    (should (eq major-mode 'shell-mode))
+    (should (eq major-mode 'emacs-shell-mode))
     (should (string-suffix-p emacs-shell-prompt-string (buffer-string)))))
 
 (ert-deftest emacs-shell-test/runs-command-and-prints-output ()

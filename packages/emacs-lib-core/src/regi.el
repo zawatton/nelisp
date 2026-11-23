@@ -44,6 +44,38 @@ standalone path by a NeLisp-only primitive instead, matching
     (make-variable-buffer-local 'ctl-arrow)
     (make-variable-buffer-local 'buffer-display-table)))
 
+(defun regi--column-plain-p (start end text table)
+  "Non-nil when TEXT, the buffer text from START to END, has a plain column.
+That is: no display table, no text property or overlay anywhere from START
+to END, no default or aliased character properties, and only printable
+ASCII characters and tabs.  `current-column' then reads no display or
+invisibility property, and every character but a tab is one column."
+  (and (null table)
+       (not (and (boundp 'default-text-properties) default-text-properties))
+       (not (and (boundp 'char-property-alias-alist) char-property-alias-alist))
+       (let ((i 0) (n (length text)) (ok t))
+         (while (and ok (< i n))
+           (let ((c (aref text i)))
+             (unless (or (eq c ?\t) (and (>= c 32) (<= c 126)))
+               (setq ok nil)))
+           (setq i (1+ i)))
+         ok)
+       (or (= start end)
+           (and (null (text-properties-at start))
+                (let ((change (next-property-change start nil end)))
+                  (or (null change) (>= change end)))
+                (null (overlays-in start end))))))
+
+(defun regi--column-plain (text tab-size)
+  "Column after TEXT of printable ASCII and tabs, with tabs every TAB-SIZE."
+  (let ((column 0) (i 0) (n (length text)))
+    (while (< i n)
+      (setq column (if (eq (aref text i) ?\t)
+                       (+ column (- tab-size (% column tab-size)))
+                     (1+ column))
+            i (1+ i)))
+    column))
+
 (defun regi--column-character (char column tab-size control-arrow table multibyte)
   "Advance COLUMN over CHAR using the current buffer's display policy."
   (let ((glyphs (and table (aref table char))))
@@ -118,7 +150,10 @@ standalone path by a NeLisp-only primitive instead, matching
 Expand tabs using `tab-width' and count character display widths.
 With `selective-display' equal to t, carriage return starts a new line.
 Invisible text without ellipses occupies no columns."
-    (let* ((start (line-beginning-position))
+    ;; gnu562: GNU's current_column scans back to the newline
+    ;; (find_newline), not to a field boundary as `line-beginning-position'
+    ;; does; `pos-bol' is that scan (and about 20 us cheaper).
+    (let* ((start (if (fboundp 'pos-bol) (pos-bol) (line-beginning-position)))
            (text (buffer-substring-no-properties start (point)))
            (tab-size (if (and (boundp 'tab-width) (integerp tab-width)
                               (> tab-width 0) (<= tab-width 1000))
@@ -133,43 +168,48 @@ Invisible text without ellipses occupies no columns."
            (column 0)
            (i 0))
       (unless (char-table-p table) (setq table nil))
-      ;; Find the last carriage return before measuring, so hidden text
-      ;; and display-table substitutions cannot conceal a line boundary.
-      (when (and (boundp 'selective-display) (eq selective-display t))
-        (let ((j 0))
-          (while (< j (length text))
-            (when (eq (aref text j) ?\r) (setq i (1+ j)))
-            (setq j (1+ j)))))
-      (while (< i (length text))
-        (let* ((position (+ start i))
-               (display (get-char-property position 'display)))
-          (cond
-           ;; GNU counts the underlying text when invisibility requests
-           ;; ellipses (invisible-p returns 2), rather than hiding it here.
-           ((regi--column-hidden-p position))
-           ((stringp display)
-            (setq column (+ column (regi--column-string
-                                    display tab-size control-arrow table)))
-            (while (and (< (1+ i) (length text))
-                        (eq (get-char-property (+ start i 1) 'display) display))
-              (setq i (1+ i))))
-           ((and (consp display) (eq (car display) 'space)
-                 (let ((width (plist-get (cdr display) :width))
-                       (align (plist-get (cdr display) :align-to)))
-                   (cond
-                    ((and (integerp width) (> width 0))
-                     (setq column (+ column width)))
-                    ((and (integerp align) (> align column))
-                     (setq column align)))))
-            (while (and (< (1+ i) (length text))
-                        (eq (get-char-property (+ start i 1) 'display) display))
-              (setq i (1+ i))))
-           (t
-            (setq column (regi--column-character
-                          (aref text i) column tab-size control-arrow
-                          table multibyte)))))
-        (setq i (1+ i)))
-      column)))
+      ;; gnu562: a plain ASCII line without properties, overlays or a
+      ;; display table is counted directly (the general loop below
+      ;; reads character properties for each character).
+      (if (regi--column-plain-p start (point) text table)
+          (regi--column-plain text tab-size)
+        ;; Find the last carriage return before measuring, so hidden text
+        ;; and display-table substitutions cannot conceal a line boundary.
+        (when (and (boundp 'selective-display) (eq selective-display t))
+          (let ((j 0))
+            (while (< j (length text))
+              (when (eq (aref text j) ?\r) (setq i (1+ j)))
+              (setq j (1+ j)))))
+        (while (< i (length text))
+          (let* ((position (+ start i))
+                 (display (get-char-property position 'display)))
+            (cond
+             ;; GNU counts the underlying text when invisibility requests
+             ;; ellipses (invisible-p returns 2), rather than hiding it here.
+             ((regi--column-hidden-p position))
+             ((stringp display)
+              (setq column (+ column (regi--column-string
+                                      display tab-size control-arrow table)))
+              (while (and (< (1+ i) (length text))
+                          (eq (get-char-property (+ start i 1) 'display) display))
+                (setq i (1+ i))))
+             ((and (consp display) (eq (car display) 'space)
+                   (let ((width (plist-get (cdr display) :width))
+                         (align (plist-get (cdr display) :align-to)))
+                     (cond
+                      ((and (integerp width) (> width 0))
+                       (setq column (+ column width)))
+                      ((and (integerp align) (> align column))
+                       (setq column align)))))
+              (while (and (< (1+ i) (length text))
+                          (eq (get-char-property (+ start i 1) 'display) display))
+                (setq i (1+ i))))
+             (t
+              (setq column (regi--column-character
+                            (aref text i) column tab-size control-arrow
+                            table multibyte)))))
+          (setq i (1+ i)))
+        column))))
 
 (when (regi--install-function-p 'back-to-indentation)
   (defun back-to-indentation ()

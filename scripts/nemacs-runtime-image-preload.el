@@ -469,13 +469,10 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
       (nemacs-runtime-image-preload--install-help-command symbol))
     (provide 'help-mode)
     (nemacs-runtime-image-preload--define-help-button-types))
-  (unless (featurep 'help-fns)
-    (dolist (symbol '(describe-function
-                      describe-variable
-                      describe-symbol
-                      describe-key))
-      (nemacs-runtime-image-preload--install-help-command symbol))
-    (provide 'help-fns))
+  ;; `describe-function', `describe-variable' and `describe-symbol' are GNU
+  ;; help-fns.el's (autoloaded from loaddefs); only `describe-key' is still
+  ;; rendered by `emacs-help'.
+  (nemacs-runtime-image-preload--install-help-command 'describe-key)
   t)
 
 (defun nemacs-runtime-image-preload--install-module-command
@@ -502,13 +499,9 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
   t)
 
 (defun nemacs-runtime-image-preload--install-ielm-core ()
-  "Install the minimal `ielm' daily-driver surface."
-  (unless (featurep 'ielm)
-    (nemacs-runtime-image-preload--install-module-command
-     'ielm 'emacs-ielm 'ielm)
-    (nemacs-runtime-image-preload--install-module-command
-     'ielm-send-input 'emacs-ielm 'ielm-input-handler)
-    (provide 'ielm))
+  "Leave `ielm' to GNU ielm.el, autoloaded from loaddefs.
+The former wrappers pointed `ielm' and `ielm-send-input' at the
+`emacs-ielm' module and provided a fake `ielm' feature."
   t)
 
 (defun nemacs-runtime-image-preload--install-minibuffer-core ()
@@ -547,6 +540,8 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
     (nemacs-runtime-image-preload--install-module-command
      'imenu 'emacs-imenu 'emacs-imenu)
     (provide 'imenu))
+  ;; `xref-find-definitions' and friends are GNU xref.el's (autoloaded
+  ;; from loaddefs); only the emacs-xref names are wrapped here.
   (unless (featurep 'xref)
     (nemacs-runtime-image-preload--install-module-command
      'emacs-xref-find-definitions
@@ -555,16 +550,7 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
     (nemacs-runtime-image-preload--install-module-command
      'emacs-xref-pop-marker-stack
      'emacs-xref
-     'emacs-xref-pop-marker-stack)
-    (nemacs-runtime-image-preload--install-module-command
-     'xref-find-definitions
-     'emacs-xref
-     'emacs-xref-find-definitions)
-    (nemacs-runtime-image-preload--install-module-command
-     'xref-pop-marker-stack
-     'emacs-xref
-     'emacs-xref-pop-marker-stack)
-    (provide 'xref))
+     'emacs-xref-pop-marker-stack))
   (unless (featurep 'compile)
     (nemacs-runtime-image-preload--install-module-command
      'emacs-compile-run 'emacs-compile 'emacs-compile-run)
@@ -609,6 +595,8 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
   "Install minimal shell/eshell daily-driver facades."
   (unless (featurep 'emacs-symbol)
     (require 'emacs-symbol))
+  ;; `shell' and `shell-mode' are GNU shell.el's (autoloaded from
+  ;; loaddefs); only the emacs-shell names are wrapped here.
   (unless (featurep 'shell)
     (unless (boundp 'emacs-shell-buffer-name)
       (defvar emacs-shell-buffer-name "*shell*"))
@@ -617,12 +605,7 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
     (nemacs-runtime-image-preload--install-module-command
      'emacs-shell-mode 'emacs-shell 'emacs-shell-mode)
     (nemacs-runtime-image-preload--install-module-command
-     'emacs-shell-send-input 'emacs-shell 'emacs-shell-send-input)
-    (nemacs-runtime-image-preload--install-module-command
-     'shell 'emacs-shell 'emacs-shell)
-    (nemacs-runtime-image-preload--install-module-command
-     'shell-mode 'emacs-shell 'emacs-shell-mode)
-    (provide 'shell))
+     'emacs-shell-send-input 'emacs-shell 'emacs-shell-send-input))
   (unless (featurep 'eshell)
     (unless (boundp 'eshell-buffer-name)
       (defvar eshell-buffer-name "*eshell*"))

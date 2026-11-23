@@ -281,7 +281,11 @@ and only paid for when a workflow actually calls them."
            (not (fboundp definition)))
       (eval (list 'defun symbol '(&rest args)
                   (list 'apply (list 'quote definition) 'args)))
-    (fset symbol definition))
+    (fset symbol definition)
+    ;; GNU `defalias' records (defun . SYMBOL) in load-history; the `defun'
+    ;; branch above already does through `nl-afset'.
+    (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
+        (nelisp--lh-fun symbol)))
   symbol)
 
 ;; Public entry point for the load-time rewriter in `emacs-load.el'.

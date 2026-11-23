@@ -18,6 +18,10 @@
                 (cons (list 'function symbol (symbol-function symbol))
                       nelisp--autoload-queue)))
         (fset symbol definition)
+        ;; GNU Fdefalias attaches (defun . SYMBOL) to load-history while a
+        ;; file loads; outside a load this is one variable test.
+        (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
+            (nelisp--lh-fun symbol))
         symbol))
 (fset 'provide
       (lambda (feature)
@@ -362,24 +366,35 @@ a negative, and signalling there turned a limit into a failure."
     (let ((ln (cond
                ((< x 0) (/ 0.0 0.0))
                ((= x 0) (/ -1.0 0.0))
+               ;; +inf is its own log; the halving loop below never ends on it.
+               ((> x 1.7976931348623157e308) (float x))
                (t (let ((k 0) (m (float x)))
                     (while (>= m 1.4142135623730951) (setq m (/ m 2.0)) (setq k (1+ k)))
                     (while (< m 0.7071067811865476) (setq m (* m 2.0)) (setq k (1- k)))
+                    ;; gnu562: z, z^3/3 and z^5/5 in double-double; the rest,
+                    ;; z^7 (1/7 + w/9 + ... + w^16/39) with w = z^2 <= 0.0295,
+                    ;; is below 4e-6 of the sum, so a double carries it to about
+                    ;; 1e-21.  Bit-identical to the 30-term double-double series
+                    ;; over 300000 arguments, at about a seventh of its cost.
                     (let* ((num (nelisp--two-sum m -1.0))
                            (den (nelisp--two-sum m 1.0))
                            (z (nelisp--dd-div num den))
                            (z2 (nelisp--dd-mul z z))
-                           (sum z)
-                           (term z)
-                           (n 1))
-                      (while (< n 30)
-                        (setq term (nelisp--dd-mul term z2))
-                        (setq sum (nelisp--dd-add sum (nelisp--dd-div-int term (+ (* 2 n) 1))))
-                        (setq n (1+ n)))
-                      (setq sum (nelisp--dd-mul sum (cons 2.0 0.0)))
-                      (let ((kk (nelisp--dd-mul (cons (float k) 0.0)
-                                                (cons 6.93147180369123816490e-01
-                                                      1.90821492927058770002e-10))))
+                           (z3 (nelisp--dd-mul z z2))
+                           (z5 (nelisp--dd-mul z3 z2))
+                           (w (car z2))
+                           (p 0.0)
+                           (n 39))
+                      (while (>= n 7)
+                        (setq p (+ (/ 1.0 n) (* w p)))
+                        (setq n (- n 2)))
+                      (let* ((sum (nelisp--dd-add z (nelisp--dd-div-int z3 3)))
+                             (sum (nelisp--dd-add sum (nelisp--dd-div-int z5 5)))
+                             (sum (nelisp--dd-add sum (cons (* (* (car z5) w) p) 0.0)))
+                             (sum (cons (* 2.0 (car sum)) (* 2.0 (cdr sum))))
+                             (kk (nelisp--dd-mul (cons (float k) 0.0)
+                                                 (cons 6.93147180369123816490e-01
+                                                       1.90821492927058770002e-10))))
                         (setq sum (nelisp--dd-add sum kk))
                         (+ (car sum) (cdr sum)))))))))
       (if base (/ ln (log base)) ln))))
@@ -562,10 +577,11 @@ new vector, or with DEST the vector when it changed and nil when it did not."
       (nelisp--two-sum (car pe) e)))
   (defun nelisp--dd-div-int (x n)
     "Double-double X divided by the small integer N."
-    (let* ((q (/ (car x) (float n)))
-           (pe (nelisp--two-prod q (float n)))
+    (let* ((fn (float n))
+           (q (/ (car x) fn))
+           (pe (nelisp--two-prod q fn))
            (rem (+ (- (- (car x) (car pe)) (cdr pe)) (cdr x))))
-      (nelisp--two-sum q (/ rem (float n)))))
+      (nelisp--two-sum q (/ rem fn))))
   (defun nelisp--pow2-exact (n)
     "2.0^N as an exact double, via repeated squaring (O(log N), never a
 per-unit loop).  Every intermediate the caller ever asks for stays inside
@@ -645,14 +661,26 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
                (hi (- xf (* k 6.93147180369123816490e-01)))
                (lo (- 0.0 (* k 1.90821492927058770002e-10)))
                (r (nelisp--two-sum hi lo))
+               (rh (car r))
                (term (cons 1.0 0.0))
                (sum (cons 1.0 0.0))
-               (n 1))
-          (while (< n 22)
+               (p 0.0)
+               (n 21))
+          ;; gnu562: terms 1..6 in double-double; the rest, r^7/7! + ... +
+          ;; r^21/21!, is below 2e-7 of the sum, so a double carries it to
+          ;; about 1e-22.  P is 6! times its coefficients (Horner on r).
+          ;; Bit-identical to the 21-term double-double series over 300000
+          ;; arguments, at about a third of its cost.
+          (while (>= n 7)
+            (setq p (/ (+ 1.0 (* rh p)) n))
+            (setq n (1- n)))
+          (setq n 1)
+          (while (<= n 6)
             (setq term (nelisp--dd-mul term r))
             (setq term (nelisp--dd-div-int term n))
             (setq sum (nelisp--dd-add sum term))
             (setq n (1+ n)))
+          (setq sum (nelisp--dd-add sum (cons (* (* (car term) rh) p) 0.0)))
           (nelisp--scale-pow2 (+ (car sum) (cdr sum)) k)))))))
 ;; This stopped being a no-buffers stub on 2026-09-19 (Doc 204 gave the
 ;; runtime real buffers).  Doc 210 gave buffers and strings real text
@@ -2162,7 +2190,16 @@ is built like the general path builds it."
                                   nelisp--char-syntax-prelude-def)
                               (or (gethash nelisp--current-buffer
                                            nelisp--syntax-buffer-tables)
-                                  nelisp--buffer-defaults-syntax-table))))
+                                  nelisp--buffer-defaults-syntax-table)))
+                   ;; gnu562: when emacs-lib's syntax tables own `char-syntax',
+                   ;; fetch the current table once instead of once per
+                   ;; character (about 6.6 us each); it cannot change here.
+                   (etab (and (not stab)
+                              (boundp 'emacs-syntax-table--char-syntax-def)
+                              (eq (symbol-function 'char-syntax)
+                                  (symbol-value
+                                   'emacs-syntax-table--char-syntax-def))
+                              (emacs-syntax-table-current))))
               (while (< i n)
                 (let ((c (aref object i)))
                   (if inword
@@ -2180,7 +2217,9 @@ is built like the general path builds it."
                             (let ((entry (aref stab c)))
                               (setq entry (if (consp entry) (logand (car entry) 255) 0))
                               (or (eq entry 2) (and csw (eq entry 3))))
-                          (let ((sx (char-syntax c)))
+                          (let ((sx (if etab
+                                        (emacs-syntax-table-char-syntax c etab)
+                                      (char-syntax c))))
                             (or (eq sx ?w) (and csw (eq sx ?_)))))
                         i (1+ i))))
               result)))))))
@@ -4209,9 +4248,11 @@ error handler continues from where it left off."
     "Dekker's split: A as HI + LO with HI carrying 26 significant bits."
     (let* ((c (* 134217729.0 a)) (hi (- c (- c a)))) (cons hi (- a hi))))
   (defun nelisp--two-prod-err (a b p)
-    "The part of A*B that P, the rounded product, dropped."
-    (let* ((sa (nelisp--f64-split a)) (sb (nelisp--f64-split b))
-           (ahi (car sa)) (alo (cdr sa)) (bhi (car sb)) (blo (cdr sb)))
+    "The part of A*B that P, the rounded product, dropped.
+Dekker's split of A and B (`nelisp--f64-split') is computed in place:
+the same operations, without the two pairs."
+    (let* ((ca (* 134217729.0 a)) (ahi (- ca (- ca a))) (alo (- a ahi))
+           (cb (* 134217729.0 b)) (bhi (- cb (- cb b))) (blo (- b bhi)))
       (+ (+ (+ (- (* ahi bhi) p) (* ahi blo)) (* alo bhi)) (* alo blo))))
   (defun sqrt (x)
     "The square root of X.
@@ -5024,16 +5065,25 @@ The matcher accepts some incomplete expressions; searches must reject them."
   (let ((i 0) (n (length text)) (prevc ?\n)
         (some-multiletter-word nil) (some-lowercase nil)
         (some-nonuppercase-initial nil) (some-uppercase nil))
-    (while (< i n)
+    ;; Every flag only ever turns on, and once SOME-LOWERCASE and
+    ;; SOME-NONUPPERCASE-INITIAL are both set no clause below can pick a
+    ;; conversion, so the scan stops there.  The previous character's
+    ;; syntax is read only when the flag it decides is still unset
+    ;; (gnu562: each `char-syntax' is the cost of this loop).
+    (while (and (< i n) (not (and some-lowercase some-nonuppercase-initial)))
       (let* ((c (aref text i))
              (up (upcase c)) (down (downcase c))
-             (prevc-syntax (char-syntax prevc))
+             (lower (and (/= up down) (= c down)))
+             (upper (and (not lower) (/= down c)))
              (prevc-word
-              (or (eq prevc-syntax ?w)
-                  (and (boundp 'case-symbols-as-words)
-                       case-symbols-as-words (eq prevc-syntax ?_)))))
+              (when (if upper (not some-multiletter-word)
+                      (not some-nonuppercase-initial))
+                (let ((prevc-syntax (char-syntax prevc)))
+                  (or (eq prevc-syntax ?w)
+                      (and (boundp 'case-symbols-as-words)
+                           case-symbols-as-words (eq prevc-syntax ?_)))))))
         (cond
-         ((and (/= up down) (= c down))
+         (lower
           (setq some-lowercase t)
           (if prevc-word
               (setq some-multiletter-word t)
@@ -5041,7 +5091,7 @@ The matcher accepts some incomplete expressions; searches must reject them."
          ;; GNU's `uppercasep' is true when downcasing changes C.  That also
          ;; includes Unicode titlecase characters such as U+01C5, which are
          ;; distinct from both their uppercase and lowercase mappings.
-         ((/= down c)
+         (upper
           (setq some-uppercase t)
           (when prevc-word (setq some-multiletter-word t)))
          ((not prevc-word)
@@ -6147,8 +6197,15 @@ selects."
   "MESSAGE, an error symbol's `error-message', as GNU print.c
 print_error_message prints it: through `substitute-command-keys' when
 that is defined, keeping MESSAGE if that fails (safe_call1), else with
-its quotes substituted for `text-quoting-style'."
+its quotes substituted for `text-quoting-style'.
+Without a backslash there is no key, keymap or escape sequence to expand, and
+`substitute-command-keys' only curves the quotes, which
+`nelisp--substitute-quotes' does without its ~0.5 ms buffer round trip."
   (cond ((not (stringp message)) message)
+        ((not (string-search "\\" message))
+         (if (or (string-search "`" message) (string-search "'" message))
+             (nelisp--substitute-quotes message)
+           (copy-sequence message)))
         ((fboundp 'substitute-command-keys)
          (or (condition-case nil (substitute-command-keys message)
                (error nil))
@@ -12215,6 +12272,15 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
   (let* ((b (nelisp-buffer--ambient buf))
          (oldlen (nelisp-buffer-len b))
          (ovt (nelisp-buffer-overlays b)))
+   ;; gnu562: GNU `erase-buffer' is `widen' + del_range (BEG, Z); on an
+   ;; empty buffer that deletes nothing, so neither the modified flag nor
+   ;; the tick changes.  Only the widening and the stale pending point
+   ;; apply; markers are already at 1 and there are no properties.
+   (if (= oldlen 0)
+       (progn
+         (setf (nelisp-buffer-narrow-start b) nil)
+         (setf (nelisp-buffer-narrow-end b) nil)
+         (setf (nelisp-buffer-pend b) nil))
     (when (and ovt (> oldlen 0))
       (nelisp-ov--before-change b 1 (1+ oldlen)))
     (setf (nelisp-buffer-ins b) nil)
@@ -12235,7 +12301,7 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
     (setf (nelisp-buffer-text-properties b) nil)
     (when (and ovt (> oldlen 0))
       (nelisp-ov--adjust-delete b 1 oldlen)
-      (nelisp-ov--after-change b 1 oldlen 0)))
+      (nelisp-ov--after-change b 1 oldlen 0))))
   nil)
 
 (defun nelisp-buffer-modified-p (&optional buf)
@@ -14022,6 +14088,12 @@ point advances past TEXT instead of consulting its own
       (when ovt
         (nelisp-ov--before-change b at at))
       (setq n (nelisp--gb-insert b text))
+      ;; GNU: an insertion inside the accessible portion moves ZV with it,
+      ;; as `nelisp-insert' does (a narrowing left by `save-restriction'
+      ;; otherwise hid the tail after `insert-before-markers').
+      (when (nelisp-buffer-narrow-end b)
+        (setf (nelisp-buffer-narrow-end b)
+              (+ (nelisp-buffer-narrow-end b) n)))
       (setf (nelisp-buffer-modified b) t)
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
@@ -19123,7 +19195,12 @@ filter it already wrote."
       (or (null destination) (eq destination t) (bufferp destination)
           (stringp destination))))
   (defun call-process (program &optional infile destination display &rest args)
-    (let* ((resolved (or (executable-find program) program))
+    ;; GNU callproc.c: PROGRAM is searched with openp in `exec-path'; a miss
+    ;; signals `file-missing' instead of running and answering 127.
+    (let* ((resolved (or (executable-find program)
+                         (signal 'file-missing
+                                 (list "Searching for program"
+                                       "No such file or directory" program))))
            (_valid (unless (nelisp--process-valid-destination-p destination)
                      (error "Unsupported call-process destination: %S" destination)))
            (spec (if (consp destination) destination
@@ -21703,6 +21780,70 @@ characters that GNU names algorithmically as PREFIX-HEX.")
       (setq i (1+ i)))
     (and ok value)))
 
+(defvar nelisp--ucs-names-ranges-pos nil
+  "Index of the \"\\n#RANGES\\n\" line in `nelisp--ucs-names-text', once found.")
+
+(defun nelisp--ucs-names-ranges-pos (text)
+  "Index in TEXT of the newline that starts its \"#RANGES\" line, or nil."
+  (or nelisp--ucs-names-ranges-pos
+      (setq nelisp--ucs-names-ranges-pos (string-search "\n#RANGES\n" text))))
+
+(defun nelisp--ucs-name-lookup (key text)
+  "Code of the character named KEY in TEXT's name lines, or nil.
+The \"NAME<TAB>HEX\" lines before the \"#RANGES\" line are sorted by name
+in character-code order (tools/ai/reader1/gen-ucs-names.el), so this is a
+binary search over line starts instead of a scan of the whole table.
+Every name ends in a TAB, which ends each comparison.  LCP-LO and LCP-HI
+are how many leading characters KEY shares with the nearest lines known to
+sort before and after it; every line between them shares at least the
+smaller count, so a comparison starts there."
+  (let ((lo 1)
+        (hi (or (nelisp--ucs-names-ranges-pos text) (length text)))
+        (klen (length key))
+        (lcp-lo 0)
+        (lcp-hi 0)
+        (result nil)
+        (done nil))
+    (while (and (not done) (< lo hi))
+      (let* ((nl (string-search "\n" text (/ (+ lo hi) 2)))
+             (ls (if (and nl (< (1+ nl) hi)) (1+ nl) lo))
+             (i (min lcp-lo lcp-hi))
+             (j (+ ls i))
+             (d 0))
+        (while (and (= d 0) (< i klen))
+          (setq d (- (aref key i) (aref text j)))
+          (when (= d 0) (setq i (1+ i) j (1+ j))))
+        (when (= d 0)
+          ;; KEY ran out: equal when the name ends here too, else a prefix.
+          (setq d (if (= (aref text j) 9) 0 -1)))
+        (cond ((= d 0)
+               (setq result (nelisp--ucs-hex-value
+                             text (1+ j) (or (string-search "\n" text j) (length text)))
+                     done t))
+              ((< d 0)
+               (if (= ls lo) (setq done t) (setq hi ls lcp-hi i)))
+              (t
+               (let ((eol (string-search "\n" text j)))
+                 (if eol (setq lo (1+ eol) lcp-lo i) (setq done t)))))))
+    result))
+
+(defvar nelisp--ucs-name-cache nil
+  "Hash table from a name looked up by `char-from-name' to its code or nil.
+GNU answers from its `ucs-names' hash table; this keeps repeated lookups
+from searching the table text again.  Cleared when it grows past 4096.")
+
+(defun nelisp--ucs-name-cached (key text)
+  "Like `nelisp--ucs-name-lookup', remembering each KEY's answer."
+  (let* ((cache (or nelisp--ucs-name-cache
+                    (setq nelisp--ucs-name-cache (make-hash-table :test 'equal))))
+         (hit (gethash key cache 'nelisp--ucs-miss)))
+    (if (not (eq hit 'nelisp--ucs-miss))
+        hit
+      (let ((code (nelisp--ucs-name-lookup key text)))
+        (when (>= (hash-table-count cache) 4096) (clrhash cache))
+        (puthash (copy-sequence key) code cache)
+        code))))
+
 (defun nelisp--ucs-algorithmic-name (code)
   "Return the algorithmic Unicode name of CODE (PREFIX-HEX), or nil.
 Covers what GNU's `name' property computes and `ucs-names' leaves out: the
@@ -21715,7 +21856,7 @@ and the variation selectors."
     (format "VARIATION SELECTOR-%d" (- code #xE00EF)))
    (t
     (let* ((text (nelisp--ucs-names-text))
-           (pos (string-search "\n#RANGES\n" text))
+           (pos (nelisp--ucs-names-ranges-pos text))
            (end (length text))
            (result nil))
       (when pos
@@ -21744,13 +21885,11 @@ VARIATION SELECTOR-17)."
     (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
     (let* ((key (if ignore-case (upcase string) string))
            (text (nelisp--ucs-names-text))
-           (pos (and (not (string-search "\t" key))
-                     (not (string-search "\n" key))
-                     (string-search (concat "\n" key "\t") text))))
-      (if pos
-          (let* ((start (+ pos (length key) 2))
-                 (eol (string-search "\n" text start)))
-            (nelisp--ucs-hex-value text start eol))
+           (found (and (not (string-search "\t" key))
+                       (not (string-search "\n" key))
+                       (nelisp--ucs-name-cached key text))))
+      (if found
+          found
         ;; GNU: parse names like "VARIATION SELECTOR-17" and "CJK
         ;; COMPATIBILITY IDEOGRAPH-F900" that are not in `ucs-names'.
         (let* ((n (length string))
@@ -23636,51 +23775,12 @@ processors not available."
             (if raw
                 (cons (expand-file-name dir)
                       (nelisp--readdir-scan-raw raw nil t))
-              nil))))
-  ;; fset directory-files: override the misc.el version (which calls
-  ;; nelisp--syscall-readdir, itself deferred) with one that calls
-  ;; nelisp--syscall-readdir-names directly.  The common no-FULL/no-MATCH
-  ;; case returns the native decoder's list as-is, avoiding a second
-  ;; interpreted traversal and reversal.
-  ;; fix/directory-files-count: COUNT (Emacs's 5th, optional argument) was
-  ;; missing entirely -- any caller passing it (the standard idiom
-  ;; `(directory-files DIR t MATCH t COUNT)') hit `wrong-number-of-
-  ;; arguments' on this fset closure.  Clip to the first COUNT entries via
-  ;; `seq-take' (a no-op when COUNT >= the entry count), post-filter, same
-  ;; as lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
-  (fset 'directory-files
-        (lambda (directory &optional full match _nosort count)
-          (unless (stringp directory)
-            (signal 'wrong-type-argument (list 'stringp directory)))
-          (when (or match count)
-            (nelisp--w101-directory-arguments directory match count))
-          (let ((raw (nelisp--syscall-readdir-names directory t)))
-            ;; GNU validates MATCH even when COUNT is zero.
-            (when match
-              (nelisp--cc03-validate-regexp match)
-              (string-match-p match ""))
-            (if raw
-                (let ((names (nelisp--readdir-scan-raw raw t t))
-                      (out nil))
-                  (if (if full t match)
-                      (progn
-                        (while names
-                          (let ((name (car names)))
-                            (if match
-                                (if (string-match-p match name)
-                                    (setq out (cons (if full
-                                                        (expand-file-name name directory)
-                                                      name)
-                                                    out)))
-                              (setq out (cons (if full
-                                                  (expand-file-name name directory)
-                                                name)
-                                              out))))
-                          (setq names (cdr names)))
-                        (setq out (nreverse out))
-                        (if count (seq-take out count) out))
-                    (if count (seq-take names count) names)))
               nil)))))
+;; gnu562: `directory-files' is defined further down (search for
+;; `nelisp--directory-files-candidates').  The fset closure that used to live
+;; here ignored NOSORT, always dropped "." and "..", and answered nil for a
+;; missing directory; because it ran first, it also kept that GNU-shaped
+;; definition from ever being installed.
 (unless (fboundp 'file-exists-p)
   ;; The stat classifier first performs this same F_OK test. Existence does
   ;; not require its second syscall or its file/directory classification.
@@ -24198,7 +24298,12 @@ Keep the original precision rather than reducing a timestamp's frequency."
          (doe (+ (* yoe 365) (/ yoe 4) (- (/ yoe 100)) doy)))
     (+ (* era 146097) doe -719468)))
 
-(unless (fboundp 'directory-files)
+;; On the standalone reader `directory-files' can already be bound when this
+;; runs (lisp/nelisp-stdlib-misc.el's copy, built on the deferred
+;; `nelisp--syscall-readdir'), so install this one whenever the native
+;; readdir primitive exists.
+(when (or (not (fboundp 'directory-files))
+          (fboundp 'nelisp--syscall-readdir-names))
   (progn
     (defun nelisp--directory-files-match-p (name match)
       (if (not match)
@@ -24209,6 +24314,46 @@ Keep the original precision rather than reducing a timestamp's frequency."
                         match)))
           (and (>= (length name) (length prefix))
                (equal (substring name 0 (length prefix)) prefix)))))
+    ;; gnu562: an anchored MATCH such as "\\`env\\'" can only match names that
+    ;; start with its literal ASCII head, so search the NUL-separated
+    ;; snapshot for NUL+HEAD and run the regexp on those names only (about
+    ;; 4 us per `string-match-p' call otherwise, for every entry).  Any \\|
+    ;; disables this, since \\` would bind to the first alternative only.
+    (defun nelisp--directory-files-literal-head (match)
+      "Return the literal ASCII text every match of MATCH starts with, or nil."
+      (when (and match (> (length match) 2)
+                 (= (aref match 0) 92) (= (aref match 1) 96)
+                 (not (string-search "\\|" match)))
+        (let ((idx 2) (len (length match)) (stop nil))
+          (while (and (< idx len) (not stop))
+            (let ((c (aref match idx)))
+              (if (or (>= c 128) (memq c '(46 42 43 63 91 94 36 92)))
+                  (setq stop c)
+                (setq idx (1+ idx)))))
+          ;; A postfix operator (* + ? or \\{) applies to the last char.
+          (when (and stop (< idx len)
+                     (or (memq stop '(42 43 63))
+                         (and (= stop 92) (< (1+ idx) len)
+                              (= (aref match (1+ idx)) 123))))
+            (setq idx (1- idx)))
+          (when (> idx 2) (substring match 2 idx)))))
+    (defun nelisp--directory-files-candidates (raw match)
+      "Return the names in RAW, in order, that MATCH could match."
+      (let ((head (and (fboundp 'nelisp--string-search)
+                       (nelisp--directory-files-literal-head match))))
+        (if (not head)
+            (nelisp--readdir-scan-raw raw nil t)
+          (let* ((text (concat "\0" raw))
+                 (needle (concat "\0" head))
+                 (skip (length head))
+                 (pos (nelisp--string-search needle text 0))
+                 (out nil))
+            (while pos
+              (let* ((start (1+ pos))
+                     (end (nelisp--string-search "\0" text (+ start skip))))
+                (setq out (cons (substring text start end) out))
+                (setq pos (and end (nelisp--string-search needle text end)))))
+            (nreverse out)))))
     ;; fix/directory-files-count: COUNT (Emacs's 5th, optional argument) was
     ;; missing here too; clip to the first COUNT entries via `seq-take' (a
     ;; no-op when COUNT >= the entry count), post-filter, same as
@@ -24233,7 +24378,7 @@ directory's enumeration order instead of sorting with `string-lessp'."
         (when match
           (nelisp--cc03-validate-regexp match)
           (string-match-p match ""))
-        (let ((names (nelisp--readdir-scan-raw raw nil t))
+        (let ((names (nelisp--directory-files-candidates raw match))
               (prefix (and full (file-name-as-directory path)))
               (remaining count) (case-fold-search nil))
           (while (and names (or (null remaining) (> remaining 0)))
@@ -26176,7 +26321,63 @@ precision (.N) are applied in elisp, %f/%F honor their .PRECISION via
 `nelisp--fmt-float' (Doc 159 §3), %S uses `prin1-to-string' and the remaining
 conversions are delegated to native `format', which lacks only the
 field-width layer."
-  (nelisp--format-full template args))
+  (or (nelisp--format-plain template args)
+      (nelisp--format-full template args)))
+
+(defun nelisp--format-plain (template args)
+  "TEMPLATE formatted with ARGS, or nil when `nelisp--format-full' is needed.
+gnu562: the full layer costs about 20 us for one %f.  This answers only
+templates whose directives are %%, %s of a property-free string, a
+symbol or an integer, %d of an integer, and %f / %e / %g with at most a
+precision, of a number, with no text properties on TEMPLATE; anything
+else (flags, width, N$, other conversions, missing arguments) answers
+nil.  Pieces are built as the full layer builds them, including its
+final multibyte promotion."
+  (when (and (stringp template)
+             (not (gethash template nelisp--tp-string-properties)))
+    (let ((n (length template)) (i 0) (pieces nil) (argp args)
+          (multibyte (multibyte-string-p template)) (ok t))
+      (dolist (argument args)
+        (when (and (stringp argument) (multibyte-string-p argument))
+          (setq multibyte t)))
+      (while (and ok (< i n))
+        (let ((pct (string-search "%" template i)))
+          (if (null pct)
+              (setq pieces (cons (substring template i) pieces) i n)
+            (when (> pct i) (setq pieces (cons (substring template i pct) pieces)))
+            (let* ((j (1+ pct)) (prec nil) (c (and (< j n) (aref template j))))
+              (when (eq c 46)           ; ?. then digits
+                (let ((k (1+ j)) (p 0))
+                  (while (and (< k n) (nelisp--digit-char-p (aref template k)))
+                    (setq p (+ (* p 10) (- (aref template k) 48)) k (1+ k)))
+                  (setq prec p j k c (and (< k n) (aref template k)))))
+              (let ((arg (car argp)) (piece nil))
+                (cond
+                 ((null c) (setq ok nil))
+                 ((and (= c 37) (not prec)) (setq piece "%"))
+                 ((null argp) (setq ok nil))
+                 ((and (= c 115) (not prec))   ; %s
+                  (cond ((stringp arg)
+                         (if (gethash arg nelisp--tp-string-properties)
+                             (setq ok nil)
+                           (setq piece arg)))
+                        ((symbolp arg) (setq piece (symbol-name arg)))
+                        ((integerp arg) (setq piece (number-to-string arg)))
+                        (t (setq ok nil))))
+                 ((and (= c 100) (not prec) (integerp arg))   ; %d
+                  (setq piece (number-to-string arg)))
+                 ((and (memq c '(102 101 103)) (numberp arg))   ; %f %e %g
+                  (setq piece (nelisp--fmt-float (if (integerp arg) (+ arg 0.0) arg)
+                                                 c (or prec 6))))
+                 (t (setq ok nil)))
+                (when piece
+                  (unless (= c 37) (setq argp (cdr argp)))
+                  (when (multibyte-string-p piece) (setq multibyte t))
+                  (setq pieces (cons piece pieces)
+                        i (1+ j))))))))
+      (when ok
+        (let ((out (apply #'concat (nreverse pieces))))
+          (if multibyte (string-to-multibyte out) out))))))
 
 (defun nelisp--format-princ (arg)
   "Render a %s argument with GNU string-serialization byte escaping."
@@ -27340,8 +27541,14 @@ sat at/after that position (elisp manual, `Output Streams'); else stdout."
   (let ((s (or stream standard-output)))
     (if (or (null s) (eq s t))
         (nelisp--native-princ object)
+      ;; A string without text properties prints as itself; skip the
+      ;; copy `prin1-to-string' would make.
       (nelisp--emit-to-stream
-       (prin1-to-string object t) s)))
+       (if (and (stringp object)
+                (null (gethash object nelisp--tp-string-properties)))
+           object
+         (prin1-to-string object t))
+       s)))
   object)
 
 (defun prin1 (object &optional stream overrides)
@@ -27974,6 +28181,121 @@ output."
                        (aref hex (1+ (* index 2)))))))
       (apply #'unibyte-string (append bytes nil)))))
 
+;; MD5 (RFC 1321) over a unibyte string, so `md5' and `secure-hash'
+;; need no external md5sum process (about 4 ms a call with its temp file).
+(defconst nelisp--md5-k
+  [#xd76aa478 #xe8c7b756 #x242070db #xc1bdceee #xf57c0faf #x4787c62a
+   #xa8304613 #xfd469501 #x698098d8 #x8b44f7af #xffff5bb1 #x895cd7be
+   #x6b901122 #xfd987193 #xa679438e #x49b40821 #xf61e2562 #xc040b340
+   #x265e5a51 #xe9b6c7aa #xd62f105d #x02441453 #xd8a1e681 #xe7d3fbc8
+   #x21e1cde6 #xc33707d6 #xf4d50d87 #x455a14ed #xa9e3e905 #xfcefa3f8
+   #x676f02d9 #x8d2a4c8a #xfffa3942 #x8771f681 #x6d9d6122 #xfde5380c
+   #xa4beea44 #x4bdecfa9 #xf6bb4b60 #xbebfbc70 #x289b7ec6 #xeaa127fa
+   #xd4ef3085 #x04881d05 #xd9d4d039 #xe6db99e5 #x1fa27cf8 #xc4ac5665
+   #xf4292244 #x432aff97 #xab9423a7 #xfc93a039 #x655b59c3 #x8f0ccc92
+   #xffeff47d #x85845dd1 #x6fa87e4f #xfe2ce6e0 #xa3014314 #x4e0811a1
+   #xf7537e82 #xbd3af235 #x2ad7d2bb #xeb86d391]
+  "MD5 additive constants, floor (abs (sin (I + 1)) * 2^32).")
+
+(defconst nelisp--md5-s
+  [7 12 17 22 7 12 17 22 7 12 17 22 7 12 17 22
+   5 9 14 20 5 9 14 20 5 9 14 20 5 9 14 20
+   4 11 16 23 4 11 16 23 4 11 16 23 4 11 16 23
+   6 10 15 21 6 10 15 21 6 10 15 21 6 10 15 21]
+  "MD5 per-step left-rotation amounts.")
+
+(defun nelisp--md5-byte (bytes len total i)
+  "Byte I of BYTES (length LEN) padded the MD5 way to TOTAL bytes."
+  (cond ((< i len) (aref bytes i))
+        ((= i len) #x80)
+        ((< i (- total 8)) 0)
+        (t (logand (ash (* len 8) (* -8 (- i (- total 8)))) 255))))
+
+(defconst nelisp--md5-g
+  (let ((v (make-vector 64 0)) (i 0))
+    (while (< i 64)
+      (aset v i (cond ((< i 16) i)
+                      ((< i 32) (% (1+ (* 5 i)) 16))
+                      ((< i 48) (% (+ (* 3 i) 5) 16))
+                      (t (% (* 7 i) 16))))
+      (setq i (1+ i)))
+    v)
+  "Message word index of each MD5 step.")
+
+(defun nelisp--md5-hex (bytes)
+  "Return the lowercase hex MD5 digest of unibyte string BYTES."
+  ;; gnu562: the padded message is built once as a vector (it was read
+  ;; through `nelisp--md5-byte', a call per byte), and the four rounds
+  ;; are separate loops with the word index from `nelisp--md5-g' instead
+  ;; of a `cond' and a `%' per step.  Same arithmetic per step.
+  (let* ((len (length bytes))
+         (total (* 64 (1+ (/ (+ len 8) 64))))
+         (pad (make-vector total 0))
+         (m (make-vector 16 0))
+         (kk nelisp--md5-k) (ss nelisp--md5-s) (gg nelisp--md5-g)
+         (a0 #x67452301) (b0 #xefcdab89) (c0 #x98badcfe) (d0 #x10325476)
+         (block 0))
+    (let ((i 0))
+      (while (< i len) (aset pad i (aref bytes i)) (setq i (1+ i))))
+    (aset pad len #x80)
+    (let ((bits (* len 8)) (i (- total 8)))
+      (while (< i total)
+        (aset pad i (logand bits 255))
+        (setq bits (ash bits -8) i (1+ i))))
+    (while (< block total)
+      (let ((j 0))
+        (while (< j 16)
+          (let ((p (+ block (* j 4))))
+            (aset m j (logior (aref pad p)
+                              (ash (aref pad (+ p 1)) 8)
+                              (ash (aref pad (+ p 2)) 16)
+                              (ash (aref pad (+ p 3)) 24))))
+          (setq j (1+ j))))
+      (let ((a a0) (b b0) (c c0) (d d0) (i 0) (f 0) (r 0))
+        (while (< i 16)
+          (setq f (logior (logand b c) (logand (logxor b #xffffffff) d))
+                f (logand (+ f a (aref kk i) (aref m i)) #xffffffff)
+                r (aref ss i)
+                a d d c c b
+                b (logand (+ b (logior (ash f r) (ash f (- r 32)))) #xffffffff)
+                i (1+ i)))
+        (while (< i 32)
+          (setq f (logior (logand d b) (logand (logxor d #xffffffff) c))
+                f (logand (+ f a (aref kk i) (aref m (aref gg i))) #xffffffff)
+                r (aref ss i)
+                a d d c c b
+                b (logand (+ b (logior (ash f r) (ash f (- r 32)))) #xffffffff)
+                i (1+ i)))
+        (while (< i 48)
+          (setq f (logxor b c d)
+                f (logand (+ f a (aref kk i) (aref m (aref gg i))) #xffffffff)
+                r (aref ss i)
+                a d d c c b
+                b (logand (+ b (logior (ash f r) (ash f (- r 32)))) #xffffffff)
+                i (1+ i)))
+        (while (< i 64)
+          (setq f (logxor c (logior b (logxor d #xffffffff)))
+                f (logand (+ f a (aref kk i) (aref m (aref gg i))) #xffffffff)
+                r (aref ss i)
+                a d d c c b
+                b (logand (+ b (logior (ash f r) (ash f (- r 32)))) #xffffffff)
+                i (1+ i)))
+        (setq a0 (logand (+ a0 a) #xffffffff)
+              b0 (logand (+ b0 b) #xffffffff)
+              c0 (logand (+ c0 c) #xffffffff)
+              d0 (logand (+ d0 d) #xffffffff)))
+      (setq block (+ block 64)))
+    (let ((out (make-string 32 ?0))
+          (digits "0123456789abcdef")
+          (words (vector a0 b0 c0 d0))
+          (k 0))
+      (while (< k 16)
+        (let ((byte (logand (ash (aref words (/ k 4)) (* -8 (% k 4))) 255)))
+          (aset out (* 2 k) (aref digits (ash byte -4)))
+          (aset out (1+ (* 2 k)) (aref digits (logand byte 15))))
+        (setq k (1+ k)))
+      out)))
+
 (unless (fboundp 'secure-hash)
   (defun secure-hash (algorithm object &optional start end binary)
   "Return ALGORITHM's digest of string or buffer OBJECT.
@@ -27989,8 +28311,11 @@ START and END select the text.  BINARY requests a unibyte digest."
     (when (multibyte-string-p text)
       (setq text (encode-coding-string text 'utf-8-unix)))
     (let ((digest
-           (if (and (eq algorithm 'sha256) (fboundp 'nelisp--sha256))
-               (nelisp--sha256 text)
+           (cond
+            ((and (eq algorithm 'sha256) (fboundp 'nelisp--sha256))
+             (nelisp--sha256 text))
+            ((eq algorithm 'md5) (nelisp--md5-hex text))
+            (t
              (let ((spec (nelisp--hash-program algorithm)))
                (unless spec (error "Hash helper unavailable: %s" algorithm))
                (let* ((command (car spec)) (width (cdr spec))
@@ -28012,7 +28337,7 @@ START and END select the text.  BINARY requests a unibyte digest."
                                              (car command) out)))
                              (setq result (substring out 0 width))))))
                    (when (file-exists-p tmp) (delete-file tmp)))
-                 result)))))
+                 result))))))
       (if binary (nelisp--secure-hash-hex-to-bytes digest) digest)))))
 
 (unless (fboundp 'md5)
@@ -30858,6 +31183,7 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
   "Evaluate the function form FORM in ENV extended with the bindings CELLS."
   (eval form (if cells (append cells env) env)))
 
+
 ;; Doc 243 S5: the compiler's state lives in special variables bound by
 ;; `nelisp--fx-compile' and its helpers are top-level functions, so the VM
 ;; compiles the compiler itself (a `cl-labels' closure over mutated locals
@@ -30874,9 +31200,41 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
 (defvar nelisp--fxc-lexlets nil)
 (defvar nelisp--fxc-alias-hints nil)
 (defvar nelisp--fxc-mutated nil)
+(defvar nelisp--fxc-boxed nil
+  "Lexical names a lambda captures and some `setq' assigns.
+Their VM slot holds the binding's cons cell (NAME . VALUE) instead of the
+value: reads take its cdr, `setq' sets it, and a lambda gets the cell
+itself in its environment, so the closure and the compiled code share one
+binding as they do under the interpreter (GNU's cconv boxes the same way).")
 (defvar nelisp--fxc-nparams nil)
 (defvar nelisp--fxc-ir nil)
 (defvar nelisp--fxc-vars nil)
+
+(defun nelisp--fx-boxed-names (tree mutated)
+  "The names in MUTATED that a lambda inside the expanded TREE mentions.
+A lambda captures what it mentions (`nelisp--fx-lambda'), so these are
+the variables a closure and the compiled code must share."
+  (let ((todo (list tree)) (out nil))
+    (while (and todo mutated)
+      (let ((x (pop todo)))
+        (when (consp x)
+          (cond
+           ((eq (car x) 'quote) nil)
+           ((or (eq (car x) 'lambda)
+                (and (eq (car x) 'function) (eq (car-safe (car-safe (cdr x))) 'lambda)))
+            (dolist (m mutated)
+              (when (and (not (memq m out)) (nelisp--fx-mentions-p x m))
+                (push m out))))
+           (t (while (consp x)
+                (when (consp (car x)) (push (car x) todo))
+                (setq x (cdr x))))))))
+    out))
+
+(defun nelisp--fxc-box-call (fn argc &rest args)
+  "Emit a call of FN on the ARGC values already pushed; ARGS are their fxir."
+  (push fn nelisp--fx-called)
+  (cons :call (cons (nelisp--fxc-emit 16 (vector fn nil nil nil nil) argc)
+                    (cons argc args))))
 
 (defun nelisp--fxc-emit (&rest items)
   ;; Track the operand-stack depth along the code as laid out; at a
@@ -30925,7 +31283,10 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
   (cond
    ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
     (let ((c (assq x nelisp--fxc-vars)))
-      (if c (progn (nelisp--fxc-emit 2 (cdr c)) (list :slot (cdr c)))
+      (if c (progn (nelisp--fxc-emit 2 (cdr c))
+                   (if (memq x nelisp--fxc-boxed)
+                       (nelisp--fxc-box-call 'cdr 1 (list :slot (cdr c)))
+                     (list :slot (cdr c))))
         ;; A global variable: VARREF, GNU's Bvarref, reads it
         ;; directly instead of calling `symbol-value'.
         (if (not (and nelisp--fxc-alias-hints (memq x nelisp--fxc-alias-hints)
@@ -30980,7 +31341,11 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
                 (nelisp--fxc-unsupported x))
               (when (and (not dyn) (nelisp--fx-special-p name)) (nelisp--fxc-unsupported x))
               (unless dyn (unless (memq name nelisp--fxc-lexlets) (push name nelisp--fxc-lexlets)))
-              (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil)))
+              (if (and (not dyn) (memq name nelisp--fxc-boxed))
+                  (let ((kn (nelisp--fxc-emit 1 name)))
+                    (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil)))
+                    (setq val (nelisp--fxc-box-call 'cons 2 (list :const kn) val)))
+                (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil))))
               (cond
                ;; A lone binding has no later value to wait for.
                ((and dyn (or (eq op 'let*) (null (cdr (cadr x)))))
@@ -31016,9 +31381,15 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
                 (let ((sym (car args)) (val (cadr args)))
                   (unless (symbolp sym) (nelisp--fxc-unsupported x))
                   (let ((c (assq sym nelisp--fxc-vars)))
-                    (if c (let ((v (nelisp--fxc-comp val)))
-                            (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 (cdr c))
-                            (push (list :setslot (cdr c) v) items))
+                    (if c (if (memq sym nelisp--fxc-boxed)
+                              (progn
+                                (nelisp--fxc-emit 2 (cdr c))
+                                (let ((v (nelisp--fxc-comp val)))
+                                  (push (nelisp--fxc-box-call 'setcdr 2 (list :slot (cdr c)) v)
+                                        items)))
+                            (let ((v (nelisp--fxc-comp val)))
+                              (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 (cdr c))
+                              (push (list :setslot (cdr c) v) items)))
                       (let* ((ks (nelisp--fxc-emit 1 sym)) (v (nelisp--fxc-comp val)))
                         ;; varaccess: setq site cache -- a call-site cache like every other call, so the
                         ;; VM's call-out decodes `set' once per site (GNU Bvarset has no lookup at all).
@@ -31116,33 +31487,39 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
             (setq nelisp--fx-missing 'nelisp--fx-lambda)
             (nelisp--fxc-unsupported x))
           (unless nelisp--fx-outer-env (nelisp--fxc-unsupported x))
-          (dolist (v nelisp--fxc-vars)
-            (when (nelisp--fx-mentions-p lam (car v))
-              (when (memq (car v) nelisp--fxc-mutated) (nelisp--fxc-unsupported x))
-              (push v cells)))
+          ;; A boxed variable (`nelisp--fxc-boxed') is passed as its cell
+          ;; itself, so an assignment on either side reaches the other;
+          ;; any other assigned variable keeps the lambda interpreted.
+          (let ((seen nil))
+            (dolist (v nelisp--fxc-vars)
+              (unless (memq (car v) seen)
+                (push (car v) seen)
+                (when (nelisp--fx-mentions-p lam (car v))
+                  (when (and (memq (car v) nelisp--fxc-mutated)
+                             (not (memq (car v) nelisp--fxc-boxed)))
+                    (nelisp--fxc-unsupported x))
+                  (push v cells)))))
           (setq cells (nreverse cells))
-          ;; `eval' trims the environment to the variables the
-          ;; body mentions, newest mention first, and keeps one the
-          ;; body binds again; the interpreter keeps let-bound
-          ;; variables in scope order and drops a rebound one.  The
-          ;; two agree for one captured variable, and for several
-          ;; parameters; anything else stays with the interpreter.
+          ;; `eval' keeps the cells the body mentions, in first-mention
+          ;; order: the capture order this runtime gives every closure
+          ;; (see `bf_closure_env_view_fwd_w'), which GNU's innermost-first
+          ;; order differs from whenever several variables are captured.
+          ;; A cell the body binds again stays with the interpreter.
           (dolist (v cells)
             (when (nelisp--fx-rebinds-p lam (car v)) (nelisp--fxc-unsupported x)))
-          (when (cdr cells)
-            (dolist (v cells)
-              (when (>= (cdr v) nelisp--fxc-nparams) (nelisp--fxc-unsupported x))))
           (push 'nelisp--fx-lambda nelisp--fx-called)
           (let* ((kf (nelisp--fxc-emit 1 (list 'function lam)))
                  (ke (nelisp--fxc-emit 1 (reverse nelisp--fx-outer-env)))
                  (args (list (list :const ke) (list :const kf))))
             (dolist (v cells)
-              (let ((ks (nelisp--fxc-emit 1 (car v))))
-                (nelisp--fxc-emit 2 (cdr v))
-                (push 'cons nelisp--fx-called)
-                (push (list :call (nelisp--fxc-emit 16 (vector 'cons nil nil nil nil) 2) 2
-                            (list :const ks) (list :slot (cdr v)))
-                      args)))
+              (if (memq (car v) nelisp--fxc-boxed)
+                  (progn (nelisp--fxc-emit 2 (cdr v)) (push (list :slot (cdr v)) args))
+                (let ((ks (nelisp--fxc-emit 1 (car v))))
+                  (nelisp--fxc-emit 2 (cdr v))
+                  (push 'cons nelisp--fx-called)
+                  (push (list :call (nelisp--fxc-emit 16 (vector 'cons nil nil nil nil) 2) 2
+                              (list :const ks) (list :slot (cdr v)))
+                        args))))
             (setq args (nreverse args))
             (cons :call (cons (nelisp--fxc-emit 16 (vector 'nelisp--fx-lambda nil nil nil nil)
                                                 (+ 2 (length cells)))
@@ -31190,6 +31567,7 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
                        (not (eq var t)) (not (keywordp var)))
             (nelisp--fxc-unsupported x))
           (when (and var (nelisp--fx-special-p var)) (nelisp--fxc-unsupported x))
+          (when (and var (memq var nelisp--fxc-boxed)) (nelisp--fxc-unsupported x))
           (dolist (c (nthcdr 3 x))
             (unless (and (consp c) (listp (cdr c))) (nelisp--fxc-unsupported x))
             (if (eq (car c) :success)
@@ -31301,6 +31679,18 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
 
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
+See `nelisp--fx-compile-1'.  The caller's match data survive: a function
+is compiled on its first call, and expanding its macros may search, so a
+call made right after a search (GNU compile.el's
+`compilation-error-properties') would otherwise read clobbered match data."
+  (let ((md (and (fboundp 'match-data) (match-data t))))
+    (unwind-protect
+        (nelisp--fx-compile-1 form params)
+      (when (and md (fboundp 'set-match-data))
+        (set-match-data md t)))))
+
+(defun nelisp--fx-compile-1 (form &optional params)
+  "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller.
 The same walk also builds the code's fxir (see `nelisp--fx-ir'); it is
 kept in `nelisp--fx-ir-table' under CODE when `nelisp--fx-want-ir' is set.
@@ -31315,6 +31705,7 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
         (nelisp--fxc-depth 0) (nelisp--fxc-maxdepth 0) (nelisp--fxc-lexlets nil)
         (nelisp--fxc-alias-hints nelisp--fx-alias-hints)
         (nelisp--fxc-mutated nil) (nelisp--fxc-nparams (length params)) (nelisp--fxc-ir nil)
+        (nelisp--fxc-boxed nil)
         ;; Innermost first, like the interpreter's environment: its
         ;; parameters are pushed in order, so the last one is first.
         (nelisp--fxc-vars (let ((i 0) (r nil))
@@ -31332,7 +31723,22 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
                   (dolist (n nelisp--fx-cap-names)
                     (when (memq n nelisp--fxc-mutated)
                       (throw 'nelisp--fx-unsupported nil)))
-                  (setq nelisp--fxc-ir (nelisp--fxc-comp expanded)))
+                  (setq nelisp--fxc-boxed
+                        (and nelisp--fxc-mutated
+                             (nelisp--fx-boxed-names expanded nelisp--fxc-mutated)))
+                  ;; A boxed parameter gets its cell on entry.
+                  (let ((pre nil) (i 0))
+                    (dolist (p params)
+                      (when (memq p nelisp--fxc-boxed)
+                        (let ((kn (nelisp--fxc-emit 1 p)))
+                          (nelisp--fxc-emit 2 i)
+                          (let ((v (nelisp--fxc-box-call 'cons 2 (list :const kn) (list :slot i))))
+                            (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 i) (nelisp--fxc-emit 11)
+                            (push (list :setslot i v) pre))))
+                      (setq i (1+ i)))
+                    (setq nelisp--fxc-ir (nelisp--fxc-comp expanded))
+                    (when pre
+                      (setq nelisp--fxc-ir (cons :seq (append (nreverse pre) (list nelisp--fxc-ir)))))))
                 (nelisp--fxc-emit 0) 'ok)
               'ok)
       ;; The last element, after HALT, is the operand stack size the VM

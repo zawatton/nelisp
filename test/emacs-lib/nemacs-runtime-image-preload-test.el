@@ -35,16 +35,11 @@
     help-mode
     help-go-back
     help-go-forward
-    describe-function
-    describe-variable
-    describe-symbol
     describe-key
     emacs-lisp-mode
     lisp-mode
     eval-defun
     indent-sexp
-    ielm
-    ielm-send-input
     completing-read
     minibuffer-complete
     minibuffer-complete-and-exit
@@ -699,9 +694,13 @@ The preload installers only `require' it when it is not yet a feature."
     ;; the bootstrap bundle, not from a preload facade.
     (should-not (featurep 'dired))
     (should (featurep 'help-mode))
-    (should (featurep 'help-fns))
+    ;; help-fns is GNU help-fns.el, autoloaded; the installer no longer
+    ;; provides the feature.
+    (should-not (featurep 'help-fns))
+    (should (fboundp 'describe-key))
     (should (featurep 'lisp-mode))
-    (should (featurep 'ielm))
+    ;; GNU ielm.el is autoloaded; the installer no longer provides it.
+    (should-not (featurep 'ielm))
     (should (featurep 'minibuffer))
     (should (featurep 'project))
     (should (featurep 'emacs-process))
@@ -824,18 +823,14 @@ The preload installers only `require' it when it is not yet a feature."
                    '(lambda (&rest args)
                       (require 'files-standalone-buffer)
                       (apply 'files--set-visited-file-name args))))
-    (should (equal (symbol-function 'describe-function)
+    (should (equal (symbol-function 'describe-key)
                    '(lambda (&rest args)
                       (require 'emacs-help)
-                      (apply 'describe-function args))))
+                      (apply 'describe-key args))))
     (should (equal (symbol-function 'emacs-lisp-mode)
                    '(lambda (&rest args)
                       (require 'lisp-mode)
                       (apply 'emacs-mode-emacs-lisp-mode args))))
-    (should (equal (symbol-function 'ielm-send-input)
-                   '(lambda (&rest args)
-                      (require 'emacs-ielm)
-                      (apply 'ielm-input-handler args))))
     (should (equal (symbol-function 'project-current)
                    '(lambda (&rest args)
                       (require 'emacs-project)
@@ -1259,9 +1254,9 @@ The preload installers only `require' it when it is not yet a feature."
                                     'saved-buffer))
                             (provide feature))
                            ('emacs-help
-                            (fset 'describe-function
-                                  (lambda (symbol &optional _buffer-name)
-                                    (push (list 'describe-function symbol)
+                            (fset 'describe-key
+                                  (lambda (symbol &optional _buffer)
+                                    (push (list 'describe-key symbol)
                                           calls)
                                     (list 'help symbol)))
                             (provide feature))
@@ -1287,7 +1282,7 @@ The preload installers only `require' it when it is not yet a feature."
                 (should (equal (buffer-string) "()\n(alpha beta)"))
                 (should (eq (save-buffer) 'saved-buffer))
                 (should (equal saved-text "()\n(alpha beta)")))
-              (should (equal (describe-function 'find-file)
+              (should (equal (describe-key 'find-file)
                              '(help find-file)))
               (should (equal (project-current)
                              '(project-vc "/tmp/runtime-project/")))
@@ -1297,7 +1292,7 @@ The preload installers only `require' it when it is not yet a feature."
                 (should (member (list 'require feature) calls)))
               (should (member '(find-file "note.el") calls))
               (should (member '(save-buffer) calls))
-              (should (member '(describe-function find-file) calls))
+              (should (member '(describe-key find-file) calls))
               (should (member '(project-current) calls)))))
       (dolist (symbol cleanup-targets)
         (when (fboundp symbol)

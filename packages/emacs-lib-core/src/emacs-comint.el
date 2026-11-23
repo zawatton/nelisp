@@ -204,21 +204,6 @@ a comint buffer with no process is created.  Returns the buffer."
           (emacs-comint--set buf :process proc))))
     buf))
 
-;;;; --- standard-name facade -----------------------------------------
-
-(defun emacs-comint-install ()
-  "Bind the standard comint command names to the `emacs-comint-*'
-implementations.  Not run on `require' (keeps a bare load from touching
-shared command symbols)."
-  (defalias 'comint-output-filter #'emacs-comint-output-filter)
-  (defalias 'comint-send-input #'emacs-comint-send-input)
-  (defalias 'comint-send-string #'emacs-comint-send-string)
-  (defalias 'comint-add-to-input-history #'emacs-comint-add-to-input-history)
-  (defalias 'comint-previous-input #'emacs-comint-previous-input)
-  (defalias 'comint-next-input #'emacs-comint-next-input)
-  (defalias 'comint-mode #'emacs-comint-mode)
-  (defalias 'make-comint-in-buffer #'emacs-comint-make))
-
 (provide 'emacs-comint)
 
 ;;; emacs-comint.el ends here

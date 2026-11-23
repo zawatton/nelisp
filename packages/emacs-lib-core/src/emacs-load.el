@@ -4074,6 +4074,14 @@ loader's defalias rewrites or native artifact compilation.  Top-level
       t))
 
   (defun nelisp--load-resolved-file (resolved noerror)
+    "Load exact absolute RESOLVED path, honoring NOERROR for open failures.
+A successful load files RESOLVED in `load-history' and runs its
+after-load forms, as GNU `load' does (lread.c build_load_history)."
+    (let ((result (nelisp--load-resolved-file-1 resolved noerror)))
+      (when (and result (fboundp 'nelisp--after-load-feature))
+        (nelisp--after-load-feature resolved))
+      result))
+  (defun nelisp--load-resolved-file-1 (resolved noerror)
     "Load exact absolute RESOLVED path, honoring NOERROR for open failures."
     (cond
      ((not (emacs-load--regular-file-p resolved))

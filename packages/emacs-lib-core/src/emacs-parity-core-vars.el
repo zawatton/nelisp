@@ -40,6 +40,51 @@
 
 ;; --- batch/display context ---
 (unless (boundp 'window-system) (defvar window-system nil))
+;; window.c DEFVAR (default `window-size', window.c:9519); read by GNU
+;; subr.el `internal-temp-output-buffer-show'.
+(unless (boundp 'window-combination-limit)
+  (defvar window-combination-limit 'window-size
+    "If non-nil, splitting a window makes a new parent window."))
+;; callproc.c DEFVAR (default "hexl", callproc.c:2188); GNU ielm.el starts
+;; its dummy process with it.
+(unless (boundp 'hexl-program-name)
+  (defvar hexl-program-name "hexl"
+    "File name for the program that converts files to and from hexl format."))
+;; doc.c DEFVARs: the DOC file's name within `doc-directory', and the object
+;; files GNU 31.1's build put into its DOC (help-fns' `help-C-file-name'
+;; keeps a DOC source entry only when its file is listed).  The list is the
+;; installed GNU Emacs 31.1 value.
+(unless (boundp 'internal-doc-file-name)
+  (defvar internal-doc-file-name "DOC"
+    "Name of file containing documentation strings of built-in symbols."))
+(unless (boundp 'build-files)
+  (defvar build-files
+    '(
+    "dispnew.o" "frame.o" "scroll.o" "xdisp.o" "menu.o" "window.o"
+    "charset.o" "coding.o" "category.o" "ccl.o" "character.o"
+    "chartab.o" "bidi.o" "cm.o" "term.o" "terminal.o" "xfaces.o"
+    "gtkutil.o" "emacsgtkfixed.o" "dbusbind.o" "emacs.o" "keyboard.o"
+    "macros.o" "keymap.o" "sysdep.o" "bignum.o" "buffer.o" "filelock.o"
+    "insdel.o" "marker.o" "minibuf.o" "fileio.o" "dired.o" "cmds.o"
+    "casetab.o" "casefiddle.o" "indent.o" "search.o" "regex-emacs.o"
+    "undo.o" "alloc.o" "pdumper.o" "data.o" "doc.o" "editfns.o"
+    "callint.o" "eval.o" "floatfns.o" "fns.o" "sort.o" "font.o"
+    "print.o" "lread.o" "emacs-module.o" "syntax.o" "bytecode.o"
+    "comp.o" "dynlib.o" "process.o" "gnutls.o" "callproc.o"
+    "region-cache.o" "sound.o" "timefns.o" "atimer.o" "doprnt.o"
+    "intervals.o" "textprop.o" "composite.o" "xml.o" "lcms.o"
+    "inotify.o" "profiler.o" "decompress.o" "thread.o" "systhread.o"
+    "sqlite.o" "treesit.o" "itree.o" "json.o" "ftfont.o" "ftcrfont.o"
+    "hbfont.o" "fontset.o" "fringe.o" "image.o" "xgselect.o" "pgtkfns.o"
+    "pgtkterm.o" "pgtkselect.o" "pgtkmenu.o" "pgtkim.o" "xsettings.o"
+    "terminfo.o")
+    "A list of files used to build this Emacs binary."))
+;; callproc.c DEFVAR_INT: sysconf (_SC_ARG_MAX) / 4 on POSIX (callproc.c:2249);
+;; Linux's ARG_MAX is 2097152.  Read by GNU subr.el
+;; `multiple-command-partition-arguments'.
+(unless (boundp 'command-line-max-length)
+  (defvar command-line-max-length 524288
+    "Maximum length of a command and its arguments on this system."))
 (unless (boundp 'invocation-directory) (defvar invocation-directory "/usr/bin/"))
 (unless (boundp 'invocation-name) (defvar invocation-name "emacs"))
 (unless (boundp 'user-full-name)
@@ -320,6 +365,13 @@ if OBJECT does not identify a displayed buffer or a live window."
 (unless (boundp 'last-event-frame)
   (defvar last-event-frame nil
     "The frame in which the most recently read event occurred."))
+
+;; GNU term.c `system-uses-terminfo' (DEFVAR_BOOL; 1 on TERMINFO builds,
+;; which includes GNU/Linux).  comint.el reads it when it builds the
+;; TERM/TERMINFO environment of a subprocess.
+(unless (boundp 'system-uses-terminfo)
+  (defvar system-uses-terminfo t
+    "Non-nil means the system uses terminfo rather than termcap."))
 
 (provide 'emacs-parity-core-vars)
 

@@ -225,11 +225,17 @@ done (relative, `~', or containing `.'/`..'/`//')."
   (let ((key (files--buffer-key buffer)))
     (and key (assq key (symbol-value alist)))))
 
+;; gnu562: the hot point wrappers expand the test in place; the call
+;; cost about 0.33 us of a 0.74 us `point-min'.
+(defmacro files--host-buffer-available ()
+  "Non-nil when captured host buffer primitives can be used."
+  '(and files--native-buffer-string
+        (fboundp 'current-buffer)
+        (current-buffer)))
+
 (defun files--host-buffer-available-p ()
   "Return non-nil when captured host buffer primitives can be used."
-  (and files--native-buffer-string
-       (fboundp 'current-buffer)
-       (current-buffer)))
+  (files--host-buffer-available))
 
 (defun files--with-host-buffer (buffer thunk)
   "Call THUNK with BUFFER current when host buffer primitives exist."
@@ -279,6 +285,9 @@ done (relative, `~', or containing `.'/`..'/`//')."
       (when key
         (set alist (cons (cons key value) (symbol-value alist)))))))
 
+;; GNU files.el `null-device', verbatim (shell.el and compile.el read it).
+(defvar null-device "/dev/null" "The system null device.")
+
 (defun files--buffer-string-value (&optional buffer)
   "Return BUFFER's fallback text."
   (if (and files--native-buffer-string (files--host-buffer-available-p))
@@ -300,7 +309,7 @@ done (relative, `~', or containing `.'/`..'/`//')."
 
 (defun files--buffer-point-value (&optional buffer)
   "Return BUFFER's fallback point."
-  (if (and files--native-point (files--host-buffer-available-p))
+  (if (and files--native-point (files--host-buffer-available))
       ;; gnu562: without BUFFER, call the native directly; the thunk was a
       ;; fresh closure built through `eval' on every call (`point' 15 us).
       (if buffer
@@ -314,7 +323,7 @@ done (relative, `~', or containing `.'/`..'/`//')."
 
 (defun files--set-buffer-point-value (point &optional buffer)
   "Set BUFFER's fallback point to POINT."
-  (if (and files--native-goto-char (files--host-buffer-available-p))
+  (if (and files--native-goto-char (files--host-buffer-available))
       ;; gnu562: without BUFFER, call the native directly; the thunk was a
       ;; fresh closure built through `eval' on every call (`point' 15 us).
       (if buffer
@@ -378,7 +387,13 @@ done (relative, `~', or containing `.'/`..'/`//')."
         (cond
          ((not flag)
           (files--set-buffer-state-cell 'files--buffer-save-ticks tick buffer))
-         ((not (files--buffer-modified-value buffer))
+         ;; gnu562: without the native getter, `files--buffer-modified-value'
+         ;; in tick mode is this comparison; reuse TICK instead of
+         ;; computing it again (about 11 us per edit).
+         ((not (if (and files--native-buffer-modified-p
+                        (files--host-buffer-available-p))
+                   (files--buffer-modified-value buffer)
+                 (< (files--buffer-save-tick buffer) tick)))
           (files--set-buffer-state-cell 'files--buffer-save-ticks
                                         (1- tick) buffer)))))
     (setq files--buffer-modified-p flag)
@@ -546,14 +561,14 @@ overhead, so the fallback is skipped while the native subr is in place.")
 (when (files--install-fallback-function-p 'point-min)
   (defun point-min ()
     "Return the first valid fallback buffer position."
-    (if (and files--native-point-min (files--host-buffer-available-p))
+    (if (and files--native-point-min (files--host-buffer-available))
         (files--native-point-min-fn)
       1)))
 
 (when (files--install-fallback-function-p 'point-max)
   (defun point-max ()
     "Return one past the last fallback buffer position."
-    (if (and files--native-point-max (files--host-buffer-available-p))
+    (if (and files--native-point-max (files--host-buffer-available))
         (files--native-point-max-fn)
       (1+ (files--string-length (files--buffer-string-value))))))
 
@@ -1334,8 +1349,35 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
       (setq i (1- i)))
     (1+ i)))
 
+(defun files--native-buffer-p ()
+  "Non-nil when the current buffer is native.
+gnu562: such a buffer is read in place with `char-after' and `pos-bol',
+which honour narrowing, instead of copying its text
+(`files--buffer-string-value', `files--bol-position').  The copying
+path indexes the accessible text from 1, so it must not be used for a
+narrowed native buffer: `move-to-column' landed at `point-min' there,
+which broke `fill-region-as-paragraph' under narrowing."
+  (and (fboundp 'pos-bol)
+       (files--host-buffer-available-p)))
+
 (defun files--column-at (pos)
   "Return the zero-based display column of POS honouring tab stops."
+  (if (files--native-buffer-p)
+      (let* ((beg (point-min))
+             (end (max beg (min pos (point-max))))
+             (bol (if (eq end (point)) (pos-bol)
+                    (let ((b end))
+                      (while (and (> b beg) (not (eq (char-after (1- b)) ?\n)))
+                        (setq b (1- b)))
+                      b)))
+             (tw (files--tab-width))
+             (col 0))
+        (while (< bol end)
+          (setq col (if (eq (char-after bol) ?\t)
+                        (* (1+ (/ col tw)) tw)
+                      (1+ col))
+                bol (1+ bol)))
+        col)
   (let* ((content (files--buffer-string-value))
          (bol (1- (files--bol-position pos)))   ; 0-indexed BOL
          (end (1- (files--clip-point pos)))     ; 0-indexed target
@@ -1347,11 +1389,20 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
                     (* (1+ (/ col tw)) tw)
                   (1+ col)))
       (setq i (1+ i)))
-    col))
+    col)))
 
 (when (files--install-fallback-function-p 'current-indentation)
   (defun current-indentation ()
     "Return the indentation column of the current line (leading whitespace)."
+    ;; gnu562: a native buffer (narrowed or not) is scanned in place from
+    ;; `pos-bol'; the general path below copies the whole buffer twice
+    ;; (the text, then again to find the line start: about 80 us).
+    (if (files--native-buffer-p)
+        (let ((tw (files--tab-width)) (p (pos-bol)) (col 0) ch)
+          (while (and (setq ch (char-after p)) (or (eq ch ?\s) (eq ch ?\t)))
+            (setq col (if (eq ch ?\t) (* (1+ (/ col tw)) tw) (1+ col))
+                  p (1+ p)))
+          col)
     (let* ((content (files--buffer-string-value))
            (len (files--string-length content))
            (tw (files--tab-width))
@@ -1363,7 +1414,7 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
                       (* (1+ (/ col tw)) tw)
                     (1+ col)))
         (setq i (1+ i)))
-      col)))
+      col))))
 
 (when (files--install-fallback-function-p 'move-to-column)
   (defun move-to-column (column &optional force)
@@ -1371,6 +1422,20 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
 With FORCE t, pad a too-short line with spaces to reach COLUMN."
     (unless (and (integerp column) (>= column 0))
       (signal 'wrong-type-argument (list 'wholenump column)))
+    (if (files--native-buffer-p)
+        (let ((tw (files--tab-width)) (p (pos-bol)) (col 0) ch)
+          (while (and (< col column)
+                      (setq ch (char-after p))
+                      (not (eq ch ?\n)))
+            (setq col (if (eq ch ?\t) (* (1+ (/ col tw)) tw) (1+ col))
+                  p (1+ p)))
+          (files--set-buffer-point-value p)
+          (when (and (eq force t) (< col column))
+            (let ((n (- column col)))
+              (when (> n 0)
+                (insert (make-string n ?\s))
+                (setq col column))))
+          col)
     (let* ((content (files--buffer-string-value))
            (len (files--string-length content))
            (tw (files--tab-width))
@@ -1389,7 +1454,7 @@ With FORCE t, pad a too-short line with spaces to reach COLUMN."
           (when (> n 0)
             (insert (make-string n ?\s))
             (setq col column))))
-      col)))
+      col))))
 
 (when (files--install-fallback-function-p 'indent-to)
   (defun indent-to (column &optional minimum)

@@ -449,18 +449,13 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; standalone reader.
     "emacs-imenu.el"
     "emacs-xref.el"
-    "imenu.el"
-    "xref.el"
     "emacs-compile.el"
-    "compile.el"
     "emacs-vc.el"
     "vc.el"
     "emacs-comint.el"
-    "comint.el"
     "emacs-replace.el"
     "replace.el"
     "emacs-ielm.el"
-    "ielm.el"
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
     ;; for project.el and anything calling `hack-dir-local-variables'.
     "emacs-files-gnu.el"
@@ -470,11 +465,9 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-project.el"
     "project.el"
     "emacs-shell.el"
-    "shell.el"
     "emacs-eshell.el"
     "eshell.el"
     "emacs-man.el"
-    "man.el"
     "woman.el"
     "emacs-calc.el"
     "calc.el"
@@ -839,13 +832,10 @@ split: special and large forms remain direct, while ordinary small forms use
                      nelisp-bootstrap-repo-root)))
 
 (defconst nelisp-bootstrap--host-only-package-sources
-  '("src/help-mode.el")
+  '()
   "Package sources host Emacs loads but the bundle must not carry.
-`help-mode.el' is a host shim that loads GNU help-mode through a filtered
-`load-path'.  The former flat staging tree never produced a bundle entry
-for it (the host loaded it from its package path, outside the staged
-`src/' prefix), so keep it out explicitly now that package paths are
-first-class.")
+Empty since the `help-mode.el' shim was removed (GNU help-mode.el is
+loaded from vendor/ on both host and standalone).")
 
 (defun nelisp-bootstrap--source-file (file)
   "Return the package source file for FILE, or nil.
@@ -1300,17 +1290,10 @@ concatenated bootstrap bundle must make the order explicit."
     ;; bootstrap path a wrong order leaves functions defined but features
     ;; unprovided after an early top-level error.
     (dolist (pair '(("emacs-calc.el" . "calc.el")
-                    ("emacs-man.el" . "man.el")
                     ("emacs-eshell.el" . "eshell.el")
-                    ("emacs-shell.el" . "shell.el")
                     ("emacs-project.el" . "project.el")
-                    ("emacs-ielm.el" . "ielm.el")
                     ("emacs-replace.el" . "replace.el")
-                    ("emacs-comint.el" . "comint.el")
                     ("emacs-vc.el" . "vc.el")
-                    ("emacs-compile.el" . "compile.el")
-                    ("emacs-xref.el" . "xref.el")
-                    ("emacs-imenu.el" . "imenu.el")
                     ("emacs-faces.el" . "emacs-faces-builtins.el")
                     ("emacs-frame.el" . "emacs-frame-builtins.el")
                     ("emacs-window.el" . "emacs-window-builtins.el")
@@ -1501,12 +1484,6 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '("(provide 'custom)\n"))
-     ;; GNU imenu.el redefines `imenu' and `imenu--make-index-alist'; its index
-     ;; builder needs marker arithmetic the core lacks, so bind the working
-     ;; `emacs-imenu' symbol index back over both.  Every other GNU imenu name
-     ;; keeps its real definition.
-     ((string= rel "vendor/emacs-lisp-31.1/imenu.el")
-      '("(when (fboundp 'emacs-imenu-install) (emacs-imenu-install))\n"))
      ((string= rel "src/nemacs-main.el")
       (mapcar (lambda (form)
                 (concat (prin1-to-string form) "\n"))
@@ -1518,8 +1495,6 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '((provide 'custom)))
-     ((string= rel "vendor/emacs-lisp-31.1/imenu.el")
-      '((when (fboundp 'emacs-imenu-install) (emacs-imenu-install))))
      ((string= rel "src/nemacs-main.el")
       (nelisp-bootstrap--runtime-load-path-prologue-forms)))))
 
@@ -1684,6 +1659,10 @@ strings or comments, and calls with any non-literal argument, are kept."
       (nelisp-bootstrap--provider-seam-position)
       (dolist (file files)
         (let ((rel (nelisp-bootstrap--logical-name file)))
+          ;; Attribute this file's definitions in `load-history' to its own
+          ;; path rather than to the bundle (GNU loads each file separately).
+          (insert (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))"
+                          (expand-file-name file)))
           (insert "\n;;; >>> " rel "\n")
           (nelisp-bootstrap--insert-bundle-file-body file rel)
           (dolist (feature (nelisp-bootstrap--file-features file))
@@ -1693,6 +1672,7 @@ strings or comments, and calls with any non-literal argument, are kept."
           (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
             (insert form))
           (insert "\n;;; <<< " rel "\n")))
+      (insert "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n")
       (nelisp-bootstrap--validate-provider-bundle-buffer
        provider provider-start provider-offset files)
       (nelisp-bootstrap--validate-ffi-publication-buffer files)

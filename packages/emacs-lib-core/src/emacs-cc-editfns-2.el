@@ -60,24 +60,51 @@ message line to stderr, whatever the text is."
       (unless (and (integerp start-check) (integerp end-check)
                    (<= (point-min) start-check end-check) (<= end-check (point-max)))
         (signal 'args-out-of-range (list (current-buffer) start-check end-check))))
+    ;; GNU calls a function SOURCE with the buffer narrowed to the region
+    ;; and replaces with what it returns.
+    (when (and (functionp source) (not (stringp source)))
+      (setq source (save-excursion
+                     (save-restriction
+                       (narrow-to-region beg end)
+                       (goto-char (point-min))
+                       (funcall source)))))
     (let* ((text (cond ((stringp source) source)
                        ((bufferp source) (with-current-buffer source (buffer-substring (point-min) (point-max))))
                        ((and (vectorp source) (= (length source) 3) (bufferp (aref source 0)))
                         (with-current-buffer (aref source 0)
                           (buffer-substring (aref source 1) (aref source 2))))
-                       ((functionp source) (replace-region-contents beg end (funcall source) max-secs nil inherit))
                        ((null source) "")
                        (t (signal 'wrong-type-argument (list '(or stringp bufferp vectorp functionp) source)))))
            (finish (if (markerp end) (marker-position end) end))
-           (start (if (markerp beg) (marker-position beg) beg)))
+           (start (if (markerp beg) (marker-position beg) beg))
+           (opoint (point)))
+      ;; Unless MAX-SECS is 0, GNU diffs the old and new text and touches
+      ;; only what changed, so point, markers and properties in the
+      ;; unchanged parts survive.  Trimming the common prefix and suffix
+      ;; gives the same result for a single contiguous change.
+      (unless (and (numberp max-secs) (<= max-secs 0))
+        (let* ((old (buffer-substring-no-properties start finish))
+               (olen (length old)) (nlen (length text))
+               (pre 0) (suf 0))
+          (while (and (< pre olen) (< pre nlen)
+                      (eq (aref old pre) (aref text pre)))
+            (setq pre (1+ pre)))
+          (while (and (< suf (- olen pre)) (< suf (- nlen pre))
+                      (eq (aref old (- olen suf 1)) (aref text (- nlen suf 1))))
+            (setq suf (1+ suf)))
+          (setq text (substring text pre (- nlen suf))
+                start (+ start pre)
+                finish (- finish suf))))
       (goto-char start)
       (delete-region start finish)
       (goto-char start)
-      (if (and max-secs (<= max-secs 0))
-          (progn (if inherit (insert-before-markers-and-inherit text) (insert text)) t)
-        (goto-char start)
-        (if inherit (insert-before-markers-and-inherit text) (insert text))
-        t))))
+      (if inherit (insert-before-markers-and-inherit text) (insert text))
+      ;; Point as GNU leaves it: unchanged before the region, at the end
+      ;; of the new text inside it, shifted by the size change after it.
+      (goto-char (cond ((<= opoint start) opoint)
+                       ((<= opoint finish) (+ start (length text)))
+                       (t (+ opoint (- (length text) (- finish start))))))
+      t)))
 
 (unless (fboundp 'translate-region-internal)
   (defun translate-region-internal (start end table)

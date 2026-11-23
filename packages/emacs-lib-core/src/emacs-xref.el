@@ -112,23 +112,6 @@ or (FILE . POS), or signals when nothing is found."
         (goto-char (cdr loc)))
       loc)))
 
-;;;; --- standard-name facade + bindings ------------------------------
-
-(defun emacs-xref-install ()
-  "Bind the standard xref command names to the `emacs-xref-*' implementations.
-Not run on `require' (keeps a bare load from touching shared command
-symbols)."
-  (defalias 'xref-find-definitions #'emacs-xref-find-definitions)
-  (defalias 'xref-pop-marker-stack #'emacs-xref-pop-marker-stack)
-  (emacs-xref--install-bindings))
-
-(defun emacs-xref--install-bindings ()
-  "Bind `M-.' / `M-,' to the xref commands on the global map."
-  (let ((map (and (fboundp 'current-global-map) (current-global-map))))
-    (when (and map (fboundp 'define-key) (fboundp 'kbd))
-      (define-key map (kbd "M-.") #'emacs-xref-find-definitions)
-      (define-key map (kbd "M-,") #'emacs-xref-pop-marker-stack))))
-
 (provide 'emacs-xref)
 
 ;;; emacs-xref.el ends here

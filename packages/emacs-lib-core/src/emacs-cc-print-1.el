@@ -25,13 +25,60 @@ newline, even when the stdout text already ended in a newline.")
 ;; Host Emacs owns this state in print.c; only the standalone needs the
 ;; compatibility tracking.  Buffer/function streams and string rendering
 ;; do not set the flag, and inhibited messages must not consume it.
+;; The printers are wrapped by named functions installed in place of the
+;; natives rather than by :around advice, whose generic dispatch cost about
+;; 5 us a call.  Each native is captured once, so loading this file again
+;; does not wrap the wrapper.  Arguments past the native arity signal the
+;; error GNU gives a direct call.
+(defun emacs-cc-print-1--princ (object &optional printcharfun &rest more)
+  "Native `princ' that notes batch printing to stdout."
+  (when more
+    (signal 'wrong-number-of-arguments (list 'princ (+ 2 (length more)))))
+  (prog1 (emacs-cc-print-1--native-princ object printcharfun)
+    (emacs-cc-print-1--note-stdout printcharfun)))
+
+(defun emacs-cc-print-1--prin1-stdout
+    (object &optional printcharfun overrides &rest more)
+  "Native `prin1' that notes batch printing to stdout."
+  (when more
+    (signal 'wrong-number-of-arguments (list 'prin1 (+ 3 (length more)))))
+  (prog1 (emacs-cc-print-1--native-prin1 object printcharfun overrides)
+    (emacs-cc-print-1--note-stdout printcharfun)))
+
+(defun emacs-cc-print-1--print (object &optional printcharfun &rest more)
+  "Native `print' that notes batch printing to stdout."
+  (when more
+    (signal 'wrong-number-of-arguments (list 'print (+ 2 (length more)))))
+  (let ((dest (or printcharfun standard-output)))
+    (if (bufferp dest)
+        ;; GNU prints into a buffer through one PRINTPREPARE/PRINTFINISH
+        ;; pair: the newline, the object and the newline are one insertion
+        ;; at that buffer's point (one change notification, not three).
+        (progn
+          (let ((text (concat "\n" (prin1-to-string object) "\n")))
+            (with-current-buffer dest (insert text)))
+          object)
+      (prog1 (emacs-cc-print-1--native-print object printcharfun)
+        (emacs-cc-print-1--note-stdout printcharfun)))))
+
+(defun emacs-cc-print-1--terpri (&optional printcharfun ensure &rest more)
+  "Native `terpri' that notes batch printing to stdout."
+  (when more
+    (signal 'wrong-number-of-arguments (list 'terpri (+ 2 (length more)))))
+  (prog1 (emacs-cc-print-1--native-terpri printcharfun ensure)
+    (emacs-cc-print-1--note-stdout printcharfun)))
+
 (when (and (boundp 'noninteractive) noninteractive
            (fboundp 'nelisp--write-stdout-bytes))
-  (dolist (printer '(princ prin1 print))
-    (unless (advice-member-p #'emacs-cc-print-1--stdout-around printer)
-      (advice-add printer :around #'emacs-cc-print-1--stdout-around)))
-  (unless (advice-member-p #'emacs-cc-print-1--terpri-around 'terpri)
-    (advice-add 'terpri :around #'emacs-cc-print-1--terpri-around)))
+  (unless (fboundp 'emacs-cc-print-1--native-princ)
+    (defalias 'emacs-cc-print-1--native-princ (symbol-function 'princ))
+    (defalias 'emacs-cc-print-1--native-prin1 (symbol-function 'prin1))
+    (defalias 'emacs-cc-print-1--native-print (symbol-function 'print))
+    (defalias 'emacs-cc-print-1--native-terpri (symbol-function 'terpri)))
+  (defalias 'princ (symbol-function 'emacs-cc-print-1--princ))
+  (defalias 'prin1 (symbol-function 'emacs-cc-print-1--prin1-stdout))
+  (defalias 'print (symbol-function 'emacs-cc-print-1--print))
+  (defalias 'terpri (symbol-function 'emacs-cc-print-1--terpri)))
 
 (defvar emacs-cc-print-1--debugging-output-file nil)
 (defvar print-circle nil)
@@ -329,32 +376,41 @@ Skip escaped syntax and vertical-bar-quoted symbol names."
     (funcall orig object noescape overrides))
    (t (funcall orig object))))
 
-(defun emacs-cc-print-1--prin1-to-string-around
-    (orig object &optional noescape overrides)
-  "Preserve managed properties and forward NOESCAPE and OVERRIDES."
+(defun emacs-cc-print-1--prin1-to-string-managed
+    (orig object noescape overrides)
+  "Print OBJECT, whose strings carry managed properties, through ORIG."
   (let ((native (lambda (value)
                   (emacs-cc-print-1--call-native
-                   orig value noescape overrides))))
-    (if (or noescape overrides
-            (not (fboundp 'emacs-buffer-string-text-property)))
-        (funcall native object)
-      (let* ((strings (if (stringp object)
-                          (list object)
-                        (emacs-cc-print-1--collect-strings object)))
-             (managed nil))
-        (while strings
-          (when (emacs-buffer-string-text-property 'runs (car strings))
-            (setq managed t))
-          (setq strings (cdr strings)))
-        (if (not managed)
-            (funcall native object)
-          (let ((leaves (if (stringp object)
-                            (list object)
-                          (emacs-cc-print-1--collect-strings object))))
-            (if leaves
-                (emacs-cc-print-1--replace-string-literals
-                 native object leaves)
-              (funcall native object))))))))
+                   orig value noescape overrides)))
+        (leaves (if (stringp object)
+                    (list object)
+                  (emacs-cc-print-1--collect-strings object))))
+    (if leaves
+        (emacs-cc-print-1--replace-string-literals native object leaves)
+      (funcall native object))))
+
+(defun emacs-cc-print-1--prin1-to-string-around
+    (orig object &optional noescape overrides)
+  "Preserve managed properties and forward NOESCAPE and OVERRIDES.
+The closure for managed strings lives in
+`emacs-cc-print-1--prin1-to-string-managed': on the standalone VM a
+function that builds a closure over its arguments runs several times
+slower even when it takes the other branch."
+  (if (or noescape overrides
+          (not (fboundp 'emacs-buffer-string-text-property)))
+      (emacs-cc-print-1--call-native orig object noescape overrides)
+    (let ((strings (if (stringp object)
+                       (list object)
+                     (emacs-cc-print-1--collect-strings object)))
+          (managed nil))
+      (while strings
+        (when (emacs-buffer-string-text-property 'runs (car strings))
+          (setq managed t))
+        (setq strings (cdr strings)))
+      (if (not managed)
+          (emacs-cc-print-1--call-native orig object noescape overrides)
+        (emacs-cc-print-1--prin1-to-string-managed
+         orig object noescape overrides)))))
 
 (defun emacs-cc-print-1--prn-to-string-around
     (orig object escape &optional depth)
@@ -448,17 +504,46 @@ The underlying printer already reads dynamically bound print variables."
         (princ (prin1-to-string object nil overrides) stream)
         object)))))
 
+(defun emacs-cc-print-1--prin1-to-string
+    (object &optional noescape overrides &rest more)
+  "Native `prin1-to-string' that preserves managed string properties."
+  (when more
+    (signal 'wrong-number-of-arguments
+            (list 'prin1-to-string (+ 3 (length more)))))
+  (emacs-cc-print-1--prin1-to-string-around
+   #'emacs-cc-print-1--native-prin1-to-string object noescape overrides))
+
+(defun emacs-cc-print-1--prn-to-string (object escape &optional depth)
+  "Native `nelisp--prn-to-string' that prints dead buffers as GNU does."
+  (emacs-cc-print-1--prn-to-string-around
+   #'emacs-cc-print-1--native-prn-to-string object escape depth))
+
+(defun emacs-cc-print-1--prin1 (object &optional stream overrides &rest more)
+  "`prin1' that preserves managed string properties."
+  (when more
+    (signal 'wrong-number-of-arguments (list 'prin1 (+ 3 (length more)))))
+  (emacs-cc-print-1--prin1-around
+   #'emacs-cc-print-1--prin1-inner object stream overrides))
+
+;; Same named-wrapper scheme as the stdout tracking above.
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'prin1-to-string))
-  (advice-add 'prin1-to-string :around
-              #'emacs-cc-print-1--prin1-to-string-around)
+  (unless (fboundp 'emacs-cc-print-1--native-prin1-to-string)
+    (defalias 'emacs-cc-print-1--native-prin1-to-string
+      (symbol-function 'prin1-to-string)))
+  (defalias 'prin1-to-string
+    (symbol-function 'emacs-cc-print-1--prin1-to-string))
   (when (fboundp 'nelisp--prn-to-string)
-    (unless (advice-member-p #'emacs-cc-print-1--prn-to-string-around
-                             'nelisp--prn-to-string)
-      (advice-add 'nelisp--prn-to-string :around
-                  #'emacs-cc-print-1--prn-to-string-around)))
+    (unless (fboundp 'emacs-cc-print-1--native-prn-to-string)
+      (defalias 'emacs-cc-print-1--native-prn-to-string
+        (symbol-function 'nelisp--prn-to-string)))
+    (defalias 'nelisp--prn-to-string
+      (symbol-function 'emacs-cc-print-1--prn-to-string)))
   (when (fboundp 'prin1)
-    (advice-add 'prin1 :around #'emacs-cc-print-1--prin1-around)))
+    ;; The function found here may be the stdout wrapper above.
+    (unless (fboundp 'emacs-cc-print-1--prin1-inner)
+      (defalias 'emacs-cc-print-1--prin1-inner (symbol-function 'prin1)))
+    (defalias 'prin1 (symbol-function 'emacs-cc-print-1--prin1))))
 
 (unless (fboundp 'redirect-debugging-output)
   (defun redirect-debugging-output (file &optional append)

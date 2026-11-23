@@ -122,7 +122,7 @@ Resets the per-buffer working directory so a re-opened `*shell*' starts
 from `default-directory' rather than a stale cwd."
   (interactive)
   (emacs-comint-mode)
-  (setq major-mode 'shell-mode
+  (setq major-mode 'emacs-shell-mode
         mode-name "Shell")
   (remhash (buffer-name (current-buffer)) emacs-shell--cwd)
   nil)
@@ -143,13 +143,6 @@ from `default-directory' rather than a stale cwd."
     buf))
 
 ;;;; --- standard-name facade -----------------------------------------
-
-(defun emacs-shell-install ()
-  "Bind the standard `shell' / `shell-mode' command names to the
-`emacs-shell' implementations.  Not run on `require' (keeps a bare load
-from touching shared command symbols)."
-  (defalias 'shell #'emacs-shell)
-  (defalias 'shell-mode #'emacs-shell-mode))
 
 (provide 'emacs-shell)
 

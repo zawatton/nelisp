@@ -988,14 +988,26 @@ carry any bit pattern, and this file's Commentary documents that the
 64-bit primitives do not round-trip a value above `most-positive-fixnum' --
 common in ordinary text/data, confirmed by this exact copy corrupting a
 symbol name before this fix.  A 32-bit word is always far below that
-ceiling, so this is exact for any content."
-  (let ((i 0) (full (* 4 (/ n 4))))
-    (while (< i full)
-      (ptr-write-u32 dst i (ptr-read-u32 src i))
-      (setq i (+ i 4)))
-    (while (< i n)
-      (ptr-write-u8 dst i (ptr-read-u8 src i))
-      (setq i (1+ i)))))
+ceiling, so this is exact for any content.
+
+Where the reader has the bulk byte primitives, each 64 KiB chunk goes
+through one `ptr-read-bytes' (raw bytes into a unibyte string) and one
+`ptr-write-bytes' (its bytes out again), both native loops: opening libm
+copies about 3 MB of segments, which the interpreted word loop took about
+0.2 s to do."
+  (if (and (fboundp 'ptr-read-bytes) (fboundp 'ptr-write-bytes))
+      (let ((i 0))
+        (while (< i n)
+          (let ((k (min 65536 (- n i))))
+            (ptr-write-bytes (+ dst i) (ptr-read-bytes (+ src i) k))
+            (setq i (+ i k)))))
+    (let ((i 0) (full (* 4 (/ n 4))))
+      (while (< i full)
+        (ptr-write-u32 dst i (ptr-read-u32 src i))
+        (setq i (+ i 4)))
+      (while (< i n)
+        (ptr-write-u8 dst i (ptr-read-u8 src i))
+        (setq i (1+ i))))))
 
 (defun nl-ffi-loader--prot-of-pflags (flags)
   "Translate an Elf64_Phdr P_FLAGS bitfield to a Linux PROT_* bitfield.

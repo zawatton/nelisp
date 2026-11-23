@@ -1,6 +1,6 @@
 # GNU Emacs 31.1 `etc` resources
 
-This directory contains a selected set of 605 resource files copied
+This directory contains a selected set of 606 resource files copied
 byte-for-byte from the installed GNU Emacs 31.1 tree at
 `/usr/local/share/emacs/31.1/etc/`. Per-file source paths and SHA-256
 digests are recorded in `vendor/ORIGIN` and `vendor/SHA256SUMS`.

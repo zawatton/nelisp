@@ -345,6 +345,16 @@ killed buffers' state.")
 
 (defun emacs-buffer--native-property-text-commit (buf full-size mapping)
   "Publish MAPPING after a successful text operation on native BUF."
+  ;; gnu562: a non-empty buffer whose own sidecar (it has no base buffer,
+  ;; so it is also the owner's) holds no intervals and gets none: the
+  ;; general path below would store nil over nil in that one sidecar and
+  ;; leave the root flag alone.  Skip it (about 20 us per insert).
+  (unless (and (null mapping)
+               (not (zerop full-size))
+               (let ((ext (gethash buf emacs-buffer--state)))
+                 (and ext
+                      (null (emacs-buffer--ext-text-props ext))
+                      (null (emacs-buffer--ext-base-buffer ext)))))
   (when (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buf)
              (fboundp 'buffer-live-p) (buffer-live-p buf))
     (let* ((target-ext (emacs-buffer--ensure-text-property-ext buf))
@@ -356,8 +366,8 @@ killed buffers' state.")
        ((zerop full-size)
         (setf (emacs-buffer--ext-interval-root-present owner-ext) nil))
        (mapping
-        (setf (emacs-buffer--ext-interval-root-present owner-ext) t))))
-    nil))
+        (setf (emacs-buffer--ext-interval-root-present owner-ext) t))))))
+  nil)
 
 (defun emacs-buffer--native-buffer-text-property-mutation
     (operation buf start end &rest payload)
@@ -1336,6 +1346,8 @@ when neither carries PROP."
 
 (defun emacs-buffer--tp-after-insert (intervals pos length)
   "Return INTERVALS adjusted after inserting LENGTH chars at POS."
+  (if (null intervals)
+      nil
   (let (out)
     (dolist (cell intervals)
       (let ((s (emacs-buffer--tp-start cell))
@@ -1350,7 +1362,7 @@ when neither carries PROP."
           (push cell out)))))
     (sort (nreverse out) (lambda (a b)
                            (< (emacs-buffer--tp-start a)
-                              (emacs-buffer--tp-start b))))))
+                              (emacs-buffer--tp-start b)))))))
 
 (defun emacs-buffer--tp-after-delete (intervals start end)
   "Return INTERVALS adjusted after deleting [START, END)."
@@ -2088,7 +2100,8 @@ reflects every text-content mutation)."
       (cond
        ((stringp s) (setq n (+ n (length s))))
        ((characterp s) (setq n (1+ n)))
-       (t (signal 'wrong-type-argument (list 'string-or-char-p s)))))
+       ;; GNU's insdel.c names the predicate char-or-string-p.
+       (t (signal 'wrong-type-argument (list 'char-or-string-p s)))))
     n))
 
 (defun emacs-buffer--insert-read-only-end (pos length)
@@ -2103,7 +2116,15 @@ reflects every text-content mutation)."
     (dolist (string strings)
       (when string
         (let ((text (if (integerp string) (string string) string)))
-          (when (stringp string)
+          (when (and (stringp string)
+                     ;; The standalone keeps a string's own properties in
+                     ;; `nelisp--tp-string-properties' and managed ones in
+                     ;; `emacs-buffer--string-state'; a string in neither
+                     ;; has no runs to copy.
+                     (not (and (boundp 'nelisp--tp-string-properties)
+                               (null (gethash string emacs-buffer--string-state))
+                               (null (gethash string
+                                              nelisp--tp-string-properties)))))
             (let ((runs (and (fboundp 'emacs-buffer-string-text-property)
                              (emacs-buffer-string-text-property
                               'runs string))))
@@ -2170,7 +2191,9 @@ Checks read-only text and shifts/expands text-property intervals."
   (let ((result (apply orig string properties)))
     (when (and (stringp string) (stringp result)
                (fboundp 'emacs-buffer-string-text-property))
-      (emacs-buffer-string-text-property 'copy string result)
+      ;; Copying runs from a string without sidecar state is a no-op.
+      (when (gethash string emacs-buffer--string-state)
+        (emacs-buffer-string-text-property 'copy string result))
       (when properties
         (emacs-buffer-string-text-property
          'add result 0 (length result) properties)))
@@ -2178,10 +2201,20 @@ Checks read-only text and shifts/expands text-property intervals."
 
 (defun emacs-buffer--native-insert-around-advice (orig &rest strings)
   "Track sidecar properties for native INSERT in its current buffer."
-  (let ((buffer (current-buffer))
-        (start (point))
-        (length (emacs-buffer--insert-text-length strings)))
+  (let* ((buffer (current-buffer))
+         (start (point))
+         (length (emacs-buffer--insert-text-length strings))
+         (plain (and (emacs-buffer--plain-insert-strings-p strings)
+                     (emacs-buffer--plain-sidecar buffer))))
     (prog1 (apply orig strings)
+      (if (and plain (null (emacs-buffer--ext-text-props plain)))
+          ;; Plain text into a buffer without intervals: only the tick moves,
+          ;; as in the general path below.
+          (progn
+            (when (> length 0)
+              (emacs-buffer--increment-ext-modified-tick plain))
+            (when (and (buffer-live-p buffer) (zerop (buffer-size buffer)))
+              (setf (emacs-buffer--ext-interval-root-present plain) nil)))
       (when (> length 0)
         (let ((ext (emacs-buffer--ensure-text-property-ext buffer)))
           (emacs-buffer--set-ext-text-props ext
@@ -2190,11 +2223,10 @@ Checks read-only text and shifts/expands text-property intervals."
           (emacs-buffer--insert-string-properties ext start strings)
           (emacs-buffer--increment-ext-modified-tick ext)))
       (when (and (fboundp 'buffer-live-p) (buffer-live-p buffer))
-        (with-current-buffer buffer
-          (let ((ext (gethash buffer emacs-buffer--state)))
-            (emacs-buffer--native-property-text-commit
-             buffer (buffer-size)
-             (and ext (emacs-buffer--ext-text-props ext)))))))))
+        (let ((ext (gethash buffer emacs-buffer--state)))
+          (emacs-buffer--native-property-text-commit
+           buffer (buffer-size buffer)
+           (and ext (emacs-buffer--ext-text-props ext)))))))))
 
 (defun emacs-buffer--property-current-buffer ()
   "Return the active native buffer owner, falling back to the compat owner."
@@ -2216,14 +2248,19 @@ Checks read-only text and shifts/expands text-property intervals."
 
 (defun emacs-buffer--copy-buffer-properties-to-string (buffer start end string)
   "Copy BUF's sidecar properties over [START, END) into STRING."
+  ;; gnu562: walk the intervals directly, in order, adding each one that
+  ;; overlaps [START, END) as `emacs-buffer--copy-runs-to-string' would,
+  ;; without first rebuilding every interval as a run list (a substring
+  ;; with no property in range paid ~30 us for that).
   (let* ((ext (gethash buffer emacs-buffer--state))
-         (intervals (and ext (emacs-buffer--ext-text-props ext)))
-         (runs (mapcar (lambda (cell)
-                         (list (emacs-buffer--tp-start cell)
-                               (emacs-buffer--tp-end cell)
-                               (emacs-buffer--tp-plist cell)))
-                       intervals)))
-    (emacs-buffer--copy-runs-to-string string runs start end)))
+         (intervals (and ext (emacs-buffer--ext-text-props ext))))
+    (dolist (cell intervals)
+      (let ((lo (max start (emacs-buffer--tp-start cell)))
+            (hi (min end (emacs-buffer--tp-end cell))))
+        (when (< lo hi)
+          (emacs-buffer-string-text-property
+           'add string (- lo start) (- hi start) (emacs-buffer--tp-plist cell)))))
+    string))
 
 (defun emacs-buffer--native-buffer-string-around (orig &rest args)
   "Preserve sidecar text properties returned by native `buffer-string'."
@@ -2234,6 +2271,16 @@ Checks read-only text and shifts/expands text-property intervals."
     (when (stringp result)
       (emacs-buffer--copy-buffer-properties-to-string buffer start end result))
     result))
+
+(defun emacs-buffer--buffer-substring (start end &rest more)
+  "Native `buffer-substring' that copies sidecar properties to the result.
+Installed in place of the native function, not as advice (see
+`emacs-buffer--propertize')."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'buffer-substring (+ 2 (length more))))
+    (emacs-buffer--native-buffer-substring-around
+     #'emacs-buffer--native-buffer-substring start end)))
 
 (defun emacs-buffer--native-buffer-substring-around (orig start end &rest args)
   "Preserve sidecar text properties returned by native `buffer-substring'."
@@ -2328,6 +2375,21 @@ with sidecar text properties gets them copied to the result."
            result (emacs-buffer-string-text-property 'runs string) lo hi)))
       result)))
 
+(defun emacs-buffer--delete-region (start end)
+  "Native `delete-region' that checks read-only text and moves intervals."
+  (emacs-buffer--delete-region-around-advice
+   #'emacs-buffer--native-delete-region start end))
+
+(defun emacs-buffer--erase-buffer ()
+  "Native `erase-buffer' that clears the buffer's property sidecar."
+  (emacs-buffer--native-erase-around-advice
+   #'emacs-buffer--native-erase-buffer))
+
+(defun emacs-buffer--insert (&rest strings)
+  "Native `insert' that tracks sidecar properties of STRINGS."
+  (apply #'emacs-buffer--native-insert-around-advice
+         #'emacs-buffer--native-insert strings))
+
 (defun emacs-buffer--delete-region-around-advice (orig start end)
   "Around-advice for compatibility and native region deletion.
 Checks read-only text and shifts/shrinks text-property intervals."
@@ -2371,31 +2433,73 @@ Checks read-only text and shifts/shrinks text-property intervals."
            (fboundp 'nelisp-ec-delete-region)
            (not (eq (indirect-function 'delete-region)
                     (indirect-function 'nelisp-ec-delete-region))))
-  (advice-add 'delete-region :around #'emacs-buffer--delete-region-around-advice))
+  ;; A named wrapper in place of the native rather than :around advice, whose
+  ;; dispatch cost about 5 us per edit; the native is captured once.
+  (unless (fboundp 'emacs-buffer--native-delete-region)
+    (defalias 'emacs-buffer--native-delete-region
+      (symbol-function 'delete-region)))
+  (defalias 'delete-region (symbol-function 'emacs-buffer--delete-region)))
+
+(defun emacs-buffer--plain-sidecar (buffer)
+  "BUFFER's sidecar when it holds no intervals and BUFFER is no indirect child.
+For such a sidecar `emacs-buffer--native-property-text-commit' with no
+mapping only clears the interval-root flag of an empty buffer, so the edit
+advice below can skip it.  Nil otherwise, or when BUFFER has no sidecar."
+  (let ((ext (gethash buffer emacs-buffer--state)))
+    (and ext
+         (null (emacs-buffer--ext-text-props ext))
+         (null (emacs-buffer--ext-base-buffer ext))
+         (fboundp 'nelisp-buffer-p)
+         (nelisp-buffer-p buffer)
+         ext)))
+
+(defun emacs-buffer--plain-insert-strings-p (strings)
+  "Non-nil when no string in STRINGS carries text properties on the standalone."
+  (and (boundp 'nelisp--tp-string-properties)
+       (let ((plain t))
+         (while (and plain strings)
+           (let ((s (car strings)))
+             (when (and (stringp s)
+                        (or (gethash s emacs-buffer--string-state)
+                            (gethash s nelisp--tp-string-properties)))
+               (setq plain nil)))
+           (setq strings (cdr strings)))
+         plain)))
 
 (defun emacs-buffer--native-erase-around-advice (orig &rest args)
   "Clear the native buffer's property sidecar after successful erasure.
 Erasure removes all text, including hidden narrowed text.  Keeping the empty
 sidecar authoritative also prevents obsolete native properties from being
 read back after a subsequent insertion.  Failed erasures retain their state."
-  (let ((buffer (current-buffer)))
+  (let* ((buffer (current-buffer))
+         (plain (emacs-buffer--plain-sidecar buffer)))
     (prog1 (apply orig args)
+      (if (and plain (null (emacs-buffer--ext-text-props plain))
+               (buffer-live-p buffer))
+          ;; What the general path below does for a sidecar without intervals.
+          (progn
+            (emacs-buffer--increment-ext-modified-tick plain)
+            (cl-incf (emacs-buffer--ext-text-tick plain))
+            (when (zerop (buffer-size buffer))
+              (setf (emacs-buffer--ext-interval-root-present plain) nil)))
       (when (and (fboundp 'buffer-live-p) (buffer-live-p buffer))
-        (with-current-buffer buffer
-          (let* ((ext (gethash buffer emacs-buffer--state))
-                 (full-size (buffer-size))
-                 (mapping (and ext (emacs-buffer--ext-text-props ext))))
-            (when ext
-              (when (zerop full-size)
-                (emacs-buffer--set-ext-text-props ext nil))
-              (emacs-buffer--increment-ext-modified-tick ext)
-              (cl-incf (emacs-buffer--ext-text-tick ext)))
-            (emacs-buffer--native-property-text-commit
-             buffer full-size (if (zerop full-size) nil mapping))))))))
+        (let* ((ext (gethash buffer emacs-buffer--state))
+               (full-size (buffer-size buffer))
+               (mapping (and ext (emacs-buffer--ext-text-props ext))))
+          (when ext
+            (when (zerop full-size)
+              (emacs-buffer--set-ext-text-props ext nil))
+            (emacs-buffer--increment-ext-modified-tick ext)
+            (cl-incf (emacs-buffer--ext-text-tick ext)))
+          (emacs-buffer--native-property-text-commit
+           buffer full-size (if (zerop full-size) nil mapping))))))))
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'erase-buffer))
-  (advice-add 'erase-buffer :around #'emacs-buffer--native-erase-around-advice))
+  (unless (fboundp 'emacs-buffer--native-erase-buffer)
+    (defalias 'emacs-buffer--native-erase-buffer
+      (symbol-function 'erase-buffer)))
+  (defalias 'erase-buffer (symbol-function 'emacs-buffer--erase-buffer)))
 
 ;; The standalone runtime may retain its native `insert' primitive while the
 ;; compatibility implementation lives under `nelisp-ec-insert'.  In that
@@ -2409,14 +2513,25 @@ read back after a subsequent insertion.  Failed erasures retain their state."
            (fboundp 'nelisp-ec-insert)
            (not (eq (indirect-function 'insert)
                     (indirect-function 'nelisp-ec-insert))))
-  (advice-add 'insert :around #'emacs-buffer--native-insert-around-advice))
+  (unless (fboundp 'emacs-buffer--native-insert)
+    (defalias 'emacs-buffer--native-insert (symbol-function 'insert)))
+  (defalias 'insert (symbol-function 'emacs-buffer--insert)))
 
 ;; A native `propertize' can attach properties that the standalone sidecar
-;; cannot enumerate.  Mirror its explicit property arguments without replacing
-;; the native function cell, so later insertion can preserve the ranges.
+;; cannot enumerate.  Mirror its explicit property arguments around the native
+;; function, so later insertion can preserve the ranges.  Like `substring',
+;; it is wrapped by a named function rather than :around advice, whose
+;; dispatch cost about 5 us a call; the native is captured once.
+(defun emacs-buffer--propertize (string &rest properties)
+  "Native `propertize' that mirrors PROPERTIES into the string sidecar."
+  (apply #'emacs-buffer--propertize-around-advice
+         #'emacs-buffer--native-propertize string properties))
+
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'propertize))
-  (advice-add 'propertize :around #'emacs-buffer--propertize-around-advice))
+  (unless (fboundp 'emacs-buffer--native-propertize)
+    (defalias 'emacs-buffer--native-propertize (symbol-function 'propertize)))
+  (defalias 'propertize (symbol-function 'emacs-buffer--propertize)))
 
 (when (fboundp 'nelisp--buffer-multibyte-p)
   (when (fboundp 'buffer-string)
@@ -2425,8 +2540,11 @@ read back after a subsequent insertion.  Failed erasures retain their state."
   (when (and (fboundp 'buffer-substring)
              (not (eq (indirect-function 'buffer-substring)
                       (indirect-function 'nelisp-ec-buffer-substring))))
-    (advice-add 'buffer-substring :around
-                #'emacs-buffer--native-buffer-substring-around))
+    (unless (fboundp 'emacs-buffer--native-buffer-substring)
+      (defalias 'emacs-buffer--native-buffer-substring
+        (symbol-function 'buffer-substring)))
+    (defalias 'buffer-substring
+      (symbol-function 'emacs-buffer--buffer-substring)))
   ;; Capture each native function once, so loading this file again does
   ;; not wrap the wrapper.
   (when (fboundp 'copy-sequence)

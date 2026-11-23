@@ -899,6 +899,38 @@ identity.  This query does not modify either table."
        (emacs-char-table--native-vector-bridge-p))
   "Non-nil when `aref' on an owned char-table is dispatched natively.")
 
+(defun emacs-char-table--owned-ascii-ref (ct char)
+  "CT's cached value for CHAR below 128 when CT is an owned vector table.
+The checks of `emacs-char-table--owned-p' and the read of
+`emacs-char-table--owner-cache-ref', done once with direct slot reads where
+the native vector bridge is active.  Answers `emacs-char-table--unset' when
+that does not apply, leaving CT to the general path."
+  (if (and (vectorp ct)
+           (> (length ct) emacs-char-table--i-owner-state)
+           (emacs-char-table--native-vector-bridge-p)
+           (eq (nelisp--raw-aref ct 0) emacs-char-table--tag))
+      ;; The two record tests are `emacs-char-table--owner-state-p' and
+      ;; `emacs-char-table--topology-node-p' with the record's type slot
+      ;; read directly (both types are symbols, so `type-of' answers the same).
+      (let ((state (nelisp--raw-aref ct emacs-char-table--i-owner-state)))
+        (if (and (recordp state)
+                 (eq (nelisp--record-type state) 'emacs-char-table--owner-state)
+                 (memq (length state) '(3 4)))
+            (let* ((current (if (and (= (length state) 4)
+                                     (>= (aref state 3)
+                                         emacs-char-table--owner-state-version))
+                                state
+                              (emacs-char-table--owner-current-state ct)))
+                   (cache (aref current 2)))
+              (if (and (recordp cache)
+                       (eq (nelisp--record-type cache)
+                           emacs-char-table--topology-node-brand)
+                       (= (length cache) 2))
+                  (aref (aref cache 1) char)
+                cache))
+          'emacs-char-table--unset))
+    'emacs-char-table--unset))
+
 (defun emacs-char-table-ref (ct char)
   "Return CT's value for character CHAR (with default / parent fallback).
 An owned table's ASCII entry goes through the native `aref' bridge, which
@@ -917,10 +949,16 @@ declines to `emacs-char-table-aref' and then `emacs-char-table-ref-slow'
    ((emacs-char-table--native-p ct) (emacs-char-table--native-ref ct char))
    ((not (integerp char)) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
    ((and (>= char 0) (< char emacs-char-table--ascii-size))
-    (let ((v (if (and (< char 128) (emacs-char-table--owned-p ct))
-                 (emacs-char-table--owner-cache-ref ct char)
-               (emacs-char-table--raw-ref
-                (emacs-char-table--raw-ref ct emacs-char-table--i-ascii) char))))
+    (let ((v (let ((fast (if (< char 128)
+                             (emacs-char-table--owned-ascii-ref ct char)
+                           'emacs-char-table--unset)))
+               (if (not (eq fast 'emacs-char-table--unset))
+                   fast
+                 (if (and (< char 128) (emacs-char-table--owned-p ct))
+                     (emacs-char-table--owner-cache-ref ct char)
+                   (emacs-char-table--raw-ref
+                    (emacs-char-table--raw-ref ct emacs-char-table--i-ascii)
+                    char))))))
       (if v v (emacs-char-table--fallback ct char))))
    ((and (integerp char) (>= char emacs-char-table--ascii-size)
          (emacs-char-table--owned-p ct))
@@ -1294,13 +1332,22 @@ character space is never enumerated."
   (let ((boundaries (list 0 (1+ emacs-char-table--max-char)))
         (table ct))
     (while table
-      (let ((vec (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
-            (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
-            (i 1))
+      (let* ((vec (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
+             (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
+             ;; gnu562: resolve the storage once and read it with the same
+             ;; primitive `emacs-char-table--raw-ref' would use per slot
+             ;; (two of its calls per slot made an empty table's map cost
+             ;; ~450 us).
+             (store (if (recordp vec) (emacs-char-table--storage vec) vec))
+             (bridge (emacs-char-table--native-vector-bridge-p))
+             (raw emacs-char-table--raw-aref)
+             (prev (if bridge (nelisp--raw-aref store 0) (funcall raw store 0)))
+             (i 1))
         (while (< i emacs-char-table--ascii-size)
-          (unless (eq (emacs-char-table--raw-ref vec (1- i))
-                      (emacs-char-table--raw-ref vec i))
-            (push i boundaries))
+          (let ((cur (if bridge (nelisp--raw-aref store i) (funcall raw store i))))
+            (unless (eq prev cur)
+              (push i boundaries))
+            (setq prev cur))
           (setq i (1+ i)))
         (push emacs-char-table--ascii-size boundaries)
         (dolist (entry ranges)

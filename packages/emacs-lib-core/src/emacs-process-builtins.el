@@ -207,15 +207,29 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
                   (check-coding-system (if (consp coding) (car coding) coding))
                   (check-coding-system (if (consp coding) (cdr coding) coding))))
               (let* ((command (plist-get args :command))
+                     (program (car-safe command))
                      (process
-                      (apply core
+                      (progn
+                        ;; GNU process.c create_process: a relative program
+                        ;; name is searched in `exec-path' before anything
+                        ;; is spawned, and a miss signals `file-missing'
+                        ;; (ielm falls back from hexl to cat on it).  The
+                        ;; core used to spawn anyway and report exit 127.
+                        (when (and (stringp program)
+                                   (not (emacs-process--program-name-absolute-p
+                                         program))
+                                   (not (executable-find program)))
+                          (signal 'file-missing
+                                  (list "Searching for program"
+                                        "No such file or directory" program)))
+                       (apply core
                              (if (consp command)
                                  (plist-put
                                   (copy-sequence args) :command
                                   (emacs-process--cwd-command
                                    (cons (emacs-process--resolve-program (car command))
                                          (cdr command))))
-                               args))))
+                               args)))))
                 (when (and (processp process) (plist-get args :command)
                            (emacs-process--native-process-p process))
                   (emacs-process-builtins--initialize-command

@@ -32190,6 +32190,69 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun m5_fx_fix (n)
       (if (> n 2305843009213693951) -1
         (if (< n -2305843009213693952) -1 (+ (shl n 2) 1))))
+    ;; gnu562: the float arm of the arithmetic opcodes (GNU arith_driver /
+    ;; arithcompare once an operand is a float): + - < = > on two operands
+    ;; (and, for the interpreter's primitives, * as op 100, <= 101, >= 102,
+    ;; / 103: GNU converts every operand to double once one is a float)
+    ;; that are each a float or an immediate fixnum, at least one a float.
+    ;; The fixnum is converted as XFIXNUM -> double; for a comparison it must
+    ;; be exact as a double (|n| <= 2^53), since GNU compares exactly.  NaN
+    ;; compares false; = is (<= and >=), so -0.0 = 0.0.  The result bits are
+    ;; computed before the safepoint and the new float is made after it, as
+    ;; `m5_fx_intrinsic_slow' polls once before its call.  -1: not handled
+    ;; (the operands' words are untouched), the generic call runs.
+    (defun m5_fx_float_p (w)
+      (if (= (logand w 7) 6)
+          (if (< w 4096) 0 (if (= (logand (heap-read-u8 (- w 6) 0) 63) 3) 1 0))
+        0))
+    (defun m5_fx_f64_operand_bits (w f)
+      (if (= f 1) (nl_float_bits w) (f64-bits (i64-to-f64 (sar w 2)))))
+    (defun m5_fx_float_box (bits)
+      (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+           (nl_float_object bits)))
+    (defun m5_fx_float_arith (op a b)
+      (let* ((fa (m5_fx_float_p a)) (fb (m5_fx_float_p b)))
+        (if (= (+ fa fb) 0) -1
+          (if (if (= fa 1) 0 (/= (logand a 3) 1)) -1
+            (if (if (= fb 1) 0 (/= (logand b 3) 1)) -1
+              (if (if (if (= op 4) 1 (if (= op 5) 1 (if (= op 100) 1 (= op 103)))) 0
+                    (if (if (= fa 1) 0 (> (sar a 2) 9007199254740992)) 1
+                      (if (if (= fa 1) 0 (< (sar a 2) -9007199254740992)) 1
+                        (if (if (= fb 1) 0 (> (sar b 2) 9007199254740992)) 1
+                          (if (if (= fb 1) 0 (< (sar b 2) -9007199254740992)) 1 0)))))
+                  -1
+                (let* ((x (m5_fx_f64_operand_bits a fa))
+                       (y (m5_fx_f64_operand_bits b fb)))
+                  (if (= op 4)
+                      (m5_fx_float_box (f64-bits (f64-add (bits-to-f64 x) (bits-to-f64 y))))
+                  (if (= op 100)
+                      (m5_fx_float_box (f64-bits (f64-mul (bits-to-f64 x) (bits-to-f64 y))))
+                  (if (= op 103)
+                      (m5_fx_float_box (f64-bits (f64-div (bits-to-f64 x) (bits-to-f64 y))))
+                  (if (= op 101)
+                      (if (= (f64-le (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                  (if (= op 102)
+                      (if (= (f64-ge (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                    (if (= op 5)
+                        (m5_fx_float_box (f64-bits (f64-sub (bits-to-f64 x) (bits-to-f64 y))))
+                      (if (= op 6)
+                          (if (= (f64-lt (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                        (if (= op 14)
+                            (if (= (f64-gt (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                          (if (= op 13)
+                              (if (= (f64-le (bits-to-f64 x) (bits-to-f64 y)) 1)
+                                  (if (= (f64-ge (bits-to-f64 x) (bits-to-f64 y)) 1) 7 3)
+                                3)
+                            -1))))))))))))))))
+    ;; The same for 1+ (op 7) and 1- (op 15) of a float.
+    (defun m5_fx_float_incdec (op a)
+      (if (= (m5_fx_float_p a) 0) -1
+        (let* ((x (nl_float_bits a)))
+          (if (= op 7)
+              (m5_fx_float_box (f64-bits (f64-add (bits-to-f64 x) (i64-to-f64 1))))
+            (if (= op 15)
+                (m5_fx_float_box (f64-bits (f64-sub (bits-to-f64 x) (i64-to-f64 1))))
+              -1)))))
     ;; Private carrier for the existing builtin adapter. The cadr is a string,
     ;; so constructing it does not intern a symbol or inspect a function cell.
     ;; XW belongs to the caller; five temporary WORD roots hold the original
@@ -33230,7 +33293,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                      (if (= op 14) (if (> (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
                                        (m5_fx_fix (if (= op 4) (+ (wf_bytecode_w_int a) (wf_bytecode_w_int b))
                                                     (- (wf_bytecode_w_int a) (wf_bytecode_w_int b)))))))
-                               -1))
+                               (m5_fx_float_arith op a b)))
                      (if (= r -1)
                          (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw (+ resw 8) oslot)))
                        (seq (ptr-write-u64 resw 0 r) (setq r 0)))
@@ -33242,7 +33305,7 @@ bytes are written into a fresh 8-byte buffer instead."
                 (seq (setq a (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq r (if (= (m5_fx_int_p a) 1)
                                  (m5_fx_fix (if (= op 7) (+ (wf_bytecode_w_int a) 1) (- (wf_bytecode_w_int a) 1)))
-                               -1))
+                               (m5_fx_float_incdec op a)))
                      (if (= r -1)
                          (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw (+ resw 8) oslot)))
                        (seq (ptr-write-u64 resw 0 r) (setq r 0)))
@@ -37933,6 +37996,35 @@ bytes are written into a fresh 8-byte buffer instead."
          (ptr-write-u64 buf 24 25970)
          (nl_alloc_symbol buf 26 out)
          0)))
+    ;; GNU load-history (lread.c LOADHIST_ATTACH): while a file is loading,
+    ;; hand ARG to the Lisp recorder named by the 14-byte packing W0/W1
+    ;; ("nelisp--lh-var"/"-fun"/"-req").  A load is in progress when
+    ;; `load-file-name' is non-nil, or inside a bundle segment
+    ;; (`nelisp--lh-seg' non-nil; a bundle runs with `load-file-name' nil).
+    ;; Otherwise nothing is built or called.
+    (defun bf_lh_seg_active (env)
+      (let* ((buf (alloc-bytes 16 1))
+             (sym (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 buf 8 113685421713516)
+         (nl_alloc_symbol buf 14 sym)
+         (let* ((w (nelisp_env_lookup_value_w env (+ env 32) sym 0)))
+           (if (or (= w 0) (or (= w 2) (= w 3))) 0 1)))))
+    (defun bf_lh_note (env arg w0 w1)
+      (if (if (= (bf_read_load_file_name_w env 0) 3)
+              (= (bf_lh_seg_active env) 0)
+            0)
+          0
+        (let* ((buf (alloc-bytes 16 1))
+               (fn (alloc-bytes 32 8))
+               (ignored (alloc-bytes 32 8)))
+          (seq
+           (ptr-write-u64 buf 0 w0)
+           (ptr-write-u64 buf 8 w1)
+           (nl_alloc_symbol buf 14 fn)
+           (bf_apply_named_1 env fn arg ignored)
+           0))))
     (defun bf_apply_named_1 (env sym arg out)
       ;; Apply the function named SYM to the one argument ARG (a view that the
       ;; caller keeps alive): 0 with OUT untouched when SYM has no function.
@@ -38190,6 +38282,8 @@ bytes are written into a fresh 8-byte buffer instead."
                          (if (= (sexp-tag candidate) 0) feature candidate))
                      feature)))
         (seq
+         ;; GNU Frequire records (require . FEATURE) even when it is loaded.
+         (bf_lh_note env feature 3255381746650998126 124680521214060)
          (bf_features_get env features)
          (if (= (bf_feature_member_p feature features) 1)
              (seq (wf_copy32 out feature) 0)
@@ -46117,6 +46211,62 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
   '(defun nl_sp_eq_defconst (name_ptr)
      (nl_sp_eq_lit name_ptr 8 8391171955409446244 0)))
 
+;; GNU Fdefvar / Fdefconst store a non-nil DOCSTRING as the symbol's
+;; `variable-documentation' property (also when defvar finds the variable
+;; already bound).  Only a call with a DOC argument pays for the synthesised
+;; (put (quote NAME) (quote variable-documentation) (quote DOC)).  Each symbol
+;; and nil tail gets its own slot: `nelisp_cons_construct' copies the 32-byte
+;; Sexp without a refcount bump, so a slot must not be shared.
+(defconst nelisp-standalone--sf-var-doc
+  '((defun nl_sf_var_doc (name_ptr doc_ptr env)
+      (let* ((pbuf (alloc-bytes 8 1)) (put_sym (alloc-bytes 32 8))
+             (qbuf1 (alloc-bytes 8 1)) (quote1 (alloc-bytes 32 8))
+             (qbuf2 (alloc-bytes 8 1)) (quote2 (alloc-bytes 32 8))
+             (qbuf3 (alloc-bytes 8 1)) (quote3 (alloc-bytes 32 8))
+             (vbuf (alloc-bytes 24 1)) (vd_sym (alloc-bytes 32 8))
+             (name_clone (alloc-bytes 32 8)) (doc_clone (alloc-bytes 32 8))
+             (nil1 (alloc-bytes 32 8)) (nil2 (alloc-bytes 32 8))
+             (nil3 (alloc-bytes 32 8)) (nil4 (alloc-bytes 32 8))
+             (l1 (alloc-bytes 32 8)) (q1 (alloc-bytes 32 8))
+             (l2 (alloc-bytes 32 8)) (q2 (alloc-bytes 32 8))
+             (l3 (alloc-bytes 32 8)) (q3 (alloc-bytes 32 8))
+             (a3 (alloc-bytes 32 8)) (a2 (alloc-bytes 32 8))
+             (a1 (alloc-bytes 32 8)) (form (alloc-bytes 32 8))
+             (scratch (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 pbuf 0 7632240) (nl_alloc_symbol pbuf 3 put_sym)
+         (ptr-write-u64 qbuf1 0 435745158513) (nl_alloc_symbol qbuf1 5 quote1)
+         (ptr-write-u64 qbuf2 0 435745158513) (nl_alloc_symbol qbuf2 5 quote2)
+         (ptr-write-u64 qbuf3 0 435745158513) (nl_alloc_symbol qbuf3 5 quote3)
+         ;; "variable-documentation"
+         (ptr-write-u64 vbuf 0 7308324465835925878)
+         (ptr-write-u64 vbuf 8 7954884667766694957)
+         (ptr-write-u64 vbuf 16 121424789660020)
+         (nl_alloc_symbol vbuf 22 vd_sym)
+         (nl_sexp_clone_into name_ptr name_clone)
+         (nl_sexp_clone_into doc_ptr doc_clone)
+         (nl_cons_write_nil nil1) (nl_cons_write_nil nil2)
+         (nl_cons_write_nil nil3) (nl_cons_write_nil nil4)
+         (nelisp_cons_construct name_clone nil1 l1)
+         (nelisp_cons_construct quote1 l1 q1)
+         (nelisp_cons_construct vd_sym nil2 l2)
+         (nelisp_cons_construct quote2 l2 q2)
+         (nelisp_cons_construct doc_clone nil3 l3)
+         (nelisp_cons_construct quote3 l3 q3)
+         (nelisp_cons_construct q3 nil4 a3)
+         (nelisp_cons_construct q2 a3 a2)
+         (nelisp_cons_construct q1 a2 a1)
+         (nelisp_cons_construct put_sym a1 form)
+         (nelisp_eval_call form env scratch))))
+    (defun nl_sf_var_doc_maybe (name_ptr rest_ptr env)
+      ;; REST_PTR is (VALUE [DOC]); store DOC when it is present and non-nil.
+      (let* ((tl (nl_cons_cdr_word rest_ptr)))
+        (if (= (sexp-tag tl) 7)
+            (let* ((doc (nl_cons_car_ptr tl)))
+              (if (= (sexp-tag doc) 0) 0 (nl_sf_var_doc name_ptr doc env)))
+          0))))
+  "Native `defvar' / `defconst' docstring installation.")
+
 (defconst nelisp-standalone--sf-defconst
   '(defun nl_sf_defconst (args env out _pad)
      ;; (defconst NAME VALUE [DOC]) -> evaluate VALUE, set NAME to it
@@ -46134,12 +46284,18 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
            (if (= (sexp-tag rest_ptr) 7)
                (if (or (or (= (sexp-tag name_ptr) 4) (= (sexp-tag name_ptr) 16))
                        (or (= (sexp-tag name_ptr) 0) (= (sexp-tag name_ptr) 1)))
-                   (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
-                          (val_slot (alloc-bytes 32 8))
-                          (rc (nelisp_eval_call val_ptr env val_slot)))
-                     (if (= rc 0)
-                         (bf_defconst_install env name_ptr val_slot out)
-                       rc))
+                   ;; GNU defconst stores DOC before evaluating VALUE.
+                   (let* ((doc_rc (nl_sf_var_doc_maybe name_ptr rest_ptr env)))
+                     (if (= doc_rc 0)
+                         (seq
+                         (bf_lh_note env name_ptr 3255381746650998126 125762920081516)
+                         (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
+                                (val_slot (alloc-bytes 32 8))
+                                (rc (nelisp_eval_call val_ptr env val_slot)))
+                           (if (= rc 0)
+                               (bf_defconst_install env name_ptr val_slot out)
+                             rc)))
+                       doc_rc))
                  (bf_wrong_type_symbolp name_ptr))
              ;; no VALUE: just yield NAME
              (seq (nl_sexp_clone_into name_ptr out) 0)))
@@ -46175,8 +46331,17 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                ;; evaluated and nothing is set): only the symbol comes back.
                (if (if (< (sexp-tag name_ptr) 2) 1 (= (bf_keyword_raw name_ptr) 1))
                    (seq (nl_sexp_clone_into name_ptr out) 0)
-               (let* ((declaration_rc (bf_declare_special env name_ptr)))
-                 (if (= declaration_rc 0)
+               (let* ((declaration_rc (bf_declare_special env name_ptr))
+                      ;; GNU defvar stores DOC first
+                      ;; (internal--define-uninitialized-variable), also when
+                      ;; NAME is already bound and VALUE is not evaluated.
+                      (doc_rc (if (= declaration_rc 0)
+                                  (nl_sf_var_doc_maybe name_ptr rest_ptr env)
+                                declaration_rc)))
+                 (if (= doc_rc 0)
+                     (seq
+                     ;; GNU records NAME in load-history, bound or not.
+                     (bf_lh_note env name_ptr 3255381746650998126 125762920081516)
                      (let* ((mode (bf_defvar_init_mode env name_ptr out)))
                        (if (= mode 0)
                          (seq (nl_sexp_clone_into name_ptr out) 0)
@@ -46185,8 +46350,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                               (rc (nelisp_eval_call val_ptr env val_slot)))
                          (if (= rc 0)
                              (bf_set_defvar_value env name_ptr val_slot out mode)
-                           rc))))
-                   declaration_rc)))
+                           rc)))))
+                   doc_rc)))
              ;; No VALUE: affect the current lexical environment only.
              (bf_declare_local_value env name_ptr out)))
        1)))
@@ -46431,7 +46596,12 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                   (nelisp_cons_construct qname fset_inner fset_args)
                   (nelisp_cons_construct fset_sym fset_args fset_form)
                   (let* ((rc (nelisp_eval_call fset_form env scratch)))
-                    (if (= rc 0) (seq (nl_sexp_clone_into name_ptr out) 0) rc))))
+                    (if (= rc 0)
+                        (seq
+                         ;; GNU defmacro is a defalias: (defun . NAME).
+                         (bf_lh_note env name_ptr 3255381746650998126 121450504480876)
+                         (nl_sexp_clone_into name_ptr out) 0)
+                      rc))))
              1)))
        1)))
 
@@ -46825,6 +46995,8 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
                 (push nelisp-standalone--sf-defun out)
                 (push nelisp-standalone--sp-eq-defvar out)
                 (push nelisp-standalone--sp-eq-defconst out)
+                (dolist (helper nelisp-standalone--sf-var-doc)
+                  (push helper out))
                 (push nelisp-standalone--sf-defvar out)
                 (push nelisp-standalone--sf-defconst out)
                 (push nelisp-standalone--sp-eq-defalias out)
@@ -50282,6 +50454,7 @@ which reach this non-inline prelude variant with INLINE nil)."
    ;; module `require'd after this point, not only the ones already
    ;; `provide'd when this wrapper runs.\n"
    "(fset 'require (lambda (feature &optional filename noerror)\n"
+   "  (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg)) (nelisp--lh-req feature))\n"
    "  (if (featurep feature)\n"
    "      feature\n"
    "    (progn\n"
@@ -50894,6 +51067,65 @@ skipped and re-run once cl-preloaded has defined the base types."
      ;; provides natively so `require' loads GNU's.
      "\n(setq features (delq 'cl-lib features))\n")))
 
+;; GNU Emacs 31.1 subr.el definitions the runtime had no provider for (a
+;; 2026-11-23 audit of every subr.el function against the reader image:
+;; each one's callees exist there or are in this list).  The variables
+;; they read come first; the rest follow in file order.
+(defconst nelisp-standalone--vendor-subr-extra-names
+  '(
+    comp-native-version-dir delayed-warnings-hook from--tty-menu-p
+    listify-key-sequence-1 native-comp-eln-load-path
+    overriding-text-conversion-style read-char-choice-use-read-key
+    read-char-from-minibuffer-map read-char-from-minibuffer-map-hash
+    set-transient-map-timeout set-transient-map-timer
+    text-clone--maintaining text-clone--pending-overlays
+    touch-screen-events-received undo--combining-change-calls noreturn
+    1value set-local buffer-local-set-state buffer-local-set-state--get
+    buffer-local-restore-state take-while undefined map-keymap-sorted
+    keymap--menu-item-binding keymap--menu-item-with-binding
+    keymap--merge-bindings keymap-canonicalize keyboard-translate
+    local-key-binding listify-key-sequence eventp mouse-movement-p
+    mouse-event-p event-line-count posn-set-point posn-x-y posn-col-row
+    posn-actual-col-row posn-timestamp posn-string posn-image
+    posn-object posn-object-x-y posn-object-width-height
+    values--store-value log10 derived-mode-all-parents
+    provided-mode-derived-p major-mode-suspend major-mode-restore
+    locate-eln-file process-kill-buffer-query-function memory-limit
+    read--potential-mouse-event read-char-choice
+    read-char-choice-with-read-key goto-char--read-natnum-interactive
+    read-char-from-minibuffer-insert-char
+    read-char-from-minibuffer-insert-other read-char-from-minibuffer
+    use-dialog-box-p atomic-change-group with-undo-amalgamate
+    prepare-change-group activate-change-group accept-change-group
+    cancel-change-group momentary-string-display find-tag-default-bounds
+    find-tag-default find-tag-default-as-regexp
+    find-tag-default-as-symbol-regexp play-sound string-or-null-p
+    list-of-strings-p plistp integer-or-null-p field-at-pos sha1
+    remove-yank-excluded-properties insert-for-yank insert-for-yank-1
+    insert-buffer-substring-as-yank insert-into-buffer
+    replace-string-in-region replace-regexp-in-region
+    yank-handle-font-lock-face-property yank-handle-category-property
+    start-process-shell-command start-file-process-shell-command
+    process-file-shell-command call-shell-region
+    multiple-command-partition-arguments track-mouse
+    internal--before-with-selected-window
+    internal--after-with-selected-window
+    internal-temp-output-buffer-show with-output-to-temp-buffer
+    while-no-input combine-after-change-calls combine-change-calls-1
+    undo--wrap-and-run-primitive-undo with-file-modes
+    with-existing-directory match-substitute-replacement
+    bidi-string-mark-left-to-right display-delayed-warnings
+    collapse-delayed-warnings delay-warning forward-whitespace
+    forward-symbol forward-same-syntax text-clone--maintain
+    text-clone--maintain-overlays text-clone-create internal-push-keymap
+    internal-pop-keymap set-transient-map dotimes-with-progress-reporter
+    dolist-with-progress-reporter package--description-file with-mutex
+    unmsys--file-name run-hook-query-error-with-timeout json-available-p
+    ensure-proper-list with-delayed-message readablep delete-line
+    total-line-spacing)
+  "Names staged from vendor/staged-emacs-lisp/subr.el by
+`nelisp-standalone--load-path-src', exact GNU source.")
+
 (defun nelisp-standalone--load-path-src (&optional defer-easy-mmode defer-libraries)
   "Return shared load-path and staged-provider source every bootstrap needs.
 `load-path' shipped empty and nothing filled it, so `require' resolved no
@@ -51211,12 +51443,59 @@ resolved fine.  Same feature, different answer per entry point."
       with-eval-after-load after-load-functions do-after-load-evaluation))
    ;; Feature keys are dispatched by `provide', while file keys are
    ;; dispatched by the GNU do-after-load-evaluation function above.
+;; GNU lread.c load-history: `defalias'/`defmacro' (via nl-afset or the
+   ;; native definer), `defvar'/`defconst', `require' and `provide' attach
+   ;; to `current-load-list' while a file loads, and a successful load files
+   ;; (FILE . ENTRIES) in definition order.  The native loader has no
+   ;; per-load binding of `current-load-list', so each list is keyed by
+   ;; `load-file-name': a nested load parks its parent's list and the parent
+   ;; takes it back on its next record.  An error mid-load files nothing.
+   ;; A concatenated bundle runs with `load-file-name' nil and marks each
+   ;; original file with `nelisp--lh-segment', so its definitions file under
+   ;; their own path; a final (nelisp--lh-segment nil) files the last one.
+   "(defvar nelisp--lh-file nil)\n"
+   "(defvar nelisp--lh-parked nil)\n"
+   "(defvar nelisp--lh-seg nil)\n"
+   "(defun nelisp--lh-select (file)\n"
+   "  (unless (equal file nelisp--lh-file)\n"
+   "    (when (and nelisp--lh-file current-load-list)\n"
+   "      (setq nelisp--lh-parked\n"
+   "            (cons (cons nelisp--lh-file current-load-list) nelisp--lh-parked)))\n"
+   "    (let ((cell (assoc file nelisp--lh-parked)))\n"
+   "      (setq nelisp--lh-parked (delq cell nelisp--lh-parked)\n"
+   "            current-load-list (cdr cell)\n"
+   "            nelisp--lh-file file))))\n"
+   "(defun nelisp--lh-attach (x)\n"
+   "  (let ((key (or load-file-name nelisp--lh-seg)))\n"
+   "    (when key\n"
+   "      (nelisp--lh-select key)\n"
+   "      (setq current-load-list (cons x current-load-list)))))\n"
+   "(defun nelisp--lh-attach-once (x)\n"
+   "  (let ((key (or load-file-name nelisp--lh-seg)))\n"
+   "   (when key\n"
+   "    (nelisp--lh-select key)\n"
+   "    (unless (member x current-load-list)\n"
+   "      (setq current-load-list (cons x current-load-list))))))\n"
+   "(defun nelisp--lh-var (symbol) (nelisp--lh-attach symbol))\n"
+   "(defun nelisp--lh-fun (symbol) (nelisp--lh-attach (cons 'defun symbol)))\n"
+   "(defun nelisp--lh-req (feature) (nelisp--lh-attach-once (cons 'require feature)))\n"
+   "(defun nelisp--lh-record (file entries)\n"
+   "  (setq load-history\n"
+   "        (cons (cons file entries) (delq (assoc file load-history) load-history))))\n"
+   "(defun nelisp--lh-take (file)\n"
+   "  (nelisp--lh-select file)\n"
+   "  (prog1 (nreverse current-load-list)\n"
+   "    (setq current-load-list nil nelisp--lh-file nil)))\n"
+   "(defun nelisp--lh-segment (path)\n"
+   "  (when nelisp--lh-seg\n"
+   "    (nelisp--lh-record nelisp--lh-seg (nelisp--lh-take nelisp--lh-seg)))\n"
+   "  (setq nelisp--lh-seg path))\n"
    "(defun nelisp--after-load-feature (event)\n"
    "  (if (stringp event)\n"
    "      (progn\n"
-   "        (setq load-history\n"
-   "              (cons (cons event nil) (delq (assoc event load-history) load-history)))\n"
+   "        (nelisp--lh-record event (nelisp--lh-take event))\n"
    "        (do-after-load-evaluation event))\n"
+   "    (nelisp--lh-attach-once (cons 'provide event))\n"
    "    (let ((elt (assq event after-load-alist)))\n"
    "      (when elt (mapc #'funcall (cdr elt))))))\n"
    ;; `string-empty-p' lives in simple.el, outside the bootstrap libraries;
@@ -51229,6 +51508,9 @@ resolved fine.  Same feature, different answer per entry point."
     "vendor/emacs-lisp/emacs-lisp/subr-x.el" 'string-pad)
    (nelisp-standalone--vendor-function-source
     "vendor/emacs-lisp/emacs-lisp/subr-x.el" 'string-chop-newline)
+   "\n;; --- GNU Emacs 31.1 subr.el: remaining definitions ---\n"
+   (nelisp-vendor-source-forms
+    "vendor/staged-emacs-lisp/subr.el" nelisp-standalone--vendor-subr-extra-names)
    ;; cl-lib.el uses this genuine GNU macro while defining compatibility mode.
    ;; Keep the historical require for every bootstrap consumer by default;
    ;; the reader defers it until its regexp provider has been installed.
@@ -51432,7 +51714,7 @@ publishes the same providers before dumping."
      ;; GNU Frequire checks features before loading anything. An explicit
      ;; source or a library found on load-path must also reach the real loader;
      ;; reserve the frozen companion for otherwise unresolved bundled modules.
-     (format "(fset 'require (lambda (feature &optional filename noerror)\n  (if (featurep feature) feature\n    (progn\n      (when (and (memq state '(pending failed)) (or (memq feature '%S)\n                  (memq feature '(nelisp-native-cache nelisp-native-template nelisp-bytecode-native-compiler))))\n        (nelisp-native-startup-ensure))\n      (if (featurep feature) feature (funcall base-require feature filename noerror))))))\n" features)
+     (format "(fset 'require (lambda (feature &optional filename noerror)\n  (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg)) (nelisp--lh-req feature))\n  (if (featurep feature) feature\n    (progn\n      (when (and (memq state '(pending failed)) (or (memq feature '%S)\n                  (memq feature '(nelisp-native-cache nelisp-native-template nelisp-bytecode-native-compiler))))\n        (nelisp-native-startup-ensure))\n      (if (featurep feature) feature (funcall base-require feature filename noerror))))))\n" features)
      (format "(fset 'load (lambda (file &rest arguments)\n  (let ((first (and (memq state '(pending failed)) (stringp file)\n                    (not (file-name-directory file)) (not (file-name-extension file))\n                    (not (locate-library file (nth 2 arguments)))\n                    (member file '%S))))\n    (when first (nelisp-native-startup-ensure))\n    (if (and first (featurep (intern file))) t\n      (apply base-load file arguments)))))\n)\n" (mapcar #'symbol-name features))
      (mapconcat (lambda (name) (format "(autoload '%S \"nelisp-native-load\")" name)) names "\n")
      "\n(autoload 'nelisp-native-cache-compile \"nelisp-native-cache\")\n"
@@ -66607,7 +66889,10 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ("=" 20 2 2) (">" 21 2 2) ("<=" 22 2 2) (">=" 23 2 2)
     ("cons" 24 2 2) ("list" 25 0 15) ("make-vector" 26 2 2)
     ("aref" 27 2 2) ("aset" 28 3 3) ("length" 29 1 1)
-    ("%" 30 2 2) ("logand" 31 0 15))
+    ("%" 30 2 2) ("logand" 31 0 15)
+    ;; gnu562: two-argument `/' with a float operand (`nl_eic_prim2_run');
+    ;; integer division and every other count decline to the builtin.
+    ("/" 32 2 2))
   "(NAME ID MIN MAX) of the builtins the interpreter calls on their evaluated
 argument WORDs (GNU eval_sub's argvals, eval.c:2626-2693), by primitive id: 1-13
 run in `m5_fx_primitive_run', 14 is apply, 15 and up in `nl_eic_prim2_run'.  MAX 15
@@ -68041,9 +68326,23 @@ two flag bits 20 and 21."
         (if (<= id 19)
             (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                    (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
-                   (r (nl_eic_prim_arith id a b argc)))
+                   (r0 (nl_eic_prim_arith id a b argc))
+                   (r (if (= r0 -1) (nl_eic_prim_float id a b argc) r0)))
               (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))
           (if (>= id 27)
+              (if (= id 32)
+                  ;; gnu562: `/' of two operands: fixnums divide truncating
+                  ;; toward zero (GNU's integer division); a zero divisor or
+                  ;; an overflow (most-negative-fixnum / -1) declines, so the
+                  ;; builtin signals.  With a float operand, `m5_fx_float_arith'.
+                  (let* ((a (heap-read-u64 base 0))
+                         (b (heap-read-u64 (+ base 8) 0))
+                         (r (if (= argc 2)
+                                (if (if (= (logand a 3) 1) (= (logand b 3) 1) 0)
+                                    (if (= b 1) -1 (m5_fx_fix (/ (sar a 2) (sar b 2))))
+                                  (m5_fx_float_arith 103 a b))
+                              -1)))
+                    (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))
               (if (= id 31) (nl_directcall_run 27 base argc resw 0)
                 (let* ((st (m5_fx_primitive_run (- 13 id) base argc argc resw 0 0)))
                   (if (if (= id 28) (= st -3) 0)
@@ -68059,14 +68358,37 @@ two flag bits 20 and 21."
                                 (if (if (= tag 9) 1 (= tag 12)) -3
                                   (bf_wrong_type_arrayp (wf_word_view a)))))
                           -3))
-                    st)))
+                    st))))
           (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
-               (r (if (<= id 23) (nl_eic_prim_compare id a b)
+               (r (if (<= id 23)
+                      (let* ((c (nl_eic_prim_compare id a b)))
+                        (if (= c -1) (nl_eic_prim_float id a b argc) c))
                       (if (= id 24) (nelisp_cons_construct_w a b 0)
                         (if (= id 25) (nl_eic_prim_list base argc resw)
                           (if (= id 26) (nl_eic_prim_make_vector a b) -1))))))
           (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))))
+      ;; gnu562: + - * 1+ 1- = > <= >= with a float operand, computed in place
+      ;; (`m5_fx_float_arith'); -1 declines as before.
+      (defun nl_eic_prim_float (id a b argc)
+        (if (= argc 2)
+            (if (= id 15) (m5_fx_float_arith 4 a b)
+              (if (= id 16) (m5_fx_float_arith 5 a b)
+                (if (= id 17) (m5_fx_float_arith 100 a b)
+                  (if (= id 20) (m5_fx_float_arith 13 a b)
+                    (if (= id 21) (m5_fx_float_arith 14 a b)
+                      (if (= id 22) (m5_fx_float_arith 101 a b)
+                        (if (= id 23) (m5_fx_float_arith 102 a b) -1)))))))
+          (if (= argc 1)
+              (if (= id 18) (m5_fx_float_incdec 7 a)
+                (if (= id 19) (m5_fx_float_incdec 15 a)
+                  ;; (- X) of a float: the sign bit flipped, as GNU negates.
+                  (if (= id 16)
+                      (if (= (m5_fx_float_p a) 1)
+                          (m5_fx_float_box (logxor (nl_float_bits a) (shl 1 63)))
+                        -1)
+                    -1)))
+            -1)))
       ;; The fixnum WORD of S, or -1 when S does not fit.
       (defun nl_eic_fix_wrap (s)
         (if (= (sar (shl s 2) 2) s) (+ (shl s 2) 1) -1))

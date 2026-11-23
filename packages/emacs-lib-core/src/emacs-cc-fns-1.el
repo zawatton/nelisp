@@ -71,14 +71,34 @@ The data in the region is assumed to represent bytes.  Optional third argument N
     (let ((buf (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
       (unless (bufferp buf) (signal 'wrong-type-argument (list 'bufferp buffer-or-name)))
       (with-current-buffer buf
-        (let ((start (point-min)) (end (point-max)) (count 0) (longest 0) (sum 0))
+        ;; gnu562: one copy of the whole text (GNU counts BEG..Z, ignoring
+        ;; narrowing), split on newlines; a text whose length is its byte
+        ;; count has each line's byte count equal to its length.  Per line
+        ;; this was a save-excursion, a search-forward and a substring
+        ;; (86 us for two lines).  The mean is GNU's running mean.
+        (let* ((text (if (and (eq (point-min) 1)
+                              (eq (point-max) (1+ (buffer-size))))
+                         (buffer-substring-no-properties 1 (point-max))
+                       (save-restriction
+                         (widen)
+                         (buffer-substring-no-properties (point-min) (point-max)))))
+               (end (length text))
+               (plain (= end (string-bytes text)))
+               (start 0) (count 0) (longest 0) (mean 0.0))
           (while (< start end)
-            (let* ((nl (save-excursion (goto-char start) (search-forward "\n" end t)))
-                   (stop (if nl (1- nl) end))
-                   (size (string-bytes (buffer-substring-no-properties start stop))))
-              (setq count (1+ count) sum (+ sum size) longest (max longest size)
-                    start (if nl nl end))))
-          (list count longest (if (= count 0) 0.0 (/ (float sum) count))))))))
+            (let* ((nl (if (fboundp 'string-search)
+                           (string-search "\n" text start)
+                         (let ((i start))
+                           (while (and (< i end) (not (eq (aref text i) ?\n)))
+                             (setq i (1+ i)))
+                           (and (< i end) i))))
+                   (stop (or nl end))
+                   (size (if plain (- stop start)
+                           (string-bytes (substring text start stop)))))
+              (setq count (1+ count) longest (max longest size)
+                    mean (+ mean (/ (- size mean) count))
+                    start (if nl (1+ nl) end))))
+          (list count longest mean))))))
 
 (unless (fboundp 'define-hash-table-test)
   (defun define-hash-table-test (name test hash)

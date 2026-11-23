@@ -53,8 +53,12 @@ the value is never this file's own override.")
     (setq prefix-len (length prefix))
       (while (and cur (not found))
         (let ((entry (car cur)))
+          ;; gnu562: the first character and the `=' are tested before the
+          ;; substring, so most entries cost two `aref's, not a copy.
           (if (and (stringp entry)
                  (>= (length entry) prefix-len)
+                 (eq (aref entry 0) (aref prefix 0))
+                 (eq (aref entry (1- prefix-len)) ?=)
                  (equal (substring entry 0 prefix-len) prefix))
             (progn (setq result (substring entry prefix-len))
                    (setq found t))))
@@ -69,7 +73,13 @@ Non-alist members and non-string keys/values are ignored."
         (result nil)
         (found nil)
         (cur nil))
-    (when (listp env)
+    ;; gnu562: `assoc' answers the common cases natively: no entry with
+    ;; that name (nil), or a first such entry with a string value.  Any
+    ;; other shape takes the loop below, unchanged.
+    (let ((hit (and (stringp variable) (listp env) (assoc variable env))))
+      (cond ((null hit) (when (stringp variable) (setq env nil)))
+            ((stringp (cdr hit)) (setq result (cdr hit) found t env nil))))
+    (when (and (listp env) (not found))
       (setq cur env)
       (while (and cur (not found))
         (let ((entry (car cur)))
@@ -86,15 +96,19 @@ Non-alist members and non-string keys/values are ignored."
   "Return VARIABLE from a NeLisp getenv primitive, or nil if unavailable."
   (unless emacs-callproc--sys-getenv-active
     (let ((emacs-callproc--sys-getenv-active t))
-      (or (catch 'done
-            (dolist (fn emacs-callproc--sys-getenv-functions)
-              (when (fboundp fn)
-                (let ((value (condition-case nil
-                                 (funcall fn variable)
-                               (error nil))))
-                  (when (stringp value)
-                    (throw 'done value)))))
-            nil)
+      ;; gnu562: a plain loop, no catch: usually none of these functions
+      ;; is defined and the catch frame was most of this call's cost.
+      (or (let ((fns emacs-callproc--sys-getenv-functions) (found nil))
+            (while (and fns (not found))
+              (let ((fn (car fns)))
+                (when (fboundp fn)
+                  (let ((value (condition-case nil
+                                   (funcall fn variable)
+                                 (error nil))))
+                    (when (stringp value)
+                      (setq found value)))))
+              (setq fns (cdr fns)))
+            found)
           ;; Last: the runtime's own `getenv' (see the defvar above).
           ;; Deliberately throw-free: inside a network-process filter
           ;; driven by nelisp's process adapter, a `throw' out of this

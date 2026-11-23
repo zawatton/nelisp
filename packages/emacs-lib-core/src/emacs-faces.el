@@ -315,7 +315,28 @@ should pass NO-CONFIRM to `load-theme' from init.el or set this to t.")
   "When non-nil, theme setters record settings without applying them.")
 
 (defvar data-directory nil
-  "Compatibility variable for built-in data lookup.")
+  "Directory of machine-independent data files (the vendored GNU etc/).")
+
+;; GNU's DEFVAR (callproc.c) holds the installation's etc/ directory and is
+;; never nil.  Earlier stubs may have bound it to nil; point it at the
+;; vendored GNU 31.1 etc tree.  The standalone prelude records the vendored
+;; backquote.el (vendor/emacs-lisp/emacs-lisp/), so etc/ is
+;; vendor/emacs-etc/.
+(when (and (null data-directory)
+           (boundp 'nelisp-standalone--backquote-file)
+           (stringp nelisp-standalone--backquote-file))
+  (let ((etc (expand-file-name
+              "../../emacs-etc/"
+              (file-name-directory nelisp-standalone--backquote-file))))
+    (when (file-directory-p etc)
+      (setq data-directory (file-name-as-directory etc)))))
+
+;; GNU's doc-directory (doc.c) is the same etc/ directory; the vendored
+;; etc/DOC holds the C primitives' docstrings.
+(when (and data-directory
+           (or (not (boundp 'doc-directory)) (null doc-directory)))
+  (defvar doc-directory nil)
+  (setq doc-directory data-directory))
 
 (defun custom-theme-name-valid-p (name)
   "Return non-nil when NAME is a valid Custom theme name."

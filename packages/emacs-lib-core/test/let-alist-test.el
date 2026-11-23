@@ -1,9 +1,9 @@
-;;; let-alist-test.el --- Tests for the let-alist shim  -*- lexical-binding: t; -*-
+;;; let-alist-test.el --- Tests for let-alist (vendored GNU let-alist.el)  -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
 ;; Doc 16 breadth round 20.  On the batch host the real GNU `let-alist'
-;; runs, pinning the contract the NeLisp runtime shim must reproduce.
+;; runs; the NeLisp runtime loads the same vendored file.
 
 ;;; Code:
 

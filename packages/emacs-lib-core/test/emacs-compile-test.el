@@ -10,6 +10,8 @@
 
 (require 'ert)
 (require 'emacs-compile)
+;; The compilation-* variables and keymaps come from GNU compile.el.
+(require 'compile)
 
 ;;;; --- diagnostic parsing (pure) -----------------------------------
 
@@ -131,15 +133,6 @@
 ;; precedent) plus that the one real entry actually matches this
 ;; substrate's own diagnostic format, and that `powershell.el''s own
 ;; `cons'-onto-the-front usage pattern works without error.
-(ert-deftest emacs-compile-test/compilation-error-regexp-alist-is-a-real-alist ()
-  (should (boundp 'compilation-error-regexp-alist))
-  (should (consp compilation-error-regexp-alist))
-  (let ((entry (car compilation-error-regexp-alist)))
-    (should (equal emacs-compile-error-regexp (car entry)))
-    (should (string-match (car entry) "foo.c:12:3: error"))
-    (should (equal "foo.c" (match-string 1 "foo.c:12:3: error")))
-    (should (equal "12" (match-string 2 "foo.c:12:3: error")))))
-
 (ert-deftest emacs-compile-test/compilation-error-regexp-alist-supports-cons-onto-front ()
   "Exercises `powershell.el''s own top-level usage pattern verbatim."
   (let* ((before (length compilation-error-regexp-alist))

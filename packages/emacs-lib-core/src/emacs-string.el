@@ -234,8 +234,16 @@ when it sorts before it.  IGNORE-CASE non-nil compares folded strings."
   (unless (and (fboundp 'substring-no-properties) (not (fboundp 'nelisp--repr)))
     (defun substring-no-properties (s &optional from to)
       "Copy the selected part of S, removing all text properties."
-      (let ((copy (substring s (or from 0) (or to (length s)))))
-	(set-text-properties 0 (length copy) nil copy)
+      ;; GNU checks S is a string and reports FROM / TO as given.
+      (unless (stringp s) (signal 'wrong-type-argument (list 'stringp s)))
+      (let ((copy (substring s from to)))
+	;; gnu562: a copy with neither standalone nor sidecar properties has
+	;; nothing to remove (set-text-properties cost about 33 us here).
+	(when (or (not (boundp 'nelisp--tp-string-properties))
+		  (gethash copy nelisp--tp-string-properties)
+		  (not (boundp 'emacs-buffer--string-state))
+		  (gethash copy emacs-buffer--string-state))
+	  (set-text-properties 0 (length copy) nil copy))
 	copy))))
 (unless (fboundp 'truncate-string-to-width)
   (defun truncate-string-to-width (str width &rest _)

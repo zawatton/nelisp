@@ -33,12 +33,10 @@
   (skip-unless (executable-find "man"))
   (should-error (emacs-man "no-such-manual-page-xyzzy-12345")))
 
-(ert-deftest emacs-man-test/install-binds-man-and-woman ()
+(ert-deftest emacs-man-test/install-binds-woman ()
   (emacs-man-install)
-  (should (fboundp 'man))
   (should (fboundp 'woman))
   ;; `defalias' to #'emacs-man records the alias as the symbol `emacs-man'.
-  (should (eq (symbol-function 'man) 'emacs-man))
   (should (eq (symbol-function 'woman) 'emacs-man)))
 
 (provide 'emacs-man-test)

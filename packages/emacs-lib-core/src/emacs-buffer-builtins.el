@@ -286,6 +286,71 @@ adjusts those positions before calling this function."
                 (nelisp-buffer-pend buffer) nil)
           (nelisp-goto-char position buffer))))))
 
+(defun emacs-buffer-builtins--indirect-edit-family
+    (operation orig args buffer family marker-length marker-start)
+  "Run OPERATION through ORIG for BUFFER, a member of indirect FAMILY.
+Part of `emacs-buffer-builtins--indirect-edit', kept apart so that the
+ordinary-buffer path does not share a function with the closure below:
+the standalone VM runs such a function several times slower."
+  (let* ((insert-p (memq operation '(insert insert-before-markers)))
+         (start (cond (insert-p (nelisp-point buffer))
+                      ((eq operation 'erase) 1)
+                      (t (min (car args) (cadr args)))))
+         (end (cond (insert-p start)
+                    ((eq operation 'erase) (1+ (nelisp-buffer-size buffer)))
+                    (t (max (car args) (cadr args)))))
+         (size (if insert-p (length (car args)) (- start end)))
+         (positions nil))
+    (dolist (peer family)
+      (when (and (not (eq peer buffer)) (buffer-live-p peer))
+        (push (cons peer (nelisp-point peer)) positions)))
+    (prog1 (apply orig args)
+      (dolist (entry positions)
+        (let* ((peer (car entry))
+               (map-position
+                (lambda (pos)
+                  (if insert-p
+                      (if (> pos start) (+ pos size) pos)
+                    (cond ((<= pos start) pos)
+                          ((>= pos end) (+ pos size))
+                          (t start)))))
+               (position (funcall map-position (cdr entry))))
+          (when (nelisp-buffer-narrow-start peer)
+            (setf (nelisp-buffer-narrow-start peer)
+                  (funcall map-position (nelisp-buffer-narrow-start peer))))
+          (when (nelisp-buffer-narrow-end peer)
+            (setf (nelisp-buffer-narrow-end peer)
+                  (if (and insert-p (>= (nelisp-buffer-narrow-end peer) start))
+                      (+ (nelisp-buffer-narrow-end peer) size)
+                    (funcall map-position (nelisp-buffer-narrow-end peer)))))
+          (if insert-p
+              (progn
+                (if (eq operation 'insert-before-markers)
+                    (nelisp-buffer--shift-markers-on-insert-before-markers
+                     peer start size)
+                  (nelisp-buffer--shift-markers-on-insert peer start size))
+                (nelisp-buffer--shift-overlays-on-insert peer start size))
+            (nelisp-buffer--shift-markers-on-delete peer start end)
+            (nelisp-buffer--shift-overlays-on-delete peer start end))
+          ;; Record the mapped point without clamping to the old text size.
+          (setf (nelisp-buffer-pend peer) position)))
+      (when (and marker-length (> marker-length 0)
+                 (buffer-live-p buffer))
+        (let* ((ext (emacs-buffer--ensure-text-property-ext buffer))
+               (mapping
+                (emacs-buffer--tp-after-insert
+                 (emacs-buffer--ext-text-props ext)
+                 marker-start marker-length)))
+          (emacs-buffer--set-ext-text-props ext mapping)
+          (emacs-buffer--insert-string-properties
+           ext marker-start (list (car args)))))
+      (emacs-buffer-builtins--share-text buffer)
+      (when (buffer-live-p buffer)
+        (let ((ext (gethash buffer emacs-buffer--state)))
+          (emacs-buffer--native-property-text-commit
+           buffer (nelisp-buffer-size buffer)
+           (and ext (emacs-buffer--ext-text-props ext))))))))
+
 (defun emacs-buffer-builtins--indirect-edit (operation orig &rest args)
   "Run text OPERATION through ORIG and adjust indirect sibling positions."
   (let* ((buffer (nelisp-buffer--ambient
@@ -312,64 +377,8 @@ adjusts those positions before calling this function."
               (emacs-buffer--native-property-text-commit
                buffer (nelisp-buffer-size buffer)
                (and ext (emacs-buffer--ext-text-props ext))))))
-      (let* ((insert-p (memq operation '(insert insert-before-markers)))
-             (start (cond (insert-p (nelisp-point buffer))
-                          ((eq operation 'erase) 1)
-                          (t (min (car args) (cadr args)))))
-             (end (cond (insert-p start)
-                        ((eq operation 'erase) (1+ (nelisp-buffer-size buffer)))
-                        (t (max (car args) (cadr args)))))
-             (size (if insert-p (length (car args)) (- start end)))
-             (positions nil))
-        (dolist (peer family)
-          (when (and (not (eq peer buffer)) (buffer-live-p peer))
-            (push (cons peer (nelisp-point peer)) positions)))
-        (prog1 (apply orig args)
-          (dolist (entry positions)
-            (let* ((peer (car entry))
-                   (map-position
-                    (lambda (pos)
-                      (if insert-p
-                          (if (> pos start) (+ pos size) pos)
-                        (cond ((<= pos start) pos)
-                              ((>= pos end) (+ pos size))
-                              (t start)))))
-                   (position (funcall map-position (cdr entry))))
-              (when (nelisp-buffer-narrow-start peer)
-                (setf (nelisp-buffer-narrow-start peer)
-                      (funcall map-position (nelisp-buffer-narrow-start peer))))
-              (when (nelisp-buffer-narrow-end peer)
-                (setf (nelisp-buffer-narrow-end peer)
-                      (if (and insert-p (>= (nelisp-buffer-narrow-end peer) start))
-                          (+ (nelisp-buffer-narrow-end peer) size)
-                        (funcall map-position (nelisp-buffer-narrow-end peer)))))
-              (if insert-p
-                  (progn
-                    (if (eq operation 'insert-before-markers)
-                        (nelisp-buffer--shift-markers-on-insert-before-markers
-                         peer start size)
-                      (nelisp-buffer--shift-markers-on-insert peer start size))
-                    (nelisp-buffer--shift-overlays-on-insert peer start size))
-                (nelisp-buffer--shift-markers-on-delete peer start end)
-                (nelisp-buffer--shift-overlays-on-delete peer start end))
-              ;; Record the mapped point without clamping to the old text size.
-              (setf (nelisp-buffer-pend peer) position)))
-          (when (and marker-length (> marker-length 0)
-                     (buffer-live-p buffer))
-            (let* ((ext (emacs-buffer--ensure-text-property-ext buffer))
-                   (mapping
-                    (emacs-buffer--tp-after-insert
-                     (emacs-buffer--ext-text-props ext)
-                     marker-start marker-length)))
-              (emacs-buffer--set-ext-text-props ext mapping)
-              (emacs-buffer--insert-string-properties
-               ext marker-start (list (car args)))))
-          (emacs-buffer-builtins--share-text buffer)
-          (when (buffer-live-p buffer)
-            (let ((ext (gethash buffer emacs-buffer--state)))
-              (emacs-buffer--native-property-text-commit
-               buffer (nelisp-buffer-size buffer)
-               (and ext (emacs-buffer--ext-text-props ext))))))))))
+      (emacs-buffer-builtins--indirect-edit-family
+       operation orig args buffer family marker-length marker-start))))
 
 ;; The change-hook variables are C-level in GNU Emacs, so nothing in Lisp
 ;; defines them.  `emacs-buffer-builtins--change-edit' reads them on every
@@ -402,9 +411,36 @@ The aggregate itself is stored in that buffer's event side table.")
 PUBLIC non-nil means ARGS are those of the user-visible primitive: no
 buffer argument, strings or characters for insertion.  ORIGINAL is then
 called directly."
-  (if (or inhibit-modification-hooks
+  (cond
+   ;; An internal edit of the current buffer (`princ' to a buffer, ...)
+   ;; notifies like a public one: GNU's C callers all reach the same
+   ;; prepare/signal pair.
+   ((and (not public) (not inhibit-modification-hooks)
+         (fboundp 'emacs-buffer-builtins--public-change)
+         (let ((b (nth (cond ((eq operation 'delete) 2)
+                             ((eq operation 'erase) 0) (t 1))
+                       args)))
+           (or (null b) (eq b (current-buffer))))
+         (not (emacs-buffer-builtins--public-quiet-p)))
+    (let* ((insert-p (memq operation '(insert insert-before-markers)))
+           (beg (cond (insert-p (point))
+                      ((eq operation 'erase) 1)
+                      (t (min (car args) (cadr args)))))
+           (end (cond (insert-p beg)
+                      ((eq operation 'erase) (1+ (buffer-size)))
+                      (t (max (car args) (cadr args)))))
+           (new-length (if insert-p (length (car args)) 0)))
+      (if (= beg end new-length 0)
+          (emacs-buffer-builtins--run-edit operation original args public)
+        (if (and (= beg end) (= new-length 0))
+            (emacs-buffer-builtins--run-edit operation original args public)
+          (emacs-buffer-builtins--public-change
+           beg end new-length
+           (lambda () (emacs-buffer-builtins--run-edit operation original args public)))))))
+   ((or inhibit-modification-hooks
           (and (null before-change-functions) (null after-change-functions)))
-      (emacs-buffer-builtins--run-edit operation original args public)
+      (emacs-buffer-builtins--run-edit operation original args public))
+   (t
     (let* ((buffer (nelisp-buffer--ambient
                     (and (not public)
                          (nth (cond ((eq operation 'delete) 2)
@@ -455,7 +491,7 @@ called directly."
                           (vector beg tail delta)))))
             (let ((inhibit-modification-hooks t))
               (run-hook-with-args 'after-change-functions
-                                  beg (+ beg new-length) old-length))))))))
+                                  beg (+ beg new-length) old-length)))))))))
 
 (defun emacs-buffer-builtins--flush-after-change (buffer)
   "Deliver and clear BUFFER's accumulated after-change notification."
@@ -537,16 +573,92 @@ called directly."
 
 (when (and (emacs-buffer-builtins--standalone-p)
            (fboundp 'nelisp-insert))
-  (dolist (entry '((nelisp-insert . emacs-buffer-builtins--indirect-insert)
-                   (nelisp-insert-before-markers . emacs-buffer-builtins--indirect-insert-before-markers)
-                   (nelisp-delete-region . emacs-buffer-builtins--indirect-delete)
-                   (nelisp-erase-buffer . emacs-buffer-builtins--indirect-erase)
-                   (nelisp-kill-buffer . emacs-buffer-builtins--indirect-kill)))
-    (advice-add (car entry) :around (cdr entry)))
+  ;; Named wrappers installed in place of the edit primitives rather than
+  ;; :around advice, whose generic dispatch cost about 5 us per edit.  Each
+  ;; primitive is captured once, so loading this file again does not wrap
+  ;; the wrapper.
+  (unless (fboundp 'emacs-buffer-builtins--native-nelisp-insert)
+    (defalias 'emacs-buffer-builtins--native-nelisp-insert
+      (symbol-function 'nelisp-insert))
+    (defalias 'emacs-buffer-builtins--native-nelisp-insert-before-markers
+      (symbol-function 'nelisp-insert-before-markers))
+    (defalias 'emacs-buffer-builtins--native-nelisp-delete-region
+      (symbol-function 'nelisp-delete-region))
+    (defalias 'emacs-buffer-builtins--native-nelisp-erase-buffer
+      (symbol-function 'nelisp-erase-buffer))
+    (defalias 'emacs-buffer-builtins--native-nelisp-kill-buffer
+      (symbol-function 'nelisp-kill-buffer)))
+  (defun emacs-buffer-builtins--nelisp-insert (text &optional buf)
+    "Insert TEXT into BUF, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'insert #'emacs-buffer-builtins--native-nelisp-insert (list text buf)))
+  (defalias 'nelisp-insert
+    (symbol-function 'emacs-buffer-builtins--nelisp-insert))
+  (defun emacs-buffer-builtins--nelisp-insert-before-markers (text &optional buf)
+    "Insert TEXT into BUF before markers, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'insert-before-markers
+     #'emacs-buffer-builtins--native-nelisp-insert-before-markers
+     (list text buf)))
+  (defalias 'nelisp-insert-before-markers
+    (symbol-function 'emacs-buffer-builtins--nelisp-insert-before-markers))
+  (defun emacs-buffer-builtins--nelisp-delete-region (start end &optional buf)
+    "Delete START..END in BUF, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'delete #'emacs-buffer-builtins--native-nelisp-delete-region
+     (list start end buf)))
+  (defalias 'nelisp-delete-region
+    (symbol-function 'emacs-buffer-builtins--nelisp-delete-region))
+  (defun emacs-buffer-builtins--nelisp-erase-buffer (&optional buf)
+    "Erase BUF, sharing it across indirect buffers."
+    (emacs-buffer-builtins--change-edit
+     'erase #'emacs-buffer-builtins--native-nelisp-erase-buffer (list buf)))
+  (defalias 'nelisp-erase-buffer
+    (symbol-function 'emacs-buffer-builtins--nelisp-erase-buffer))
+  (defun emacs-buffer-builtins--nelisp-kill-buffer (buf)
+    "Kill BUF and, for a base buffer, its indirect children."
+    (emacs-buffer-builtins--indirect-kill
+     #'emacs-buffer-builtins--native-nelisp-kill-buffer buf))
+  (defalias 'nelisp-kill-buffer
+    (symbol-function 'emacs-buffer-builtins--nelisp-kill-buffer))
   (advice-add 'nelisp-buffer-set-modified :after
               #'emacs-buffer-builtins--indirect-set-modified)
-  (dolist (function '(insert insert-before-markers delete-region erase-buffer))
-    (advice-add function :after #'emacs-buffer-builtins--share-current-text)))
+  ;; Named wrappers in place of the edit functions rather than :after
+  ;; advice, whose dispatch cost about 5 us per edit.  Each function found
+  ;; here is captured once.
+  (unless (fboundp 'emacs-buffer-builtins--unshared-insert)
+    (defalias 'emacs-buffer-builtins--unshared-insert
+      (symbol-function 'insert))
+    (defalias 'emacs-buffer-builtins--unshared-insert-before-markers
+      (symbol-function 'insert-before-markers))
+    (defalias 'emacs-buffer-builtins--unshared-delete-region
+      (symbol-function 'delete-region))
+    (defalias 'emacs-buffer-builtins--unshared-erase-buffer
+      (symbol-function 'erase-buffer)))
+  (defun emacs-buffer-builtins--shared-insert (&rest args)
+    "`insert' that publishes the edit to indirect siblings."
+    (prog1 (apply #'emacs-buffer-builtins--unshared-insert args)
+      (emacs-buffer-builtins--share-current-text)))
+  (defun emacs-buffer-builtins--shared-insert-before-markers (&rest args)
+    "`insert-before-markers' that publishes the edit to indirect siblings."
+    (prog1 (apply #'emacs-buffer-builtins--unshared-insert-before-markers args)
+      (emacs-buffer-builtins--share-current-text)))
+  (defun emacs-buffer-builtins--shared-delete-region (start end)
+    "`delete-region' that publishes the edit to indirect siblings."
+    (prog1 (emacs-buffer-builtins--unshared-delete-region start end)
+      (emacs-buffer-builtins--share-current-text)))
+  (defun emacs-buffer-builtins--shared-erase-buffer ()
+    "`erase-buffer' that publishes the edit to indirect siblings."
+    (prog1 (emacs-buffer-builtins--unshared-erase-buffer)
+      (emacs-buffer-builtins--share-current-text)))
+  (defalias 'insert
+    (symbol-function 'emacs-buffer-builtins--shared-insert))
+  (defalias 'insert-before-markers
+    (symbol-function 'emacs-buffer-builtins--shared-insert-before-markers))
+  (defalias 'delete-region
+    (symbol-function 'emacs-buffer-builtins--shared-delete-region))
+  (defalias 'erase-buffer
+    (symbol-function 'emacs-buffer-builtins--shared-erase-buffer)))
 
 ;;;; --- change hooks for the user-visible edit primitives ------------------
 ;; GNU runs `before-change-functions' / `after-change-functions' from the C
@@ -554,61 +666,346 @@ called directly."
 ;; `nelisp-insert' / `nelisp-delete-region' (the advised layer above), so each
 ;; public name is wrapped around the same shared notification path.
 
+;;;; --- GNU modification hooks of text properties and overlays ------------
+;; GNU runs these from the edit primitives (insdel.c prepare_to_modify_buffer_1,
+;; signal_before_change, signal_after_change), textprop.c
+;; verify_interval_modification / report_interval_modification and buffer.c
+;; report_overlay_modification.  The pending insert hooks and the collected
+;; overlay hooks are global, as GNU keeps them: an insertion into a buffer
+;; without intervals reports whatever the last verification left behind.
+
+(defvar emacs-buffer-builtins--interval-insert-behind-hooks nil
+  "GNU `interval_insert_behind_hooks': set before an insertion, run after it.")
+(defvar emacs-buffer-builtins--interval-insert-in-front-hooks nil
+  "GNU `interval_insert_in_front_hooks': set before an insertion, run after it.")
+(defvar emacs-buffer-builtins--overlay-modification-hooks nil
+  "GNU `last_overlay_modification_hooks': (HOOKS . OVERLAY) pairs, in order.")
+
+(defun emacs-buffer-builtins--call-mod-hooks (list &rest args)
+  "Call each function of LIST with ARGS (GNU `call_mod_hooks')."
+  (while list
+    (apply (car list) args)
+    (setq list (cdr list))))
+
+(defun emacs-buffer-builtins--verify-interval-modification (start end)
+  "The hook part of GNU `verify_interval_modification' for START..END.
+Read-only text is not checked here.  Reads the caller's
+`inhibit-modification-hooks'."
+  (setq emacs-buffer-builtins--interval-insert-behind-hooks nil
+        emacs-buffer-builtins--interval-insert-in-front-hooks nil)
+  (when (> start end) (let ((tmp start)) (setq start end end tmp)))
+  (if (= start end)
+      (progn
+        (when (> start (point-min))
+          (setq emacs-buffer-builtins--interval-insert-behind-hooks
+                (get-text-property (1- start) 'insert-behind-hooks)))
+        (when (< start (point-max))
+          (setq emacs-buffer-builtins--interval-insert-in-front-hooks
+                (get-text-property start 'insert-in-front-hooks))))
+    (unless inhibit-modification-hooks
+      (let ((pos start) (prev nil) (hooks nil))
+        (while (< pos end)
+          (let ((mod (get-text-property pos 'modification-hooks)))
+            (when (and mod (not (eq mod prev)))
+              (push mod hooks)
+              (setq prev mod)))
+          (setq pos (next-single-property-change pos 'modification-hooks nil end)))
+        (dolist (h (nreverse hooks))
+          (emacs-buffer-builtins--call-mod-hooks h start end))))))
+
+(defun emacs-buffer-builtins--report-interval-modification (start end)
+  "GNU `report_interval_modification': run the pending insert hooks."
+  (let ((behind emacs-buffer-builtins--interval-insert-behind-hooks)
+        (front emacs-buffer-builtins--interval-insert-in-front-hooks))
+    (when behind
+      (emacs-buffer-builtins--call-mod-hooks behind start end))
+    (when (and front (not (eq front behind)))
+      (emacs-buffer-builtins--call-mod-hooks front start end))))
+
+(defun emacs-buffer-builtins--overlay-start-lessp (a b)
+  (< (overlay-start a) (overlay-start b)))
+
+(defun emacs-buffer-builtins--report-overlay-modification (start end after &optional lendel)
+  "GNU `report_overlay_modification' for START..END.
+Before the change (AFTER nil) collect the hooks of the overlays at
+START..END and call them with (OVERLAY nil START END); after it, call the
+collected ones with (OVERLAY t START END LENDEL)."
+  (unless after
+    (setq emacs-buffer-builtins--overlay-modification-hooks nil)
+    (let ((insertion (= start end)) (found nil))
+      (dolist (ov (sort (overlays-in (max 1 (1- start)) (min (1+ (buffer-size)) (1+ end)))
+                        #'emacs-buffer-builtins--overlay-start-lessp))
+        (let ((ob (overlay-start ov)) (oe (overlay-end ov)))
+          (when (and ob oe
+                     (<= (- start (if insertion 1 0)) oe)
+                     (<= ob (+ end (if insertion 1 0))))
+            (when (and insertion (or (= start ob) (= end ob)))
+              (let ((prop (overlay-get ov 'insert-in-front-hooks)))
+                (when prop (push (cons prop ov) found))))
+            (when (and insertion (or (= start oe) (= end oe)))
+              (let ((prop (overlay-get ov 'insert-behind-hooks)))
+                (when prop (push (cons prop ov) found))))
+            (when (and (> end ob) (< start oe))
+              (let ((prop (overlay-get ov 'modification-hooks)))
+                (when prop (push (cons prop ov) found)))))))
+      (setq emacs-buffer-builtins--overlay-modification-hooks (nreverse found))))
+  (dolist (entry emacs-buffer-builtins--overlay-modification-hooks)
+    (let ((ov (cdr entry)))
+      (when (eq (overlay-buffer ov) (current-buffer))
+        (let ((list (car entry)))
+          (while (consp list)
+            (if after
+                (funcall (car list) ov t start end lendel)
+              (funcall (car list) ov nil start end))
+            (setq list (cdr list))))))))
+
+(defun emacs-buffer-builtins--public-change (beg end new-length thunk)
+  "Run THUNK, one primitive change of BEG..END inserting NEW-LENGTH chars,
+with GNU's modification notifications in GNU's order.  THUNK runs with
+`inhibit-modification-hooks' t, so inner layers do not notify again."
+  (let ((overlays (nelisp-buffer-overlays nelisp--current-buffer))
+        (old-length (- end beg)))
+    (when (nelisp-buffer-text-properties nelisp--current-buffer)
+      (emacs-buffer-builtins--verify-interval-modification beg end))
+    (if inhibit-modification-hooks
+        (funcall thunk)
+      (let ((buffer (current-buffer))
+            (size (buffer-size)))
+        (let ((inhibit-modification-hooks t))
+          (when before-change-functions
+            (run-hook-with-args 'before-change-functions beg end))
+          (when overlays
+            (emacs-buffer-builtins--report-overlay-modification beg end nil)))
+        (prog1 (let ((inhibit-modification-hooks t)) (funcall thunk))
+          (if (and combine-after-change-calls (null before-change-functions)
+                   (not (nelisp-buffer-overlays nelisp--current-buffer)))
+              (progn
+                (when (and emacs-buffer-builtins--after-change-buffer
+                           (not (eq buffer emacs-buffer-builtins--after-change-buffer)))
+                  (let ((previous emacs-buffer-builtins--after-change-buffer))
+                    (emacs-buffer-builtins--flush-after-change previous)
+                    (emacs-buffer--set-pending-after-change buffer
+                          (emacs-buffer--pending-after-change previous))
+                    (emacs-buffer--set-pending-after-change previous nil)))
+                (setq emacs-buffer-builtins--after-change-buffer buffer)
+                (emacs-buffer--ensure-ext buffer)
+                (let ((pending (emacs-buffer--pending-after-change buffer))
+                      (tail (- size (1- beg)))
+                      (delta (- new-length old-length)))
+                  (if pending
+                      (progn (aset pending 0 (min beg (aref pending 0)))
+                             (aset pending 1 (min tail (aref pending 1)))
+                             (aset pending 2 (+ delta (aref pending 2))))
+                    (emacs-buffer--set-pending-after-change buffer
+                          (vector beg tail delta)))))
+            (let ((behind emacs-buffer-builtins--interval-insert-behind-hooks)
+                  (front emacs-buffer-builtins--interval-insert-in-front-hooks))
+              (when emacs-buffer-builtins--after-change-buffer
+                (emacs-buffer-builtins--flush-after-change
+                 emacs-buffer-builtins--after-change-buffer))
+              (let ((inhibit-modification-hooks t))
+                (when after-change-functions
+                  (run-hook-with-args 'after-change-functions
+                                      beg (+ beg new-length) old-length))
+                (setq emacs-buffer-builtins--interval-insert-behind-hooks behind
+                      emacs-buffer-builtins--interval-insert-in-front-hooks front)
+                (when (nelisp-buffer-overlays nelisp--current-buffer)
+                  (emacs-buffer-builtins--report-overlay-modification
+                   beg (+ beg new-length) t old-length))
+                (when (= old-length 0)
+                  (emacs-buffer-builtins--report-interval-modification
+                   beg (+ beg new-length)))))))))))
+
+(defmacro emacs-buffer-builtins--public-quiet-p ()
+  "Non-nil when an edit now has nothing to notify and nothing to verify:
+no change functions (or they are inhibited), no overlays, no text
+property intervals and no pending insert hooks."
+  '(and (or inhibit-modification-hooks
+            (and (null before-change-functions) (null after-change-functions)
+                 (null emacs-buffer-builtins--interval-insert-behind-hooks)
+                 (null emacs-buffer-builtins--interval-insert-in-front-hooks)
+                 (null (nelisp-buffer-overlays nelisp--current-buffer))))
+        (null (nelisp-buffer-text-properties nelisp--current-buffer))))
+
+(defun emacs-buffer-builtins--insert-arg-length (arg)
+  (if (stringp arg) (length arg) 1))
+
 (defun emacs-buffer-builtins--public-position (value)
   "Return VALUE as an integer position, or nil if it is not one."
   (cond ((integerp value) value)
         ((and (markerp value) (marker-buffer value)) (marker-position value))))
 
+;; gnu562: with no change hook to run (none set, or inhibited), each public
+;; wrapper below calls ORIG directly under `inhibit-modification-hooks' t,
+;; which is what `emacs-buffer-builtins--change-edit' does for that case
+;; (`emacs-buffer-builtins--run-edit', PUBLIC), without the closure, the
+;; `apply' and the two calls (erase-buffer +35 us, delete-char +55 us).
+(defmacro emacs-buffer-builtins--public-no-hooks-p ()
+  "Non-nil when an edit now runs no `before-' or `after-change-functions'."
+  '(or inhibit-modification-hooks (and (null before-change-functions) (null after-change-functions))))
+
+(defun emacs-buffer-builtins--public-insert-each (orig args)
+  "Insert ARGS one at a time through ORIG, notifying for each, as GNU's
+`general_insert_function' does; an empty string notifies nothing."
+  (dolist (arg args)
+    (unless (or (and (stringp arg) (= (length arg) 0))
+                (not (or (stringp arg) (characterp arg))))
+      (let ((pt (point)))
+        (emacs-buffer-builtins--public-change
+         pt pt (emacs-buffer-builtins--insert-arg-length arg)
+         (lambda () (funcall orig arg)))))
+    (unless (or (stringp arg) (characterp arg))
+      ;; Let ORIG signal exactly as before for a bad argument.
+      (let ((inhibit-modification-hooks t)) (funcall orig arg))))
+  nil)
+
+(defun emacs-buffer-builtins--public-insert-args (orig args)
+  "Insert ARGS through ORIG with GNU's notifications."
+  (cond
+   ((emacs-buffer-builtins--public-quiet-p)
+    (let ((inhibit-modification-hooks t)) (apply orig args)))
+   ;; Only text properties to verify: with no insert hook at point, none
+   ;; can turn up for the later arguments either (inserted text inherits
+   ;; nothing), so insert them at once, as in the quiet case.
+   ((or inhibit-modification-hooks
+        (and (null before-change-functions) (null after-change-functions)
+             (null (nelisp-buffer-overlays nelisp--current-buffer))))
+    (if (and (nelisp-buffer-text-properties nelisp--current-buffer)
+             (or (null (cdr args)) (not inhibit-modification-hooks)))
+        (let ((pt (point)))
+          (emacs-buffer-builtins--verify-interval-modification pt pt)
+          (if (and (not inhibit-modification-hooks)
+                   (or emacs-buffer-builtins--interval-insert-behind-hooks
+                       emacs-buffer-builtins--interval-insert-in-front-hooks))
+              (emacs-buffer-builtins--public-insert-each orig args)
+            (let ((inhibit-modification-hooks t)) (apply orig args))))
+      (emacs-buffer-builtins--public-insert-each orig args)))
+   (t (emacs-buffer-builtins--public-insert-each orig args))))
+
 (defun emacs-buffer-builtins--public-insert (orig &rest args)
   "Run ORIG (`insert') with change hooks."
-  (emacs-buffer-builtins--change-edit 'insert orig args t))
+  (emacs-buffer-builtins--public-insert-args orig args))
 
 (defun emacs-buffer-builtins--public-insert-before-markers (orig &rest args)
   "Run ORIG (`insert-before-markers') with change hooks."
-  (emacs-buffer-builtins--change-edit 'insert-before-markers orig args t))
+  (emacs-buffer-builtins--public-insert-args orig args))
 
 (defun emacs-buffer-builtins--public-delete-region (orig start end)
   "Run ORIG (`delete-region') on START and END with change hooks."
   (let ((s (emacs-buffer-builtins--public-position start))
         (e (emacs-buffer-builtins--public-position end)))
-    (if (and s e (<= (point-min) (min s e)) (<= (max s e) (point-max)))
-        (emacs-buffer-builtins--change-edit
-         'delete (lambda (&rest _) (funcall orig start end)) (list s e) t)
-      (funcall orig start end))))
+    (cond ((not (and s e (<= (point-min) (min s e)) (<= (max s e) (point-max))))
+           (funcall orig start end))
+          ((or (emacs-buffer-builtins--public-quiet-p) (= s e))
+           (let ((inhibit-modification-hooks t)) (funcall orig start end)))
+          (t (emacs-buffer-builtins--public-change
+              (min s e) (max s e) 0 (lambda () (funcall orig start end)))))))
 
 (defun emacs-buffer-builtins--public-erase-buffer (orig)
   "Run ORIG (`erase-buffer') with change hooks."
-  (emacs-buffer-builtins--change-edit
-   'erase (lambda (&rest _) (funcall orig)) nil t))
+  (if (or (emacs-buffer-builtins--public-quiet-p)
+          (= (buffer-size) 0))
+      (let ((inhibit-modification-hooks t)) (funcall orig))
+    ;; GNU widens, then deletes BEG..Z.
+    (widen)
+    (emacs-buffer-builtins--public-change
+     (point-min) (point-max) 0 (lambda () (funcall orig)))))
 
 (defun emacs-buffer-builtins--public-insert-char (orig char &optional count inherit)
   "Run ORIG (`insert-char') with change hooks."
-  (if (and (characterp char) (or (null count) (integerp count)))
-      (emacs-buffer-builtins--change-edit
-       'insert (lambda (&rest _) (funcall orig char count inherit))
-       (list (make-string (max 0 (or count 1)) char)) t)
-    (funcall orig char count inherit)))
+  (cond ((not (and (characterp char) (or (null count) (integerp count))))
+         (funcall orig char count inherit))
+        ((or (emacs-buffer-builtins--public-quiet-p) (<= (or count 1) 0))
+         (let ((inhibit-modification-hooks t)) (funcall orig char count inherit)))
+        (t
+         ;; GNU inserts from a 4000-byte buffer, notifying once per chunk.
+         (let* ((len (if enable-multibyte-characters
+                         ;; Bytes of CHAR in Emacs's internal representation.
+                         (cond ((< char #x80) 1) ((< char #x800) 2)
+                               ((< char #x10000) 3) ((< char #x200000) 4)
+                               ((< char #x3FFF80) 5) (t 2))
+                       1))
+                (chunk (/ (- 4000 (% 4000 len)) len))
+                (n (or count 1)))
+           (while (> n 0)
+             (let ((k (min n chunk)) (pt (point)))
+               (emacs-buffer-builtins--public-change
+                pt pt k (lambda () (funcall orig char k inherit)))
+               (setq n (- n k))))
+           nil))))
 
 (defun emacs-buffer-builtins--public-delete-char (orig n &optional killflag)
   "Run ORIG (`delete-char') with change hooks."
-  (if (and (integerp n) (not killflag)
-           (<= (point-min) (+ (point) n)) (<= (+ (point) n) (point-max)))
-      (emacs-buffer-builtins--change-edit
-       'delete (lambda (&rest _) (funcall orig n killflag))
-       (list (point) (+ (point) n)) t)
-    (funcall orig n killflag)))
+  (cond ((not (and (integerp n) (not killflag)
+                   (<= (point-min) (+ (point) n)) (<= (+ (point) n) (point-max))))
+         (funcall orig n killflag))
+        ((or (emacs-buffer-builtins--public-quiet-p) (= n 0))
+         (let ((inhibit-modification-hooks t)) (funcall orig n killflag)))
+        (t (emacs-buffer-builtins--public-change
+            (min (point) (+ (point) n)) (max (point) (+ (point) n)) 0
+            (lambda () (funcall orig n killflag))))))
 
+;; gnu562: installed as named wrappers over the previous definitions (kept
+;; as emacs-buffer-builtins--NAME-next), not as :around advice, whose
+;; dispatch cost about 10 us per edit (delete-region +40 us over its
+;; inner layers).  The public functions above receive the previous
+;; definition as ORIG, as the advice did.
 (when (and (emacs-buffer-builtins--standalone-p)
            (fboundp 'nelisp-insert))
-  (dolist (entry '((insert . emacs-buffer-builtins--public-insert)
-                   (insert-before-markers
-                    . emacs-buffer-builtins--public-insert-before-markers)
-                   (delete-region . emacs-buffer-builtins--public-delete-region)
-                   (erase-buffer . emacs-buffer-builtins--public-erase-buffer)
-                   (insert-char . emacs-buffer-builtins--public-insert-char)
-                   (delete-char . emacs-buffer-builtins--public-delete-char)))
-    (when (fboundp (car entry))
-      (advice-add (car entry) :around (cdr entry)))))
+  (when (fboundp 'insert)
+    (unless (fboundp 'emacs-buffer-builtins--insert-next)
+      (defalias 'emacs-buffer-builtins--insert-next (symbol-function 'insert)))
+    (defun emacs-buffer-builtins--insert-wrapper (&rest args)
+      "`insert' running the change hooks."
+      (apply #'emacs-buffer-builtins--public-insert
+             #'emacs-buffer-builtins--insert-next args))
+    (defalias 'insert #'emacs-buffer-builtins--insert-wrapper))
+  (when (fboundp 'insert-before-markers)
+    (unless (fboundp 'emacs-buffer-builtins--insert-before-markers-next)
+      (defalias 'emacs-buffer-builtins--insert-before-markers-next
+        (symbol-function 'insert-before-markers)))
+    (defun emacs-buffer-builtins--insert-before-markers-wrapper (&rest args)
+      "`insert-before-markers' running the change hooks."
+      (apply #'emacs-buffer-builtins--public-insert-before-markers
+             #'emacs-buffer-builtins--insert-before-markers-next args))
+    (defalias 'insert-before-markers
+      #'emacs-buffer-builtins--insert-before-markers-wrapper))
+  (when (fboundp 'delete-region)
+    (unless (fboundp 'emacs-buffer-builtins--delete-region-next)
+      (defalias 'emacs-buffer-builtins--delete-region-next
+        (symbol-function 'delete-region)))
+    (defun emacs-buffer-builtins--delete-region-wrapper (start end)
+      "`delete-region' running the change hooks."
+      (emacs-buffer-builtins--public-delete-region
+       #'emacs-buffer-builtins--delete-region-next start end))
+    (defalias 'delete-region #'emacs-buffer-builtins--delete-region-wrapper))
+  (when (fboundp 'erase-buffer)
+    (unless (fboundp 'emacs-buffer-builtins--erase-buffer-next)
+      (defalias 'emacs-buffer-builtins--erase-buffer-next
+        (symbol-function 'erase-buffer)))
+    (defun emacs-buffer-builtins--erase-buffer-wrapper ()
+      "`erase-buffer' running the change hooks."
+      (emacs-buffer-builtins--public-erase-buffer
+       #'emacs-buffer-builtins--erase-buffer-next))
+    (defalias 'erase-buffer #'emacs-buffer-builtins--erase-buffer-wrapper))
+  (when (fboundp 'insert-char)
+    (unless (fboundp 'emacs-buffer-builtins--insert-char-next)
+      (defalias 'emacs-buffer-builtins--insert-char-next
+        (symbol-function 'insert-char)))
+    (defun emacs-buffer-builtins--insert-char-wrapper (char &optional count inherit)
+      "`insert-char' running the change hooks."
+      (emacs-buffer-builtins--public-insert-char
+       #'emacs-buffer-builtins--insert-char-next char count inherit))
+    (defalias 'insert-char #'emacs-buffer-builtins--insert-char-wrapper))
+  (when (fboundp 'delete-char)
+    (unless (fboundp 'emacs-buffer-builtins--delete-char-next)
+      (defalias 'emacs-buffer-builtins--delete-char-next
+        (symbol-function 'delete-char)))
+    (defun emacs-buffer-builtins--delete-char-wrapper (n &optional killflag)
+      "`delete-char' running the change hooks."
+      (emacs-buffer-builtins--public-delete-char
+       #'emacs-buffer-builtins--delete-char-next n killflag))
+    (defalias 'delete-char #'emacs-buffer-builtins--delete-char-wrapper)))
 
 (when (emacs-buffer-builtins--standalone-p)
   (defun buffer-base-buffer (&optional buffer)
@@ -1106,27 +1503,25 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
 (defun emacs-buffer-builtins--get-text-property-around (orig pos prop &optional object)
   "Read sidecar properties while preserving native `get-text-property'."
   (let* ((native-value (funcall orig pos prop object))
-         (pos (emacs-buffer-builtins--position pos))
          (target (emacs-buffer-builtins--text-property-object object))
          (managed
           (cond
            ((stringp target)
            (gethash target emacs-buffer--string-state))
            ((and target (not (eq target :string-or-unsupported)))
-            (gethash target emacs-buffer--state))))
-         (sidecar-value
-          (cond
-           ((stringp target)
+            (gethash target emacs-buffer--state)))))
+    ;; gnu562: an unmanaged string or buffer answers the native value, so its
+    ;; sidecar is not read.  The sidecar's only errors, a non-integer POS or
+    ;; one outside the object, the native call above has already signalled.
+    (if (not managed)
+        native-value
+      (let ((pos (emacs-buffer-builtins--position pos)))
+        (if (stringp target)
             (emacs-buffer-builtins--call-string-property
-             'get target pos prop))
-           ;; gnu562: an unmanaged buffer answers the native value, so its
-           ;; sidecar is not read (its only error, a non-integer POS, the
-           ;; native call above has already signalled).
-           ((and managed (not (eq target :string-or-unsupported)))
-            (emacs-buffer-builtins--call-emacs-buffer
-             'emacs-buffer-get-text-property
-             (list pos prop target))))))
-    (if managed sidecar-value native-value)))
+             'get target pos prop)
+          (emacs-buffer-builtins--call-emacs-buffer
+           'emacs-buffer-get-text-property
+           (list pos prop target)))))))
 
 (defun emacs-buffer-builtins--whole-buffer-size (&optional buffer)
   "Return BUFFER's total character count, independent of narrowing."
@@ -1140,10 +1535,28 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
 (when (fboundp 'nelisp--repr)
   (defalias 'buffer-size #'emacs-buffer-builtins--whole-buffer-size))
 
+;; `get-text-property' and `text-properties-at' are wrapped by named
+;; functions installed in place of the natives rather than by :around advice,
+;; whose generic dispatch cost about 5 us a call.  Each native is captured
+;; once, so loading this file again does not wrap the wrapper.  Arguments past
+;; the native arity signal the error GNU gives a direct call.
+(defun emacs-buffer-builtins--get-text-property
+    (position prop &optional object &rest more)
+  "Native `get-text-property' that answers managed sidecar properties."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'get-text-property (+ 3 (length more))))
+    (emacs-buffer-builtins--get-text-property-around
+     #'emacs-buffer-builtins--native-get-text-property
+     position prop object)))
+
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'get-text-property))
-  (advice-add 'get-text-property :around
-              #'emacs-buffer-builtins--get-text-property-around))
+  (unless (fboundp 'emacs-buffer-builtins--native-get-text-property)
+    (defalias 'emacs-buffer-builtins--native-get-text-property
+      (symbol-function 'get-text-property)))
+  (defalias 'get-text-property
+    (symbol-function 'emacs-buffer-builtins--get-text-property)))
 
 (defun emacs-buffer-builtins--text-properties-at-around (orig pos &optional object)
   "Read complete managed sidecar plists before native text properties."
@@ -1158,20 +1571,33 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
               (if (stringp target)
                   (gethash target emacs-buffer--string-state)
                 (gethash target emacs-buffer--state)))
+             ;; gnu562: read only when the answer uses it; POS is an
+             ;; integer inside TARGET already, the sidecar's only checks.
              (sidecar-value
-              (if (stringp target)
-                  (emacs-buffer-builtins--call-string-property 'at target pos)
-                ;; gnu562: read only when the answer uses it; POS is an
-                ;; integer already, the sidecar's only check.
-                (and managed
+              (and managed
+                   (if (stringp target)
+                       (emacs-buffer-builtins--call-string-property
+                        'at target pos)
                      (emacs-buffer-builtins--call-emacs-buffer
                       'emacs-buffer-text-property-at (list pos target))))))
         (if managed sidecar-value native-value)))))
 
+(defun emacs-buffer-builtins--text-properties-at
+    (position &optional object &rest more)
+  "Native `text-properties-at' that answers managed sidecar plists."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'text-properties-at (+ 2 (length more))))
+    (emacs-buffer-builtins--text-properties-at-around
+     #'emacs-buffer-builtins--native-text-properties-at position object)))
+
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'text-properties-at))
-  (advice-add 'text-properties-at :around
-              #'emacs-buffer-builtins--text-properties-at-around))
+  (unless (fboundp 'emacs-buffer-builtins--native-text-properties-at)
+    (defalias 'emacs-buffer-builtins--native-text-properties-at
+      (symbol-function 'text-properties-at)))
+  (defalias 'text-properties-at
+    (symbol-function 'emacs-buffer-builtins--text-properties-at)))
 
 (defun emacs-buffer-builtins--native-put-property-undo-records
     (target start end property value)
@@ -1191,7 +1617,109 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
         (setq position run-end)))
     records))
 
+(defvar emacs-buffer-builtins--modification-hooks-seen nil
+  "Non-nil once a text-property mutation has set `modification-hooks' or
+`category' anywhere: only then can a property change find text-property
+modification hooks to run, so only then is its range scanned for them.")
+
+(defun emacs-buffer-builtins--property-change-p (operation start end payload value)
+  "Non-nil when OPERATION on START..END of the current buffer changes a
+property, by GNU's tests: add/put unless every character already has
+every new value (`eq'); remove when some character has one of the
+properties; set unless both the buffer and the new list are empty."
+  (cond
+   ((>= start end) nil)
+   ((eq operation 'set)
+    (or payload (nelisp-buffer-text-properties nelisp--current-buffer)))
+   (t
+    (let ((pairs (cond ((eq operation 'put) (list payload value))
+                       ((eq operation 'remove) payload)
+                       (t payload)))
+          (pos start) (found nil))
+      (while (and (< pos end) (not found))
+        (let ((props (text-properties-at pos)) (tail pairs))
+          (while (and (consp tail) (not found))
+            (if (eq operation 'remove)
+                (when (plist-member props (car tail)) (setq found t))
+              (unless (and (plist-member props (car tail))
+                           (eq (plist-get props (car tail)) (cadr tail)))
+                (setq found t)))
+            (setq tail (cddr tail))))
+        (setq pos (or (next-property-change pos nil end) end)))
+      found))))
+
 (defun emacs-buffer-builtins--text-property-mutation-around
+    (operation orig start end &rest args)
+  "Mirror OPERATION into the sidecar, notifying a buffer change as GNU's
+`modify_text_properties' and `signal_after_change' do."
+  (let* ((put-p (eq operation 'put))
+         (payload (car args))
+         (object (if put-p (nth 2 args) (nth 1 args)))
+         (buffer (cond ((null object) (current-buffer))
+                       ((bufferp object) object))))
+    (unless emacs-buffer-builtins--modification-hooks-seen
+      (when (if put-p
+                (memq payload '(modification-hooks category))
+              (and (memq operation '(add set))
+                   (let ((tail payload) (hit nil))
+                     (while (and (consp tail) (not hit))
+                       (setq hit (memq (car tail) '(modification-hooks category))
+                             tail (cdr-safe (cdr tail))))
+                     hit)))
+        (setq emacs-buffer-builtins--modification-hooks-seen t)))
+    (cond
+     ;; Nothing to notify in the current buffer: GNU's verification
+     ;; would only reset the pending insert hooks.
+     ((and (eq buffer (current-buffer))
+           (or inhibit-modification-hooks
+               (and (null before-change-functions)
+                    (null after-change-functions)
+                    (null (nelisp-buffer-overlays nelisp--current-buffer))
+                    (not emacs-buffer-builtins--modification-hooks-seen))))
+      (when (nelisp-buffer-text-properties nelisp--current-buffer)
+        (setq emacs-buffer-builtins--interval-insert-behind-hooks nil
+              emacs-buffer-builtins--interval-insert-in-front-hooks nil))
+      (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+             operation orig start end args))
+     ((or (null buffer)
+            (not (fboundp 'emacs-buffer-builtins--public-change))
+            (not (and (integerp (emacs-buffer-builtins--public-position start))
+                      (integerp (emacs-buffer-builtins--public-position end)))))
+      (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+             operation orig start end args))
+     (t
+      (with-current-buffer buffer
+        (let ((s (min (emacs-buffer-builtins--public-position start)
+                      (emacs-buffer-builtins--public-position end)))
+              (e (max (emacs-buffer-builtins--public-position start)
+                      (emacs-buffer-builtins--public-position end))))
+          (if (or (and (or inhibit-modification-hooks
+                           (and (null before-change-functions)
+                                (null after-change-functions)
+                                (null (nelisp-buffer-overlays nelisp--current-buffer))
+                                (not emacs-buffer-builtins--modification-hooks-seen)))
+                       (progn
+                         ;; GNU's verification still resets the pending
+                         ;; insert hooks in a buffer with intervals.
+                         (when (nelisp-buffer-text-properties nelisp--current-buffer)
+                           (setq emacs-buffer-builtins--interval-insert-behind-hooks nil
+                                 emacs-buffer-builtins--interval-insert-in-front-hooks nil))
+                         t))
+                  (< s (point-min)) (> e (point-max))
+                  (not (emacs-buffer-builtins--property-change-p
+                        operation s e payload (cadr args))))
+              (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+                     operation orig start end args)
+            (let ((result nil))
+              (emacs-buffer-builtins--public-change
+               s e (- e s)
+               (lambda ()
+                 (setq result
+                       (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+                              operation orig start end args))))
+              result))))))))
+
+(defun emacs-buffer-builtins--text-property-mutation-around-1
     (operation orig start end &rest args)
   "Mirror native text-property mutation OPERATION into the sidecar."
   (let* ((put-p (eq operation 'put))
@@ -1295,13 +1823,14 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
   "Mirror native `remove-list-of-text-properties' into the sidecar.
 Without this, readers that prefer the managed sidecar keep seeing the
 removed properties (GNU font-lock unfontify relies on this primitive)."
-  (let ((result (funcall orig start end list-of-properties object))
-        (plist nil))
+  (let ((plist nil))
     (dolist (key list-of-properties)
       (setq plist (cons key (cons nil plist))))
+    ;; The native removal runs inside the mirror, after the change
+    ;; notification has seen the old properties (GNU notifies first).
     (emacs-buffer-builtins--text-property-mutation-around
-     'remove #'ignore start end plist object)
-    result))
+     'remove (lambda (&rest _) (funcall orig start end list-of-properties object))
+     start end plist object)))
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'remove-list-of-text-properties))
@@ -1980,8 +2509,16 @@ buffers are returned regardless."
 
 (defun emacs-buffer-builtins-bridge-buffer-modified-tick (&optional buffer)
   "Return BUFFER's modified tick, deferring to the native one for native buffers."
-  (emacs-buffer-builtins--tick-dispatch
-   emacs-buffer-builtins--native-buffer-modified-tick buffer))
+  ;; gnu562: `emacs-buffer-builtins--tick-dispatch' and
+  ;; `emacs-buffer-builtins--ec-buffer-p' inlined (about 2 us of 10).
+  (let ((native emacs-buffer-builtins--native-buffer-modified-tick)
+        (target (or buffer (current-buffer))))
+    (if (or (null native)
+            (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p target)))
+        (emacs-buffer-builtins-buffer-modified-tick buffer)
+      (+ (funcall native buffer)
+         (let ((ext (emacs-buffer--native-property-state target)))
+           (if ext (emacs-buffer--ext-property-delta ext) 0))))))
 
 (when (emacs-buffer-builtins--install-function-p 'buffer-modified-tick)
   (defalias 'buffer-modified-tick
@@ -2710,8 +3247,10 @@ Ignores narrowing (hashes the whole buffer)."
 (defvar emacs-buffer-builtins--native-goto-char nil)
 (defun emacs-buffer-builtins-goto-char (position)
   "Move native point to integer or marker POSITION, returning POSITION."
-  (funcall emacs-buffer-builtins--native-goto-char
-           (emacs-buffer-builtins--checked-position position))
+  ;; gnu562: by name (see the bridge installer); `funcall' of the variable
+  ;; cost about 0.5 us of a 2 us `goto-char'.
+  (emacs-buffer-builtins--native-goto-char-fn
+   (emacs-buffer-builtins--checked-position position))
   position)
 (defvar emacs-buffer-builtins--native-char-after nil)
 (defvar emacs-buffer-builtins--native-char-before nil)
@@ -2743,6 +3282,8 @@ Ignores narrowing (hashes the whole buffer)."
   ;; its replacement later would form a cycle through that adapter.
   (unless emacs-buffer-builtins--native-goto-char
     (setq emacs-buffer-builtins--native-goto-char (symbol-function 'goto-char)))
+  (defalias 'emacs-buffer-builtins--native-goto-char-fn
+    emacs-buffer-builtins--native-goto-char)
   (unless emacs-buffer-builtins--native-char-after
     (setq emacs-buffer-builtins--native-char-after (symbol-function 'char-after)))
   (unless emacs-buffer-builtins--native-char-before

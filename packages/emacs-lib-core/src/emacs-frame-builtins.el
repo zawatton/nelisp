@@ -251,11 +251,15 @@ GNU batch Emacs; text and window geometry change before cached dimensions."
       (mapcar (lambda (entry) (cons (car entry) (cdr entry)))
               (emacs-frame-frame-parameters frame)))))
 (defun emacs-frame-builtins--frame-parameter (frame parameter)
-  "Return FRAME's PARAMETER, checking the frame before the symbol."
+  "Return FRAME's PARAMETER, checking the frame before the symbol.
+Reads the parameter alist itself rather than the fresh copy
+`emacs-frame-builtins--frame-parameters' makes for its caller: only the
+value is returned, and the copy shares it."
   (let ((frame (emacs-frame-builtins--get-frame frame)))
     (unless (symbolp parameter)
       (signal 'wrong-type-argument (list 'symbolp parameter)))
-    (cdr (assq parameter (emacs-frame-builtins--frame-parameters frame)))))
+    (unless (emacs-frame-dead-p frame)
+      (cdr (assq parameter (emacs-frame-frame-parameters frame))))))
 (defvar emacs-frame-builtins--automatic-name-counter 0
   "Last automatically generated frame name number.")
 (defun emacs-frame-builtins--reset-frame-name (frame)
