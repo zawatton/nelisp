@@ -2239,14 +2239,19 @@ Checks read-only text and shifts/expands text-property intervals."
 
 (defun emacs-buffer--copy-buffer-properties-to-string (buffer start end string)
   "Copy BUF's sidecar properties over [START, END) into STRING."
+  ;; gnu562: walk the intervals directly, in order, adding each one that
+  ;; overlaps [START, END) as `emacs-buffer--copy-runs-to-string' would,
+  ;; without first rebuilding every interval as a run list (a substring
+  ;; with no property in range paid ~30 us for that).
   (let* ((ext (gethash buffer emacs-buffer--state))
-         (intervals (and ext (emacs-buffer--ext-text-props ext)))
-         (runs (mapcar (lambda (cell)
-                         (list (emacs-buffer--tp-start cell)
-                               (emacs-buffer--tp-end cell)
-                               (emacs-buffer--tp-plist cell)))
-                       intervals)))
-    (emacs-buffer--copy-runs-to-string string runs start end)))
+         (intervals (and ext (emacs-buffer--ext-text-props ext))))
+    (dolist (cell intervals)
+      (let ((lo (max start (emacs-buffer--tp-start cell)))
+            (hi (min end (emacs-buffer--tp-end cell))))
+        (when (< lo hi)
+          (emacs-buffer-string-text-property
+           'add string (- lo start) (- hi start) (emacs-buffer--tp-plist cell)))))
+    string))
 
 (defun emacs-buffer--native-buffer-string-around (orig &rest args)
   "Preserve sidecar text properties returned by native `buffer-string'."
