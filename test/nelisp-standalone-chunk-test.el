@@ -191,4 +191,35 @@
     ;; NEGATIVE CONTROL: without the pins the same cluster is spread out.
     (should (> (cl-count-if-not (lambda (n) (eql 0 (funcall where without n))) pinned) 40))))
 
+;; A2: the committed tables are located from the file's own load-time directory.
+(ert-deftest nelisp-chunk-committed-tables-ignore-call-time-load-file-name ()
+  ;; Under a -l wrapper `load-file-name' / `buffer-file-name' name the wrapper
+  ;; and `default-directory' is arbitrary; the tables must still be found.
+  (let ((load-file-name "/nonexistent-wrapper-dir/sub/wrapper.el")
+        (buffer-file-name nil)
+        (default-directory (file-name-as-directory temporary-file-directory)))
+    (should (nelisp-standalone-chunk-load-table 8))
+    (should (nelisp-standalone-chunk-load-pins 8))))
+
+(ert-deftest nelisp-chunk-missing-committed-file-signals-at-k-gt-1 ()
+  (let* ((empty (file-name-as-directory (make-temp-file "nl-chunk-empty" t)))
+         (nelisp-standalone-chunk--repo empty))
+    (unwind-protect
+        (progn
+          (should-error (nelisp-standalone-chunk-load-table 8))
+          (should-error (nelisp-standalone-chunk-load-pins 8))
+          ;; K = 1 keeps the old, file-free path.
+          (should-not (nelisp-standalone-chunk-load-table 1))
+          (should-not (nelisp-standalone-chunk-load-pins 1))
+          (should-not (nelisp-standalone-chunk-load-pins)))
+      (delete-directory empty t))))
+
+(ert-deftest nelisp-chunk-committed-table-passes-check-table ()
+  ;; A row naming a non-representative member (e.g. a _w partner) is never
+  ;; applied and, worse, silently re-splits the atom; the validator rejects it.
+  (skip-unless (require 'nelisp-standalone-build nil t))
+  (let ((main (car (nelisp-standalone--applyfn-split-units
+                    (nelisp-standalone--patch-autoload-lookups (nelisp-standalone--applyfn-source))))))
+    (should (nelisp-standalone-chunk-check-table (nelisp-standalone-chunk-load-table 8) (cdr main) 8))))
+
 (provide 'nelisp-standalone-chunk-test)

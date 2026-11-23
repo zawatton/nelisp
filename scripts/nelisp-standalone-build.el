@@ -68913,7 +68913,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                            (nelisp-standalone-chunk-split
                             (car applyfn-split) k
                             (nelisp-standalone-chunk-load-table k)
-                            (nelisp-standalone-chunk-load-pins))))
+                            (nelisp-standalone-chunk-load-pins k))))
          (_sibling-imports
           (setq nelisp-standalone--chunk-sibling-imports
                 (and (cdr applyfn-chunks)

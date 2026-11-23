@@ -8,7 +8,7 @@
         (bf_make_native_subr_w . 0)
         (bf_n2_direct_arity . 1)
         (m5_sha_init_k . 2)
-        (nelisp_apply_function_w . 5)
+        (nelisp_apply_function . 5)   ; was keyed by its _w partner, which is not the atom representative
         (nelisp_eln_callback_context_pop . 0)
         (nl_apply_builtin_leaf_287_w . 6)
         (nl_fw_gate . 2)
@@ -20,5 +20,5 @@
         (wf_bytecode_try_throw . 0)
         (wf_concat_strings_w . 0)
         (wf_mapc_w . 2)
-        (wf_subtail_w . 2)
+        (wf_subtail . 2)   ; atom representative, not its _w partner
         ))

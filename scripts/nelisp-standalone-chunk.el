@@ -45,14 +45,31 @@ Keeps a hot cluster in one object so intra-unit inlining survives.")
 (defvar nelisp-standalone-chunk-pinned-names nil
   "Defun names whose whole atom is pinned to chunk 0 (the F1 closure cluster).")
 
-(defun nelisp-standalone-chunk-load-pins ()
-  "The committed pinned-name list (tools/dev/applyfn-chunk-pins.el), or nil."
-  (let ((file (expand-file-name "tools/dev/applyfn-chunk-pins.el"
-                                (file-name-directory
-                                 (directory-file-name
-                                  (file-name-directory (or load-file-name buffer-file-name
-                                                           (locate-library "nelisp-standalone-chunk"))))))))
-    (when (file-readable-p file)
+(defconst nelisp-standalone-chunk--repo
+  (let ((f (or load-file-name
+               (bound-and-true-p byte-compile-current-file)
+               buffer-file-name
+               (locate-library "nelisp-standalone-chunk"))))
+    (and f (file-name-directory (directory-file-name (file-name-directory (expand-file-name f))))))
+  "Repo root, captured when this file is loaded (not at call time).
+At call time `load-file-name' and `buffer-file-name' belong to whatever file
+is being loaded, e.g. a -l wrapper, so they cannot locate the committed tables.")
+
+(defun nelisp-standalone-chunk--committed-file (name k)
+  "Path of tools/dev/NAME; signal when K > 1 and it is missing or unreadable."
+  (let ((file (and nelisp-standalone-chunk--repo
+                   (expand-file-name (concat "tools/dev/" name) nelisp-standalone-chunk--repo))))
+    (cond ((and file (file-readable-p file)) file)
+          ((and k (> k 1))
+           (error "applyfn chunk: committed file %s is missing or unreadable (K=%d)"
+                  (or file name) k))
+          (t nil))))
+
+(defun nelisp-standalone-chunk-load-pins (&optional k)
+  "The committed pinned-name list (tools/dev/applyfn-chunk-pins.el).
+Returns nil when the file is absent and K is nil or 1; signals when K > 1."
+  (let ((file (nelisp-standalone-chunk--committed-file "applyfn-chunk-pins.el" k)))
+    (when file
       (let ((nelisp-standalone-chunk-pinned-names nil))
         (load file nil t t)
         nelisp-standalone-chunk-pinned-names))))
@@ -68,17 +85,13 @@ Unset, empty, 0 or 1 select the unsplit unit; \"on\" selects the default count."
 (defun nelisp-standalone-chunk-load-table (k)
   "The committed override table for K chunks (tools/dev/applyfn-chunk-map.el), or nil.
 The file sets `nelisp-standalone-chunk-table' and `-table-k'; rows are used
-only when its K equals the requested K."
+only when its K equals the requested K.  Signals when K > 1 and the file is
+missing or unreadable."
   (when (> k 1)
-    (let ((file (expand-file-name "tools/dev/applyfn-chunk-map.el"
-                                  (file-name-directory
-                                   (directory-file-name
-                                    (file-name-directory (or load-file-name buffer-file-name
-                                                             (locate-library "nelisp-standalone-chunk"))))))))
-      (when (file-readable-p file)
-        (let ((nelisp-standalone-chunk-table nil) (nelisp-standalone-chunk-table-k nil))
-          (load file nil t t)
-          (and (eql nelisp-standalone-chunk-table-k k) nelisp-standalone-chunk-table))))))
+    (let ((file (nelisp-standalone-chunk--committed-file "applyfn-chunk-map.el" k)))
+      (let ((nelisp-standalone-chunk-table nil) (nelisp-standalone-chunk-table-k nil))
+        (load file nil t t)
+        (and (eql nelisp-standalone-chunk-table-k k) nelisp-standalone-chunk-table)))))
 
 (defun nelisp-standalone-chunk-unit-name (index)
   "Link unit name of chunk INDEX; chunk 0 keeps the historical name."
