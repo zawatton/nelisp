@@ -128,3 +128,16 @@
              (let ((b (mapcar #'ce-scan ce-pats)))
                (modify-syntax-entry ?c "_" st)
                (list a b (mapcar #'ce-scan ce-pats))))))))
+(row "E11 std raw aset"
+     ;; Raw aset on the standard syntax table, probed by string-match only (no
+     ;; buffer or table creation between the store and the match).  A GNU
+     ;; parity row: the bare binary's native string-match reads the live table
+     ;; and never takes the class route, so this row cannot show the native
+     ;; epoch there (F422 addendum 5).
+     (let* ((std (standard-syntax-table)) (old (aref std ?_))
+            (sm (lambda () (mapcar (lambda (re) (mapcar (lambda (s) (string-match re s)) ce-texts)) ce-pats))))
+       (with-syntax-table std
+         (let ((a (funcall sm)))
+           (aset std ?_ (cons 2 nil))
+           (unwind-protect (list a (funcall sm))
+             (aset std ?_ old))))))
