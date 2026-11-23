@@ -53,43 +53,39 @@ UNIBYTE is obsolete.  DO-ALLOW-PRINT permits output without PRINTFLAG."
     nil))
 
 (defun emacs-cc-census-buffer-w202--field (position escape limit endp)
-  "Find the field boundary at POSITION, respecting ESCAPE, LIMIT and ENDP."
-  (let* ((pos (emacs-cc-census-buffer-w202--position (or position (point))))
-         (bound (and limit (emacs-cc-census-buffer-w202--position limit)))
-         (lo (point-min)) (hi (point-max))
-         (cursor (if endp
-                     (if (and escape (< pos hi)) pos (max lo (1- pos)))
-                   (max lo (1- pos))))
-         (value (get-char-property cursor 'field)))
-    ;; A boundary field separates the two adjoining fields; escaping it
-    ;; includes the field on the far side rather than stopping inside it.
-    (when (and escape (eq value 'boundary))
-      (if endp
-          (progn
-            (while (and (< cursor hi)
-                        (eq (get-char-property cursor 'field) 'boundary))
-              (setq cursor (1+ cursor)))
-            (setq value (get-char-property cursor 'field)))
-        (while (and (> cursor lo)
-                    (eq (get-char-property cursor 'field) 'boundary))
-          (setq cursor (1- cursor)))
-        (setq value (get-char-property cursor 'field))))
-    ;; gnu562: up to eight characters one at a time (a scan costs about
-    ;; three reads, so short runs stay cheaper this way), then one property scan for
-    ;; the rest of the run (it stops at the first value that is not `eq').
+  "Find the field boundary at POSITION, respecting ESCAPE, LIMIT and ENDP.
+A transcription of GNU editfns.c `find_field': without ESCAPE, POSITION
+is a field edge when the field an inserted character would get
+\(`get-pos-property') differs from the field after or before it, except
+that a nil field between two non-nil ones (a comint prompt that is
+rear-nonsticky) is not an edge."
+  (let* ((pos (if position
+                  (emacs-cc-census-buffer-w202--position position)
+                (point)))
+         (after-field (get-char-property pos 'field))
+         (before-field (if (> pos (point-min))
+                           (get-char-property (1- pos) 'field)
+                         after-field))
+         at-start at-end)
+    (unless escape
+      (let ((field (get-pos-property pos 'field)))
+        (unless (eq field after-field) (setq at-end t))
+        (unless (eq field before-field) (setq at-start t))
+        (when (and (null field) at-start at-end)
+          (setq at-start nil at-end nil))))
     (if endp
-        (let ((steps 9))
-          (while (and (< cursor hi)
-                      (eq (get-char-property cursor 'field) value))
-            (setq cursor (if (> (setq steps (1- steps)) 0) (1+ cursor)
-                           (next-single-char-property-change cursor 'field nil hi))))
-          (if bound (min cursor bound) cursor))
-      (let ((steps 9))
-        (while (and (> cursor lo)
-                    (eq (get-char-property (1- cursor) 'field) value))
-          (setq cursor (if (> (setq steps (1- steps)) 0) (1- cursor)
-                         (previous-single-char-property-change cursor 'field nil lo)))))
-      (if bound (max cursor bound) cursor))))
+        (if at-end
+            pos
+          (when (and escape (eq after-field 'boundary))
+            (setq pos (next-single-char-property-change pos 'field nil limit)))
+          (or (next-single-char-property-change pos 'field nil limit)
+              (point-max)))
+      (if at-start
+          pos
+        (when (and escape (eq before-field 'boundary))
+          (setq pos (previous-single-char-property-change pos 'field nil limit)))
+        (or (previous-single-char-property-change pos 'field nil limit)
+            (point-min))))))
 
 (unless (fboundp 'field-beginning)
   (defun field-beginning (&optional pos escape-from-edge limit)

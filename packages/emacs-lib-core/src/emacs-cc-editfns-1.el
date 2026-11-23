@@ -49,47 +49,57 @@
             (t (1+ i))))))
 
 (defun emacs-cc-editfns-1--field-bounds (pos)
-  "Return the field boundaries around POS, honoring boundary insertion behavior."
+  "Return (BEG . END) of the field at POS, as GNU `find_field' does.
+`field-beginning' and `field-end' carry the edge and stickiness rules."
   (unless (or (integerp pos) (and (fboundp 'markerp) (markerp pos)))
     (signal 'wrong-type-argument (list 'integer-or-marker-p pos)))
-  (let* ((lo (point-min)) (hi (point-max))
-         (at (get-text-property pos 'field))
-         (before (and (> pos lo) (get-text-property (1- pos) 'field)))
-         (value (if (and (/= pos lo) (not (eq at before))) before at))
-         (beg pos) (end pos))
-    ;; gnu562: up to eight characters one at a time (a scan costs about
-    ;; three reads, so short runs stay cheaper this way), then one property scan for
-    ;; the rest of the run (it stops at the first value that is not `eq').
-    (let ((steps 9))
-      (while (and (> beg lo) (eq (get-text-property (1- beg) 'field) value))
-        (setq beg (if (> (setq steps (1- steps)) 0) (1- beg)
-                    (previous-single-property-change beg 'field nil lo)))))
-    (let ((steps 9))
-      (while (and (< end hi) (eq (get-text-property end 'field) value))
-        (setq end (if (> (setq steps (1- steps)) 0) (1+ end)
-                    (next-single-property-change end 'field nil hi)))))
-    (cons beg end)))
+  (cons (field-beginning pos) (field-end pos)))
 
 (unless (fboundp 'constrain-to-field)
   (defun constrain-to-field (new-pos old-pos &optional escape-from-edge only-in-line inhibit-capture-property)
-    "Constrain NEW-POS to the text field containing OLD-POS."
-    (unless (or (null new-pos) (integerp new-pos)
-                (and (fboundp 'markerp) (markerp new-pos)))
-      (signal 'wrong-type-argument (list 'integer-or-marker-p new-pos)))
-    (unless (or (integerp old-pos) (and (fboundp 'markerp) (markerp old-pos)))
-      (signal 'wrong-type-argument (list 'integer-or-marker-p old-pos)))
-    (let* ((pos (or new-pos (point)))
-           (bounds (emacs-cc-editfns-1--field-bounds old-pos))
-           (beg (car bounds)) (end (cdr bounds))
-           (result (if (or (and (boundp 'inhibit-field-text-motion) inhibit-field-text-motion)
-                           (and inhibit-capture-property (get-text-property old-pos inhibit-capture-property))
-                           (and new-pos (or (< pos beg) (> pos end))))
-                       (if (and (<= beg pos) (<= pos end)) pos
-                         (if (< pos beg) beg end)) pos)))
-      (when (and only-in-line (/= (line-number-at-pos result) (line-number-at-pos pos)))
-        (setq result pos))
-      (when (null new-pos) (goto-char result))
-      result)))
+    "Return the position closest to NEW-POS that is in the same field as OLD-POS.
+A transcription of GNU editfns.c `Fconstrain_to_field'.  With NEW-POS
+nil, use point and move point to the result."
+    (let ((orig-point (and (null new-pos) (point))))
+      (when orig-point (setq new-pos orig-point))
+      (dolist (arg (list new-pos old-pos))
+        (unless (or (integerp arg) (and (fboundp 'markerp) (markerp arg)))
+          (signal 'wrong-type-argument (list 'integer-or-marker-p arg))))
+      (when (markerp new-pos) (setq new-pos (marker-position new-pos)))
+      (when (markerp old-pos) (setq old-pos (marker-position old-pos)))
+      (let ((fwd (> new-pos old-pos))
+            (lo (point-min)))
+        (when (and (not (and (boundp 'inhibit-field-text-motion)
+                             inhibit-field-text-motion))
+                   (/= new-pos old-pos)
+                   (or (get-char-property new-pos 'field)
+                       (get-char-property old-pos 'field)
+                       (and (> new-pos lo)
+                            (get-char-property (1- new-pos) 'field))
+                       (and (> old-pos lo)
+                            (get-char-property (1- old-pos) 'field)))
+                   (or (null inhibit-capture-property)
+                       (and (null (get-pos-property
+                                   old-pos inhibit-capture-property))
+                            (or (<= old-pos lo)
+                                (null (get-char-property
+                                       old-pos inhibit-capture-property))
+                                (null (get-char-property
+                                       (1- old-pos)
+                                       inhibit-capture-property))))))
+          (let ((bound (if fwd
+                           (field-end old-pos escape-from-edge new-pos)
+                         (field-beginning old-pos escape-from-edge new-pos))))
+            (when (and (if (< bound new-pos) fwd (not fwd))
+                       (or (null only-in-line)
+                           (not (string-search
+                                 "\n" (buffer-substring-no-properties
+                                        (min bound new-pos)
+                                        (max bound new-pos))))))
+              (setq new-pos bound))
+            (when (and orig-point (/= new-pos orig-point))
+              (goto-char new-pos)))))
+      new-pos)))
 
 (unless (fboundp 'delete-field)
   (defun delete-field (&optional pos)
