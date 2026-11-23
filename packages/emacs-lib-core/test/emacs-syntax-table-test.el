@@ -554,6 +554,38 @@ Expected values come from host emacs-31.1 -Q --batch (fundamental mode)."
 (ert-deftest emacs-syntax-table-test/nbsp-is-whitespace ()
   (with-temp-buffer (should (= (char-syntax #xa0) 32))))
 
+(ert-deftest emacs-syntax-table-test/skip-syntax-fastmap-cached-by-content ()
+  "The class fastmap is built once per SYNTAX content, not per call."
+  (let* ((s (copy-sequence "w_"))
+         (m1 (emacs-syntax-table--skip-fastmap s)))
+    (should (eq m1 (emacs-syntax-table--skip-fastmap (copy-sequence "w_"))))
+    (should (aref m1 2)) (should (aref m1 3)) (should-not (aref m1 0))
+    ;; Mutating the caller's string must select a different map.
+    (aset s 1 ?.)
+    (let ((m2 (emacs-syntax-table--skip-fastmap s)))
+      (should-not (eq m1 m2))
+      (should (aref m2 1)) (should-not (aref m2 3))
+      ;; The first map is intact.
+      (should (aref m1 3)))
+    ;; ^ complements every slot, including the 255 unknown-class slot.
+    (let ((neg (emacs-syntax-table--skip-fastmap "^w")))
+      (should-not (aref neg 2)) (should (aref neg 0)) (should (aref neg 255))
+      (should (aref neg 100)))))
+
+(ert-deftest emacs-syntax-table-test/skip-syntax-mutated-string-rescans ()
+  (with-temp-buffer
+    (insert "ab cd_ef")
+    (let ((s (copy-sequence "w")))
+      (goto-char 1)
+      (should (= 2 (skip-syntax-forward s)))
+      (aset s 0 ?_)
+      (should (= 0 (skip-syntax-forward s)))
+      (aset s 0 ? )
+      (should (= 1 (skip-syntax-forward s)))
+      (aset s 0 ?w)
+      (should (= 2 (skip-syntax-forward s)))
+      (should (= -2 (skip-syntax-backward s))))))
+
 (ert-deftest emacs-syntax-table-test/skip-syntax-honours-dynamic-table ()
   (let ((st (make-syntax-table)))
     (modify-syntax-entry ?- "w" st)

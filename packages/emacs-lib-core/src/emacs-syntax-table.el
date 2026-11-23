@@ -779,24 +779,48 @@ compatibility and stops at comment boundaries."
 ;; syntax.c `skip_syntaxes' over the same buffer text string, resolving the
 ;; table through `emacs-syntax-table-current'.
 
-(defun emacs-syntax-table--skip-raw-entry (table text pos)
-  "Raw syntax entry at 1-based POS of TEXT: property, else TABLE."
-  (let ((prop (and (boundp 'parse-sexp-lookup-properties)
-                   parse-sexp-lookup-properties
-                   (get-char-property pos 'syntax-table))))
-    (cond ((consp prop) prop)
-          ((and prop (emacs-char-table-p prop)
-                (eq (emacs-char-table-subtype prop) 'syntax-table))
-           (aref prop (aref text (1- pos))))
-          (t (aref table (aref text (1- pos)))))))
+;; Per-call setup used to dominate (a 256-slot fastmap vector, an assq per
+;; class char, a whole-buffer string copy).  The class fastmap is now cached by
+;; the syntax string's content (built once, read-only afterwards); text is
+;; read with the native `char-after'; the table lookup is inlined.
+(defvar emacs-syntax-table--skip-map-cache (make-hash-table :test 'equal)
+  "Content-keyed cache: SYNTAX string -> 256-slot class fastmap (t or nil).")
+(defvar emacs-syntax-table--skip-last-syntax nil
+  "Private copy of the SYNTAX string whose fastmap is `--skip-last-map'.")
+(defvar emacs-syntax-table--skip-last-map nil
+  "Fastmap of `emacs-syntax-table--skip-last-syntax'.")
+
+(defun emacs-syntax-table--skip-fastmap (syntax)
+  "Return the GNU `skip_syntaxes' fastmap of SYNTAX: slot CODE is t iff
+raw class code CODE is skipped (leading ^ complements all 256 slots).
+Results are cached by content; the cache keys are private copies, so
+mutating the caller's string later cannot corrupt them.  The returned
+vector is shared and must not be modified."
+  (if (equal syntax emacs-syntax-table--skip-last-syntax)
+      emacs-syntax-table--skip-last-map
+    (let ((map (gethash syntax emacs-syntax-table--skip-map-cache)))
+      (unless map
+        (let* ((n (length syntax)) (i 0)
+               (neg (and (> n 0) (= (logand (aref syntax 0) 255) ?^))))
+          (setq map (make-vector 256 neg))
+          (when neg (setq i 1))
+          (while (< i n)
+            (let* ((char (logand (aref syntax i) 255))
+                   (code (or (cdr (assq char nelisp--syntax-spec-codes)) 255)))
+              (aset map code (not neg)))
+            (setq i (1+ i)))
+          (when (>= (hash-table-count emacs-syntax-table--skip-map-cache) 64)
+            (clrhash emacs-syntax-table--skip-map-cache))
+          (puthash (copy-sequence syntax) map emacs-syntax-table--skip-map-cache)))
+      (setq emacs-syntax-table--skip-last-syntax (copy-sequence syntax)
+            emacs-syntax-table--skip-last-map map)
+      map)))
 
 (defun emacs-syntax-table--skip-syntaxes (forward syntax limit)
   "GNU `skip_syntaxes': skip classes in SYNTAX from point, return the distance."
   (unless (stringp syntax)
     (signal 'wrong-type-argument (list 'stringp syntax)))
-  (let* ((buf nelisp--current-buffer)
-         (lo (nelisp-point-min buf)) (hi (nelisp-point-max buf))
-         (start (nelisp-point buf)))
+  (let ((lo (point-min)) (hi (point-max)) (start (point)))
     (cond ((null limit) (setq limit (if forward hi lo)))
           ((markerp limit)
            (setq limit (or (marker-position limit)
@@ -806,31 +830,48 @@ compatibility and stops at comment boundaries."
     (setq limit (max lo (min hi limit)))
     (if (if forward (>= start limit) (<= start limit))
         0
-      (let* ((fastmap (make-vector 256 0))
-             (n (length syntax)) (i 0) (negate nil)
-             (text (nelisp-buffer-string buf))
-             (table (emacs-syntax-table-current))
-             (pos start) (step (if forward 1 -1)))
-        (when (and (> n 0) (= (logand (aref syntax 0) 255) ?^))
-          (setq negate t i 1))
-        (while (< i n)
-          (let* ((char (logand (aref syntax i) 255))
-                 (code (or (cdr (assq char nelisp--syntax-spec-codes)) 255)))
-            (aset fastmap code 1))
-          (setq i (1+ i)))
-        (when negate
-          (setq i 0)
-          (while (< i 256)
-            (aset fastmap i (logxor (aref fastmap i) 1))
-            (setq i (1+ i))))
-        (while (and (if forward (< pos limit) (> pos limit))
-                    (let* ((at (if forward pos (1- pos)))
-                           (entry (emacs-syntax-table--skip-raw-entry table text at))
-                           (code (if (consp entry) (logand (car entry) 255) 0)))
-                      (/= (aref fastmap code) 0)))
-          (setq pos (+ pos step)))
-        (nelisp-goto-char pos buf)
+      (let ((map (emacs-syntax-table--skip-fastmap syntax))
+            ;; Same result as `emacs-syntax-table-current' with the
+            ;; standalone no-buffer-local-table shortcut inlined.
+            (table (or emacs-syntax-table--current
+                       (if (and (fboundp 'nelisp--repr)
+                                (not (boundp emacs-syntax-table--local-key)))
+                           (or emacs-syntax-table--standard-char-table
+                               (emacs-syntax-table-standard))
+                         (emacs-syntax-table-current))))
+            (plsp (and (boundp 'parse-sexp-lookup-properties)
+                       parse-sexp-lookup-properties))
+            (pos start) (c nil) (e nil))
+        ;; A raw entry is (CODE . MATCHING-CHAR) with flags in CODE's high
+        ;; bits; anything else counts as class 0.
+        (if forward
+            (while (and (< pos limit)
+                        (progn
+                          (setq c (char-after pos))
+                          (setq e (if plsp
+                                      (emacs-syntax-table--skip-prop-entry table pos c)
+                                    (aref table c)))
+                          (aref map (if (consp e) (logand (car e) 255) 0))))
+              (setq pos (1+ pos)))
+          (while (and (> pos limit)
+                      (progn
+                        (setq c (char-after (1- pos)))
+                        (setq e (if plsp
+                                    (emacs-syntax-table--skip-prop-entry table (1- pos) c)
+                                  (aref table c)))
+                        (aref map (if (consp e) (logand (car e) 255) 0))))
+            (setq pos (1- pos))))
+        (goto-char pos)
         (- pos start)))))
+
+(defun emacs-syntax-table--skip-prop-entry (table at c)
+  "Raw syntax entry of char C at AT honouring `syntax-table' properties."
+  (let ((prop (get-char-property at 'syntax-table)))
+    (cond ((consp prop) prop)
+          ((and prop (emacs-char-table-p prop)
+                (eq (emacs-char-table-subtype prop) 'syntax-table))
+           (aref prop c))
+          (t (aref table c)))))
 
 (when (and (fboundp 'nelisp--skip-syntaxes)
            (emacs-syntax-table--install-function-p 'skip-syntax-forward))
