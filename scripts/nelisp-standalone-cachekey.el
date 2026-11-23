@@ -37,7 +37,12 @@ The static `require' closure of these (inside the repository) is added.")
     "NELISP_XINLINE" "NELISP_INLINE" "NELISP_INLINE_MAX_NODES" "NELISP_TCO"
     "NELISP_READER_DYNAMIC" "NELISP_REPR_CENSUS"
     ;; Read by `runtime-reload-enabled-p' (xinline-enabled-p): found by the closure scan.
-    "NELISP_RUNTIME_RELOAD")
+    "NELISP_RUNTIME_RELOAD"
+    ;; lane/split: the chunk count and which sibling helpers a chunk imports
+    ;; (build.el chunk sibling imports); keyed directly, not only through the
+    ;; unit source and the donor set.
+    "NELISP_STANDALONE_APPLYFN_CHUNKS"
+    "NELISP_STANDALONE_CHUNK_SIBLING_MAX_NODES" "NELISP_STANDALONE_CHUNK_SIBLING_IMPORTS")
   "Environment variables read on the compile path.
 All are part of the key, so a value that changes generated code is a miss.")
 
