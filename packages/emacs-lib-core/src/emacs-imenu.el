@@ -119,13 +119,6 @@ Returns the target position."
 
 ;;;; --- standard-name facade -----------------------------------------
 
-(defun emacs-imenu-install ()
-  "Bind the standard `imenu' command name to the `emacs-imenu' implementation.
-Not run on `require' (keeps a bare load from touching shared command
-symbols)."
-  (defalias 'imenu #'emacs-imenu)
-  (defalias 'imenu--make-index-alist #'emacs-imenu-create-index))
-
 (provide 'emacs-imenu)
 
 ;;; emacs-imenu.el ends here

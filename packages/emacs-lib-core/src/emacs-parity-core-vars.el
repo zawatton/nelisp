@@ -45,6 +45,11 @@
 (unless (boundp 'window-combination-limit)
   (defvar window-combination-limit 'window-size
     "If non-nil, splitting a window makes a new parent window."))
+;; callproc.c DEFVAR (default "hexl", callproc.c:2188); GNU ielm.el starts
+;; its dummy process with it.
+(unless (boundp 'hexl-program-name)
+  (defvar hexl-program-name "hexl"
+    "File name for the program that converts files to and from hexl format."))
 ;; callproc.c DEFVAR_INT: sysconf (_SC_ARG_MAX) / 4 on POSIX (callproc.c:2249);
 ;; Linux's ARG_MAX is 2097152.  Read by GNU subr.el
 ;; `multiple-command-partition-arguments'.

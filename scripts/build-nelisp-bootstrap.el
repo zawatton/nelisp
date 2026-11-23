@@ -449,7 +449,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; standalone reader.
     "emacs-imenu.el"
     "emacs-xref.el"
-    "imenu.el"
     "xref.el"
     "emacs-compile.el"
     "compile.el"
@@ -1305,7 +1304,6 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-vc.el" . "vc.el")
                     ("emacs-compile.el" . "compile.el")
                     ("emacs-xref.el" . "xref.el")
-                    ("emacs-imenu.el" . "imenu.el")
                     ("emacs-faces.el" . "emacs-faces-builtins.el")
                     ("emacs-frame.el" . "emacs-frame-builtins.el")
                     ("emacs-window.el" . "emacs-window-builtins.el")
@@ -1496,12 +1494,6 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '("(provide 'custom)\n"))
-     ;; GNU imenu.el redefines `imenu' and `imenu--make-index-alist'; its index
-     ;; builder needs marker arithmetic the core lacks, so bind the working
-     ;; `emacs-imenu' symbol index back over both.  Every other GNU imenu name
-     ;; keeps its real definition.
-     ((string= rel "vendor/emacs-lisp-31.1/imenu.el")
-      '("(when (fboundp 'emacs-imenu-install) (emacs-imenu-install))\n"))
      ((string= rel "src/nemacs-main.el")
       (mapcar (lambda (form)
                 (concat (prin1-to-string form) "\n"))
@@ -1513,8 +1505,6 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '((provide 'custom)))
-     ((string= rel "vendor/emacs-lisp-31.1/imenu.el")
-      '((when (fboundp 'emacs-imenu-install) (emacs-imenu-install))))
      ((string= rel "src/nemacs-main.el")
       (nelisp-bootstrap--runtime-load-path-prologue-forms)))))
 
