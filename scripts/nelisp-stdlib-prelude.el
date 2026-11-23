@@ -26966,14 +26966,26 @@ argument end extends over right padding (textprop.c:2123)."
 ;; `(builtin ...)' cons (returns nil).  Provide a predicate-composed `type-of'
 ;; and a corrected `functionp' so function type-dispatch works.
 (unless (fboundp 'nelisp--native-functionp) (fset 'nelisp--native-functionp (symbol-function 'functionp)))
-(defun functionp (x)
-  "Return t if X is callable (lambda / closure / builtin cons, or native)."
-  (if (or (nelisp--closure-p x) (and (consp x) (memq (car x) '(lambda closure builtin))))
-      t
-    (if (or (and (fboundp 'byte-code-function-p)
-                 (byte-code-function-p x))
-            (and (fboundp 'subrp) (subrp x))
-            (nelisp--native-functionp x)) t nil)))
+(defun functionp (object)
+  "Return t if OBJECT is a function, with the semantics of GNU Emacs 31 eval.c.
+A symbol is followed through `indirect-function'; an autoload object found
+that way counts when its type slot is nil.  A closure object, a byte-code
+object, a non-special subr and a (lambda ...) list are functions.  A macro
+cons, a special form, a `(closure ...)' list and an unbound symbol are not."
+  (let ((f object) (sym nil))
+    (if (and f (symbolp f)) (setq sym t f (indirect-function f)))
+    ;; A subr is cons-shaped in the standalone reader, so `subrp' must be
+    ;; asked before `consp'.
+    (cond ((null f) nil)
+          ((nelisp--closure-p f) t)
+          ((subrp f) (not (special-form-p f)))
+          ((consp f)
+           (let ((h (car f)))
+             (cond ((eq h 'lambda) t)
+                   ((and sym (eq h 'autoload)) (null (nth 4 f)))
+                   (t nil))))
+          ((byte-code-function-p f) t)
+          (t nil))))
 
 (unless (fboundp 'type-of)
   (defun type-of (x)
