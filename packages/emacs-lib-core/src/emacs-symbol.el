@@ -60,7 +60,13 @@ the underlying NeLisp runtime has no native property-cell.")
 ;; existing obarray operations, but their discarded size and insertion
 ;; history cannot be recovered by `internal--obarray-buckets'.
 (defun emacs-symbol--obarray-p (object)
-  "Recognize both prelude obarrays and obarrays with bucket state."
+  "Recognize the initial obarray, prelude obarrays and obarrays with bucket state."
+  (or (and (boundp 'nelisp--initial-obarray) object
+           (eq object nelisp--initial-obarray))
+      (emacs-symbol--table-obarray-p object)))
+
+(defun emacs-symbol--table-obarray-p (object)
+  "Non-nil when OBJECT is an obarray record backed by a name hash table."
   (and (recordp object)
        (memq (nelisp--record-length object) '(3 4))
        (eq (nelisp--record-type object) 'obarray)
@@ -95,7 +101,7 @@ the underlying NeLisp runtime has no native property-cell.")
       (when (eq array 0)
         (setq array (emacs-symbol--make-obarray 0))
         (aset object 0 array)))
-    (unless (emacs-symbol--obarray-p array)
+    (unless (emacs-symbol--table-obarray-p array)
       (signal 'wrong-type-argument (list 'obarrayp object)))
     array))
 
@@ -236,7 +242,14 @@ growth of the same names reuse it.  Only such names are cached, so two
 
 (defun emacs-symbol--mapatoms (function &optional obarray)
   "Call FUNCTION on every symbol, using bucket order for managed obarrays."
-  (unless obarray (signal 'unsupported-feature '(global-mapatoms)))
+  (if (or (null obarray)
+          (and (boundp 'nelisp--initial-obarray) (eq obarray nelisp--initial-obarray)))
+      ;; The initial obarray, as the prelude's `mapatoms' walks it (GNU
+      ;; lread.c: every symbol, nil and t included).
+      (progn
+        (funcall function nil)
+        (funcall function t)
+        (mapc function (nelisp--intern-table-symbols)))
   (let* ((array (emacs-symbol--obarray-object obarray))
          (state (emacs-symbol--obarray-state array)))
     (if state
@@ -246,7 +259,7 @@ growth of the same names reuse it.  Only such names are cached, so two
               (funcall function symbol))
             (setq i (1+ i))))
       (maphash (lambda (_name symbol) (funcall function symbol))
-               (nelisp--record-ref array 1))))
+               (nelisp--record-ref array 1)))))
   nil)
 
 (defun emacs-symbol--obarray-clear (&rest arguments)
@@ -255,7 +268,7 @@ growth of the same names reuse it.  Only such names are cached, so two
     (signal 'wrong-number-of-arguments
             (list 'obarray-clear (length arguments))))
   (let ((obarray (car arguments)))
-    (unless (emacs-symbol--obarray-p obarray)
+    (unless (emacs-symbol--table-obarray-p obarray)
       (signal 'wrong-type-argument (list 'obarrayp obarray)))
     (let ((state (emacs-symbol--obarray-state obarray)))
       (clrhash (nelisp--record-ref obarray 1))
@@ -285,7 +298,7 @@ growth of the same names reuse it.  Only such names are cached, so two
   (defun intern (name &optional ob)
     "Return the canonical symbol named NAME, interning it if necessary.
 Optional OB is the obarray to intern in."
-    (if (and ob (stringp name) (emacs-symbol--obarray-p ob))
+    (if (and ob (stringp name) (emacs-symbol--table-obarray-p ob))
         (emacs-symbol--obarray-intern name ob)
       (emacs-symbol--native-intern name ob))))
 
