@@ -31466,6 +31466,12 @@ permanent `none'.  Now the body gets a countdown in `nelisp--fx-table'
 body is compiled from the applied closure.  After `nelisp--fx-retry-max'
 attempts the final `none' is written.")
 
+;; Set by `nelisp--fx-register-fn' after each compile attempt: non-nil when the
+;; attempt failed for a reason that can go away (an undefined callee stopped
+;; it, or the compiler signalled while a helper was still undefined).  A
+;; final decline (unsupported form) leaves it nil, so the expired-retry
+;; re-arm below never burns its budget on a permanent `none'.
+(defvar nelisp--fx-last-transient nil)
 (defconst nelisp--fx-retry-max 6
   "Attempts a never-queued body gets before it stays `none'.")
 
@@ -31546,6 +31552,7 @@ and `nelisp--fx-register-fn' repeats the check."
       (when (and expired (gethash body nelisp--fx-retry-tries)
                  (not (gethash body nelisp--fx-table))
                  (consp body) (listp formals) (nelisp--fx-retry-ready-p))
+        (setq nelisp--fx-last-transient nil)
         (nelisp--fx-register-fn
          nil (cons 'closure (cons captured (cons formals body))))
         ;; A compilation that failed here (a callee still undefined) writes
@@ -31555,6 +31562,7 @@ and `nelisp--fx-register-fn' repeats the check."
         ;; budget is the same `nelisp--fx-retry-max' and the delay grows 4x.
         (let ((tries (gethash body nelisp--fx-retry-tries 0)))
           (when (and (eq (gethash body nelisp--fx-table) 'none)
+                     nelisp--fx-last-transient
                      (< tries nelisp--fx-retry-max)
                      (nelisp--fx-arglist-shape formals)
                      (or (nelisp--fx-env-ok-p captured)
@@ -31671,6 +31679,8 @@ meanwhile would otherwise record `none' again behind the compilation)."
                    (c (condition-case nil (nelisp--fx-compile (cons 'progn body)
                                                               (append capnames (car shape)))
                         (error (setq failed t) nil))))
+              (setq nelisp--fx-last-transient
+                    (and (null c) (or nelisp--fx-missing failed) t))
               (if c (setq nelisp--fx-compiled-ok t)
                 (when (and name failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))

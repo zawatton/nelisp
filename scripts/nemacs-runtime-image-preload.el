@@ -104,7 +104,10 @@ batch entry is still unavailable."
   (nemacs-runtime-image-preload--install-daily-driver-core)
   (nemacs-runtime-image-preload--reassert-process-bridge)
   (nemacs-runtime-image-preload--retry-stale-fx)
-  (nemacs-runtime-image-preload--reconvert-native-rows)
+  ;; The reconvert compiles can record a fresh `none' behind them; one more
+  ;; bounded pass (itself at most 4 rounds) repairs those.
+  (when (nemacs-runtime-image-preload--reconvert-native-rows)
+    (nemacs-runtime-image-preload--retry-stale-fx))
   t)
 
 (defun nemacs-runtime-image-preload--retry-stale-fx-pass ()
@@ -181,19 +184,44 @@ runtime."
     found))
 
 (defun nemacs-runtime-image-preload--reconvert-row (name)
-  "Compile NAME again from its closure and convert it; non-nil when converted."
+  "Compile NAME again from its closure and convert it; non-nil when converted.
+The record NAME had (fx table, pending entry, converted membership) is
+restored when the new registration fails or leaves a non-vector record, so a
+failed attempt never demotes a row that was fine before."
   (let* ((cell (nelisp--closure-cons (symbol-function name))))
     (when (eq (car-safe cell) 'closure)
-      (let ((body (nthcdr 3 cell)))
+      (let* ((body (nthcdr 3 cell))
+             (absent (make-symbol "absent"))
+             (old (gethash body nelisp--fx-table absent))
+             (old-pending (if (hash-table-p nelisp--fx-pending)
+                              (gethash body nelisp--fx-pending absent)
+                            absent))
+             (was-converted (and (memq name nelisp-nc--converted) t))
+             (ok nil))
         (remhash body nelisp--fx-table)
         (when (hash-table-p nelisp--fx-pending)
           (remhash body nelisp--fx-pending))
-        (nelisp--fx-register name)
-        ;; The install-tail wrapper converts on registration; convert here
-        ;; too in case it is not installed.
-        (unless (memq name nelisp-nc--converted)
-          (nelisp-nc--convert name (symbol-function name)))
-        (and (memq name nelisp-nc--converted) t)))))
+        (condition-case nil
+            (progn
+              (nelisp--fx-register name)
+              ;; The install-tail wrapper converts on registration; convert
+              ;; here too in case it is not installed.
+              (unless (memq name nelisp-nc--converted)
+                (nelisp-nc--convert name (symbol-function name)))
+              (setq ok (and (memq name nelisp-nc--converted)
+                            (vectorp (gethash body nelisp--fx-table))
+                            t)))
+          (error nil))
+        (unless ok
+          (if (eq old absent)
+              (remhash body nelisp--fx-table)
+            (puthash body old nelisp--fx-table))
+          (when (and (hash-table-p nelisp--fx-pending)
+                     (not (eq old-pending absent)))
+            (puthash body old-pending nelisp--fx-pending))
+          (when (and was-converted (not (memq name nelisp-nc--converted)))
+            (push name nelisp-nc--converted)))
+        ok))))
 
 (defun nemacs-runtime-image-preload--reconvert-native-rows ()
   "Re-register every native-row function that is not converted; answer how many.
