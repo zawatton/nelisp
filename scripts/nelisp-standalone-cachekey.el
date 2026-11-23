@@ -520,6 +520,12 @@ codegen input the key never sees."
              defs)
     (sort res (lambda (a b) (string< (symbol-name a) (symbol-name b))))))
 
+(defun nelisp-standalone-cachekey-uncovered-dynamic-vars (file)
+  "Let-bound closure variables of FILE that are in neither `-dynamic-vars' nor `-printed-vars'."
+  (seq-remove (lambda (v) (or (memq v nelisp-standalone-cachekey-dynamic-vars)
+                              (memq v nelisp-standalone-cachekey-printed-vars)))
+              (nelisp-standalone-cachekey-let-bound-vars file)))
+
 (defun nelisp-standalone-cachekey-dynamic-values (vars)
   "Stable text of the current values of VARS (symbols) for the key."
   (let ((print-length nil) (print-level nil) (print-circle t))

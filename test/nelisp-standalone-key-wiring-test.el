@@ -85,4 +85,20 @@
                                        . "(defun nelisp-standalone--unit-cache-key (source) ;; trailing   \n")))))
     (should-not (equal base (nl-kw--key '(("(format \"inline=%s/%d\\0\"" . "(format \"inline2=%s/%d\\0\"")))))))
 
+(ert-deftest nl-kw-new-driver-bound-variable-refuses-narrow-key ()
+  "F5: a let-bound variable the closure reads, absent from the key list, takes the global key."
+  (let* ((msgs nil)
+         (run (lambda (driver)
+                (setq msgs nil)
+                (cl-letf (((symbol-function 'message) (lambda (f &rest a) (push (apply #'format f a) msgs))))
+                  (nl-kw--key
+                   (list (cons "(defun nelisp-standalone--xinline-enabled-p ()"
+                               (concat "(defun nelisp-standalone--zz-driver () " driver ")\n"
+                                       "(defun nelisp-standalone--xinline-enabled-p () nelisp-aot-compiler--zz-new-var"))))))))
+    (funcall run "(let ((nelisp-aot-compiler--zz-new-var 1)) 1)")
+    (should (seq-some (lambda (m) (string-match-p "unlisted driver-bound variable" m)) msgs))
+    ;; Negative control: the driver does not bind the variable, narrow key stays.
+    (funcall run "1")
+    (should-not (seq-some (lambda (m) (string-match-p "global key" m)) msgs))))
+
 (provide 'nelisp-standalone-key-wiring-test)

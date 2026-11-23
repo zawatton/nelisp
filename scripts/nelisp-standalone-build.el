@@ -3637,7 +3637,12 @@ NELISP_STANDALONE_FULL_KEY=1).  Memoised per process; the reason is printed once
                            (error (list :error err))))
                    (reason (or (and (plist-get info :error)
                                     (format "closure scan failed: %S" (plist-get info :error)))
-                               (nelisp-standalone-cachekey-closure-fallback-reason info))))
+                               (nelisp-standalone-cachekey-closure-fallback-reason info)
+                               ;; F5: a driver-bound variable the closure reads but the
+                               ;; key does not print: refuse the narrow key.
+                               (let ((u (nelisp-standalone-cachekey-uncovered-dynamic-vars
+                                         nelisp-standalone--this-file)))
+                                 (and u (format "unlisted driver-bound variable %s" (car u)))))))
               (if reason
                   (progn (message "[standalone] key: %s, global key" reason)
                          (cons nil reason))
