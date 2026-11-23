@@ -603,16 +603,15 @@
     ;; install skipped a special name, the env sentinel (a direct cons element,
     ;; see `nelisp_frame_captured_decls' mode 1) followed by the installed names.
     ;; LMODE 2 answers 1 when the sentinel is present.  LMODE 0 (no sentinel)
-    ;; conses each element onto ACC, head first (the established order).  The
-    ;; reader walks the capture and reverses it, so LMODE 3 (sentinel present)
-    ;; accumulates the defvars head first and, at the sentinel, switches to
-    ;; LMODE 1 on the closure env list, which accumulates too: capture =
-    ;; rev(env) ++ rev(defvars) ++ ACC, view = defvars ++ env like GNU's defvar
-    ;; pushes.  The installed names after the sentinel (a subset of the env)
-    ;; are dropped.  LMODE 1 keeps the env's own order, duplicates and special
-    ;; names; the install predicate of `nelisp_frame_captured_decls' minus its
-    ;; special test filters pairs, immediates and non-names.  Iterative, and no
-    ;; allocation outside the conses.
+    ;; conses each element onto ACC, head first (the established order).  LMODE
+    ;; 3 (sentinel present) conses the defvars AFTER the expanded env so they
+    ;; lead the view like GNU's defvar pushes: view = defvars ++ env ++ ACC; at
+    ;; the sentinel it switches to LMODE 1 on the closure env list and drops the
+    ;; installed names (a subset of the env).  LMODE 1 conses the env cdr first
+    ;; so the view keeps the env's own order, duplicates and special names, as
+    ;; the pre-b665d7f30 install produced; the install predicate of
+    ;; `nelisp_frame_captured_decls' minus its special test filters pairs,
+    ;; immediates and non-names.  No allocation outside the conses.
     (defun nl_capture_local_names_w (names acc roots lmode)
       (if (= (nl_val_tag names) 7)
           (let* ((item (nl_cons_car_word names)))
@@ -620,23 +619,25 @@
                 (if (= (nl_val_tag item) 7) 1
                   (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 2))
               (if (= lmode 1)
-                  (if (if (= (logand item 1) 1) 0
-                        (if (= (sexp-tag item) 4) 1
-                          (if (or (= (nelisp_frame_stack_find_word_name_p item) 1)
-                                  (= (sexp-tag item) 6)
-                                  (= (sexp-tag item) 15))
-                              1
-                            0)))
-                      (let* ((word (nelisp_cons_construct_w item acc 0)))
-                        (nl_capture_root_set_word roots 0 word)
-                        (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 1))
-                    (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 1))
+                  (let* ((rest (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 1)))
+                    (if (if (= (logand item 1) 1) 0
+                          (if (= (sexp-tag item) 4) 1
+                            (if (or (= (nelisp_frame_stack_find_word_name_p item) 1)
+                                    (= (sexp-tag item) 6)
+                                    (= (sexp-tag item) 15))
+                                1
+                              0)))
+                        (let* ((word (nelisp_cons_construct_w item rest 0)))
+                          (nl_capture_root_set_word roots 0 word)
+                          word)
+                      rest))
                 (if (= lmode 3)
                     (if (= (nl_val_tag item) 7)
                         (nl_capture_local_names_w item acc roots 1)
-                      (let* ((word (nelisp_cons_construct_w item acc 0)))
+                      (let* ((rest (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 3))
+                             (word (nelisp_cons_construct_w item rest 0)))
                         (nl_capture_root_set_word roots 0 word)
-                        (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 3)))
+                        word))
                   (let* ((word (nelisp_cons_construct_w item acc 0)))
                     (nl_capture_root_set_word roots 0 word)
                     (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 0))))))
