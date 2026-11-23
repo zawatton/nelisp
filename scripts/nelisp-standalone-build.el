@@ -73109,7 +73109,9 @@ retains the checkout default. Application outputs still go to OUTPUT."
 ;; 0 (8-byte), undo entries at 8192 (16 bytes, 65536 of them), backtrack
 ;; frames at 1056768 (32 bytes, 65536 of them).  Answers: >= 0 the packed
 ;; (start * 2^31 + end) in characters; FLAGS = anchored + 2 * the text's character count, -1 no match, -2 decline (nothing was
-;; written but the scratch and the caller's capture vector).
+;; written but the scratch and the caller's capture vector).  Opcode 22 SYNCLS
+;; (class atoms, program flag 32 needing a capture vector of >= 460 slots) is
+;; mirrored by `rxn-cls' in refvm.el.
 (setq nelisp-standalone--applyfn-m5-helpers
       (append
        nelisp-standalone--applyfn-m5-helpers
@@ -73177,6 +73179,21 @@ retains the checkout default. Application outputs still go to OUTPUT."
                 (if (if (= op 17) 1 (= op 21))
                     (if (if (= b1 1) (= a1 0) 0) 1 0)
                   (if (= op 18) (if (= b1 a1) 0 1) (if (= b1 a1) 1 0)))))))))
+    ;; SYNCLS MASK NEG at byte POS of limit LIM (op 22): one ASCII character
+    ;; whose class code (0..15, the map at slots 332.. of the capture vector,
+    ;; SM + 1024 here) has its bit in MASK different from NEG.  1 holds, 0
+    ;; fails, -2 declines (byte >= 128, unfilled map or code outside 0..15).
+    ;; The bit is found by halving: shifts are not linked.
+    (defun m5_rx_cls (tp pos lim mask neg sm)
+      (if (>= pos lim) 0
+        (let* ((b (heap-read-u8 tp pos)))
+          (if (>= b 128) -2
+            (let* ((cls (m5_rx_sy (+ sm 1024) b)))
+              (if (< cls 0) -2
+                (if (>= cls 16) -2
+                  (let* ((m mask) (k cls))
+                    (seq (while (> k 0) (seq (setq m (/ m 2)) (setq k (- k 1))))
+                         (if (= (- m (* (/ m 2) 2)) neg) 0 1)))))))))) 
     ;; Character position of byte P (>= FOUND) of the match that starts at
     ;; byte FOUND = character CS; HUNI 1 means one byte per character.
     (defun m5_rx_cp (hay huni found cs p)
@@ -73294,7 +73311,11 @@ retains the checkout default. Application outputs still go to OUTPUT."
                                            (let* ((r (m5_rx_bnd tp n pos op sm)))
                                              (if (= r 1) (setq pc (+ pc 1))
                                                (if (= r 0) (setq failing 1) (setq res -2))))
-                                         (setq res -2)))))))))))))))))
+                                         (if (= op 22)
+                                             (let* ((r (m5_rx_cls tp pos lim (m5_rx_w pp (+ pc 1)) (m5_rx_w pp (+ pc 2)) sm)))
+                                               (if (= r 1) (seq (setq pos (+ pos 1)) (setq pc (+ pc 3)))
+                                                 (if (= r 0) (setq failing 1) (setq res -2))))
+                                           (setq res -2))))))))))))))))))
          res)))
     ;; PROG hay START LIMIT FLAGS(1 = only at START) CAPVEC SCRATCH; see above.
     (defun m5_rx_search (prog hay start lim flags capw scr)
@@ -73315,6 +73336,7 @@ retains the checkout default. Application outputs still go to OUTPUT."
                           (if (< (nl_vector_length capw) (* 2 ng)) -2
                            (if (if (= (logand pflags 8) 0) 0 (m5_unibyte_tag_p ht)) -2
                             (if (if (= (logand pflags 16) 0) 0 (< (nl_vector_length capw) 332)) -2
+                            (if (if (= (logand pflags 32) 0) 0 (< (nl_vector_length capw) 460)) -2
                             (if (if (= huni 1) (> lim hnb) 0) -2
                               (let* ((sb (if (= huni 1) start (nl_str_sub_byte_off hay hnb start)))
                                      (lb (if (= huni 1) lim
@@ -73325,7 +73347,7 @@ retains the checkout default. Application outputs still go to OUTPUT."
                                 (if (< sb 0) -2
                                   (if (< lb 0) -2
                                     (if (> lb hnb) -2
-                                      (m5_rx_scan pp tp hay start sb lb flags capw sc))))))))))))))))))))
+                                      (m5_rx_scan pp tp hay start sb lb flags capw sc)))))))))))))))))))))
     (defun m5_rx_scan (pp tp hay start sb lb flags capw sc)
       (let* ((rb sc)
              (hnb (m5_strlen hay))
