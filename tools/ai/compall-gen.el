@@ -120,6 +120,17 @@ bytes) plus about 100 per call node (the call-out's relocations).  Fitted on a
           (let ((form (condition-case nil (car (read-from-string text start)) (error nil))))
             (when (and (eq (car-safe form) 'defun) (symbolp (nth 1 form)))
               (puthash (nth 1 form) (cons form (gethash (nth 1 form) tbl)) tbl))))))))
+(defun compall-gen--vendor-sources ()
+  "NAME -> its defuns in the staged GNU sources the boot loads
+\(vendor/staged-emacs-lisp; e.g. cl-lib.el's cl-mapcar and cl-adjoin replace
+the prelude's).  Used only as extra candidates of the closure source check,
+never to count a byte-code function's sources."
+  (let ((tbl (make-hash-table :test 'eq)))
+    (when (file-directory-p "vendor/staged-emacs-lisp")
+      (dolist (file (directory-files "vendor/staged-emacs-lisp" t "\\.el\\'"))
+        (dolist (form (condition-case nil (compall-gen--read-forms file) (error nil)))
+          (compall-gen--defuns form tbl))))
+    tbl))
 (defun compall-gen--sources ()
   "NAME -> its source defuns, the last in file-name order first."
   (let ((tbl (make-hash-table :test 'eq)))
@@ -236,7 +247,7 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
                  compall-gen-max-ir))
        (exclude (make-hash-table :test 'eq))
        (exclude-file (or (getenv "COMPALL_EXCLUDE") "tools/ai/compall2-exclude.txt"))
-       (names nil) (rows nil) (skipped 0) (src (compall-gen--sources))
+       (names nil) (rows nil) (skipped 0) (src (compall-gen--sources)) (vsrc (compall-gen--vendor-sources))
        ;; The byte-code JIT's dispatcher, which every byte-code call goes through.
        (jit (let ((tbl (make-hash-table :test 'eq)))
               (dolist (f (compall-gen--read-forms "lisp/nelisp-bytecode-jit.el"))
@@ -334,7 +345,8 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
                   ((string-prefix-p "nelisp--fx-" (symbol-name name)) "fx-compiler")
                   ((gethash name jit) "bytecode-jit")
                   ((and (gethash name src) (not bc)
-                        (not (compall-gen--source-same-p (gethash name src) (nth 2 c) (car c) (nth 2 fn))))
+                        (not (compall-gen--source-same-p (append (gethash name src) (gethash name vsrc))
+                                                    (nth 2 c) (car c) (nth 2 fn))))
                    "source-differs"))))
       (if reason
           (progn (setq skipped (1+ skipped)) (princ (format "GEN %s skip %s\n" name reason)))
