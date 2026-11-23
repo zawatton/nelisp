@@ -1,0 +1,8 @@
+R1 modify in place         ((nil 0 nil 0 0 1 (nil t nil t)) (0 nil nil 0 0 3 (t nil nil t)) (0 nil nil 0 0 3 (t nil nil t)) (nil 0 nil 0 0 1 (nil t nil t)))
+R2 raw aset                ((nil 0 nil 0 0 1 (nil t nil t)) (0 nil nil 0 0 3 (t nil nil t)) (0 nil nil 0 0 3 (t nil nil t)))
+R3 parent edit             ((nil 0 nil 0 0 1 (nil t nil t)) (0 nil nil 0 0 3 (t nil nil t)) (nil nil nil 0 0 1 (nil nil nil t)))
+R4 set-syntax-table        ((nil 0 nil 0 0 1 (nil t nil t)) (0 nil nil 0 0 3 (t nil nil t)) (nil 0 nil 0 0 1 (nil t nil t)))
+R5 two buffers             ((nil 0 nil 0 0 1 (nil t nil t)) (0 nil nil 0 0 3 (t nil nil t)) (nil 0 nil 0 0 1 (nil t nil t)) (0 nil nil 0 0 3 (t nil nil t)))
+R6 with-syntax-table       ((nil 0 nil 0 0 1 (nil t nil t)) ((0 nil nil 0 0 3 (t nil nil t)) (nil 0 0 nil 0 1 (nil t t nil)) (0 nil nil 0 0 3 (t nil nil t))) (nil 0 nil 0 0 1 (nil t nil t)))
+R7 std table edit          ((nil 0 nil 0 0 1 (nil t nil t)) (0 nil nil 0 0 3 (t nil nil t)))
+R8 non-ascii               (0 nil (nil 0))

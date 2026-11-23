@@ -1589,18 +1589,36 @@ A separate function: GNU compiles `char-syntax' to opcode 122, which the
 standalone VM does not admit, and the predicates below stay byte-code."
   (char-syntax c))
 
+(defvar nlre--setup-syntax-key nil
+  "Provider table object that `nlre--setup-syntax-table' last classified.")
+(defvar nlre--setup-syntax-gen -1
+  "`nlre--syntax-cache-generation' when `nlre--setup-syntax-key' was classified.")
+(defvar nlre--setup-syntax-answer nil
+  "Answer `nlre--setup-syntax-table' returned for `nlre--setup-syntax-key'.")
+
 (defun nlre--setup-syntax-table ()
-  "Read the current syntax table into `nlre--syntax-table' and return it."
+  "Read the current syntax table into `nlre--syntax-table' and return it.
+The table-or-t classification is reused while the table object and
+`nlre--syntax-cache-generation' are unchanged, the same contract as
+`nlre--nat-syn-ensure'.  The answer is the table object itself, so in-place
+edits (`aset', parent-table changes) stay visible to the predicates."
   (setq nlre--syntax-table
         (if (not (fboundp 'char-syntax))
             'none
           (let ((table (and nlre--syntax-table-reader
                             (funcall nlre--syntax-table-reader))))
-            (if (if (fboundp 'nelisp--syntax-table-object-p)
-                    (nelisp--syntax-table-object-p table)
-                  (char-table-p table))
-                table
-              t)))))
+            (if (and table (eq table nlre--setup-syntax-key)
+                     (= nlre--syntax-cache-generation nlre--setup-syntax-gen))
+                nlre--setup-syntax-answer
+              (let ((answer (if (if (fboundp 'nelisp--syntax-table-object-p)
+                                    (nelisp--syntax-table-object-p table)
+                                  (char-table-p table))
+                                table
+                              t)))
+                (setq nlre--setup-syntax-key table
+                      nlre--setup-syntax-gen nlre--syntax-cache-generation
+                      nlre--setup-syntax-answer answer)
+                answer))))))
 
 ;; Each predicate reads the class code from the raw descriptor, as GNU's
 ;; SYNTAX (syntax.h:116-135): an entry that is not a cons is whitespace.
