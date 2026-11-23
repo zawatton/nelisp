@@ -14082,6 +14082,12 @@ point advances past TEXT instead of consulting its own
       (when ovt
         (nelisp-ov--before-change b at at))
       (setq n (nelisp--gb-insert b text))
+      ;; GNU: an insertion inside the accessible portion moves ZV with it,
+      ;; as `nelisp-insert' does (a narrowing left by `save-restriction'
+      ;; otherwise hid the tail after `insert-before-markers').
+      (when (nelisp-buffer-narrow-end b)
+        (setf (nelisp-buffer-narrow-end b)
+              (+ (nelisp-buffer-narrow-end b) n)))
       (setf (nelisp-buffer-modified b) t)
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
