@@ -4155,10 +4155,22 @@ directory tracks the tree rather than accumulating every key ever built."
         ;; a prewarm child, another build or another lane may write the same
         ;; entry, and a reader must never see a partly written file.
         (make-directory cache-dir t)
-        (nelisp-standalone-cachekey-entry-write
-         cache key
-         (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
-           (prin1-to-string (nelisp-standalone--unit-cache-encode unit))))
+        (let* ((text (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
+                       (prin1-to-string (nelisp-standalone--unit-cache-encode unit))))
+               (olds (directory-files cache-dir t
+                                      (concat "\\`" (regexp-quote name)
+                                              "\\(\\.[0-9a-f]+\\)?\\.unit\\'")))
+               (same (nelisp-standalone-cachekey-unchanged-entry
+                      (delq nil (mapcar (lambda (o) (unless (string= o cache) o)) olds))
+                      text)))
+          ;; Early cutoff (design2 C): the recompiled payload equals an
+          ;; older entry of this unit, so nothing downstream can change.
+          (when same
+            (message "[standalone] unit output unchanged: %s" name)
+            (nelisp-standalone--build-trace-event "unit-output-unchanged" "end"))
+          (nelisp-standalone-cachekey-entry-write
+           cache key text
+           (or (car (nelisp-standalone--key-closure-term)) "global")))
         ;; Only the build prunes older entries of this unit.  A prewarm
         ;; child replays the build with every other unit stubbed, so its
         ;; source -- and key -- can differ from the build's; pruning there
@@ -69150,6 +69162,20 @@ bridge is deliberately callable only through a raw builtin descriptor."
             (error "Unregistered foundation builtin: %s" name))))))
   t)
 
+(defun nelisp-standalone--install-linked-binary (new final)
+  "Move the freshly linked and stamped NEW over FINAL unless their bytes are equal.
+Return FINAL.  Equal bytes (the stamped digest is inside them) delete NEW and
+keep FINAL untouched; a missing FINAL, any difference or a read error installs
+NEW.  Never skips on doubt, so an image embedding its output path only loses
+the cutoff."
+  (if (and (file-exists-p final)
+           (ignore-errors (nelisp-standalone-cachekey-files-equal-p new final)))
+      (progn (delete-file new)
+             (message "[standalone-reader] binary unchanged, kept %s" final))
+    (rename-file new final t)
+    (message "[standalone-reader] binary installed %s" final))
+  final)
+
 (defun nelisp-standalone-build-reader ()
   "Incrementally build the reader-path standalone binary; return its path.
 NELISP_STANDALONE_BUILD_TRACE opts into an appended JSONL phase trace.
@@ -69184,7 +69210,10 @@ The trace parent directory must exist; tracing never skips a build stage."
                   (nelisp-standalone--with-stackmap-unit
                    (nelisp-standalone--hot-layout
                     (nelisp-standalone--reader-units)))))
-         (out (nelisp-standalone--output-path t)))
+         (final (nelisp-standalone--output-path t))
+         ;; Link beside the old binary (design2 C): an identical result keeps
+         ;; the old file, so its mtime and every sidecar keyed on it survive.
+         (out (concat final ".new")))
     (nelisp-standalone--build-trace-phase "link-stamp"
     (pcase (nelisp-standalone-arena-rewrite-target)
       ('windows-x86_64
@@ -69230,6 +69259,7 @@ The trace parent directory must exist; tracing never skips a build stage."
       (when (eq (nelisp-standalone-arena-rewrite-target) 'macos-aarch64)
         (nelisp-standalone--codesign-macos-adhoc out))
       (message "[standalone-reader] build digest %s" digest)))
+    (setq out (nelisp-standalone--install-linked-binary out final))
     ;; The linked unit graph is dead; release it before the native cold dump.
     (setq units nil)
     (garbage-collect)

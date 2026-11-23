@@ -174,16 +174,44 @@ or several hosts never share it; the destination is replaced atomically."
                (setq tmp nil))
       (when (and tmp (file-exists-p tmp)) (ignore-errors (delete-file tmp))))))
 
-(defun nelisp-standalone-cachekey-entry-text (key payload)
-  "Entry file text for KEY and PAYLOAD (a string): header line then payload."
-  (format "%s key=%s sha256=%s bytes=%d\n%s"
+(defun nelisp-standalone-cachekey-entry-text (key payload &optional closure)
+  "Entry file text for KEY and PAYLOAD (a string): header line then payload.
+CLOSURE (design2 C) is the closure digest the key was taken under, or the
+string \"global\"; it is recorded as a diagnostic header field, never checked."
+  (format "%s key=%s sha256=%s bytes=%d%s\n%s"
           nelisp-standalone-cachekey-entry-magic key
-          (secure-hash 'sha256 payload) (string-bytes payload) payload))
+          (secure-hash 'sha256 payload) (string-bytes payload)
+          (if closure (format " closure=%s" closure) "") payload))
 
-(defun nelisp-standalone-cachekey-entry-write (file key payload)
-  "Atomically write the entry for KEY with PAYLOAD to FILE."
+(defun nelisp-standalone-cachekey-entry-write (file key payload &optional closure)
+  "Atomically write the entry for KEY with PAYLOAD (and CLOSURE) to FILE."
   (nelisp-standalone-cachekey-atomic-write
-   file (nelisp-standalone-cachekey-entry-text key payload)))
+   file (nelisp-standalone-cachekey-entry-text key payload closure)))
+
+(defun nelisp-standalone-cachekey-entry-header (file)
+  "Return the header of entry FILE as a plist (:key :sha256 :bytes :closure), or nil.
+Reads only the first line; a missing or malformed file is nil."
+  (ignore-errors
+    (with-temp-buffer
+      (let ((coding-system-for-read 'utf-8-unix))
+        (insert-file-contents file nil 0 512))
+      (goto-char (point-min))
+      (when (looking-at (concat (regexp-quote nelisp-standalone-cachekey-entry-magic)
+                                " key=\\([0-9a-f]+\\) sha256=\\([0-9a-f]+\\) bytes=\\([0-9]+\\)"
+                                "\\(?: closure=\\([0-9a-z]+\\)\\)?$"))
+        (list :key (match-string 1) :sha256 (match-string 2)
+              :bytes (string-to-number (match-string 3)) :closure (match-string 4))))))
+
+(defun nelisp-standalone-cachekey-unchanged-entry (files payload)
+  "Return the first of FILES whose header sha256 equals PAYLOAD's, else nil.
+Early cutoff for a unit: a recompiled unit whose payload equals an older entry
+changed nothing downstream."
+  (let ((sha (secure-hash 'sha256 payload)) hit)
+    (dolist (f files)
+      (unless hit
+        (when (equal (plist-get (nelisp-standalone-cachekey-entry-header f) :sha256) sha)
+          (setq hit f))))
+    hit))
 
 (defun nelisp-standalone-cachekey-entry-read (file key)
   "Return (OK . PAYLOAD-or-REASON) for the entry FILE expected to hold KEY.
@@ -200,7 +228,7 @@ is split off."
                     (buffer-string))))
         (if (not (string-match
                   (concat "\\`" (regexp-quote nelisp-standalone-cachekey-entry-magic)
-                          " key=\\([0-9a-f]+\\) sha256=\\([0-9a-f]+\\) bytes=\\([0-9]+\\)\n")
+                          " key=\\([0-9a-f]+\\) sha256=\\([0-9a-f]+\\) bytes=\\([0-9]+\\)\\(?: closure=[0-9a-z]+\\)?\n")
                   text))
             (cons nil 'header)
           (let ((hkey (match-string 1 text)) (hsha (match-string 2 text))
@@ -564,6 +592,14 @@ approximates what a bake reads, so an edit can only cost a re-bake."
                                          (secure-hash 'sha256 (current-buffer)))
                        "\0" bake-in "\0"
                        (format "%S" (mapcar (lambda (n) (cons n (getenv n))) env-names)))))
+
+(defun nelisp-standalone-cachekey-files-equal-p (a b)
+  "Non-nil when files A and B have the same size and bytes."
+  (and (= (file-attribute-size (file-attributes a)) (file-attribute-size (file-attributes b)))
+       (equal (with-temp-buffer (set-buffer-multibyte nil)
+                                (insert-file-contents-literally a) (secure-hash 'sha256 (current-buffer)))
+              (with-temp-buffer (set-buffer-multibyte nil)
+                                (insert-file-contents-literally b) (secure-hash 'sha256 (current-buffer))))))
 
 (defun nelisp-standalone-cachekey-sidecar-fresh-p (file key)
   "Non-nil only when FILE and FILE.digest exist and the digest equals KEY."

@@ -538,3 +538,50 @@ Each FROM must occur exactly once: an edit that misses is a test error."
             (delete-file img)
             (should-not (nelisp-standalone-cachekey-sidecar-fresh-p img k))))
       (delete-directory dir t))))
+
+;;;; design2 C: closure in the entry header, unit early cutoff, binary compare.
+
+(ert-deftest nl-ck-entry-header-closure-roundtrip ()
+  (let* ((dir (make-temp-file "nlck" t)) (f (expand-file-name "u.unit" dir))
+         (k (make-string 40 ?a)))
+    (unwind-protect
+        (progn
+          (nelisp-standalone-cachekey-entry-write f k "payload-1" "0123abcd")
+          (should (equal (plist-get (nelisp-standalone-cachekey-entry-header f) :closure) "0123abcd"))
+          (should (equal (nelisp-standalone-cachekey-entry-read f k) '(t . "payload-1")))
+          ;; Global key is recorded as such; an entry without the field still reads.
+          (nelisp-standalone-cachekey-entry-write f k "payload-2" "global")
+          (should (equal (plist-get (nelisp-standalone-cachekey-entry-header f) :closure) "global"))
+          (nelisp-standalone-cachekey-entry-write f k "payload-3")
+          (should-not (plist-get (nelisp-standalone-cachekey-entry-header f) :closure))
+          (should (equal (nelisp-standalone-cachekey-entry-read f k) '(t . "payload-3")))
+          ;; Negative control: a corrupted header yields nil, not a plist.
+          (with-temp-file f (insert "garbage\n"))
+          (should-not (nelisp-standalone-cachekey-entry-header f)))
+      (delete-directory dir t))))
+
+(ert-deftest nl-ck-unchanged-entry-matches-payload-only ()
+  (let* ((dir (make-temp-file "nlck" t)) (a (expand-file-name "a.unit" dir))
+         (b (expand-file-name "b.unit" dir)))
+    (unwind-protect
+        (progn
+          (nelisp-standalone-cachekey-entry-write a (make-string 40 ?a) "same" "x")
+          (nelisp-standalone-cachekey-entry-write b (make-string 40 ?b) "other" "x")
+          (should (equal (nelisp-standalone-cachekey-unchanged-entry (list a b) "same") a))
+          ;; Negative controls: different payload, no candidates, missing file.
+          (should-not (nelisp-standalone-cachekey-unchanged-entry (list a b) "changed"))
+          (should-not (nelisp-standalone-cachekey-unchanged-entry nil "same"))
+          (should-not (nelisp-standalone-cachekey-unchanged-entry (list (expand-file-name "no" dir)) "same")))
+      (delete-directory dir t))))
+
+(ert-deftest nl-ck-files-equal-p-bytes ()
+  (let* ((dir (make-temp-file "nlck" t)) (a (expand-file-name "a" dir))
+         (b (expand-file-name "b" dir)) (c (expand-file-name "c" dir)))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'binary))
+            (write-region "abc\0def" nil a) (write-region "abc\0def" nil b)
+            (write-region "abc\0deg" nil c))
+          (should (nelisp-standalone-cachekey-files-equal-p a b))
+          (should-not (nelisp-standalone-cachekey-files-equal-p a c)))
+      (delete-directory dir t))))

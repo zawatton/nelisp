@@ -129,3 +129,28 @@
       (delete-directory dir t))))
 
 (provide 'nelisp-standalone-key-wiring-test)
+
+(ert-deftest nl-kw-install-linked-binary-cutoff ()
+  "Equal bytes keep the old binary (mtime and inode); a difference or absence installs."
+  (let* ((dir (make-temp-file "nlkw" t)) (final (expand-file-name "nelisp" dir))
+         (new (concat final ".new")) (coding-system-for-write 'binary))
+    (unwind-protect
+        (progn
+          (write-region "BIN-1" nil final)
+          (set-file-times final (seconds-to-time 1000))
+          (write-region "BIN-1" nil new)
+          (should (equal (nelisp-standalone--install-linked-binary new final) final))
+          (should-not (file-exists-p new))
+          (should (= 1000 (floor (float-time (file-attribute-modification-time (file-attributes final))))))
+          ;; Negative control: a different binary replaces the old one.
+          (write-region "BIN-2" nil new)
+          (nelisp-standalone--install-linked-binary new final)
+          (should-not (file-exists-p new))
+          (should (equal (with-temp-buffer (insert-file-contents final) (buffer-string)) "BIN-2"))
+          (should (> (float-time (file-attribute-modification-time (file-attributes final))) 2000))
+          ;; Absent old binary: installed.
+          (delete-file final)
+          (write-region "BIN-3" nil new)
+          (nelisp-standalone--install-linked-binary new final)
+          (should (file-exists-p final)))
+      (delete-directory dir t))))
