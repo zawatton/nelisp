@@ -1617,7 +1617,109 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
         (setq position run-end)))
     records))
 
+(defvar emacs-buffer-builtins--modification-hooks-seen nil
+  "Non-nil once a text-property mutation has set `modification-hooks' or
+`category' anywhere: only then can a property change find text-property
+modification hooks to run, so only then is its range scanned for them.")
+
+(defun emacs-buffer-builtins--property-change-p (operation start end payload value)
+  "Non-nil when OPERATION on START..END of the current buffer changes a
+property, by GNU's tests: add/put unless every character already has
+every new value (`eq'); remove when some character has one of the
+properties; set unless both the buffer and the new list are empty."
+  (cond
+   ((>= start end) nil)
+   ((eq operation 'set)
+    (or payload (nelisp-buffer-text-properties nelisp--current-buffer)))
+   (t
+    (let ((pairs (cond ((eq operation 'put) (list payload value))
+                       ((eq operation 'remove) payload)
+                       (t payload)))
+          (pos start) (found nil))
+      (while (and (< pos end) (not found))
+        (let ((props (text-properties-at pos)) (tail pairs))
+          (while (and (consp tail) (not found))
+            (if (eq operation 'remove)
+                (when (plist-member props (car tail)) (setq found t))
+              (unless (and (plist-member props (car tail))
+                           (eq (plist-get props (car tail)) (cadr tail)))
+                (setq found t)))
+            (setq tail (cddr tail))))
+        (setq pos (or (next-property-change pos nil end) end)))
+      found))))
+
 (defun emacs-buffer-builtins--text-property-mutation-around
+    (operation orig start end &rest args)
+  "Mirror OPERATION into the sidecar, notifying a buffer change as GNU's
+`modify_text_properties' and `signal_after_change' do."
+  (let* ((put-p (eq operation 'put))
+         (payload (car args))
+         (object (if put-p (nth 2 args) (nth 1 args)))
+         (buffer (cond ((null object) (current-buffer))
+                       ((bufferp object) object))))
+    (unless emacs-buffer-builtins--modification-hooks-seen
+      (when (if put-p
+                (memq payload '(modification-hooks category))
+              (and (memq operation '(add set))
+                   (let ((tail payload) (hit nil))
+                     (while (and (consp tail) (not hit))
+                       (setq hit (memq (car tail) '(modification-hooks category))
+                             tail (cdr-safe (cdr tail))))
+                     hit)))
+        (setq emacs-buffer-builtins--modification-hooks-seen t)))
+    (cond
+     ;; Nothing to notify in the current buffer: GNU's verification
+     ;; would only reset the pending insert hooks.
+     ((and (eq buffer (current-buffer))
+           (or inhibit-modification-hooks
+               (and (null before-change-functions)
+                    (null after-change-functions)
+                    (null (nelisp-buffer-overlays nelisp--current-buffer))
+                    (not emacs-buffer-builtins--modification-hooks-seen))))
+      (when (nelisp-buffer-text-properties nelisp--current-buffer)
+        (setq emacs-buffer-builtins--interval-insert-behind-hooks nil
+              emacs-buffer-builtins--interval-insert-in-front-hooks nil))
+      (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+             operation orig start end args))
+     ((or (null buffer)
+            (not (fboundp 'emacs-buffer-builtins--public-change))
+            (not (and (integerp (emacs-buffer-builtins--public-position start))
+                      (integerp (emacs-buffer-builtins--public-position end)))))
+      (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+             operation orig start end args))
+     (t
+      (with-current-buffer buffer
+        (let ((s (min (emacs-buffer-builtins--public-position start)
+                      (emacs-buffer-builtins--public-position end)))
+              (e (max (emacs-buffer-builtins--public-position start)
+                      (emacs-buffer-builtins--public-position end))))
+          (if (or (and (or inhibit-modification-hooks
+                           (and (null before-change-functions)
+                                (null after-change-functions)
+                                (null (nelisp-buffer-overlays nelisp--current-buffer))
+                                (not emacs-buffer-builtins--modification-hooks-seen)))
+                       (progn
+                         ;; GNU's verification still resets the pending
+                         ;; insert hooks in a buffer with intervals.
+                         (when (nelisp-buffer-text-properties nelisp--current-buffer)
+                           (setq emacs-buffer-builtins--interval-insert-behind-hooks nil
+                                 emacs-buffer-builtins--interval-insert-in-front-hooks nil))
+                         t))
+                  (< s (point-min)) (> e (point-max))
+                  (not (emacs-buffer-builtins--property-change-p
+                        operation s e payload (cadr args))))
+              (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+                     operation orig start end args)
+            (let ((result nil))
+              (emacs-buffer-builtins--public-change
+               s e (- e s)
+               (lambda ()
+                 (setq result
+                       (apply #'emacs-buffer-builtins--text-property-mutation-around-1
+                              operation orig start end args))))
+              result))))))))
+
+(defun emacs-buffer-builtins--text-property-mutation-around-1
     (operation orig start end &rest args)
   "Mirror native text-property mutation OPERATION into the sidecar."
   (let* ((put-p (eq operation 'put))
@@ -1721,13 +1823,14 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
   "Mirror native `remove-list-of-text-properties' into the sidecar.
 Without this, readers that prefer the managed sidecar keep seeing the
 removed properties (GNU font-lock unfontify relies on this primitive)."
-  (let ((result (funcall orig start end list-of-properties object))
-        (plist nil))
+  (let ((plist nil))
     (dolist (key list-of-properties)
       (setq plist (cons key (cons nil plist))))
+    ;; The native removal runs inside the mirror, after the change
+    ;; notification has seen the old properties (GNU notifies first).
     (emacs-buffer-builtins--text-property-mutation-around
-     'remove #'ignore start end plist object)
-    result))
+     'remove (lambda (&rest _) (funcall orig start end list-of-properties object))
+     start end plist object)))
 
 (when (and (fboundp 'nelisp--buffer-multibyte-p)
            (fboundp 'remove-list-of-text-properties))
