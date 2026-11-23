@@ -15534,9 +15534,16 @@ value at a range's start.")
           (aset table (+ 3 i) sub))
         (nelisp--sub-char-table-set sub c val)))))
 
+(defvar nelisp--chartab-lisp-epoch 0
+  "Count of char-table writes made by the Lisp paths of this file and of
+emacs-char-table.el (the native paths count in `nelisp--char-table-epoch').
+Every write bumps it, so a cache keyed on the sum of both counters sees a raw
+`aset', `set-char-table-range' or `set-char-table-parent' on any table.")
+
 (defun nelisp--char-table-set (table c val)
   "chartab.c:399-421 `char_table_set', with lisp.h's CHAR_TABLE_SET
 ASCII path."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (let* ((slots (nelisp--char-table-vector table))
          (ascii (aref slots 0)))
     (if (and (< c 128) (nelisp--sub-char-table-p ascii))
@@ -15572,6 +15579,7 @@ ASCII path."
 
 (defun nelisp--char-table-set-range (table from to val)
   "chartab.c:462-496 `char_table_set_range'."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (if (= from to)
       (nelisp--char-table-set table from val)
     (let* ((slots (nelisp--char-table-vector table))
@@ -15593,6 +15601,7 @@ ASCII path."
 (defun nelisp--char-table-aset (table idx val)
   "`aset' on a char-table: data.c Faset's CHECK_CHARACTER and CHAR_TABLE_SET.
 The native `aset' has already checked that IDX is a fixnum."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (nelisp--chartab-check-char idx)
   (nelisp--char-table-set table idx val)
   val)
@@ -15643,6 +15652,7 @@ or a character code.  Return VALUE.
 
 \(fn CHAR-TABLE RANGE VALUE)"
   ;; chartab.c:608-641.
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (nelisp--chartab-check char-table)
   (cond ((eq range t)
          (let ((slots (nelisp--char-table-vector char-table)) (i 1))

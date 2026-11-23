@@ -153,10 +153,14 @@ this global generation without walking the table."
 
 (defun nlre--install-syntax-cache-hook ()
   "Connect public syntax-table mutation before caching a compiled regexp.
+Also forgets the per-call syntax maps when a char-table was written since they
+were filled (`nlre--ct-epoch-sync'); every filler and the harvested
+`nlre--nat-syn-ensure' call this first.
 The library may also call `nlre-clear-syntax-cache' directly from its mutator.
 Observe function-cell replacement in constant time: this bootstrap's raw
 defalias does not preserve advice when a later library supplies its mutator.
 Capture that callable directly instead of autoloading the nadvice substrate."
+  (nlre--ct-epoch-sync)
   (unless (or nlre--syntax-cache-installing
               (and nlre--syntax-cache-wrapper
                    (eq nlre--syntax-cache-wrapper
@@ -2883,6 +2887,38 @@ contract as the compiled-pattern cache (`nlre-clear-syntax-cache')."
 (defvar nlre--nat-cls-gen -1
   "`nlre--syntax-cache-generation' when the class map was filled.")
 
+;; Char-table write epoch (F415).  GNU reads the live syntax table on every
+;; lookup, so a raw `aset', `set-char-table-range' or `set-char-table-parent'
+;; (on the table, its parent or the standard table) is seen at once.  The maps
+;; below are reused while the table object and `nlre--syntax-cache-generation'
+;; are unchanged, which does not see such writes.  Every char-table write
+;; bumps `nelisp--chartab-lisp-epoch' (Lisp writers) or the native counter
+;; read by `nelisp--char-table-epoch'; their sum only increases.
+;; `nlre--ct-epoch-sync' runs from `nlre--install-syntax-cache-hook' and, when
+;; the sum moved, voids the generation stamp of the assertion map, the class
+;; map and the setup answer so each is refilled by its next user.  Compiled
+;; pattern caches are untouched, as in GNU.
+(defvar nelisp--chartab-lisp-epoch 0
+  "Count of Lisp-path char-table writes (the prelude and emacs-char-table.el).")
+(defvar nlre--ct-epoch-native (fboundp 'nelisp--char-table-epoch)
+  "Non-nil when the native char-table write counter exists (resolved at load).")
+(defvar nlre--ct-seen -1
+  "Char-table epoch at the last `nlre--ct-epoch-sync'.")
+
+(defun nlre--ct-epoch ()
+  "Sum of the native and the Lisp char-table write counters."
+  (+ (if nlre--ct-epoch-native (funcall 'nelisp--char-table-epoch) 0)
+     nelisp--chartab-lisp-epoch))
+
+(defun nlre--ct-epoch-sync ()
+  "Void the syntax maps when a char-table was written since the last call."
+  (let ((e (nlre--ct-epoch)))
+    (unless (eql e nlre--ct-seen)
+      (setq nlre--ct-seen e
+            nlre--nat-syn-gen -1
+            nlre--nat-cls-gen -1
+            nlre--setup-syntax-gen -1))))
+
 (defun nlre--nat-cls-code (table c)
   "GNU class code (0..15) of ASCII char C under TABLE as `nlre--syntax-p' reads
 it; 16 (the exec declines) when that predicate has no answer."
@@ -2918,11 +2954,10 @@ it; 16 (the exec declines) when that predicate has no answer."
 ;; row), through the functions below, which are not harvested either.  The
 ;; harvested `nlre--nat-program', `nlre--nat-program-syn' and `nlre--nat-bsearch'
 ;; keep declining class atoms, so re-search-forward/backward are unchanged.
-(defvar nlre--nat-cls-enable nil
+(defvar nlre--nat-cls-enable t
   "Non-nil lets class atoms (\\w \\sC ...) run on the native matcher.
-Default nil: the generation-keyed class map does not see a raw `aset' on a
-syntax table (the Lisp predicates read the live table), so enabling it is a
-shipping decision; see the F414 entry.")
+Default t since F415: the class map is voided by `nlre--ct-epoch-sync' when any
+char-table was written, so a raw `aset' on a syntax table is seen.")
 (defvar nlre--nat-cprogs (make-hash-table :test 'equal)
   "Regexp -> (PROGRAM . GROUPS) of a class program, or :no; case-sensitive.")
 (defvar nlre--nat-cprogs-fold (make-hash-table :test 'equal)

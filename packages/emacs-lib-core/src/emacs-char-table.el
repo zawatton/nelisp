@@ -73,6 +73,10 @@ New tables allocate the count specified by their subtype property.")
 The lightweight runtime has no native per-buffer category-table slot yet;
 the shared table still gives vendor libraries real mutation semantics.")
 
+(defvar nelisp--chartab-lisp-epoch 0
+  "Count of Lisp-path char-table writes; see the same variable in the prelude.
+Every writer below bumps it so a cache keyed on it sees a raw write.")
+
 (defconst emacs-char-table--max-char #x3FFFFF
   "Largest character code (Doc 05: UTF-8 / Unicode range).")
 
@@ -584,6 +588,7 @@ Mutations and compatibility views follow GNU's recursive slot order."
 
 (defun emacs-char-table--owner-set-char (table char value)
   "Apply GNU's single-character write path to owned TABLE."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (let ((cache (emacs-char-table--owner-cache table)))
     (if (and (< char 128) (emacs-char-table--topology-node-p cache))
         (aset (emacs-char-table--topology-node-contents cache) char value)
@@ -596,6 +601,7 @@ Mutations and compatibility views follow GNU's recursive slot order."
 
 (defun emacs-char-table--owner-set-range (table from to value)
   "Apply a character range write to owned TABLE and return VALUE."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (cond
    ((= from to)
     (emacs-char-table--owner-set-char table from value))
@@ -756,6 +762,7 @@ than being discarded in favor of the standard table."
 
 (defun emacs-char-table--raw-set (array index value)
   "Write storage slot INDEX of ARRAY, including bootstrap syntax tables."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (when (recordp array) (setq array (emacs-char-table--storage array)))
   (if (emacs-char-table--native-vector-bridge-p)
       (nelisp--raw-aset array index value)
@@ -926,6 +933,7 @@ declines to `emacs-char-table-aref' and then `emacs-char-table-ref-slow'
 
 (defun emacs-char-table-set (ct char value)
   "Set CT's value for a single character CHAR to VALUE."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (if (emacs-char-table--native-p ct)
       (emacs-char-table--native-set ct char value)
    (if (and (emacs-char-table--owned-p ct)
@@ -1089,6 +1097,7 @@ RESET removes CATEGORY.  CATEGORY must be defined in TABLE."
 
 (defun emacs-char-table--owned-set-range (ct range value)
   "Apply RANGE to owned char-table CT, then return VALUE."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (cond
    ((null range)
     (emacs-char-table--raw-set ct emacs-char-table--i-default value))
@@ -1120,6 +1129,7 @@ RESET removes CATEGORY.  CATEGORY must be defined in TABLE."
 RANGE is nil (the default value), t (the whole table), a character,
 or a cons (FROM . TO).  Large supra-ASCII ranges are stored sparsely
 rather than materialised."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (emacs-char-table--check-table ct)
   (if (emacs-char-table--owned-p ct)
       (emacs-char-table--owned-set-range ct range value)
@@ -1198,6 +1208,7 @@ rather than materialised."
 
 (defun emacs-char-table-set-parent (ct parent)
   "Set CT's parent to PARENT (a char-table or nil).  Returns PARENT."
+  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (emacs-char-table--check-table ct)
   (when (emacs-char-table--native-p ct)
     (error "Cannot set the parent of a native char-table"))

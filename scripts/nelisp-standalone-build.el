@@ -17132,6 +17132,21 @@ list groups retain the original leaves/default exactly."
       ;; SeqCst atomic increment so concurrent threads (parallel build) never
       ;; lose a mutation-epoch bump (the old read;+1;write was a racy RMW).
       (atomic-fetch-add 268435544 1))
+    ;; Char-table write epoch (F415).  A counter in the reserved arena slot
+    ;; 268436312 (+856; unused anywhere in scripts/ lisp/ tools/ packages/
+    ;; test/ in decimal, hex or base+offset form; zero-fresh per process).
+    ;; Bumped by every native char-table store (nl_ct2_set_try/-walk,
+    ;; bf_ct2_set_slots_w, bf_set_char_table_range_w, bf_set_char_table_parent_w,
+    ;; nl_lct_owner_set_try, nl_lct_set_try, the legacy bf_aset tag-9 arm);
+    ;; the Lisp writers bump `nelisp--chartab-lisp-epoch' instead.  Separate
+    ;; from wf_dirty, which every vector/cons/hash write bumps.  Atomic, as
+    ;; wf_dirty, so parallel threads never lose a bump.
+    (defun nl_cte_bump ()
+      (atomic-fetch-add 268436312 1))
+    ;; `nelisp--char-table-epoch': the counter as a fixnum (clause 1:
+    ;; tagged-object write counter with no Lisp form; wraps at 2^40).
+    (defun bf_char_table_epoch_w (_args _pad)
+      (nl_imm_int (logand (atomic-fetch-add 268436312 0) 1099511627775)))
     ;; --- Doc 190 Phase B: bignum arithmetic core (contagion) -----------
     ;; `+'/`-'/`*' promote a fixnum-boundary overflow (or an operand that
     ;; is already a Bignum) to an exact Bignum result instead of signalling
@@ -35558,13 +35573,13 @@ bytes are written into a fresh 8-byte buffer instead."
     (if (= (nl_word_tag64 ct) 9)
         (let* ((box (nl_word_payload ct)) (ptag (nl_val_tag parent)))
           (if (= ptag 0)
-              (seq (wf_dirty) (ptr-write-u64 (+ box 48) 0 0) 3)
+              (seq (wf_dirty) (nl_cte_bump) (ptr-write-u64 (+ box 48) 0 0) 3)
             (if (= ptag 9)
                 (let* ((parent-box (nl_word_payload parent)))
                   (if (or (= (nl_ct_map_parent_cycle_p parent-box) 1)
                           (= (nl_ct_parent_chain_contains parent-box box) 1))
                       (nl_abi_fail (bf_char_table_parent_cycle_error (alloc-bytes 32 8)) 0)
-                    (seq (wf_dirty) (ptr-write-u64 (+ box 48) 0 parent-box) parent)))
+                    (seq (wf_dirty) (nl_cte_bump) (ptr-write-u64 (+ box 48) 0 parent-box) parent)))
               (nl_abi_fail (bf_wrong_type_char_table_p parent) 0))))
       (nl_abi_fail (bf_wrong_type_char_table_p ct) 0))))
     (defun bf_map_char_table_w (args env _pad)
@@ -35673,7 +35688,7 @@ bytes are written into a fresh 8-byte buffer instead."
           (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_set_char_table_range_w (args _pad)
-      (seq  (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_word args 1))
+      (seq (nl_cte_bump) (let* ((ct (wf_arg_ptr args 0)) (range (wf_arg_word args 1))
              (val (wf_arg_word args 2)))
           (if (= (nl_val_tag ct) 9) (let* ((rtag (nl_word_tag64 range)))
           (if (= rtag 0) (seq (wf_dirty) (nl_ct_store_word (+ (nl_word_payload ct) 16) val) val) (if (= rtag 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct 0 4194303 val 0)) (if (= rtag 2) (if (= (nl_ct_char_ok (nl_word_payload range)) 1) (seq (wf_dirty) (nl_char_table_set_range_raw_w ct (nl_word_payload range) (nl_word_payload range) val 0)) (nl_abi_fail (bf_wrong_type_characterp range) 0)) (if (= rtag 7) (let* ((fromp (nl_cons_car_ptr range))
@@ -36069,7 +36084,7 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun bf_ct2_set_slots_w (args _pad)
       (let* ((table (wf_arg_word args 0)) (val (wf_arg_word args 1)))
         (if (= (nl_val_tag table) 9)
-            (seq (wf_dirty)
+            (seq (wf_dirty) (nl_cte_bump)
                  (nl_ct_store_word (heap-read-u64 (nl_word_payload table) 56) val)
                  val)
           (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
@@ -36085,7 +36100,7 @@ bytes are written into a fresh 8-byte buffer instead."
         (let* ((depth (nl_word_payload (nl_vector_slot_word sub 1)))
                (min (nl_word_payload (nl_vector_slot_word sub 2)))
                (i (/ (- c min) (if (= depth 1) 4096 (if (= depth 2) 128 1)))))
-          (if (= depth 3) (seq (vector-slot-set sub (+ 3 i) val) 1)
+          (if (= depth 3) (seq (nl_cte_bump) (vector-slot-set sub (+ 3 i) val) 1)
             (nl_ct2_set_walk (nl_vector_slot_word sub (+ 3 i)) c val)))))
     (defun nl_ct2_set_try (table c val)
       (if (= (nl_ct_char_ok c) 0) 0
@@ -36095,7 +36110,7 @@ bytes are written into a fresh 8-byte buffer instead."
                   (if (< c 128)
                       (let* ((ascii (nl_vector_slot_word slots 0)))
                         (if (= (nl_ct2_sub_p ascii) 1)
-                            (seq (wf_dirty) (vector-slot-set ascii (+ 3 c) val) 1)
+                            (seq (wf_dirty) (nl_cte_bump) (vector-slot-set ascii (+ 3 c) val) 1)
                           0))
                     (let* ((top (nl_vector_slot_word slots (+ 1 (/ c 65536)))))
                       (if (= (nl_ct2_sub_p top) 1)
@@ -36613,7 +36628,7 @@ bytes are written into a fresh 8-byte buffer instead."
                 ;; like `vector-slot-set'/`record-slot-set'.
                 (if (= (heap-sexp-tag-word arr) 9)
                     (if (= (nl_ct_char_ok idx) 1)
-                        (seq (wf_dirty) (nl_char_table_set_raw_w arr idx val 0))
+                        (seq (wf_dirty) (nl_cte_bump) (nl_char_table_set_raw_w arr idx val 0))
                       (nl_abi_fail (bf_wrong_type_characterp (wf_arg_word args 1)) 0))
                   ;; BoolVector(10): flip bit IDX to non-nil/nil, bounds-
                   ;; checked against the box's own N (offset 0 of the box
@@ -36712,11 +36727,11 @@ bytes are written into a fresh 8-byte buffer instead."
             (let* ((ascii (nl_vector_slot_word ct 4)))
               (if (= (nl_val_tag ascii) 8)
                   (if (> (vector-len ascii) c)
-                      (seq (wf_dirty) (vector-slot-set ascii c val) 1)
+                      (seq (wf_dirty) (nl_cte_bump) (vector-slot-set ascii c val) 1)
                     0)
                 0))
           (let* ((ranges (nl_vector_slot_word ct 5)) (cw (nl_imm_int c)))
-            (seq (wf_dirty)
+            (seq (wf_dirty) (nl_cte_bump)
                  (vector-slot-set ct 5 (nelisp_cons_construct_w
                                         (nelisp_cons_construct_w
                                          (nelisp_cons_construct_w cw cw 0) val 0)
@@ -36823,7 +36838,7 @@ bytes are written into a fresh 8-byte buffer instead."
               (let* ((ascii (nl_vector_slot_word ct 4)))
                 (if (= (nl_val_tag ascii) 8)
                     (if (> (vector-len ascii) c)
-                        (seq (wf_dirty)
+                        (seq (wf_dirty) (nl_cte_bump)
                              (vector-slot-set cont c val)
                              (vector-slot-set ascii c val)
                              1)
@@ -41274,6 +41289,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "char-table-subtype")     :word . (bf_char_table_subtype_w args 0))
     ((:lit "char-table-parent")      :word . (bf_char_table_parent_w args 0))
     ((:lit "set-char-table-parent")  :word . (bf_set_char_table_parent_w args 0))
+    ((:lit "nelisp--char-table-epoch") :word . (bf_char_table_epoch_w args 0))
     ((:lit "char-table-extra-slot")  :word . (bf_char_table_extra_slot_w args 0))
     ((:lit "set-char-table-extra-slot") :word . (bf_set_char_table_extra_slot_w args 0))
     ((:lit "char-table-range")       :word . (bf_char_table_range_w args 0))
@@ -41704,7 +41720,7 @@ the name path costs time, never an answer)."
     "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
     ;; Doc 225 S3: GNU chartab.c slot vector access.
-    "nelisp--char-table-slots" "nelisp--char-table-set-slots"
+    "nelisp--char-table-slots" "nelisp--char-table-set-slots" "nelisp--char-table-epoch"
     ;; reprs (Doc 226 plist slot; bool-vector words)
     "symbol-plist" "setplist" "get" "put" "nelisp--bv-binop" "nelisp--bv-count"
     "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "nelisp--native-substring" "nelisp--native-format" "setcar" "setcdr" "load"
@@ -42693,7 +42709,8 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--arena-dump-table-verify nelisp--arena-force-grow-smoke
       nelisp--arena-image-root-verify nelisp--arena-load-relocate-verify
       nelisp--arena-mark-reach-verify nelisp--arena-stats nelisp--arena-swizzle-verify
-      nelisp--arena-walk-verify nelisp--build-digest nelisp--char-table-vector-bridge-p
+      nelisp--arena-walk-verify nelisp--build-digest nelisp--char-table-epoch
+      nelisp--char-table-vector-bridge-p
       nelisp--env-capture-roots nelisp--gc-pressure nelisp--hash-table-make-raw
       nelisp--intern-table-symbols nelisp--native-env nelisp--pool-root-coverage
       nelisp--pop-frame nelisp--push-frame nelisp--size-census nelisp--target-arch-code
@@ -49225,7 +49242,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
     ;; Doc 225 S3: GNU chartab.c slot vector access.
-    "nelisp--char-table-slots" "nelisp--char-table-set-slots"
+    "nelisp--char-table-slots" "nelisp--char-table-set-slots" "nelisp--char-table-epoch"
     ;; reprs (Doc 226 plist slot; bool-vector words)
     "symbol-plist" "setplist" "get" "put" "nelisp--bv-binop" "nelisp--bv-count"
     "signal" "error" "equal" "setcar" "setcdr"
