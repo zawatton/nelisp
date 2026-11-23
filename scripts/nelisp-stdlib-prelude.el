@@ -31129,6 +31129,7 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
   "Evaluate the function form FORM in ENV extended with the bindings CELLS."
   (eval form (if cells (append cells env) env)))
 
+
 ;; Doc 243 S5: the compiler's state lives in special variables bound by
 ;; `nelisp--fx-compile' and its helpers are top-level functions, so the VM
 ;; compiles the compiler itself (a `cl-labels' closure over mutated locals
@@ -31145,9 +31146,41 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
 (defvar nelisp--fxc-lexlets nil)
 (defvar nelisp--fxc-alias-hints nil)
 (defvar nelisp--fxc-mutated nil)
+(defvar nelisp--fxc-boxed nil
+  "Lexical names a lambda captures and some `setq' assigns.
+Their VM slot holds the binding's cons cell (NAME . VALUE) instead of the
+value: reads take its cdr, `setq' sets it, and a lambda gets the cell
+itself in its environment, so the closure and the compiled code share one
+binding as they do under the interpreter (GNU's cconv boxes the same way).")
 (defvar nelisp--fxc-nparams nil)
 (defvar nelisp--fxc-ir nil)
 (defvar nelisp--fxc-vars nil)
+
+(defun nelisp--fx-boxed-names (tree mutated)
+  "The names in MUTATED that a lambda inside the expanded TREE mentions.
+A lambda captures what it mentions (`nelisp--fx-lambda'), so these are
+the variables a closure and the compiled code must share."
+  (let ((todo (list tree)) (out nil))
+    (while (and todo mutated)
+      (let ((x (pop todo)))
+        (when (consp x)
+          (cond
+           ((eq (car x) 'quote) nil)
+           ((or (eq (car x) 'lambda)
+                (and (eq (car x) 'function) (eq (car-safe (car-safe (cdr x))) 'lambda)))
+            (dolist (m mutated)
+              (when (and (not (memq m out)) (nelisp--fx-mentions-p x m))
+                (push m out))))
+           (t (while (consp x)
+                (when (consp (car x)) (push (car x) todo))
+                (setq x (cdr x))))))))
+    out))
+
+(defun nelisp--fxc-box-call (fn argc &rest args)
+  "Emit a call of FN on the ARGC values already pushed; ARGS are their fxir."
+  (push fn nelisp--fx-called)
+  (cons :call (cons (nelisp--fxc-emit 16 (vector fn nil nil nil nil) argc)
+                    (cons argc args))))
 
 (defun nelisp--fxc-emit (&rest items)
   ;; Track the operand-stack depth along the code as laid out; at a
@@ -31196,7 +31229,10 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
   (cond
    ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
     (let ((c (assq x nelisp--fxc-vars)))
-      (if c (progn (nelisp--fxc-emit 2 (cdr c)) (list :slot (cdr c)))
+      (if c (progn (nelisp--fxc-emit 2 (cdr c))
+                   (if (memq x nelisp--fxc-boxed)
+                       (nelisp--fxc-box-call 'cdr 1 (list :slot (cdr c)))
+                     (list :slot (cdr c))))
         ;; A global variable: VARREF, GNU's Bvarref, reads it
         ;; directly instead of calling `symbol-value'.
         (if (not (and nelisp--fxc-alias-hints (memq x nelisp--fxc-alias-hints)
@@ -31251,7 +31287,11 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
                 (nelisp--fxc-unsupported x))
               (when (and (not dyn) (nelisp--fx-special-p name)) (nelisp--fxc-unsupported x))
               (unless dyn (unless (memq name nelisp--fxc-lexlets) (push name nelisp--fxc-lexlets)))
-              (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil)))
+              (if (and (not dyn) (memq name nelisp--fxc-boxed))
+                  (let ((kn (nelisp--fxc-emit 1 name)))
+                    (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil)))
+                    (setq val (nelisp--fxc-box-call 'cons 2 (list :const kn) val)))
+                (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil))))
               (cond
                ;; A lone binding has no later value to wait for.
                ((and dyn (or (eq op 'let*) (null (cdr (cadr x)))))
@@ -31287,9 +31327,15 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
                 (let ((sym (car args)) (val (cadr args)))
                   (unless (symbolp sym) (nelisp--fxc-unsupported x))
                   (let ((c (assq sym nelisp--fxc-vars)))
-                    (if c (let ((v (nelisp--fxc-comp val)))
-                            (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 (cdr c))
-                            (push (list :setslot (cdr c) v) items))
+                    (if c (if (memq sym nelisp--fxc-boxed)
+                              (progn
+                                (nelisp--fxc-emit 2 (cdr c))
+                                (let ((v (nelisp--fxc-comp val)))
+                                  (push (nelisp--fxc-box-call 'setcdr 2 (list :slot (cdr c)) v)
+                                        items)))
+                            (let ((v (nelisp--fxc-comp val)))
+                              (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 (cdr c))
+                              (push (list :setslot (cdr c) v) items)))
                       (let* ((ks (nelisp--fxc-emit 1 sym)) (v (nelisp--fxc-comp val)))
                         ;; varaccess: setq site cache -- a call-site cache like every other call, so the
                         ;; VM's call-out decodes `set' once per site (GNU Bvarset has no lookup at all).
@@ -31387,33 +31433,39 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
             (setq nelisp--fx-missing 'nelisp--fx-lambda)
             (nelisp--fxc-unsupported x))
           (unless nelisp--fx-outer-env (nelisp--fxc-unsupported x))
-          (dolist (v nelisp--fxc-vars)
-            (when (nelisp--fx-mentions-p lam (car v))
-              (when (memq (car v) nelisp--fxc-mutated) (nelisp--fxc-unsupported x))
-              (push v cells)))
+          ;; A boxed variable (`nelisp--fxc-boxed') is passed as its cell
+          ;; itself, so an assignment on either side reaches the other;
+          ;; any other assigned variable keeps the lambda interpreted.
+          (let ((seen nil))
+            (dolist (v nelisp--fxc-vars)
+              (unless (memq (car v) seen)
+                (push (car v) seen)
+                (when (nelisp--fx-mentions-p lam (car v))
+                  (when (and (memq (car v) nelisp--fxc-mutated)
+                             (not (memq (car v) nelisp--fxc-boxed)))
+                    (nelisp--fxc-unsupported x))
+                  (push v cells)))))
           (setq cells (nreverse cells))
-          ;; `eval' trims the environment to the variables the
-          ;; body mentions, newest mention first, and keeps one the
-          ;; body binds again; the interpreter keeps let-bound
-          ;; variables in scope order and drops a rebound one.  The
-          ;; two agree for one captured variable, and for several
-          ;; parameters; anything else stays with the interpreter.
+          ;; `eval' keeps the cells the body mentions, in first-mention
+          ;; order: the capture order this runtime gives every closure
+          ;; (see `bf_closure_env_view_fwd_w'), which GNU's innermost-first
+          ;; order differs from whenever several variables are captured.
+          ;; A cell the body binds again stays with the interpreter.
           (dolist (v cells)
             (when (nelisp--fx-rebinds-p lam (car v)) (nelisp--fxc-unsupported x)))
-          (when (cdr cells)
-            (dolist (v cells)
-              (when (>= (cdr v) nelisp--fxc-nparams) (nelisp--fxc-unsupported x))))
           (push 'nelisp--fx-lambda nelisp--fx-called)
           (let* ((kf (nelisp--fxc-emit 1 (list 'function lam)))
                  (ke (nelisp--fxc-emit 1 nelisp--fx-outer-env))
                  (args (list (list :const ke) (list :const kf))))
             (dolist (v cells)
-              (let ((ks (nelisp--fxc-emit 1 (car v))))
-                (nelisp--fxc-emit 2 (cdr v))
-                (push 'cons nelisp--fx-called)
-                (push (list :call (nelisp--fxc-emit 16 (vector 'cons nil nil nil nil) 2) 2
-                            (list :const ks) (list :slot (cdr v)))
-                      args)))
+              (if (memq (car v) nelisp--fxc-boxed)
+                  (progn (nelisp--fxc-emit 2 (cdr v)) (push (list :slot (cdr v)) args))
+                (let ((ks (nelisp--fxc-emit 1 (car v))))
+                  (nelisp--fxc-emit 2 (cdr v))
+                  (push 'cons nelisp--fx-called)
+                  (push (list :call (nelisp--fxc-emit 16 (vector 'cons nil nil nil nil) 2) 2
+                              (list :const ks) (list :slot (cdr v)))
+                        args))))
             (setq args (nreverse args))
             (cons :call (cons (nelisp--fxc-emit 16 (vector 'nelisp--fx-lambda nil nil nil nil)
                                                 (+ 2 (length cells)))
@@ -31461,6 +31513,7 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
                        (not (eq var t)) (not (keywordp var)))
             (nelisp--fxc-unsupported x))
           (when (and var (nelisp--fx-special-p var)) (nelisp--fxc-unsupported x))
+          (when (and var (memq var nelisp--fxc-boxed)) (nelisp--fxc-unsupported x))
           (dolist (c (nthcdr 3 x))
             (unless (and (consp c) (listp (cdr c))) (nelisp--fxc-unsupported x))
             (if (eq (car c) :success)
@@ -31586,6 +31639,7 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
         (nelisp--fxc-depth 0) (nelisp--fxc-maxdepth 0) (nelisp--fxc-lexlets nil)
         (nelisp--fxc-alias-hints nelisp--fx-alias-hints)
         (nelisp--fxc-mutated nil) (nelisp--fxc-nparams (length params)) (nelisp--fxc-ir nil)
+        (nelisp--fxc-boxed nil)
         ;; Innermost first, like the interpreter's environment: its
         ;; parameters are pushed in order, so the last one is first.
         (nelisp--fxc-vars (let ((i 0) (r nil))
@@ -31603,7 +31657,22 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
                   (dolist (n nelisp--fx-cap-names)
                     (when (memq n nelisp--fxc-mutated)
                       (throw 'nelisp--fx-unsupported nil)))
-                  (setq nelisp--fxc-ir (nelisp--fxc-comp expanded)))
+                  (setq nelisp--fxc-boxed
+                        (and nelisp--fxc-mutated
+                             (nelisp--fx-boxed-names expanded nelisp--fxc-mutated)))
+                  ;; A boxed parameter gets its cell on entry.
+                  (let ((pre nil) (i 0))
+                    (dolist (p params)
+                      (when (memq p nelisp--fxc-boxed)
+                        (let ((kn (nelisp--fxc-emit 1 p)))
+                          (nelisp--fxc-emit 2 i)
+                          (let ((v (nelisp--fxc-box-call 'cons 2 (list :const kn) (list :slot i))))
+                            (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 i) (nelisp--fxc-emit 11)
+                            (push (list :setslot i v) pre))))
+                      (setq i (1+ i)))
+                    (setq nelisp--fxc-ir (nelisp--fxc-comp expanded))
+                    (when pre
+                      (setq nelisp--fxc-ir (cons :seq (append (nreverse pre) (list nelisp--fxc-ir)))))))
                 (nelisp--fxc-emit 0) 'ok)
               'ok)
       ;; The last element, after HALT, is the operand stack size the VM
