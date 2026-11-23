@@ -3979,11 +3979,12 @@ Idempotent: a defun whose F_w is already defined in SOURCE is left alone."
 ;; inherits the build's resource limits (one address-space cap per process).
 
 (defconst nelisp-standalone--prewarm-units
-  ;; Not fxir-native.o: a child computes a different source for it than the
-  ;; build (its inline imports depend on the units the child stubs), so the
-  ;; build waited ~284 s for an entry it could not use and then compiled
-  ;; the unit itself (measured 2026-11-03, build57 trace).
-  '("applyfn-reader.o" "combiner-cons-mxcache.o" "reader-gc.o"
+  ;; fxir-native.o was left out on 2026-11-03 (build57): a child then
+  ;; computed a different source for it, so the build waited ~284 s for an
+  ;; entry it could not use.  Re-checked 2026-11-23 (F406): a child replay at
+  ;; 8594a1a19 dumps a source, imports and xinline digest byte-identical to the
+  ;; build's own dump and hits the build's cache entry, so it is prewarmed again.
+  '("applyfn-reader.o" "fxir-native.o" "combiner-cons-mxcache.o" "reader-gc.o"
     "combiner-apply-fix.o" "applyfn-frame-0.o" "applyfn-frame-1.o")
   "Units a parallel build compiles in child processes, most expensive first.")
 
