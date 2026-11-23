@@ -366,13 +366,32 @@ uses the native bridge.  Falls back to a global setting without a buffer."
     nil))
 
 (defun emacs-syntax-table-char-syntax (char &optional table)
-  "Return CHAR's syntax class designator via TABLE (default current)."
-  (emacs-syntax-table--check-character char)
-  (let* ((entry (emacs-char-table-ref (or table (emacs-syntax-table-current))
-                                      char))
+  "Return CHAR's syntax class designator via TABLE (default current).
+Like GNU `char-syntax' this ignores `syntax-table' text properties."
+  (unless (and (integerp char) (<= 0 char) (<= char #x3fffff))
+    (emacs-syntax-table--check-character char))
+  (let* ((tbl (or table
+                  ;; Same result as `emacs-syntax-table-current' with the
+                  ;; standalone no-buffer-local-table shortcut inlined.
+                  emacs-syntax-table--current
+                  (if (and (fboundp 'nelisp--repr)
+                           (not (boundp emacs-syntax-table--local-key)))
+                      (or emacs-syntax-table--standard-char-table
+                          (emacs-syntax-table-standard))
+                    (emacs-syntax-table-current))))
+         ;; The active table is always a syntax char-table, so its ASCII
+         ;; entries go through the native `aref' bridge (parent and default
+         ;; fallback included), as in `emacs-syntax-table--skip-syntaxes'.
+         ;; An explicit TABLE argument and non-ASCII chars take the full
+         ;; library lookup, which validates the table shape.
+         (entry (if (and (null table) (< char 128)
+                         emacs-char-table--fast-aref-p)
+                    (aref tbl char)
+                  (emacs-char-table-ref tbl char)))
          (code (cond ((consp entry) (car entry))
                      ((integerp entry) entry)
-                     (t 2))))
+                     ;; GNU SYNTAX: a non-cons entry is whitespace.
+                     (t 0))))
     (aref emacs-syntax-table--code-spec (logand code 255))))
 
 (defun emacs-syntax-table-parse-partial-sexp
@@ -673,7 +692,21 @@ comments.  Whitespace is skipped only while looking for the next comment."
 (when (emacs-syntax-table--install-function-p 'char-syntax)
   (defun char-syntax (char)
     "Return the syntax class designator character for CHAR (current table)."
-    (emacs-syntax-table-char-syntax char)))
+    (if (and (integerp char) (<= 0 char) (< char 128)
+             emacs-char-table--fast-aref-p)
+        (aref emacs-syntax-table--code-spec
+              (logand (let ((entry (aref (or emacs-syntax-table--current
+                                             (if (and (fboundp 'nelisp--repr)
+                                                      (not (boundp emacs-syntax-table--local-key)))
+                                                 (or emacs-syntax-table--standard-char-table
+                                                     (emacs-syntax-table-standard))
+                                               (emacs-syntax-table-current)))
+                                         char)))
+                        (cond ((consp entry) (car entry))
+                              ((integerp entry) entry)
+                              (t 0)))
+                      255))
+      (emacs-syntax-table-char-syntax char))))
 
 (when (emacs-syntax-table--install-function-p 'standard-syntax-table)
   (defun standard-syntax-table ()

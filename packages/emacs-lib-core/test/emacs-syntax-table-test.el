@@ -179,6 +179,25 @@ string face."
           (dotimes (_ 4) (push (list (forward-word -1) (point)) r))
           (should (equal (cons text (nreverse r)) (cons text (nth 2 row)))))))))
 
+(ert-deftest emacs-syntax-table-test/char-syntax-gnu-semantics ()
+  "char-syntax: nil entry is whitespace, ignores text properties, honours tables."
+  (let ((tt (make-char-table 'syntax-table nil))
+        (child (make-syntax-table (standard-syntax-table))))
+    (should (= ?\s (emacs-syntax-table-char-syntax ?a tt)))
+    (modify-syntax-entry ?Z "." child)
+    (with-syntax-table child
+      (should (= ?. (char-syntax ?Z)))
+      (should (= ?w (char-syntax ?a)))
+      (should (= ?w (char-syntax ?あ))))
+    (should (= ?w (char-syntax ?Z)))
+    (should-error (char-syntax nil) :type 'wrong-type-argument)
+    (should-error (char-syntax #x400000) :type 'wrong-type-argument)
+    (with-temp-buffer
+      (insert "a")
+      (put-text-property 1 2 'syntax-table (string-to-syntax "."))
+      (let ((parse-sexp-lookup-properties t))
+        (should (= ?w (char-syntax (char-after 1))))))))
+
 (provide 'emacs-syntax-table-test)
 
 ;;; emacs-syntax-table-test.el ends here
