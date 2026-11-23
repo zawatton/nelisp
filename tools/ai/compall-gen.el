@@ -130,12 +130,23 @@ bytes) plus about 100 per call node (the call-out's relocations).  Fitted on a
           (compall-gen--defuns form tbl)
           (when (string-match-p "standalone-build" file) (compall-gen--embedded form tbl)))))
     tbl))
+(defun compall-gen--expand-setf (x)
+  "X with every `setf' form macroexpanded, and nothing else.
+The image's boot definitions hold `setf' already expanded (gv's expansion,
+with uninterned temporaries), while their other macros stay as written; a
+probe defun of the raw source would compile `setf' differently."
+  (cond ((not (consp x)) x)
+        ((memq (car x) '(quote \`)) x)
+        ((eq (car x) 'setf) (compall-gen--expand-setf (macroexpand-1 x)))
+        (t (let ((r nil) (c x))
+             (while (consp c) (push (compall-gen--expand-setf (car c)) r) (setq c (cdr c)))
+             (nconc (nreverse r) c)))))
 (defun compall-gen--closure-of (form &optional probe)
   "The closure source defun FORM defines, as `defun' installs it, under a probe
 name PROBE (the real name keeps its image definition); nil if not a closure."
   (let ((probe (or probe (make-symbol "compall-gen-probe"))))
     (condition-case nil
-        (progn (eval (cons 'defun (cons probe (nthcdr 2 form))) t)
+        (progn (eval (cons 'defun (cons probe (compall-gen--expand-setf (nthcdr 2 form)))) t)
                (let ((fn (compall-gen--fn (symbol-function probe))))
                  (and (eq (car-safe fn) 'closure) fn)))
       (error nil))))
