@@ -50498,6 +50498,65 @@ skipped and re-run once cl-preloaded has defined the base types."
      ;; provides natively so `require' loads GNU's.
      "\n(setq features (delq 'cl-lib features))\n")))
 
+;; GNU Emacs 31.1 subr.el definitions the runtime had no provider for (a
+;; 2026-11-23 audit of every subr.el function against the reader image:
+;; each one's callees exist there or are in this list).  The variables
+;; they read come first; the rest follow in file order.
+(defconst nelisp-standalone--vendor-subr-extra-names
+  '(
+    comp-native-version-dir delayed-warnings-hook from--tty-menu-p
+    listify-key-sequence-1 native-comp-eln-load-path
+    overriding-text-conversion-style read-char-choice-use-read-key
+    read-char-from-minibuffer-map read-char-from-minibuffer-map-hash
+    set-transient-map-timeout set-transient-map-timer
+    text-clone--maintaining text-clone--pending-overlays
+    touch-screen-events-received undo--combining-change-calls noreturn
+    1value set-local buffer-local-set-state buffer-local-set-state--get
+    buffer-local-restore-state take-while undefined map-keymap-sorted
+    keymap--menu-item-binding keymap--menu-item-with-binding
+    keymap--merge-bindings keymap-canonicalize keyboard-translate
+    local-key-binding listify-key-sequence eventp mouse-movement-p
+    mouse-event-p event-line-count posn-set-point posn-x-y posn-col-row
+    posn-actual-col-row posn-timestamp posn-string posn-image
+    posn-object posn-object-x-y posn-object-width-height
+    values--store-value log10 derived-mode-all-parents
+    provided-mode-derived-p major-mode-suspend major-mode-restore
+    locate-eln-file process-kill-buffer-query-function memory-limit
+    read--potential-mouse-event read-char-choice
+    read-char-choice-with-read-key goto-char--read-natnum-interactive
+    read-char-from-minibuffer-insert-char
+    read-char-from-minibuffer-insert-other read-char-from-minibuffer
+    use-dialog-box-p atomic-change-group with-undo-amalgamate
+    prepare-change-group activate-change-group accept-change-group
+    cancel-change-group momentary-string-display find-tag-default-bounds
+    find-tag-default find-tag-default-as-regexp
+    find-tag-default-as-symbol-regexp play-sound string-or-null-p
+    list-of-strings-p plistp integer-or-null-p field-at-pos sha1
+    remove-yank-excluded-properties insert-for-yank insert-for-yank-1
+    insert-buffer-substring-as-yank insert-into-buffer
+    replace-string-in-region replace-regexp-in-region
+    yank-handle-font-lock-face-property yank-handle-category-property
+    start-process-shell-command start-file-process-shell-command
+    process-file-shell-command call-shell-region
+    multiple-command-partition-arguments track-mouse
+    internal--before-with-selected-window
+    internal--after-with-selected-window
+    internal-temp-output-buffer-show with-output-to-temp-buffer
+    while-no-input combine-after-change-calls combine-change-calls-1
+    undo--wrap-and-run-primitive-undo with-file-modes
+    with-existing-directory match-substitute-replacement
+    bidi-string-mark-left-to-right display-delayed-warnings
+    collapse-delayed-warnings delay-warning forward-whitespace
+    forward-symbol forward-same-syntax text-clone--maintain
+    text-clone--maintain-overlays text-clone-create internal-push-keymap
+    internal-pop-keymap set-transient-map dotimes-with-progress-reporter
+    dolist-with-progress-reporter package--description-file with-mutex
+    unmsys--file-name run-hook-query-error-with-timeout json-available-p
+    ensure-proper-list with-delayed-message readablep delete-line
+    total-line-spacing)
+  "Names staged from vendor/staged-emacs-lisp/subr.el by
+`nelisp-standalone--load-path-src', exact GNU source.")
+
 (defun nelisp-standalone--load-path-src (&optional defer-easy-mmode defer-libraries)
   "Return shared load-path and staged-provider source every bootstrap needs.
 `load-path' shipped empty and nothing filled it, so `require' resolved no
@@ -50833,6 +50892,9 @@ resolved fine.  Same feature, different answer per entry point."
     "vendor/emacs-lisp/emacs-lisp/subr-x.el" 'string-pad)
    (nelisp-standalone--vendor-function-source
     "vendor/emacs-lisp/emacs-lisp/subr-x.el" 'string-chop-newline)
+   "\n;; --- GNU Emacs 31.1 subr.el: remaining definitions ---\n"
+   (nelisp-vendor-source-forms
+    "vendor/staged-emacs-lisp/subr.el" nelisp-standalone--vendor-subr-extra-names)
    ;; cl-lib.el uses this genuine GNU macro while defining compatibility mode.
    ;; Keep the historical require for every bootstrap consumer by default;
    ;; the reader defers it until its regexp provider has been installed.
