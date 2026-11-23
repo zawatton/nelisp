@@ -1202,36 +1202,35 @@ minibuffer input queue -- the same path the host ERT exercises."
      (should (string-match-p "IS-CYCLE=12" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/ielm-callable ()
-  "The in-process ielm REPL evaluates and prints results on the reader.
-Creates the `*ielm*' buffer, evaluates two forms through
-`ielm-input-handler', and confirms the printed results and input ring."
+  "GNU ielm evaluates and prints results on the reader.
+Creates the `*ielm*' buffer, evaluates two forms through `ielm-return',
+and confirms the printed results and the comint input ring."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
    (let ((out (nemacs-bootstrap-nelisp-test--run
                "--batch" "--no-banner"
                "--eval"
                (concat
                 "(progn"
-                "  (when (get-buffer ielm-buffer-name)"
-                "    (kill-buffer (get-buffer ielm-buffer-name)))"
-                "  (let ((buf (ielm)))"
+                "  (when (get-buffer \"*ielm*\")"
+                "    (kill-buffer (get-buffer \"*ielm*\")))"
+                "  (ielm)"
+                "  (let ((buf (get-buffer \"*ielm*\")))"
                 "    (nelisp--write-stdout-bytes"
                 "     (concat \"IELM-LIVE=\" (if (buffer-live-p buf) \"t\" \"nil\") \"\\n\"))"
                 "    (with-current-buffer buf"
-                "      (goto-char (point-max)) (insert \"(+ 1 2)\\n\") (ielm-input-handler)"
+                "      (goto-char (point-max)) (insert \"(+ 1 2)\") (ielm-return)"
                 "      (nelisp--write-stdout-bytes"
                 "       (concat \"IELM-EVAL=\""
-                "               (if (string-suffix-p (concat \"(+ 1 2)\\n3\\n\" ielm-prompt)"
-                "                                    (buffer-string)) \"t\" \"nil\")"
+                "               (if (string-match-p \"(\\\\+ 1 2)\\n3\\n (#o3, #x3\" (buffer-string)) \"t\" \"nil\")"
                 "               \"\\n\"))"
-                "      (goto-char (point-max)) (insert \"(* 6 7)\\n\") (ielm-input-handler)"
+                "      (goto-char (point-max)) (insert \"(* 6 7)\") (ielm-return)"
                 "      (nelisp--write-stdout-bytes"
                 "       (concat \"IELM-EVAL2=\""
-                "               (if (string-suffix-p (concat \"(* 6 7)\\n42\\n\" ielm-prompt)"
-                "                                    (buffer-string)) \"t\" \"nil\")"
+                "               (if (string-match-p \"(\\\\* 6 7)\\n42\\n (#o52, #x2a\" (buffer-string)) \"t\" \"nil\")"
                 "               \"\\n\"))"
                 "      (nelisp--write-stdout-bytes"
                 "       (concat \"IELM-HIST-N=\""
-                "               (number-to-string (length (emacs-ielm--history)))"
+                "               (number-to-string (ring-length comint-input-ring))"
                 "               \"\\n\"))))"
                 "  (nelisp--write-stdout-bytes"
                 "   (concat \"FB-IELM=\" (if (fboundp (quote ielm)) \"t\" \"nil\") \"\\n\")))"))))

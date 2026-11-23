@@ -40,8 +40,6 @@
     lisp-mode
     eval-defun
     indent-sexp
-    ielm
-    ielm-send-input
     completing-read
     minibuffer-complete
     minibuffer-complete-and-exit
@@ -701,7 +699,8 @@ The preload installers only `require' it when it is not yet a feature."
     (should-not (featurep 'help-fns))
     (should (fboundp 'describe-key))
     (should (featurep 'lisp-mode))
-    (should (featurep 'ielm))
+    ;; GNU ielm.el is autoloaded; the installer no longer provides it.
+    (should-not (featurep 'ielm))
     (should (featurep 'minibuffer))
     (should (featurep 'project))
     (should (featurep 'emacs-process))
@@ -832,10 +831,6 @@ The preload installers only `require' it when it is not yet a feature."
                    '(lambda (&rest args)
                       (require 'lisp-mode)
                       (apply 'emacs-mode-emacs-lisp-mode args))))
-    (should (equal (symbol-function 'ielm-send-input)
-                   '(lambda (&rest args)
-                      (require 'emacs-ielm)
-                      (apply 'ielm-input-handler args))))
     (should (equal (symbol-function 'project-current)
                    '(lambda (&rest args)
                       (require 'emacs-project)

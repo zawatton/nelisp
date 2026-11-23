@@ -457,7 +457,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-replace.el"
     "replace.el"
     "emacs-ielm.el"
-    "ielm.el"
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
     ;; for project.el and anything calling `hack-dir-local-variables'.
     "emacs-files-gnu.el"
@@ -1294,7 +1293,6 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-eshell.el" . "eshell.el")
                     ("emacs-shell.el" . "shell.el")
                     ("emacs-project.el" . "project.el")
-                    ("emacs-ielm.el" . "ielm.el")
                     ("emacs-replace.el" . "replace.el")
                     ("emacs-vc.el" . "vc.el")
                     ("emacs-xref.el" . "xref.el")

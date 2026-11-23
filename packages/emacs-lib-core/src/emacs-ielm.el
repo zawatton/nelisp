@@ -1,4 +1,4 @@
-;;; emacs-ielm.el --- Minimal in-process ielm REPL for nelisp-emacs  -*- lexical-binding: t; -*-
+;;; emacs-ielm.el --- Minimal in-process emacs-ielm REPL for nelisp-emacs  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton + Claude
 
@@ -7,9 +7,9 @@
 ;;; Commentary:
 
 ;; Doc 02 `docs/design/02-v01-daily-driver.org' §3.2.5 asks for the
-;; smallest usable `ielm' REPL:
+;; smallest usable `emacs-ielm' REPL:
 ;;
-;; - `M-x ielm' opens or switches to a `*ielm*' buffer
+;; - `M-x emacs-ielm' opens or switches to a `*emacs-ielm*' buffer
 ;; - prompt = "ELISP> "
 ;; - RET reads the current input, evaluates it in-process, prints the
 ;;   `prin1-to-string' result, and inserts the next prompt
@@ -28,42 +28,42 @@
 (require 'emacs-keymap)
 (require 'emacs-mode)
 
-(defconst ielm-buffer-name "*ielm*"
-  "Canonical buffer name used by `ielm'.")
+(defconst emacs-ielm-buffer-name "*emacs-ielm*"
+  "Canonical buffer name used by `emacs-ielm'.")
 
-(defconst ielm-prompt "ELISP> "
+(defconst emacs-ielm-prompt "ELISP> "
   "Prompt inserted before each input chunk.")
 
-(defvar inferior-emacs-lisp-mode-map
+(defvar emacs-ielm-mode-map
   (let ((map (emacs-keymap-make-sparse-keymap)))
-    (emacs-keymap-define-key map (kbd "RET") #'ielm-input-handler)
-    (emacs-keymap-define-key map (kbd "M-p") #'ielm-previous-input)
-    (emacs-keymap-define-key map (kbd "M-n") #'ielm-next-input)
-    (emacs-keymap-define-key map (kbd "C-c C-l") #'ielm-clear-buffer)
+    (emacs-keymap-define-key map (kbd "RET") #'emacs-ielm-input-handler)
+    (emacs-keymap-define-key map (kbd "M-p") #'emacs-ielm-previous-input)
+    (emacs-keymap-define-key map (kbd "M-n") #'emacs-ielm-next-input)
+    (emacs-keymap-define-key map (kbd "C-c C-l") #'emacs-ielm-clear-buffer)
     map)
-  "Keymap for `inferior-emacs-lisp-mode'.")
+  "Keymap for `emacs-ielm-mode'.")
 
 (defvar emacs-ielm--state (make-hash-table :test 'equal :weakness nil)
-  "Per-buffer ielm state, keyed by buffer NAME.
+  "Per-buffer emacs-ielm state, keyed by buffer NAME.
 Each value is a plist with keys:
 - `:input-start'    point where editable user input begins
 - `:history'        newest-first list of submitted input strings
 - `:history-index'  nil or zero-based index into `:history' for M-p/M-n
 
 A buffer-name string key is used rather than the buffer object: on the
-standalone reader buffer objects are not usable as `eq' hash keys.  ielm
+standalone reader buffer objects are not usable as `eq' hash keys.  emacs-ielm
 uses a single canonical buffer, so the name is stable.")
 
 (defun emacs-ielm--buffer ()
-  "Return the canonical ielm buffer, creating it if needed."
-  (get-buffer-create ielm-buffer-name))
+  "Return the canonical emacs-ielm buffer, creating it if needed."
+  (get-buffer-create emacs-ielm-buffer-name))
 
 (defun emacs-ielm--key (buffer)
   "Return the state-hash key for BUFFER (default current)."
   (buffer-name (or buffer (current-buffer))))
 
 (defun emacs-ielm--state (buffer)
-  "Return BUFFER's ielm state, creating a default record when needed."
+  "Return BUFFER's emacs-ielm state, creating a default record when needed."
   (let ((k (emacs-ielm--key buffer)))
     (or (gethash k emacs-ielm--state)
         (puthash k
@@ -73,7 +73,7 @@ uses a single canonical buffer, so the name is stable.")
                  emacs-ielm--state))))
 
 (defun emacs-ielm--set-state (buffer key value)
-  "Store VALUE under KEY in BUFFER's ielm state and return VALUE."
+  "Store VALUE under KEY in BUFFER's emacs-ielm state and return VALUE."
   (let ((state (copy-sequence (emacs-ielm--state buffer))))
     (setq state (plist-put state key value))
     (puthash (emacs-ielm--key buffer) state emacs-ielm--state)
@@ -139,11 +139,11 @@ does not match on the standalone reader's regexp engine."
 (defun emacs-ielm--insert-prompt ()
   "Insert a fresh prompt at point-max and record the new input start."
   (goto-char (point-max))
-  (insert ielm-prompt)
+  (insert emacs-ielm-prompt)
   (emacs-ielm--set-input-start (current-buffer) (point)))
 
 (defun emacs-ielm--ensure-prompt ()
-  "Insert the first prompt when the current ielm buffer is empty."
+  "Insert the first prompt when the current emacs-ielm buffer is empty."
   (when (= (point-max) 1)
     (emacs-ielm--insert-prompt)))
 
@@ -197,32 +197,32 @@ reader's batch context, so do not rely on its return value."
   buffer)
 
 ;;;###autoload
-(defun inferior-emacs-lisp-mode ()
+(defun emacs-ielm-mode ()
   "Major mode for the minimal in-process elisp REPL."
   (interactive)
   (emacs-mode-kill-all-local-variables)
-  (emacs-mode-set-major-mode 'inferior-emacs-lisp-mode "IELM")
-  (setq major-mode 'inferior-emacs-lisp-mode)
+  (emacs-mode-set-major-mode 'emacs-ielm-mode "IELM")
+  (setq major-mode 'emacs-ielm-mode)
   (setq mode-name "IELM")
-  (emacs-keymap-use-local-map inferior-emacs-lisp-mode-map)
+  (emacs-keymap-use-local-map emacs-ielm-mode-map)
   (emacs-ielm--state (current-buffer))
   (emacs-ielm--ensure-prompt)
   nil)
 
 ;;;###autoload
-(defun ielm ()
-  "Open or switch to the `*ielm*' buffer."
+(defun emacs-ielm ()
+  "Open or switch to the `*emacs-ielm*' buffer."
   (interactive)
   (let ((buffer (emacs-ielm--buffer)))
     (with-current-buffer buffer
-      (unless (eq major-mode 'inferior-emacs-lisp-mode)
-        (inferior-emacs-lisp-mode))
+      (unless (eq major-mode 'emacs-ielm-mode)
+        (emacs-ielm-mode))
       (emacs-ielm--ensure-prompt)
       (emacs-ielm--goto-input-end))
     (emacs-ielm--open-buffer buffer)))
 
-(defun ielm-input-handler ()
-  "Read, evaluate, and print the current input in the ielm buffer."
+(defun emacs-ielm-input-handler ()
+  "Read, evaluate, and print the current input in the emacs-ielm buffer."
   (interactive)
   (let ((input (emacs-ielm--trim-right (emacs-ielm--current-input))))
     (goto-char (point-max))
@@ -241,7 +241,7 @@ reader's batch context, so do not rely on its return value."
   (emacs-ielm--goto-input-end)
   nil)
 
-(defun ielm-previous-input ()
+(defun emacs-ielm-previous-input ()
   "Replace the current input with the previous history item."
   (interactive)
   (let* ((history (emacs-ielm--history))
@@ -257,7 +257,7 @@ reader's batch context, so do not rely on its return value."
   (emacs-ielm--goto-input-end)
   nil)
 
-(defun ielm-next-input ()
+(defun emacs-ielm-next-input ()
   "Replace the current input with the next history item."
   (interactive)
   (let ((current (emacs-ielm--history-index)))
@@ -274,8 +274,8 @@ reader's batch context, so do not rely on its return value."
   (emacs-ielm--goto-input-end)
   nil)
 
-(defun ielm-clear-buffer ()
-  "Clear the ielm buffer and reset history."
+(defun emacs-ielm-clear-buffer ()
+  "Clear the emacs-ielm buffer and reset history."
   (interactive)
   (erase-buffer)
   (emacs-ielm--reset-buffer-state (current-buffer))

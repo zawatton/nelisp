@@ -318,13 +318,9 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
   t)
 
 (defun nemacs-runtime-image-preload--install-ielm-core ()
-  "Install the minimal `ielm' daily-driver surface."
-  (unless (featurep 'ielm)
-    (nemacs-runtime-image-preload--install-module-command
-     'ielm 'emacs-ielm 'ielm)
-    (nemacs-runtime-image-preload--install-module-command
-     'ielm-send-input 'emacs-ielm 'ielm-input-handler)
-    (provide 'ielm))
+  "Leave `ielm' to GNU ielm.el, autoloaded from loaddefs.
+The former wrappers pointed `ielm' and `ielm-send-input' at the
+`emacs-ielm' module and provided a fake `ielm' feature."
   t)
 
 (defun nemacs-runtime-image-preload--install-minibuffer-core ()
