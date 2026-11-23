@@ -32539,8 +32539,38 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= r 1)
             (seq (m5_fx_first_call body env captured formals)
                  (let* ((r2 (nl_fx_lookup body env 0 0)))
-                   (if (= r2 1) 0 r2)))
-          r)))
+                   (if (= r2 1) 0 (m5_fx_rec_valid r2 captured formals))))
+          (m5_fx_rec_valid r captured formals))))
+    ;; F391: a record is keyed by the body cons alone, but its code bakes in
+    ;; the environment's declared markers, the outer environment constant and
+    ;; the formals (slots 8 and 9 hold what it was compiled under).  REC (or 0)
+    ;; is answered only for a closure whose CAPTURED and FORMALS match them:
+    ;; an eq test first, then an element-wise compare.  A mismatch, or a record
+    ;; of an older 8-slot layout, answers 0 and the call runs interpreted;
+    ;; nothing is written to the table.
+    (defun m5_fx_rec_valid (rec captured formals)
+      (if (= rec 0) 0
+        (if (< (nl_vector_length rec) 10) 0
+          (if (= (m5_fx_list_same captured (nl_vector_slot_word rec 8)) 1)
+              (if (= (m5_fx_list_same formals (nl_vector_slot_word rec 9)) 1) rec 0)
+            0))))
+    ;; 1 when the proper lists A and B (words or views, raw 0 or nil for the
+    ;; empty list) hold eq elements in the same order, else 0.
+    (defun m5_fx_list_same (a0 b0)
+      (if (= a0 b0) 1
+        (let* ((a a0) (b b0) (r 2))
+          (seq
+           (while (= r 2)
+             (let* ((ae (if (= a 0) 1 (if (= (nl_val_tag a) 0) 1 0)))
+                    (be (if (= b 0) 1 (if (= (nl_val_tag b) 0) 1 0))))
+               (if (/= ae be) (setq r 0)
+                 (if (= ae 1) (setq r 1)
+                   (if (= (m5_fx_word_cons_p a 0) 0) (setq r 0)
+                     (if (= (m5_fx_word_cons_p b 0) 0) (setq r 0)
+                       (if (= (wf_bytecode_w_eqw (nl_cons_car_word a) (nl_cons_car_word b)) 1)
+                           (seq (setq a (nl_cons_cdr_word a)) (setq b (nl_cons_cdr_word b)))
+                         (setq r 0))))))))
+           r))))
     ;; Compile on first call: apply `nelisp--fx-first-call' to BODY (prelude),
     ;; which registers it under the name it was defined with and leaves BODY
     ;; in the table either way.  The guard makes closures applied while that

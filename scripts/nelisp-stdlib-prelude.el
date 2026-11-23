@@ -31711,7 +31711,18 @@ meanwhile would otherwise record `none' again behind the compilation)."
                                                (if capnames nelisp--fx-cap-arity (nth 2 shape))
                                                (nth 3 shape)
                                                (and capnames
-                                                    (apply #'vector (nth 1 shape) capnames)))
+                                                    (apply #'vector (nth 1 shape) capnames))
+                                               ;; Slots 8 and 9: the environment and formals this
+                                               ;; code was compiled under (F391).  The VM runs the
+                                               ;; record only for a closure whose own environment and
+                                               ;; formals match (`m5_fx_rec_valid'); a cap record keeps
+                                               ;; just its bare markers, never the (NAME . VALUE) pairs.
+                                               (if capnames
+                                                   (let ((r nil))
+                                                     (dolist (e (nth 1 fn)) (unless (consp e) (push e r)))
+                                                     (nreverse r))
+                                                 (nth 1 fn))
+                                               args)
                                   (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
                               'none)
                        nelisp--fx-table)))))))))
