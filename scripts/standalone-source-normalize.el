@@ -1750,11 +1750,10 @@ runtime meaning."
          (memq (cadr form)
                standalone-source-normalize-dropped-defvar-symbols))
     nil)
-   ((and (consp form)
-         (eq (car form) 'defvar)
-         (symbolp (cadr form))
-         (null (cddr form)))
-    nil)
+   ;; A bare `(defvar SYMBOL)' is kept: the standalone evaluator makes
+   ;; SYMBOL dynamically scoped for the forms after it, as GNU does, and
+   ;; code relies on it.  GNU ielm.el's `(let (ielm-input) (comint-send-input)
+   ;; ...)' only sees the value `ielm-input-sender' sets through it.
    ((and (equal standalone-source-normalize-current-file "xterm.el")
          (standalone-source-normalize--keymap-defvar-let-p form))
     (standalone-source-normalize--keymap-defvar-let-forms form))

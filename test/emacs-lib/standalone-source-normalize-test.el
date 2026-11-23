@@ -2393,11 +2393,13 @@ that walks down into the guarded definition."
      (standalone-source-normalize-top-level-forms
       '(define-key unrelated-map "2" 'split-window-below)))))
 
-(ert-deftest standalone-source-normalize-test/drops-uninitialized-top-level-defvar ()
+(ert-deftest standalone-source-normalize-test/keeps-uninitialized-top-level-defvar ()
+  "A bare defvar declares a file-local special variable; GNU ielm.el needs it."
   (should
-   (null
+   (equal
     (standalone-source-normalize-top-level-forms
-     '(defvar org-element-cache-map-continue-from)))))
+     '(defvar org-element-cache-map-continue-from))
+    '((defvar org-element-cache-map-continue-from)))))
 
 (ert-deftest standalone-source-normalize-test/preserves-initialized-top-level-defvar ()
   (should
