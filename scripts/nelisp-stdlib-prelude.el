@@ -6190,7 +6190,9 @@ Without a backslash there is no key, keymap or escape sequence to expand, and
 `nelisp--substitute-quotes' does without its ~0.5 ms buffer round trip."
   (cond ((not (stringp message)) message)
         ((not (string-search "\\" message))
-         (nelisp--substitute-quotes message))
+         (if (or (string-search "`" message) (string-search "'" message))
+             (nelisp--substitute-quotes message)
+           (copy-sequence message)))
         ((fboundp 'substitute-command-keys)
          (or (condition-case nil (substitute-command-keys message)
                (error nil))
