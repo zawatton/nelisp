@@ -249,13 +249,21 @@ always disables.  Shared directories are collected by tools/dev/nl-cache-gc.sh."
     "codegen-settings-string" "unit-cache-encode" "unit-cache-decode")
   "Definitions (names without the script prefix) that run at or after the key.")
 
+;; census-instrument and abi-box-split-source are NOT cut: the trace oracle
+;; (tools/dev/nl-key-trace.el) showed compile-to-unit applies both a second
+;; time (3374-3376), so an edit of either changes the compiled code.
 (defconst nelisp-standalone-cachekey-closure-cut
-  '("unit-inline-imports" "census-instrument" "abi-box-split-source"
+  '("unit-inline-imports"
     "xinline-prepare" "xinline-register" "unit-for" "reader-driver-unit"
     "glue-source" "applyfn-assemble" "applyfn-baked-source" "applyfn-source"
     "applyfn-split-units" "applyfn-frame-units" "reader-units" "prewarm-wait"
     "box-census-record")
   "Pre-key producers: the BFS neither enters nor hashes these.")
+
+;; Diagnostics called inside compile-to-unit that only write census/dump files.
+(defconst nelisp-standalone-cachekey-trace-diagnostics
+  '("box-census-record" "box-dump-record")
+  "Functions the trace oracle may see outside the closure: they record, never transform.")
 
 (defconst nelisp-standalone-cachekey-bookkeeping-vars
   '("recompiled" "build-trace-misses" "build-trace-hits" "build-trace-unit" "prewarm-unit" "cache-dir")
@@ -289,6 +297,10 @@ scanner without being listed here fails the ERT (and the key refuses).")
     (nelisp-standalone--unit-cache-key . fboundp)
     ;; FUNCALL of a local `cl-labels' walker.
     (nelisp-standalone--inline-wrapper-initializers . funcall)
+    ;; INTERN derives `NAME_w' style names from the defun name text.
+    (nelisp-standalone--abi-box-split-defun . intern)
+    (nelisp-standalone--abi-box-split-source . intern)
+    (nelisp-standalone--abi-definer-word . intern)
     ;; NELISP_RUNTIME_RELOAD is in `-env-names'.
     (nelisp-standalone--runtime-reload-enabled-p . getenv))
   "Alist (DEF . HEAD) of opaque sites reviewed as safe (each has a reason above).")

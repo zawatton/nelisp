@@ -438,3 +438,51 @@ Each FROM must occur exactly once: an edit that misses is a test error."
     (should-not (seq-remove (lambda (v) (memq v covered)) lb))
     ;; Negative control: an unlisted variable would be reported.
     (should (seq-remove (lambda (v) (memq v (remq (car lb) covered))) lb))))
+
+;;;; Design2 A4: the dynamic trace is an oracle for the static closure.
+
+(defvar nelisp-cachekey-test--trace nil)
+(defun nelisp-cachekey-test--trace ()
+  "Names run after the key while the first 3 units build (tools/dev/nl-key-trace.sh)."
+  (or nelisp-cachekey-test--trace
+      (let* ((dir (make-temp-file "nl-kt" t))
+             (script (expand-file-name "tools/dev/nl-key-trace.sh" nelisp-cachekey-test--root)))
+        (unwind-protect
+            (progn
+              (should (eq 0 (call-process "sh" nil nil nil script nelisp-cachekey-test--root
+                                          (expand-file-name "o" dir) "3")))
+              (setq nelisp-cachekey-test--trace
+                    (split-string (with-temp-buffer
+                                    (insert-file-contents (expand-file-name "o/trace.txt" dir))
+                                    (buffer-string))
+                                  "\n" t)))
+          (delete-directory dir t)))))
+
+(defun nelisp-cachekey-test--trace-missing (trace closure-names)
+  "TRACE names that are neither in CLOSURE-NAMES nor reviewed diagnostics."
+  (seq-remove (lambda (n)
+                (or (member n closure-names)
+                    (member (string-remove-prefix "nelisp-standalone--" n)
+                            nelisp-standalone-cachekey-trace-diagnostics)))
+              trace))
+
+(ert-deftest nelisp-cachekey-trace-subset-of-closure ()
+  (skip-unless (file-executable-p "/usr/local/bin/emacs-31.1"))
+  (let* ((trace (nelisp-cachekey-test--trace))
+         (names (mapcar #'symbol-name (plist-get (nelisp-cachekey-test--base) :defs))))
+    (should (> (length trace) 20))
+    (should (member "nelisp-standalone--compile-to-unit" trace))
+    (should-not (nelisp-cachekey-test--trace-missing trace names))
+    ;; Negative control (poison): dropping a traced def from the static set is RED.
+    (let ((victim (seq-find (lambda (n) (and (member n names)
+                                             (not (equal n "nelisp-standalone--compile-to-unit"))
+                                             (not (member (string-remove-prefix "nelisp-standalone--" n)
+                                                          nelisp-standalone-cachekey-closure-roots))))
+                            trace)))
+      (should victim)
+      (should (equal (list victim)
+                     (nelisp-cachekey-test--trace-missing trace (remove victim names)))))
+    ;; Negative control 2: the second application of the box splitter inside
+    ;; compile-to-unit is traced, so it must be in the closure (it was once cut).
+    (should (member "nelisp-standalone--abi-box-split-source" trace))
+    (should (member "nelisp-standalone--abi-box-split-source" names))))
