@@ -31112,7 +31112,7 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
               (when (>= (cdr v) nelisp--fxc-nparams) (nelisp--fxc-unsupported x))))
           (push 'nelisp--fx-lambda nelisp--fx-called)
           (let* ((kf (nelisp--fxc-emit 1 (list 'function lam)))
-                 (ke (nelisp--fxc-emit 1 nelisp--fx-outer-env))
+                 (ke (nelisp--fxc-emit 1 (reverse nelisp--fx-outer-env)))
                  (args (list (list :const ke) (list :const kf))))
             (dolist (v cells)
               (let ((ks (nelisp--fxc-emit 1 (car v))))
