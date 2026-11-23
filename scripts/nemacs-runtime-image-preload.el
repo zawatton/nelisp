@@ -183,6 +183,18 @@ runtime."
          ((and x (symbolp x) (memq x names)) (setq found t)))))
     found))
 
+;; F420: a row is wanted when its CURRENT closure has no native record, whatever
+;; `nelisp-nc--converted' says (the bootstrap re-emits stdlib functions, so a name
+;; can stay listed as converted while its new closure runs on the word VM).
+(defun nemacs-runtime-image-preload--row-needs-convert-p (name)
+  "Non-nil when NAME's current closure lacks a native record.
+Record slot 1 <= -16 is native; any other slot 1 or a missing or non-vector
+record is not.  A function that is not a closure is left alone (nil)."
+  (let ((cell (ignore-errors (nelisp--closure-cons (symbol-function name)))))
+    (when (eq (car-safe cell) 'closure)
+      (let ((rec (gethash (nthcdr 3 cell) nelisp--fx-table)))
+        (not (and (vectorp rec) (integerp (aref rec 1)) (<= (aref rec 1) -16)))))))
+
 (defun nemacs-runtime-image-preload--reconvert-row (name)
   "Compile NAME again from its closure and convert it; non-nil when converted.
 The record NAME had (fx table, pending entry, converted membership) is
@@ -201,6 +213,9 @@ failed attempt never demotes a row that was fine before."
         (remhash body nelisp--fx-table)
         (when (hash-table-p nelisp--fx-pending)
           (remhash body nelisp--fx-pending))
+        ;; A stale membership must not hide the retry; restored below on failure.
+        (when was-converted
+          (setq nelisp-nc--converted (delq name nelisp-nc--converted)))
         (condition-case nil
             (progn
               (nelisp--fx-register name)
@@ -224,7 +239,7 @@ failed attempt never demotes a row that was fine before."
         ok))))
 
 (defun nemacs-runtime-image-preload--reconvert-native-rows ()
-  "Re-register every native-row function that is not converted; answer how many.
+  "Re-register every native-row function whose current record is not native; answer how many.
 A row function is compiled for the word VM when it is first called, which
 for `nconc' happens during the prelude load, before `cddr' is defined: its
 code then holds `cddr' as a closure call, `nelisp-nc--code-same-p' rejects
@@ -249,7 +264,8 @@ was.  Answer the number of rows converted, or nil off the NeLisp runtime."
       (dolist (row nelisp-nc--table)
         (let ((name (car row)))
           (when (and (symbolp name) (not (memq :mutant row))
-                     (fboundp name) (not (memq name nelisp-nc--converted)))
+                     (fboundp name)
+                     (nemacs-runtime-image-preload--row-needs-convert-p name))
             (condition-case nil
                 (when (nemacs-runtime-image-preload--reconvert-row name)
                   (push name fixed)
