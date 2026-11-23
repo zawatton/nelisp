@@ -104,6 +104,7 @@ batch entry is still unavailable."
   (nemacs-runtime-image-preload--install-daily-driver-core)
   (nemacs-runtime-image-preload--reassert-process-bridge)
   (nemacs-runtime-image-preload--retry-stale-fx)
+  (nemacs-runtime-image-preload--reconvert-native-rows)
   t)
 
 (defun nemacs-runtime-image-preload--retry-stale-fx-pass ()
@@ -163,6 +164,83 @@ runtime."
               total (+ total n)
               pass (1+ pass)))
       total)))
+
+(defun nemacs-runtime-image-preload--tree-mentions-p (tree names)
+  "Non-nil when the cons TREE contains a symbol of NAMES.  Iterative walk."
+  (let ((todo (list tree)) (found nil))
+    (while (and todo (not found))
+      (let ((x (pop todo)))
+        (cond
+         ((consp x)
+          (while (consp x)
+            (if (consp (car x)) (push (car x) todo)
+              (when (memq (car x) names) (setq found t)))
+            (setq x (cdr x)))
+          (when (and x (symbolp x) (memq x names)) (setq found t)))
+         ((and x (symbolp x) (memq x names)) (setq found t)))))
+    found))
+
+(defun nemacs-runtime-image-preload--reconvert-row (name)
+  "Compile NAME again from its closure and convert it; non-nil when converted."
+  (let* ((cell (nelisp--closure-cons (symbol-function name))))
+    (when (eq (car-safe cell) 'closure)
+      (let ((body (nthcdr 3 cell)))
+        (remhash body nelisp--fx-table)
+        (when (hash-table-p nelisp--fx-pending)
+          (remhash body nelisp--fx-pending))
+        (nelisp--fx-register name)
+        ;; The install-tail wrapper converts on registration; convert here
+        ;; too in case it is not installed.
+        (unless (memq name nelisp-nc--converted)
+          (nelisp-nc--convert name (symbol-function name)))
+        (and (memq name nelisp-nc--converted) t)))))
+
+(defun nemacs-runtime-image-preload--reconvert-native-rows ()
+  "Re-register every native-row function that is not converted; answer how many.
+A row function is compiled for the word VM when it is first called, which
+for `nconc' happens during the prelude load, before `cddr' is defined: its
+code then holds `cddr' as a closure call, `nelisp-nc--code-same-p' rejects
+the native row, and nothing converts it again once `cddr' exists, so it
+stays on the word VM for the whole life of the image (F284: nconc 0.8 us
+native vs 2.0 us VM, string-clean-whitespace 1.9x slower).  Drop the stale
+table and pending entries, compile the function again now that its callees
+exist, and convert it.  A converted row whose body mentions a function just
+converted (`mapcan' applies `nconc') is compiled and converted once more so
+that it links to the new record (mapcan stayed at 4.5 us, 2.3 us after).
+One pass over `nelisp-nc--table' plus one over the dependents, no loop at
+call time; a row the compiler or the fxir match still declines stays as it
+was.  Answer the number of rows converted, or nil off the NeLisp runtime."
+  (when (and (boundp 'nelisp-nc--table) nelisp-nc--table
+             (boundp 'nelisp-nc--converted)
+             (fboundp 'nelisp-nc--convert)
+             (fboundp 'nelisp--fx-register)
+             (fboundp 'nelisp--closure-cons)
+             (boundp 'nelisp--fx-table)
+             (hash-table-p nelisp--fx-table))
+    (let ((fixed nil) (n 0))
+      (dolist (row nelisp-nc--table)
+        (let ((name (car row)))
+          (when (and (symbolp name) (not (memq :mutant row))
+                     (fboundp name) (not (memq name nelisp-nc--converted)))
+            (condition-case nil
+                (when (nemacs-runtime-image-preload--reconvert-row name)
+                  (push name fixed)
+                  (setq n (1+ n)))
+              (error nil)))))
+      (when fixed
+        (dolist (row nelisp-nc--table)
+          (let ((name (car row)))
+            (when (and (symbolp name) (not (memq :mutant row))
+                       (fboundp name) (memq name nelisp-nc--converted)
+                       (not (memq name fixed)))
+              (condition-case nil
+                  (let ((cell (nelisp--closure-cons (symbol-function name))))
+                    (when (and (eq (car-safe cell) 'closure)
+                               (nemacs-runtime-image-preload--tree-mentions-p
+                                (nthcdr 3 cell) fixed))
+                      (nemacs-runtime-image-preload--reconvert-row name)))
+                (error nil))))))
+      n)))
 
 (defun nemacs-runtime-image-preload--reassert-process-bridge ()
   "Re-point the public process entry points at the `emacs-process' facade.

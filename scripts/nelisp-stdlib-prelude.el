@@ -31547,7 +31547,20 @@ and `nelisp--fx-register-fn' repeats the check."
                  (not (gethash body nelisp--fx-table))
                  (consp body) (listp formals) (nelisp--fx-retry-ready-p))
         (nelisp--fx-register-fn
-         nil (cons 'closure (cons captured (cons formals body)))))
+         nil (cons 'closure (cons captured (cons formals body))))
+        ;; A compilation that failed here (a callee still undefined) writes
+        ;; `none' itself, which used to be final at tries=1: nelisp--rris ran
+        ;; interpreted for good, 2.3x slower than its recompiled record
+        ;; (F284).  Re-arm the countdown while the retry budget lasts; the
+        ;; budget is the same `nelisp--fx-retry-max' and the delay grows 4x.
+        (let ((tries (gethash body nelisp--fx-retry-tries 0)))
+          (when (and (eq (gethash body nelisp--fx-table) 'none)
+                     (< tries nelisp--fx-retry-max)
+                     (nelisp--fx-arglist-shape formals)
+                     (or (nelisp--fx-env-ok-p captured)
+                         (nelisp--fx-cap-names captured)))
+            (puthash body (1+ tries) nelisp--fx-retry-tries)
+            (puthash body (nelisp--fx-retry-delay tries t) nelisp--fx-table))))
     (error nil))
   (condition-case nil
       (unless (or first-sight (gethash body nelisp--fx-table))
