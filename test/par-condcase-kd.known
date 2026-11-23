@@ -1,0 +1,10 @@
+E5 condcase b-warm         ((error 1) unbound)
+E5a condcase a-warm        ((error 1) unbound)
+E5g condcase global sp     (error 1)
+E5c cold condcase decl     (error 1)
+g1 global special          ((error 1) (error 1))
+g2 eval global special     (error 1)
+g3 eval local decl         (error 1)
+g4 eval decl+global        (error 1)
+g5 body sees var           (error 1)
+g8 success var             5
