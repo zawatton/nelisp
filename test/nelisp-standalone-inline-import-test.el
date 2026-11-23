@@ -60,6 +60,8 @@
                   nelisp-standalone--inline-small-defuns-imports
                   nelisp-standalone--inline-source
                   nelisp-standalone--build-trace-phase
+                  nelisp-standalone--codegen-settings-string
+                  nelisp-standalone--chunk-sibling-imports
                   nelisp-standalone--unit-cache-key
                   nelisp-standalone--cached-unit
                   nelisp-standalone--glue-source
@@ -71,6 +73,8 @@
                   nelisp-standalone--runtime-reload-enabled-p
                   nelisp-standalone--xinline-enabled-p
                   nelisp-standalone--xinline-digest
+                  nelisp-standalone--xinline-used-entries
+                  nelisp-standalone--xinline-mark-used
                   nelisp-standalone--unit-for
                   nelisp-standalone--reader-driver-unit))
     (goto-char (point-min))
@@ -81,6 +85,12 @@
       (eval (read (current-buffer)) t))))
 
 (defvar nelisp-standalone--inline-import-sources nil)
+;; Settings string and unit key helpers live in the cache-key library, which the build script requires.
+(let ((load-path (cons (expand-file-name "../scripts"
+                                        (file-name-directory (or load-file-name buffer-file-name)))
+                       load-path)))
+  (require 'nelisp-standalone-cachekey))
+(defvar nelisp-standalone--linux-arena-size 0)
 (defvar nelisp-standalone--manifest nil)
 (defvar nelisp-standalone--gc-source nil)
 (defvar nelisp-standalone--strings-source nil)
@@ -352,7 +362,12 @@
                     (20000 . 2000) (20016 . 400) (20024 . 2100) (20048 . 30000)
                     (30000 . 3000) (30016 . 400) (30024 . 3100) (30048 . 0)))
       (puthash (car pair) (cdr pair) memory))
-    (cl-letf (((symbol-function 'ptr-read-u64)
+    (cl-letf (((symbol-function 'nl_gc_in_arena_rest)
+               ;; The growth-chunk walk is a separate recursive defun; model it from production source.
+               (nelisp-inline-import-test--function
+                (nelisp-heap-accessors-lower
+                 (cl-find 'nl_gc_in_arena_rest (cdr gc) :key #'cadr))))
+              ((symbol-function 'ptr-read-u64)
                (lambda (address offset)
                  (let ((value (gethash (+ address offset) memory 'missing)))
                    (when (eq value 'missing) (error "Unknown model address")) value))))
@@ -385,6 +400,9 @@
                      (list donor)))
                   ((symbol-function 'nelisp-standalone--toolchain-digest)
                    (lambda () "fixture-toolchain"))
+                  ;; Cache entries record the key closure digest; use the global-key fallback.
+                  ((symbol-function 'nelisp-standalone--key-closure-term)
+                   (lambda () (cons nil "fixture")))
                   ((symbol-function 'nelisp-standalone--compile-to-unit)
                    (lambda (_name _source)
                      (push (copy-tree nelisp-standalone--inline-import-sources) compiled)
