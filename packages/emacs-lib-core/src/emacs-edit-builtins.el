@@ -3097,7 +3097,10 @@ the buffer record (`nelisp-buffer-overlays', an interval tree or nil), not in
 the emacs-buffer sidecar; text properties are checked in both stores."
   (interactive "p")
   (let ((ext (gethash (current-buffer) emacs-buffer--state)))
-    (if (and (or (null ext) (null (emacs-buffer--ext-text-props ext)))
+    ;; Bind only when the global flag is set: binding an already-nil flag would
+    ;; drop a first-property write made during the call at unbind.
+    (if (and emacs-buffer--char-props-seen
+             (or (null ext) (null (emacs-buffer--ext-text-props ext)))
              (null (nelisp-buffer-overlays nelisp--current-buffer))
              (null (nelisp-buffer-text-properties nelisp--current-buffer)))
         (let ((emacs-buffer--char-props-seen nil))
