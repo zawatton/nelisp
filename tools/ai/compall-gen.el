@@ -150,6 +150,38 @@ name PROBE (the real name keeps its image definition); nil if not a closure."
                (let ((fn (compall-gen--fn (symbol-function probe))))
                  (and (eq (car-safe fn) 'closure) fn)))
       (error nil))))
+(defun compall-gen--gensym-p (x)
+  (and (symbolp x) x (not (eq (intern-soft (symbol-name x)) x))))
+(defun compall-gen--same-p (a b)
+  "`equal', except that uninterned symbols of the same name match and
+closures compare by their lists.  A setf expansion makes fresh temporaries
+\(gv's `v'), so a probe compile holds different uninterned symbols than the
+live one, also inside constant lambdas of the code vector."
+  (setq a (compall-gen--fn a) b (compall-gen--fn b))
+  (cond ((equal a b) t)
+        ((and (compall-gen--gensym-p a) (compall-gen--gensym-p b))
+         (string= (symbol-name a) (symbol-name b)))
+        ((and (consp a) (consp b))
+         (let ((ok t))
+           (while (and ok (consp a) (consp b))
+             (setq ok (compall-gen--same-p (car a) (car b)) a (cdr a) b (cdr b)))
+           (and ok (compall-gen--same-p a b))))
+        ((and (vectorp a) (vectorp b) (= (length a) (length b)))
+         (let ((i 0) (ok t))
+           (while (and ok (< i (length a)))
+             (setq ok (compall-gen--same-p (aref a i) (aref b i)) i (1+ i)))
+           ok))))
+(defun compall-gen--code-same-p (a b)
+  "`nelisp-fxir-code-same-p' with `compall-gen--same-p' for the constants."
+  (and (= (length a) (length b))
+       (let ((i 0) (ok t))
+         (while (and ok (< i (length a)))
+           (let ((x (aref a i)) (y (aref b i)))
+             (setq ok (if (and (vectorp x) (vectorp y) (> (length x) 0) (> (length y) 0))
+                          (equal (aref x 0) (aref y 0))
+                        (compall-gen--same-p x y))))
+           (setq i (1+ i)))
+         ok)))
 (defun compall-gen--source-same-p (forms ir code args)
   "Non-nil when one of FORMS compiles to IR and CODE with arglist ARGS."
   (let ((ok nil))
@@ -157,7 +189,7 @@ name PROBE (the real name keeps its image definition); nil if not a closure."
       (unless ok
         (let* ((fn (compall-gen--closure-of f))
                (c (and fn (equal (nth 2 fn) args) (ignore-errors (nelisp-fxir-recompile fn)))))
-          (when (and c (equal (nth 2 c) ir) (nelisp-fxir-code-same-p (car c) code))
+          (when (and c (compall-gen--same-p (nth 2 c) ir) (compall-gen--code-same-p (car c) code))
             (setq ok t)))))
     ok))
 
