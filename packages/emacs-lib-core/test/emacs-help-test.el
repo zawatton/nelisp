@@ -171,8 +171,8 @@
 
 (ert-deftest help-mode-history-commands-report-unavailable ()
   (emacs-help-test--with-fresh-world
-    (should-error (help-go-back) :type 'user-error)
-    (should-error (help-go-forward) :type 'user-error)))
+    (should-error (emacs-help-go-back) :type 'user-error)
+    (should-error (emacs-help-go-forward) :type 'user-error)))
 
 (ert-deftest help-go-back-and-forward-navigate-history ()
   "A4-adjacent: help history (Doc 15 wave A: A3) walks topics back/forward."
@@ -180,18 +180,18 @@
     (describe-function 'emacs-help-test--sample-function) ; topic A
     (describe-variable 'emacs-help-test--sample-variable) ; topic B (now shown)
     ;; back -> A
-    (help-go-back)
+    (emacs-help-go-back)
     (should (string-match-p "Sample function docstring"
                             (emacs-help-test--help-string)))
     ;; forward -> B
-    (help-go-forward)
+    (emacs-help-go-forward)
     (should (string-match-p "Sample variable docstring"
                             (emacs-help-test--help-string)))
     ;; nothing past B
-    (should-error (help-go-forward) :type 'user-error)
+    (should-error (emacs-help-go-forward) :type 'user-error)
     ;; back -> A, then nothing before A
-    (help-go-back)
-    (should-error (help-go-back) :type 'user-error)))
+    (emacs-help-go-back)
+    (should-error (emacs-help-go-back) :type 'user-error)))
 
 (ert-deftest describe-key-resolves-binding ()
   (emacs-help-test--with-fresh-world

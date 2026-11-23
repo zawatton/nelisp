@@ -837,13 +837,10 @@ split: special and large forms remain direct, while ordinary small forms use
                      nelisp-bootstrap-repo-root)))
 
 (defconst nelisp-bootstrap--host-only-package-sources
-  '("src/help-mode.el")
+  '()
   "Package sources host Emacs loads but the bundle must not carry.
-`help-mode.el' is a host shim that loads GNU help-mode through a filtered
-`load-path'.  The former flat staging tree never produced a bundle entry
-for it (the host loaded it from its package path, outside the staged
-`src/' prefix), so keep it out explicitly now that package paths are
-first-class.")
+Empty since the `help-mode.el' shim was removed (GNU help-mode.el is
+loaded from vendor/ on both host and standalone).")
 
 (defun nelisp-bootstrap--source-file (file)
   "Return the package source file for FILE, or nil.

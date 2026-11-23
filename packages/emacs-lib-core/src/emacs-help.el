@@ -28,9 +28,6 @@
 (require 'emacs-keymap)
 (require 'emacs-mode)
 
-(defvar help-mode-map nil
-  "Keymap for `help-mode'.")
-
 (defvar describe-symbol-backends nil
   "Backends consulted by callers that extend `describe-symbol'.")
 
@@ -50,11 +47,9 @@
                 prefix))))
       (describe-bindings prefix))))
 
-(setq help-mode-map
-      (let ((map (emacs-keymap-make-sparse-keymap)))
-        (emacs-keymap-define-key map (kbd "q") #'emacs-help-quit-window)
-        (emacs-keymap-define-key map (kbd "g") #'emacs-help-revert-buffer)
-        map))
+;; The help buffer uses GNU `help-mode' (vendored help-mode.el) and its
+;; `help-mode-map'; `g' reaches `emacs-help-revert-buffer' through the
+;; buffer's `revert-buffer-function' (see `emacs-help--use-help-mode').
 
 (defvar emacs-help--state (make-hash-table :test 'eq :weakness nil)
   "Hash table mapping help buffers to render metadata.
@@ -461,8 +456,8 @@ NAMES is an optional alist mapping integer keysyms to display strings."
 (defun emacs-help--history-record (rerender)
   "Record RERENDER in the help navigation history.
 A normal topic push moves the current topic onto the back stack and
-clears the forward stack; replays driven by `help-go-back' /
-`help-go-forward' (when `emacs-help--navigating' is non-nil) are not
+clears the forward stack; replays driven by `emacs-help-go-back' /
+`emacs-help-go-forward' (when `emacs-help--navigating' is non-nil) are not
 recorded so navigation stays stable."
   (unless emacs-help--navigating
     (when emacs-help--nav-current
@@ -476,7 +471,7 @@ KIND and SUBJECT describe the current topic.
 RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
   (let ((buffer (emacs-help--buffer)))
     (with-current-buffer buffer
-      (help-mode)
+      (emacs-help--use-help-mode)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (funcall renderer)
@@ -553,7 +548,7 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
   (or (emacs-help-gui--backend-call :show-help-buffer title body)
       (let ((buffer (emacs-help--buffer)))
         (with-current-buffer buffer
-          (help-mode)
+          (emacs-help--use-help-mode)
           (let ((inhibit-read-only t))
             (erase-buffer)
             (insert title "\n\n" body)
@@ -1039,22 +1034,14 @@ display core."
      (concat "Apropos documentation search is not yet backed by the full documentation index.\nPattern: "
              arg))))
 
-;;;###autoload
-;; A GNU loaddefs autoload for `help-mode' (file help-mode, the shim that
-;; re-exports this module) is not a definition: the shim would load and leave
-;; it undefined, so it counts as unbound here.
-(unless (and (fboundp 'help-mode)
-             (not (eq (car-safe (symbol-function 'help-mode)) 'autoload)))
-  (defun help-mode ()
-    "Major mode for the shared `*Help*' buffer."
-    (interactive)
-    (emacs-mode-kill-all-local-variables)
-    (emacs-mode-set-major-mode 'help-mode "Help")
-    (setq major-mode 'help-mode)
-    (setq mode-name "Help")
-    (use-local-map help-mode-map)
-    (setq truncate-lines t)
-    nil))
+(defun emacs-help--revert-buffer-function (&rest _ignore)
+  "`revert-buffer-function' of the help buffer: re-render its topic."
+  (emacs-help-revert-buffer))
+
+(defun emacs-help--use-help-mode ()
+  "Put the current buffer in GNU `help-mode', re-rendered by `g'."
+  (help-mode)
+  (setq-local revert-buffer-function #'emacs-help--revert-buffer-function))
 
 ;;;###autoload
 (defun emacs-help-quit-window ()
@@ -1073,7 +1060,7 @@ display core."
       (user-error "Current buffer is not a help buffer"))
     (funcall rerender)))
 
-(defun help-go-back ()
+(defun emacs-help-go-back ()
   "Go back to the previously shown help topic."
   (interactive)
   (unless emacs-help--nav-back
@@ -1083,7 +1070,7 @@ display core."
   (let ((emacs-help--navigating t))
     (funcall emacs-help--nav-current)))
 
-(defun help-go-forward ()
+(defun emacs-help-go-forward ()
   "Go forward to the next help topic in the history."
   (interactive)
   (unless emacs-help--nav-forward

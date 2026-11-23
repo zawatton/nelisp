@@ -40,6 +40,17 @@
 
 ;; --- batch/display context ---
 (unless (boundp 'window-system) (defvar window-system nil))
+;; window.c DEFVAR (default `window-size', window.c:9519); read by GNU
+;; subr.el `internal-temp-output-buffer-show'.
+(unless (boundp 'window-combination-limit)
+  (defvar window-combination-limit 'window-size
+    "If non-nil, splitting a window makes a new parent window."))
+;; callproc.c DEFVAR_INT: sysconf (_SC_ARG_MAX) / 4 on POSIX (callproc.c:2249);
+;; Linux's ARG_MAX is 2097152.  Read by GNU subr.el
+;; `multiple-command-partition-arguments'.
+(unless (boundp 'command-line-max-length)
+  (defvar command-line-max-length 524288
+    "Maximum length of a command and its arguments on this system."))
 (unless (boundp 'invocation-directory) (defvar invocation-directory "/usr/bin/"))
 (unless (boundp 'invocation-name) (defvar invocation-name "emacs"))
 (unless (boundp 'user-full-name)
