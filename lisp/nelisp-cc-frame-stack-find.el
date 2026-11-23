@@ -567,11 +567,13 @@
 
     (defun nelisp_frame_local_declare_one (frame name)
       (if (> (record-slot-count frame) 3)
-          (let* ((names (record-slot-ref-ptr frame 3)))
-            (if (= (nl_capture_filter_contains names name) 1) 0
-              (let* ((new-names (alloc-bytes 32 8)))
-                (seq (cons-make-with-clone name names new-names)
-                     (record-slot-set frame 3 new-names) 0))))
+          ;; GNU Fdefvar pushes a bare marker with no membership check, so a
+          ;; repeated (defvar SYM) records SYM again; only the global
+          ;; declared-special test (bf_declare_local_status) skips a write.
+          (let* ((names (record-slot-ref-ptr frame 3))
+                 (new-names (alloc-bytes 32 8)))
+            (seq (cons-make-with-clone name names new-names)
+                 (record-slot-set frame 3 new-names) 0))
         1))
 
     (defun nelisp_frame_local_declare_walk (backing i name)
