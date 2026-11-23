@@ -32539,21 +32539,61 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= r 1)
             (seq (m5_fx_first_call body env captured formals)
                  (let* ((r2 (nl_fx_lookup body env 0 0)))
-                   (if (= r2 1) 0 (m5_fx_rec_valid r2 captured formals))))
-          (m5_fx_rec_valid r captured formals))))
-    ;; F391: a record is keyed by the body cons alone, but its code bakes in
-    ;; the environment's declared markers, the outer environment constant and
-    ;; the formals (slots 8 and 9 hold what it was compiled under).  REC (or 0)
-    ;; is answered only for a closure whose CAPTURED and FORMALS match them:
-    ;; an eq test first, then an element-wise compare.  A mismatch, or a record
-    ;; of an older 8-slot layout, answers 0 and the call runs interpreted;
-    ;; nothing is written to the table.
+                   (if (= r2 1) 0 (m5_fx_rec_pick body env r2 captured formals))))
+          (m5_fx_rec_pick body env r captured formals))))
+    ;; F391/F396: a record is keyed by the body cons alone, but its code bakes
+    ;; in the environment's declared markers, the outer environment constant
+    ;; and the formals (slots 8 and 9 hold what it was compiled under).  The
+    ;; head record REC (or 0) is answered only for a closure whose CAPTURED
+    ;; and FORMALS match them: an eq test first, then an element-wise compare.
+    ;; A record of 12 or more slots also holds variants (slot 10), one per
+    ;; further shape; the first matching one is answered.  A record of an
+    ;; older 8-slot layout answers 0.  Nothing is written.
     (defun m5_fx_rec_valid (rec captured formals)
       (if (= rec 0) 0
         (if (< (nl_vector_length rec) 10) 0
-          (if (= (m5_fx_list_same captured (nl_vector_slot_word rec 8)) 1)
-              (if (= (m5_fx_list_same formals (nl_vector_slot_word rec 9)) 1) rec 0)
-            0))))
+          (if (= (m5_fx_shape_match rec captured formals) 1) rec
+            (if (< (nl_vector_length rec) 12) 0
+              (m5_fx_variant_walk (nl_vector_slot_word rec 10) captured formals))))))
+    ;; 1 when record REC was compiled under CAPTURED and FORMALS.
+    (defun m5_fx_shape_match (rec captured formals)
+      (if (= (m5_fx_list_same captured (nl_vector_slot_word rec 8)) 1)
+          (if (= (m5_fx_list_same formals (nl_vector_slot_word rec 9)) 1) 1 0)
+        0))
+    ;; The first record of the variant list LST that matches and is inside
+    ;; NELISP_FX_RANGE, or 0.
+    (defun m5_fx_variant_walk (lst captured formals)
+      (let* ((w lst) (found 0))
+        (seq
+         (while (if (= found 0) (= (m5_fx_word_cons_p w 0) 1) 0)
+           (let* ((v (nl_cons_car_word w)))
+             (seq
+              (if (= (logand v 1) 1) 0
+                (if (/= (heap-sexp-tag-word v) 8) 0
+                  (if (< (nl_vector_length v) 10) 0
+                    (if (= (nl_fx_out_of_range v) 1) 0
+                      (if (= (m5_fx_shape_match v captured formals) 1) (setq found v) 0)))))
+              (setq w (nl_cons_cdr_word w)))))
+         found)))
+    ;; The head's variant state (slot 11) is the fixnum 0: a new shape may
+    ;; still be added.  A closed (-1), older or shorter record answers 0.
+    (defun m5_fx_variant_open (rec)
+      (if (< (nl_vector_length rec) 12) 0
+        (let* ((w (nl_vector_slot_word rec 11)))
+          (if (= (logand w 3) 1) (if (= (sar w 2) 0) 1 0) 0))))
+    ;; REC (the head, or 0) answered for the closure's own shape.  On a miss
+    ;; with the head still open and no compilation running, add this shape
+    ;; once (`nelisp--fx-add-variant') and look again; any other miss answers
+    ;; 0 without entering Lisp.
+    (defun m5_fx_rec_pick (body env rec captured formals)
+      (let* ((v (m5_fx_rec_valid rec captured formals)))
+        (if (/= v 0) v
+          (if (= rec 0) 0
+            (if (/= (m5_fx_variant_open rec) 1) 0
+              (if (/= (nl_fx_compiling) 0) 0
+                (seq (m5_fx_add_variant body env captured formals)
+                     (let* ((r2 (nl_fx_lookup body env 0 0)))
+                       (if (= r2 1) 0 (m5_fx_rec_valid r2 captured formals))))))))))
     ;; 1 when the proper lists A and B (words or views, raw 0 or nil for the
     ;; empty list) hold eq elements in the same order, else 0.
     (defun m5_fx_list_same (a0 b0)
@@ -32620,6 +32660,30 @@ bytes are written into a fresh 8-byte buffer instead."
          (ptr-write-u64 (+ buf 8) 0 8391176327732754534)
          (ptr-write-u64 (+ buf 16) 0 465674789677)
          (nl_alloc_symbol buf 21 args)
+         (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) args fslot) 0)
+             (m5_fx_first_call_apply body env fslot args value captured formals)
+           0))))
+    ;; Add the closure's shape to BODY's head record: `nelisp--fx-add-variant'
+    ;; takes the same arguments as `nelisp--fx-first-call' and runs under the
+    ;; same compiling guard, rooted views and argument list.
+    (defun m5_fx_add_variant (body env captured formals)
+      (if (/= (nl_fx_compiling) 0) 0
+        (let* ((mark (nl_root_mark env)) (views (nl_anchor_views env 3)))
+          (seq
+           (nl_fx_compiling_set 1 0)
+           (m5_fx_add_variant_in body env (heap-read-u64 views 0)
+                                 (heap-read-u64 views 8) (heap-read-u64 views 16)
+                                 captured formals)
+           (nl_fx_compiling_set 0 0)
+           (nl_root_release env mark)
+           0))))
+    (defun m5_fx_add_variant_in (body env fslot args value captured formals)
+      (let* ((buf (alloc-bytes 24 1)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 (+ buf 8) 0 8515572852717353062)
+         (ptr-write-u64 (+ buf 16) 0 128017429525089)
+         (nl_alloc_symbol buf 22 args)
          (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) args fslot) 0)
              (m5_fx_first_call_apply body env fslot args value captured formals)
            0))))

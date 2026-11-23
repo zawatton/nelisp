@@ -31639,6 +31639,38 @@ Defining it as a function compiles them again.")
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
     (nelisp--fx-register-fn name (symbol-function name))))
 
+(defun nelisp--fx-make-record (c shape capnames name env args)
+  "Build the 10-slot record for compile result C of a closure.
+C is (CODE . NLOCALS) from `nelisp--fx-compile', SHAPE the
+`nelisp--fx-arglist-shape' of ARGS, CAPNAMES the captured names of a cap
+record (else nil), NAME the function name or nil, ENV the closure's
+environment.  Consumes the next registration index.  Slots 8 and 9 hold the
+environment and formals the code was compiled under (F391); the VM runs the
+record only for a closure whose own environment and formals match them
+\(`m5_fx_rec_valid'); a cap record keeps just its bare markers, never the
+\(NAME . VALUE) pairs."
+  ;; Compiler-private -2 selects the nullary constant path.  Ordinary VM
+  ;; calls keep the original executor prologue.
+  (let ((code (car c)))
+    (when (and (null capnames) (= (cdr c) 0) (= (nth 1 shape) 0)
+               (= (length code) 6) (= (aref code 0) 17)
+               (= (aref code 2) 1) (= (aref code 4) 0))
+      (setcdr c -2)))
+  (prog1 (vector (car c) (cdr c)
+                 (if capnames nelisp--fx-cap-arity (nth 1 shape))
+                 nelisp--fx-next-index name
+                 (if capnames nelisp--fx-cap-arity (nth 2 shape))
+                 (nth 3 shape)
+                 (and capnames
+                      (apply #'vector (nth 1 shape) capnames))
+                 (if capnames
+                     (let ((r nil))
+                       (dolist (e env) (unless (consp e) (push e r)))
+                       (nreverse r))
+                   env)
+                 args)
+    (setq nelisp--fx-next-index (1+ nelisp--fx-next-index))))
+
 (defun nelisp--fx-register-fn (name fn &optional force)
   "Compile closure FN = (closure ENV ARGS . BODY) into `nelisp--fx-table'.
 NAME is the function it is defined as, or nil for an anonymous lambda; only
@@ -31685,13 +31717,6 @@ meanwhile would otherwise record `none' again behind the compilation)."
                 (when (and name failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
-                ;; Compiler-private -2 selects the nullary constant path.
-                ;; Ordinary VM calls keep the original executor prologue.
-                (let ((code (car c)))
-                  (when (and (null capnames) (= (cdr c) 0) (= (nth 1 shape) 0)
-                             (= (length code) 6) (= (aref code 0) 17)
-                             (= (aref code 2) 1) (= (aref code 4) 0))
-                    (setcdr c -2)))
                 (dolist (m macros)
                   (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)
@@ -31705,27 +31730,82 @@ meanwhile would otherwise record `none' again behind the compilation)."
               (when (and name (null c) nelisp--fx-missing (not (eq nelisp--fx-missing name)))
                 (push name (gethash nelisp--fx-missing nelisp--fx-waiting)))
               (puthash body (if c
-                                (prog1 (vector (car c) (cdr c)
-                                               (if capnames nelisp--fx-cap-arity (nth 1 shape))
-                                               nelisp--fx-next-index name
-                                               (if capnames nelisp--fx-cap-arity (nth 2 shape))
-                                               (nth 3 shape)
-                                               (and capnames
-                                                    (apply #'vector (nth 1 shape) capnames))
-                                               ;; Slots 8 and 9: the environment and formals this
-                                               ;; code was compiled under (F391).  The VM runs the
-                                               ;; record only for a closure whose own environment and
-                                               ;; formals match (`m5_fx_rec_valid'); a cap record keeps
-                                               ;; just its bare markers, never the (NAME . VALUE) pairs.
-                                               (if capnames
-                                                   (let ((r nil))
-                                                     (dolist (e (nth 1 fn)) (unless (consp e) (push e r)))
-                                                     (nreverse r))
-                                                 (nth 1 fn))
-                                               args)
-                                  (setq nelisp--fx-next-index (1+ nelisp--fx-next-index)))
+                                ;; The head record also carries the variant list (slot 10)
+                                ;; and its state (slot 11, 0 = open): see `nelisp--fx-add-variant'.
+                                (vconcat (nelisp--fx-make-record c shape capnames name (nth 1 fn) args)
+                                         (vector nil 0))
                               'none)
                        nelisp--fx-table)))))))))
+
+;; Shape variants (F396).  A body's table record is compiled under one
+;; environment and formals; the VM runs it only for a closure with the same
+;; shape (`m5_fx_rec_valid').  A body later called under another shape
+;; (the same quoted lambda under (t) and under 400 declaration markers)
+;; gets one more record per shape, kept in the head record's slot 10 (at
+;; most three), so each shape runs on the VM.  Slot 11 is 0 while a new
+;; shape may still be added and -1 once an attempt declined.
+(defun nelisp--fx-same-list-p (a b)
+  "Non-nil when the proper lists A and B hold eq elements in the same order."
+  (let ((ok t))
+    (while (and ok (or a b))
+      (if (and (consp a) (consp b) (eq (car a) (car b)))
+          (setq a (cdr a) b (cdr b))
+        (setq ok nil)))
+    ok))
+
+(defun nelisp--fx-shape-known-p (head captured formals)
+  "Non-nil when HEAD or one of its variants was compiled under CAPTURED and FORMALS."
+  (let ((found (and (nelisp--fx-same-list-p captured (aref head 8))
+                    (nelisp--fx-same-list-p formals (aref head 9))))
+        (l (aref head 10)))
+    (while (and (not found) l)
+      (let ((v (car l)))
+        (when (and (nelisp--fx-same-list-p captured (aref v 8))
+                   (nelisp--fx-same-list-p formals (aref v 9)))
+          (setq found t)))
+      (setq l (cdr l)))
+    found))
+
+(defun nelisp--fx-build-variant (head body captured formals)
+  "A record for BODY compiled under CAPTURED and FORMALS, named as HEAD, or nil.
+The compile bindings are those of `nelisp--fx-register-fn' for a
+marker-only environment."
+  (let ((shape (nelisp--fx-arglist-shape formals)))
+    (when shape
+      (let ((nelisp--fx-declared (let ((r nil))
+                                   (dolist (e (remq t captured)) (unless (consp e) (push e r)))
+                                   (nreverse r))))
+        (when (not (cl-some #'nelisp--fx-special-p (car shape)))
+          (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil)
+                 (inhibit-message t)
+                 (macros (nelisp--fx-macros-used body))
+                 (nelisp--fx-expand (and macros t))
+                 (nelisp--fx-outer-env captured)
+                 (nelisp--fx-cap-names nil)
+                 (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
+                      (error nil))))
+            (when c
+              (nelisp--fx-make-record c shape nil (aref head 4) captured formals))))))))
+
+(defun nelisp--fx-add-variant (body captured formals)
+  "Add a record for BODY under the shape CAPTURED and FORMALS to its head record.
+Called by the runtime (`m5_fx_rec_valid') with re-entry blocked, once per
+miss while the head's variant state (slot 11) is 0.  Any decline closes the
+head (slot 11 = -1), so later misses never enter Lisp.  Never signals."
+  (condition-case nil
+      (let ((head (gethash body nelisp--fx-table)))
+        (when (and (vectorp head) (>= (length head) 12) (eql (aref head 11) 0)
+                   (not (vectorp (aref head 7)))
+                   (not (nelisp--fx-shape-known-p head captured formals)))
+          (let ((v (and (listp formals)
+                        (nelisp--fx-env-ok-p captured)
+                        (< (length (aref head 10)) 3)
+                        (nelisp--fx-build-variant head body captured formals))))
+            (if v
+                (aset head 10 (append (aref head 10) (list v)))
+              (aset head 11 -1)))))
+    (error nil))
+  nil)
 
 (defconst nelisp--fx-hopeless-heads nil
   "Forms `nelisp--fx-compile' never covers and no common macro removes.
@@ -31813,7 +31893,11 @@ with LO <= index < HI run on the VM: bisect a divergence over them."
   (catch 'found
     (maphash (lambda (_body rec)
                (when (and (vectorp rec) (> (length rec) 4) (eq (aref rec 3) index))
-                 (throw 'found (aref rec 4))))
+                 (throw 'found (aref rec 4)))
+               (when (and (vectorp rec) (>= (length rec) 12))
+                 (dolist (v (aref rec 10))
+                   (when (and (vectorp v) (> (length v) 4) (eq (aref v 3) index))
+                     (throw 'found (aref v 4))))))
              nelisp--fx-table)
     nil))
 
@@ -32190,9 +32274,18 @@ code never starts again from a cache.  Its code slot stays: the record's
 own activations, and any caller that already holds the record, still run it
 (GNU's function object keeps its code for as long as anything refers to
 it)."
-  (let ((rec (gethash body nelisp--fx-table)))
-    (when (and (vectorp rec) (> (length rec) 7)) (aset rec 7 t))
-    (remhash body nelisp--fx-table)))
+  (nelisp--fx-mark-retired (gethash body nelisp--fx-table))
+  (remhash body nelisp--fx-table))
+
+(defun nelisp--fx-mark-retired (rec)
+  "Mark REC, a compiled head record, and each variant in its slot 10 retired."
+  (when (and (vectorp rec) (> (length rec) 7))
+    (aset rec 7 t)
+    (when (>= (length rec) 12)
+      (let ((l (aref rec 10)))
+        (while l
+          (when (and (vectorp (car l)) (> (length (car l)) 7)) (aset (car l) 7 t))
+          (setq l (cdr l)))))))
 
 (defun nelisp--fx-retire-anon-callers (name)
   "NAME is now a macro: retire the anonymous bodies whose code calls it.
@@ -32209,8 +32302,7 @@ They are not deferred again; the next call of each compiles it afresh."
 (defun nelisp--fx-table-put (body rec)
   "Install REC as BODY's entry, marking a compiled record it replaces retired."
   (let ((old (gethash body nelisp--fx-table)))
-    (when (and (vectorp old) (not (eq old rec)) (> (length old) 7))
-      (aset old 7 t)))
+    (unless (eq old rec) (nelisp--fx-mark-retired old)))
   (puthash body rec nelisp--fx-table))
 
 (when (and (fboundp 'nl-afset)
