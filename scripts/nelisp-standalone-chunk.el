@@ -87,29 +87,49 @@ only when its K equals the requested K."
 
 (defun nelisp-standalone-chunk-atoms (forms)
   "Group FORMS (a list of source forms) into atoms.
-Return a list of (REP . FORMS-IN-SOURCE-ORDER), ordered by first member.  REP
-is the blob name for an atom with a local data-blob, else the defun name."
-  (let ((blobs (make-hash-table :test #'eq)) (rep-of (make-hash-table :test #'eq))
-        (order nil) (members (make-hash-table :test #'eq)) (i 0))
-    (dolist (f forms)
-      (when (and (eq (car-safe f) 'data-blob) (symbolp (cadr f)))
-        (puthash (cadr f) t blobs)))
-    (dolist (f forms)
-      (let* ((name (and (memq (car-safe f) '(defun data-blob)) (symbolp (cadr f)) (cadr f)))
-             (used (and (eq (car-safe f) 'defun)
-                        (cl-remove-if-not (lambda (s) (gethash s blobs))
-                                          (nelisp-standalone-chunk--data-addrs f))))
-             (rep (cond ((null name) (intern (format "nl-chunk-form-%d" i)))
-                        ((eq (car f) 'data-blob) name)
-                        (used (car (sort (copy-sequence used)
-                                         (lambda (a b) (string< (symbol-name a) (symbol-name b)))))))))
-        (setq i (1+ i))
-        (when (and used (cdr used))
-          (error "applyfn chunk: %s takes the addresses of several local blobs %S" name used))
-        (puthash (or rep name) (cons f (gethash (or rep name) members)) members)
-        (unless (memq (or rep name) order) (push (or rep name) order))
-        (when name (puthash name (or rep name) rep-of))))
-    (mapcar (lambda (r) (cons r (nreverse (gethash r members)))) (nreverse order))))
+Return a list of (REP . FORMS-IN-SOURCE-ORDER), ordered by first member.  An
+atom is a union of: a local data-blob and every defun taking its address, and
+a split partner pair F / F_w (both defined in FORMS).  The per-unit abi box
+split (`nelisp-standalone--abi-box-split-source') looks for F_w in the same
+source, so the pair must share a chunk.  REP is the first local blob name of
+the atom (by name), else the first defun name; a singleton's REP is its name."
+  (let ((blobs (make-hash-table :test #'eq)) (defuns (make-hash-table :test #'eq))
+        (parent (make-hash-table :test #'eq)) (members (make-hash-table :test #'eq))
+        (key-of (make-vector (length forms) nil)) (i 0) (order nil))
+    (cl-labels ((find* (x) (let ((p (gethash x parent x))) (if (eq p x) x (puthash x (find* p) parent) (gethash x parent))))
+                (union* (a b) (let ((ra (find* a)) (rb (find* b))) (unless (eq ra rb) (puthash rb ra parent))))
+                (sym< (a b) (string< (symbol-name a) (symbol-name b))))
+      (dolist (f forms)
+        (when (and (eq (car-safe f) 'data-blob) (symbolp (cadr f))) (puthash (cadr f) t blobs))
+        (when (and (eq (car-safe f) 'defun) (symbolp (cadr f))) (puthash (cadr f) t defuns)))
+      (dolist (f forms)
+        (let* ((name (and (memq (car-safe f) '(defun data-blob)) (symbolp (cadr f)) (cadr f)))
+               (key (or name (intern (format "nl-chunk-form-%d" i)))))
+          (aset key-of i key) (setq i (1+ i))
+          (when (and name (eq (car f) 'defun))
+            (let ((used (cl-remove-if-not (lambda (s) (gethash s blobs))
+                                          (nelisp-standalone-chunk--data-addrs f)))
+                  (base (and (string-suffix-p "_w" (symbol-name name))
+                             (intern (substring (symbol-name name) 0 -2)))))
+              (when (and used (cdr used))
+                (error "applyfn chunk: %s takes the addresses of several local blobs %S" name used))
+              (when used (union* (car used) name))
+              (when (and base (gethash base defuns)) (union* base name))))))
+      ;; Representative of a class: first local blob by name, else first member by name.
+      (let ((cls (make-hash-table :test #'eq)) (rep (make-hash-table :test #'eq)))
+        (dotimes (j (length key-of)) (push (aref key-of j) (gethash (find* (aref key-of j)) cls)))
+        (maphash (lambda (root ms)
+                   (let* ((bl (cl-remove-if-not (lambda (m) (gethash m blobs)) ms))
+                          (pick (car (sort (copy-sequence (or bl ms)) #'sym<))))
+                     (puthash root pick rep)))
+                 cls)
+        (setq i 0)
+        (dolist (f forms)
+          (let ((r (gethash (find* (aref key-of i)) rep)))
+            (setq i (1+ i))
+            (puthash r (cons f (gethash r members)) members)
+            (unless (memq r order) (push r order))))
+        (mapcar (lambda (r) (cons r (nreverse (gethash r members)))) (nreverse order))))))
 
 (defun nelisp-standalone-chunk-assign (rep k &optional table)
   "Chunk index in [0,K) of the atom with representative name REP."

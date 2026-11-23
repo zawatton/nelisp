@@ -134,4 +134,37 @@
       (should (cl-every (lambda (s) (and (> s 50000) (< s (* 1.5 mean)))) sizes)))
     (should (equal (nelisp-standalone-chunk-split main 1) (list main)))))
 
+(ert-deftest nelisp-chunk-split-partner-pairs-share-a-chunk ()
+  ;; F and F_w must share a chunk: the per-unit abi box split looks for F_w in
+  ;; the same source and signals otherwise (F370).
+  (let* ((bases (cl-loop for i below 120 collect (intern (format "nl_pair_%03d" i))))
+         (src `(seq ,@(cl-loop for b in bases
+                               append (list `(defun ,b (out) (nl_abi_word_to_rc (,(intern (format "%s_w" b)) 0) out))
+                                            `(defun ,(intern (format "%s_w" b)) (pad) pad)))))
+         (chunks (nelisp-standalone-chunk-split src 8))
+         (where (lambda (n) (cl-position-if (lambda (u) (cl-some (lambda (f) (eq (cadr f) n)) (cdr u))) chunks)))
+         (straddle-by-name 0))
+    (dolist (b bases)
+      (let ((w (intern (format "%s_w" b))))
+        (should (= (funcall where b) (funcall where w)))
+        ;; NEGATIVE CONTROL: independent per-name assignment (the F370 bug)
+        ;; does separate many of the same pairs.
+        (unless (= (nelisp-standalone-chunk-assign b 8) (nelisp-standalone-chunk-assign w 8))
+          (cl-incf straddle-by-name))))
+    (should (> straddle-by-name 20))
+    ;; Real source: every defun with a defined F_w twin lives with it.
+    (skip-unless (require 'nelisp-standalone-build nil t))
+    (let* ((main (car (nelisp-standalone--applyfn-split-units
+                       (nelisp-standalone--patch-autoload-lookups (nelisp-standalone--applyfn-source)))))
+           (real (nelisp-standalone-chunk-split main 8 (nelisp-standalone-chunk-load-table 8)))
+           (names (make-hash-table :test #'eq)) (pairs 0))
+      (cl-loop for u in real for c from 0
+               do (dolist (f (cdr u)) (when (eq (car-safe f) 'defun) (puthash (cadr f) c names))))
+      (maphash (lambda (n c)
+                 (let ((wc (gethash (intern (format "%s_w" n)) names)))
+                   (when wc (cl-incf pairs) (should (= c wc)))))
+               names)
+      (should (> pairs 10))
+      (should (eq (gethash 'bf_env_capture_roots names) (gethash 'bf_env_capture_roots_w names))))))
+
 (provide 'nelisp-standalone-chunk-test)
