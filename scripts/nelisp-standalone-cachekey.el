@@ -486,9 +486,12 @@ the build takes the global key instead of silently missing them.")
                         (setq hit v))))))
              (when hit
                (push (cons n hit) writers)
-               ;; The writer's own text joins; its callees do not (a callee
-               ;; that mutates a closure variable is found by this same loop).
-               (puthash n t set) (setq changed t)))))
+               ;; The writer's text joins, and so do its callees (cut producers
+               ;; excepted): the value it stores comes from them.
+               (puthash n t set)
+               (maphash (lambda (k _) (puthash k t set))
+                        (nelisp-standalone-cachekey--bfs (list n) cut defs))
+               (setq changed t)))))
        defs)
       (dolist (tp tops)
         (when (and (consp tp) (memq (car tp) '(setq when add-to-list put unless if progn))
@@ -570,6 +573,52 @@ codegen input the key never sees."
                               (cl-pushnew v res)))))))))
              defs)
     (sort res (lambda (a b) (string< (symbol-name a) (symbol-name b))))))
+
+;;;; Evidence A5: scanner audits used by the ERT.
+
+(defun nelisp-standalone-cachekey-unkeyed-getenvs (files reviewed)
+  "Return (NAME . FILE) for NELISP_STANDALONE_* getenv literals in FILES.
+Names in `-env-names' or in REVIEWED (a list of strings) are not reported.
+The closure scanner accepts any such prefix, so this is the guard."
+  (let (r)
+    (dolist (f files)
+      (unless (string-prefix-p "?" f)
+        (with-temp-buffer
+          (insert-file-contents-literally f) (goto-char (point-min))
+          (while (re-search-forward "(getenv[ \t\n]+\"\\(NELISP_STANDALONE_[A-Z0-9_]*\\)\"" nil t)
+            (let ((n (match-string 1)))
+              (unless (or (member n nelisp-standalone-cachekey-env-names) (member n reviewed))
+                (push (cons n (file-name-nondirectory f)) r)))))))
+    (delete-dups (nreverse r))))
+
+(defun nelisp-standalone-cachekey-lib-var-binders (file lib-files)
+  "Return (VAR DEF HEAD) for library variables that defs of FILE outside the closure bind.
+VAR is a defvar/defconst/defcustom of LIB-FILES; DEF is a script def outside the
+traced closure that `let'-binds or mutates it (a producer: the key sees the effect
+only if VAR is keyed by value, see `-dynamic-vars' and `-printed-vars')."
+  (let* ((info (nelisp-standalone-cachekey-closure-compute file))
+         (defs (car (nelisp-standalone-cachekey--read-script file)))
+         (inside (make-hash-table :test 'eq)) (libvars (make-hash-table :test 'eq)) res)
+    (dolist (n (plist-get info :defs)) (puthash n t inside))
+    (dolist (l lib-files)
+      (unless (string-prefix-p "?" l)
+        (with-temp-buffer
+          (insert-file-contents-literally l) (goto-char (point-min))
+          (while (re-search-forward "^(\\(?:defvar\\|defconst\\|defcustom\\)[ \t\n]+\\([^ \t\n()]+\\)" nil t)
+            (puthash (intern (match-string 1)) t libvars)))))
+    (maphash
+     (lambda (n form)
+       (unless (gethash n inside)
+         (nelisp-standalone-cachekey--walk
+          form
+          (lambda (x)
+            (when (and (memq (car x) nelisp-standalone-cachekey-writer-heads)
+                       (consp (cdr x)) (listp (cdr (last x))))
+              (dolist (v (nelisp-standalone-cachekey--set-var-targets x))
+                (when (and (symbolp v) (gethash v libvars))
+                  (push (list v n (car x)) res))))))))
+     defs)
+    (delete-dups (nreverse res))))
 
 (defun nelisp-standalone-cachekey-uncovered-dynamic-vars (file)
   "Let-bound closure variables of FILE that are in neither `-dynamic-vars' nor `-printed-vars'."

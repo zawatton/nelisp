@@ -624,3 +624,76 @@ Each FROM must occur exactly once: an edit that misses is a test error."
             (should (equal (nelisp-standalone-cachekey-files-digest-loaded (list el))
                            (nelisp-standalone-cachekey-files-digest (list el))))))
       (delete-directory dir t))))
+
+;;;; Evidence A5: scanner blind spots (review item 6).
+
+(defun nelisp-cachekey-test--dep-files ()
+  (nelisp-standalone-cachekey-require-closure
+   (append nelisp-standalone-cachekey-root-features '("nelisp-standalone-build"))
+   nelisp-cachekey-test--root load-path))
+
+(defconst nelisp-cachekey-test--reviewed-getenvs
+  '(;; Cache and key controls: never reach generated code.
+    "NELISP_STANDALONE_UNIT_CACHE_DIR" "NELISP_STANDALONE_UNIT_CACHE_PRUNE"
+    "NELISP_STANDALONE_UNIT_CACHE_NOPRUNE" "NELISP_STANDALONE_UNIT_CACHE_VERIFY"
+    "NELISP_STANDALONE_UNIT_CACHE_ALLOW_INCOMPLETE" "NELISP_STANDALONE_FULL_KEY"
+    ;; Diagnostics that only dump sources.
+    "NELISP_STANDALONE_UNIT_SOURCE_DUMP" "NELISP_STANDALONE_UNIT_SOURCE_DUMP_MATCH"
+    ;; Resolved into :arch/:abi, which `unit-cache-key' prints by value.
+    "NELISP_STANDALONE_TARGET"
+    ;; Cold image / prelude boot / evidence tooling, not a unit compile input.
+    "NELISP_STANDALONE_NATIVE_COMPILER_COLD" "NELISP_STANDALONE_COLD_IMAGE"
+    "NELISP_STANDALONE_COLD_RUNNER" "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY"
+    "NELISP_STANDALONE_PRELUDE_DISK_CACHE" "NELISP_STANDALONE_PRELUDE_CACHE_VERIFY"
+    ;; Build orchestration (pre-key or scheduling only).
+    "NELISP_STANDALONE_JOBS" "NELISP_STANDALONE_JOB_WRAPPER"
+    "NELISP_STANDALONE_BUILD_TRACE" "NELISP_STANDALONE_BUILD_TRACE_FNS"
+    "NELISP_STANDALONE_READER_OUTPUT")
+  "Reviewed NELISP_STANDALONE_* getenv names that are deliberately not in the key.")
+
+(ert-deftest nelisp-cachekey-no-unkeyed-standalone-getenv ()
+  (let ((files (nelisp-cachekey-test--dep-files)))
+    ;; Reviewed names may be stale: report only unreviewed ones.
+    (should-not (nelisp-standalone-cachekey-unkeyed-getenvs
+                 files nelisp-cachekey-test--reviewed-getenvs))
+    ;; Negative control: a new unkeyed read in a temp source is reported.
+    (let ((tmp (make-temp-file "nl-genv" nil ".el")))
+      (unwind-protect
+          (progn (with-temp-file tmp (insert "(defun f () (getenv \"NELISP_STANDALONE_NEWFLAG\"))"))
+                 (should (equal (mapcar #'car (nelisp-standalone-cachekey-unkeyed-getenvs
+                                               (list tmp) nelisp-cachekey-test--reviewed-getenvs))
+                                '("NELISP_STANDALONE_NEWFLAG")))
+                 (should-not (nelisp-standalone-cachekey-unkeyed-getenvs
+                              (list tmp) '("NELISP_STANDALONE_NEWFLAG"))))
+        (delete-file tmp)))))
+
+(defconst nelisp-cachekey-test--reviewed-lib-binders
+  '(;; Printer variable: keyed by the print bindings in `unit-cache-key' itself.
+    print-circle
+    ;; Memo/accumulator caches reset around producers; units are keyed by source after them.
+    nelisp-native-load--running-binary-sha256-cache nelisp-argframe-generated
+    ;; Startup-source assembly, not a unit compile.
+    nelisp-native-load--build-target)
+  "Library variables a script def outside the key closure may bind, besides the keyed ones.")
+
+(ert-deftest nelisp-cachekey-lib-defvar-binders-are-keyed-or-reviewed ()
+  "A let/setq of a library defvar by a producer must be keyed by value or reviewed."
+  (let* ((files (nelisp-cachekey-test--dep-files))
+         (lib (seq-remove (lambda (f) (string-suffix-p "nelisp-standalone-build.el" f)) files))
+         (b (nelisp-standalone-cachekey-lib-var-binders nelisp-cachekey-test--build lib))
+         (ok (append nelisp-standalone-cachekey-dynamic-vars nelisp-standalone-cachekey-printed-vars
+                     nelisp-cachekey-test--reviewed-lib-binders)))
+    (should b)
+    (should-not (seq-remove (lambda (e) (memq (car e) ok)) b))
+    ;; Negative control: with the reviewed list emptied they would be reported.
+    (should (seq-remove (lambda (e) (memq (car e) (append nelisp-standalone-cachekey-dynamic-vars
+                                                         nelisp-standalone-cachekey-printed-vars)))
+                        b))))
+
+(ert-deftest nelisp-cachekey-writer-callees-join-closure ()
+  "Callees of a writer that joins the closure are hashed too (t5 follow-up)."
+  (let ((i (nelisp-cachekey-test--closure-after
+            '(("(defun nelisp-standalone--patch-binding-kinds (source)"
+               . "(defun nelisp-standalone--zz-callee () 41)\n(defun nelisp-standalone--zz-writer () (setq nelisp-standalone--xinline-table (nelisp-standalone--zz-callee)))\n(defun nelisp-standalone--patch-binding-kinds (source)")))))
+    (should (memq 'nelisp-standalone--zz-writer (plist-get i :defs)))
+    (should (memq 'nelisp-standalone--zz-callee (plist-get i :defs)))))
