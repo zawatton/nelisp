@@ -73,7 +73,10 @@ Functions registered for FEATURE in `after-load-alist' run each time."
     (setq features (cons feature features)))
   (when subfeatures
     (put feature 'subfeatures subfeatures))
-  (setq current-load-list (cons (cons 'provide feature) current-load-list))
+  (if (fboundp 'nelisp--lh-attach-once)
+      ;; The runtime keys `current-load-list' by the file being loaded.
+      (nelisp--lh-attach-once (cons 'provide feature))
+    (setq current-load-list (cons (cons 'provide feature) current-load-list)))
   (mapc #'funcall (cdr (assq feature after-load-alist)))
   feature)
 
@@ -323,6 +326,10 @@ branch, `load-file' being a builtin there."
     "Load FEATURE through `load-path' unless it is already provided.
 FILENAME and NOERROR follow the common Emacs `require' surface used by
 batch tests and local runtime modules."
+    ;; GNU Frequire records (require . FEATURE) in load-history even when
+    ;; FEATURE is already provided.
+    (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
+        (nelisp--lh-req feature))
     (if (featurep feature)
         feature
       (let* ((base (or filename (symbol-name feature)))

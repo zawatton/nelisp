@@ -1659,6 +1659,10 @@ strings or comments, and calls with any non-literal argument, are kept."
       (nelisp-bootstrap--provider-seam-position)
       (dolist (file files)
         (let ((rel (nelisp-bootstrap--logical-name file)))
+          ;; Attribute this file's definitions in `load-history' to its own
+          ;; path rather than to the bundle (GNU loads each file separately).
+          (insert (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))"
+                          (expand-file-name file)))
           (insert "\n;;; >>> " rel "\n")
           (nelisp-bootstrap--insert-bundle-file-body file rel)
           (dolist (feature (nelisp-bootstrap--file-features file))
@@ -1668,6 +1672,7 @@ strings or comments, and calls with any non-literal argument, are kept."
           (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
             (insert form))
           (insert "\n;;; <<< " rel "\n")))
+      (insert "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n")
       (nelisp-bootstrap--validate-provider-bundle-buffer
        provider provider-start provider-offset files)
       (nelisp-bootstrap--validate-ffi-publication-buffer files)

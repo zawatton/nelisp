@@ -37616,6 +37616,35 @@ bytes are written into a fresh 8-byte buffer instead."
          (ptr-write-u64 buf 24 25970)
          (nl_alloc_symbol buf 26 out)
          0)))
+    ;; GNU load-history (lread.c LOADHIST_ATTACH): while a file is loading,
+    ;; hand ARG to the Lisp recorder named by the 14-byte packing W0/W1
+    ;; ("nelisp--lh-var"/"-fun"/"-req").  A load is in progress when
+    ;; `load-file-name' is non-nil, or inside a bundle segment
+    ;; (`nelisp--lh-seg' non-nil; a bundle runs with `load-file-name' nil).
+    ;; Otherwise nothing is built or called.
+    (defun bf_lh_seg_active (env)
+      (let* ((buf (alloc-bytes 16 1))
+             (sym (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 3255381746650998126)
+         (ptr-write-u64 buf 8 113685421713516)
+         (nl_alloc_symbol buf 14 sym)
+         (let* ((w (nelisp_env_lookup_value_w env (+ env 32) sym 0)))
+           (if (or (= w 0) (or (= w 2) (= w 3))) 0 1)))))
+    (defun bf_lh_note (env arg w0 w1)
+      (if (if (= (bf_read_load_file_name_w env 0) 3)
+              (= (bf_lh_seg_active env) 0)
+            0)
+          0
+        (let* ((buf (alloc-bytes 16 1))
+               (fn (alloc-bytes 32 8))
+               (ignored (alloc-bytes 32 8)))
+          (seq
+           (ptr-write-u64 buf 0 w0)
+           (ptr-write-u64 buf 8 w1)
+           (nl_alloc_symbol buf 14 fn)
+           (bf_apply_named_1 env fn arg ignored)
+           0))))
     (defun bf_apply_named_1 (env sym arg out)
       ;; Apply the function named SYM to the one argument ARG (a view that the
       ;; caller keeps alive): 0 with OUT untouched when SYM has no function.
@@ -37873,6 +37902,8 @@ bytes are written into a fresh 8-byte buffer instead."
                          (if (= (sexp-tag candidate) 0) feature candidate))
                      feature)))
         (seq
+         ;; GNU Frequire records (require . FEATURE) even when it is loaded.
+         (bf_lh_note env feature 3255381746650998126 124680521214060)
          (bf_features_get env features)
          (if (= (bf_feature_member_p feature features) 1)
              (seq (wf_copy32 out feature) 0)
@@ -45874,12 +45905,14 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                    ;; GNU defconst stores DOC before evaluating VALUE.
                    (let* ((doc_rc (nl_sf_var_doc_maybe name_ptr rest_ptr env)))
                      (if (= doc_rc 0)
+                         (seq
+                         (bf_lh_note env name_ptr 3255381746650998126 125762920081516)
                          (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
                                 (val_slot (alloc-bytes 32 8))
                                 (rc (nelisp_eval_call val_ptr env val_slot)))
                            (if (= rc 0)
                                (bf_defconst_install env name_ptr val_slot out)
-                             rc))
+                             rc)))
                        doc_rc))
                  (bf_wrong_type_symbolp name_ptr))
              ;; no VALUE: just yield NAME
@@ -45924,6 +45957,9 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                                   (nl_sf_var_doc_maybe name_ptr rest_ptr env)
                                 declaration_rc)))
                  (if (= doc_rc 0)
+                     (seq
+                     ;; GNU records NAME in load-history, bound or not.
+                     (bf_lh_note env name_ptr 3255381746650998126 125762920081516)
                      (let* ((mode (bf_defvar_init_mode env name_ptr out)))
                        (if (= mode 0)
                          (seq (nl_sexp_clone_into name_ptr out) 0)
@@ -45932,7 +45968,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                               (rc (nelisp_eval_call val_ptr env val_slot)))
                          (if (= rc 0)
                              (bf_set_defvar_value env name_ptr val_slot out mode)
-                           rc))))
+                           rc)))))
                    doc_rc)))
              ;; No VALUE: affect the current lexical environment only.
              (bf_declare_local_value env name_ptr out)))
@@ -46178,7 +46214,12 @@ stated value-vs-whole-record trade-off vs. real Emacs.")
                   (nelisp_cons_construct qname fset_inner fset_args)
                   (nelisp_cons_construct fset_sym fset_args fset_form)
                   (let* ((rc (nelisp_eval_call fset_form env scratch)))
-                    (if (= rc 0) (seq (nl_sexp_clone_into name_ptr out) 0) rc))))
+                    (if (= rc 0)
+                        (seq
+                         ;; GNU defmacro is a defalias: (defun . NAME).
+                         (bf_lh_note env name_ptr 3255381746650998126 121450504480876)
+                         (nl_sexp_clone_into name_ptr out) 0)
+                      rc))))
              1)))
        1)))
 
@@ -49954,6 +49995,7 @@ which reach this non-inline prelude variant with INLINE nil)."
    ;; module `require'd after this point, not only the ones already
    ;; `provide'd when this wrapper runs.\n"
    "(fset 'require (lambda (feature &optional filename noerror)\n"
+   "  (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg)) (nelisp--lh-req feature))\n"
    "  (if (featurep feature)\n"
    "      feature\n"
    "    (progn\n"
@@ -50942,12 +50984,59 @@ resolved fine.  Same feature, different answer per entry point."
       with-eval-after-load after-load-functions do-after-load-evaluation))
    ;; Feature keys are dispatched by `provide', while file keys are
    ;; dispatched by the GNU do-after-load-evaluation function above.
+;; GNU lread.c load-history: `defalias'/`defmacro' (via nl-afset or the
+   ;; native definer), `defvar'/`defconst', `require' and `provide' attach
+   ;; to `current-load-list' while a file loads, and a successful load files
+   ;; (FILE . ENTRIES) in definition order.  The native loader has no
+   ;; per-load binding of `current-load-list', so each list is keyed by
+   ;; `load-file-name': a nested load parks its parent's list and the parent
+   ;; takes it back on its next record.  An error mid-load files nothing.
+   ;; A concatenated bundle runs with `load-file-name' nil and marks each
+   ;; original file with `nelisp--lh-segment', so its definitions file under
+   ;; their own path; a final (nelisp--lh-segment nil) files the last one.
+   "(defvar nelisp--lh-file nil)\n"
+   "(defvar nelisp--lh-parked nil)\n"
+   "(defvar nelisp--lh-seg nil)\n"
+   "(defun nelisp--lh-select (file)\n"
+   "  (unless (equal file nelisp--lh-file)\n"
+   "    (when (and nelisp--lh-file current-load-list)\n"
+   "      (setq nelisp--lh-parked\n"
+   "            (cons (cons nelisp--lh-file current-load-list) nelisp--lh-parked)))\n"
+   "    (let ((cell (assoc file nelisp--lh-parked)))\n"
+   "      (setq nelisp--lh-parked (delq cell nelisp--lh-parked)\n"
+   "            current-load-list (cdr cell)\n"
+   "            nelisp--lh-file file))))\n"
+   "(defun nelisp--lh-attach (x)\n"
+   "  (let ((key (or load-file-name nelisp--lh-seg)))\n"
+   "    (when key\n"
+   "      (nelisp--lh-select key)\n"
+   "      (setq current-load-list (cons x current-load-list)))))\n"
+   "(defun nelisp--lh-attach-once (x)\n"
+   "  (let ((key (or load-file-name nelisp--lh-seg)))\n"
+   "   (when key\n"
+   "    (nelisp--lh-select key)\n"
+   "    (unless (member x current-load-list)\n"
+   "      (setq current-load-list (cons x current-load-list))))))\n"
+   "(defun nelisp--lh-var (symbol) (nelisp--lh-attach symbol))\n"
+   "(defun nelisp--lh-fun (symbol) (nelisp--lh-attach (cons 'defun symbol)))\n"
+   "(defun nelisp--lh-req (feature) (nelisp--lh-attach-once (cons 'require feature)))\n"
+   "(defun nelisp--lh-record (file entries)\n"
+   "  (setq load-history\n"
+   "        (cons (cons file entries) (delq (assoc file load-history) load-history))))\n"
+   "(defun nelisp--lh-take (file)\n"
+   "  (nelisp--lh-select file)\n"
+   "  (prog1 (nreverse current-load-list)\n"
+   "    (setq current-load-list nil nelisp--lh-file nil)))\n"
+   "(defun nelisp--lh-segment (path)\n"
+   "  (when nelisp--lh-seg\n"
+   "    (nelisp--lh-record nelisp--lh-seg (nelisp--lh-take nelisp--lh-seg)))\n"
+   "  (setq nelisp--lh-seg path))\n"
    "(defun nelisp--after-load-feature (event)\n"
    "  (if (stringp event)\n"
    "      (progn\n"
-   "        (setq load-history\n"
-   "              (cons (cons event nil) (delq (assoc event load-history) load-history)))\n"
+   "        (nelisp--lh-record event (nelisp--lh-take event))\n"
    "        (do-after-load-evaluation event))\n"
+   "    (nelisp--lh-attach-once (cons 'provide event))\n"
    "    (let ((elt (assq event after-load-alist)))\n"
    "      (when elt (mapc #'funcall (cdr elt))))))\n"
    ;; `string-empty-p' lives in simple.el, outside the bootstrap libraries;
@@ -51166,7 +51255,7 @@ publishes the same providers before dumping."
      ;; GNU Frequire checks features before loading anything. An explicit
      ;; source or a library found on load-path must also reach the real loader;
      ;; reserve the frozen companion for otherwise unresolved bundled modules.
-     (format "(fset 'require (lambda (feature &optional filename noerror)\n  (if (featurep feature) feature\n    (progn\n      (when (and (memq state '(pending failed)) (or (memq feature '%S)\n                  (memq feature '(nelisp-native-cache nelisp-native-template nelisp-bytecode-native-compiler))))\n        (nelisp-native-startup-ensure))\n      (if (featurep feature) feature (funcall base-require feature filename noerror))))))\n" features)
+     (format "(fset 'require (lambda (feature &optional filename noerror)\n  (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg)) (nelisp--lh-req feature))\n  (if (featurep feature) feature\n    (progn\n      (when (and (memq state '(pending failed)) (or (memq feature '%S)\n                  (memq feature '(nelisp-native-cache nelisp-native-template nelisp-bytecode-native-compiler))))\n        (nelisp-native-startup-ensure))\n      (if (featurep feature) feature (funcall base-require feature filename noerror))))))\n" features)
      (format "(fset 'load (lambda (file &rest arguments)\n  (let ((first (and (memq state '(pending failed)) (stringp file)\n                    (not (file-name-directory file)) (not (file-name-extension file))\n                    (not (locate-library file (nth 2 arguments)))\n                    (member file '%S))))\n    (when first (nelisp-native-startup-ensure))\n    (if (and first (featurep (intern file))) t\n      (apply base-load file arguments)))))\n)\n" (mapcar #'symbol-name features))
      (mapconcat (lambda (name) (format "(autoload '%S \"nelisp-native-load\")" name)) names "\n")
      "\n(autoload 'nelisp-native-cache-compile \"nelisp-native-cache\")\n"

@@ -18,6 +18,10 @@
                 (cons (list 'function symbol (symbol-function symbol))
                       nelisp--autoload-queue)))
         (fset symbol definition)
+        ;; GNU Fdefalias attaches (defun . SYMBOL) to load-history while a
+        ;; file loads; outside a load this is one variable test.
+        (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
+            (nelisp--lh-fun symbol))
         symbol))
 (fset 'provide
       (lambda (feature)

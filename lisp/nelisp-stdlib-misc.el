@@ -677,6 +677,10 @@ already there.  Returns FEATURE."
 of FEATURE if FILENAME is nil) and verify the load did `provide' it.
 Returns FEATURE on success, nil on failure when NOERROR is non-nil,
 or signals otherwise.  Replaces the deleted Rust `bi_require'."
+  ;; GNU Frequire records (require . FEATURE) in load-history even when
+  ;; FEATURE is already provided.
+  (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
+      (nelisp--lh-req feature))
   (if (featurep feature)
       feature
     ;; Do not manufacture a successful `provide' merely because this early
