@@ -585,3 +585,42 @@ Each FROM must occur exactly once: an edit that misses is a test error."
           (should (nelisp-standalone-cachekey-files-equal-p a b))
           (should-not (nelisp-standalone-cachekey-files-equal-p a c)))
       (delete-directory dir t))))
+
+;;;; Evidence A1: a loaded .elc is keyed, not only the .el beside it.
+
+(defun nelisp-cachekey-test--a1-write (file text)
+  (with-temp-file file (insert text)))
+
+(ert-deftest nelisp-cachekey-loaded-elc-enters-key ()
+  "A newer .elc that `load-prefer-newer' loads must move the key by itself."
+  (let* ((dir (make-temp-file (expand-file-name "evid-a1-" (or (getenv "EVID_TMP") temporary-file-directory)) t))
+         (el (expand-file-name "evid-a1-feat.el" dir))
+         (elc (concat el "c"))
+         (alt (expand-file-name "evid-a1-alt.el" dir))
+         (load-prefer-newer t)
+         (load-history nil))
+    (unwind-protect
+        (progn
+          (nelisp-cachekey-test--a1-write el "(defvar evid-a1-x 1)\n(provide 'evid-a1-feat)\n")
+          (byte-compile-file el)
+          (nelisp-cachekey-test--a1-write alt "(defvar evid-a1-x 2)\n(provide 'evid-a1-feat)\n")
+          (set-file-times el (time-subtract (current-time) 100))
+          (load (expand-file-name "evid-a1-feat" dir) nil t)
+          (let ((d1 (nelisp-standalone-cachekey-files-digest-loaded (list el)))
+                (del (nelisp-standalone-cachekey-files-digest (list el))))
+            ;; Replace ONLY the .elc by different bytecode; the .el is untouched.
+            (byte-compile-file alt)
+            (copy-file (concat alt "c") elc t)
+            (set-file-times elc (current-time))
+            (setq load-history nil)
+            (load (expand-file-name "evid-a1-feat" dir) nil t)
+            (should (equal evid-a1-x 1)) ; defvar keeps the first value; the load is what matters
+            (let ((d2 (nelisp-standalone-cachekey-files-digest-loaded (list el))))
+              (should-not (equal d1 d2))
+              ;; The .el itself did not change, so an .el-only digest is blind to it.
+              (should (equal del (nelisp-standalone-cachekey-files-digest (list el)))))
+            ;; Negative control: no .elc loaded => digest equals the .el digest.
+            (setq load-history nil)
+            (should (equal (nelisp-standalone-cachekey-files-digest-loaded (list el))
+                           (nelisp-standalone-cachekey-files-digest (list el))))))
+      (delete-directory dir t))))

@@ -3695,8 +3695,12 @@ NELISP_STANDALONE_FULL_KEY=1).  Memoised per process; the reason is printed once
                    (files (nelisp-standalone-cachekey-check-files
                            (nelisp-standalone--dep-files))))
               ;; Global key: no closure digest, the whole script is hashed.
+              ;; A newer .elc that `load-prefer-newer' loaded is what runs: key its
+              ;; bytes too, build script included (its .el only enters as closure text).
               (concat (nelisp-standalone-cachekey-files-digest
-                       (if (car closure) files (cons nelisp-standalone--this-file files)))
+                       (append (if (car closure) files (cons nelisp-standalone--this-file files))
+                               (nelisp-standalone-cachekey-loaded-elcs
+                                (cons nelisp-standalone--this-file files))))
                       "\0closure=" (or (car closure) "global"))))))
 
 (defun nelisp-standalone--codegen-settings-string ()

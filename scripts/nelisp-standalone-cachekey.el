@@ -121,6 +121,29 @@ that uses them would let an edit go unkeyed."
         (concat (if (string-prefix-p "?" f) f (file-name-nondirectory f)) ":-")))
     files "\n")))
 
+(defun nelisp-standalone-cachekey-loaded-elcs (files)
+  "Return the byte-compiled files that `load-history' shows loaded for FILES.
+FILES are .el sources.  The build, its prewarm children and the gate scripts
+load with `load-prefer-newer', so a newer .elc beside a source (for example
+left by another branch) is what actually runs while the key hashes the .el.
+Each .elc that is in `load-history' is returned so that its bytes are keyed
+too.  Sources without a loaded .elc add nothing (their keys do not move)."
+  (let ((loaded (make-hash-table :test 'equal)) r)
+    (dolist (e load-history)
+      (when (and (stringp (car e)) (string-suffix-p ".elc" (car e)))
+        (puthash (file-truename (car e)) t loaded)))
+    (dolist (f files)
+      (unless (string-prefix-p "?" f)
+        (let ((elc (concat (file-name-sans-extension f) ".elc")))
+          (when (and (file-exists-p elc) (gethash (file-truename elc) loaded))
+            (push elc r)))))
+    (nreverse r)))
+
+(defun nelisp-standalone-cachekey-files-digest-loaded (files)
+  "Like `nelisp-standalone-cachekey-files-digest' of FILES plus their loaded .elc files."
+  (nelisp-standalone-cachekey-files-digest
+   (append files (nelisp-standalone-cachekey-loaded-elcs files))))
+
 (defun nelisp-standalone-cachekey-allow-incomplete-p ()
   "Non-nil when NELISP_STANDALONE_UNIT_CACHE_ALLOW_INCOMPLETE=1 (explicit opt-out)."
   (equal (getenv "NELISP_STANDALONE_UNIT_CACHE_ALLOW_INCOMPLETE") "1"))
