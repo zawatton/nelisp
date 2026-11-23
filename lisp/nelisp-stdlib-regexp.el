@@ -2898,9 +2898,10 @@ contract as the compiled-pattern cache (`nlre-clear-syntax-cache')."
 ;; the sum moved, voids the generation stamp of the assertion map, the class
 ;; map and the setup answer so each is refilled by its next user.  Compiled
 ;; pattern caches are untouched, as in GNU.
-(unless (boundp 'nelisp--chartab-lisp-epoch)
-  (defvar nelisp--chartab-lisp-epoch 0
-    "Count of Lisp-path char-table writes (the prelude and emacs-char-table.el)."))
+;; Owner: scripts/nelisp-stdlib-prelude.el.  Here only the special declaration
+;; and a host-load fallback, so the name has a single definition site.
+(defvar nelisp--chartab-lisp-epoch)
+(unless (boundp 'nelisp--chartab-lisp-epoch) (set 'nelisp--chartab-lisp-epoch 0))
 (defvar nlre--ct-epoch-native (fboundp 'nelisp--char-table-epoch)
   "Non-nil when the native char-table write counter exists (resolved at load).")
 (defvar nlre--ct-seen -1
