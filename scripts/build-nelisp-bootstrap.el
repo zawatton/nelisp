@@ -472,7 +472,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-eshell.el"
     "eshell.el"
     "emacs-man.el"
-    "man.el"
     "woman.el"
     "emacs-calc.el"
     "calc.el"
@@ -1293,7 +1292,6 @@ concatenated bootstrap bundle must make the order explicit."
     ;; bootstrap path a wrong order leaves functions defined but features
     ;; unprovided after an early top-level error.
     (dolist (pair '(("emacs-calc.el" . "calc.el")
-                    ("emacs-man.el" . "man.el")
                     ("emacs-eshell.el" . "eshell.el")
                     ("emacs-shell.el" . "shell.el")
                     ("emacs-project.el" . "project.el")

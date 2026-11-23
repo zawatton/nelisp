@@ -86,12 +86,10 @@ Returns the buffer; signals an error when no page is found."
 ;;;; --- standard-name facade -----------------------------------------
 
 (defun emacs-man-install ()
-  "Bind the standard `man' / `woman' / `Man-mode' command names to the
-`emacs-man' implementation.  Not run on `require' (keeps a bare load from
-touching shared command symbols)."
-  (defalias 'man #'emacs-man)
-  (defalias 'woman #'emacs-man)
-  (defalias 'Man-mode #'emacs-man-mode))
+  "Bind the standard `woman' command name to the `emacs-man' implementation.
+`man' and `Man-mode' come from the vendored GNU man.el.  Not run on
+`require' (keeps a bare load from touching shared command symbols)."
+  (defalias 'woman #'emacs-man))
 
 (provide 'emacs-man)
 
