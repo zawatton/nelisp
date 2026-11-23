@@ -2948,7 +2948,12 @@ has no `field' property, so field constraints leave motion unchanged."
        (let ((ext (gethash (current-buffer) emacs-buffer--state)))
          (or (null ext)
              (and (null (emacs-buffer--ext-text-props ext))
-                  (null (emacs-buffer--ext-overlays ext)))))))
+                  (null (emacs-buffer--ext-overlays ext)))))
+       ;; Standalone NeLisp keeps overlays only in the buffer record, so the
+       ;; sidecar test above alone reported no fields in a buffer whose only
+       ;; field is an overlay (F426).
+       (or (not (fboundp 'nelisp-buffer-overlays))
+           (null (nelisp-buffer-overlays nelisp--current-buffer)))))
 
 (defun emacs-edit--word-field-at (position)
   "Return the field property at POSITION, including overlays when available."
@@ -3066,6 +3071,60 @@ if all requested words were traversed, nil at a buffer or field edge."
                  (or (emacs-edit-builtins--install-function-p 'forward-word)
                      (fboundp 'nelisp--repr))))
     (fset 'forward-word #'emacs-edit--forward-word-lisp)))
+;; F426: the native `forward-word' declines to the Lisp scan whenever the
+;; global, monotone `emacs-buffer--char-props-seen' is set, and image boot
+;; sets it, so every call paid the Lisp scan.  Fields come only from text
+;; properties and overlays, so a buffer whose sidecar holds neither can run
+;; the native leaf with the flag bound to nil.  The test is O(1), the same
+;; one the `buffer-substring' fast path uses.  Every other decline reason
+;; of the native leaf (non-ASCII, `words-include-escapes', ...) is unchanged.
+;; Limitation: the native scan may decline to the Lisp scan with the flag
+;; bound to nil; a boundary callback that creates the first property
+;; interval of the session would have its global flag write undone on exit
+;; (the per-buffer test still sees the sidecar, so only a direct caller of
+;; the private native subr is affected).
+(defvar emacs-buffer--char-props-seen)
+(defvar emacs-edit--forward-word-wrapper nil
+  "The installed per-buffer `forward-word' wrapper object, or nil.")
+(defvar emacs-edit--forward-word-native nil
+  "The native `forward-word' subr kept under a private name (F426).")
+
+(defun emacs-edit--forward-word-perbuf (&optional arg)
+  "Move point forward ARG words; like `forward-word'.
+Runs the native scan with the global property flag cleared when the current
+buffer has no text-property intervals and no overlays.  Overlays live only in
+the buffer record (`nelisp-buffer-overlays', an interval tree or nil), not in
+the emacs-buffer sidecar; text properties are checked in both stores."
+  (interactive "p")
+  (let ((ext (gethash (current-buffer) emacs-buffer--state)))
+    (if (and (or (null ext) (null (emacs-buffer--ext-text-props ext)))
+             (null (nelisp-buffer-overlays nelisp--current-buffer))
+             (null (nelisp-buffer-text-properties nelisp--current-buffer)))
+        (let ((emacs-buffer--char-props-seen nil))
+          (funcall emacs-edit--forward-word-native arg))
+      (funcall emacs-edit--forward-word-native arg))))
+
+(let ((cur (and (fboundp 'forward-word) (symbol-function 'forward-word))))
+  (cond
+   ;; Reloaded: the cell holds the previous wrapper; keep the native subr.
+   ((and emacs-edit--forward-word-wrapper
+         (eq cur emacs-edit--forward-word-wrapper))
+    (fset 'forward-word
+          (setq emacs-edit--forward-word-wrapper
+                (symbol-function 'emacs-edit--forward-word-perbuf))))
+   ;; A native `forward-word' (it declines to the reference scan): wrap it.
+   ((and cur
+         (fboundp 'nelisp--forward-word-reference)
+         (boundp 'emacs-buffer--char-props-seen)
+         (boundp 'emacs-buffer--state)
+         (fboundp 'nelisp-buffer-overlays)
+         (fboundp 'nelisp-buffer-text-properties)
+         (not (eq cur (symbol-function 'emacs-edit--forward-word-lisp)))
+         (not (eq cur (symbol-function 'nelisp--forward-word-reference))))
+    (setq emacs-edit--forward-word-native cur)
+    (fset 'forward-word
+          (setq emacs-edit--forward-word-wrapper
+                (symbol-function 'emacs-edit--forward-word-perbuf))))))
 
 (when (emacs-edit-builtins--install-function-p 'backward-word)
   (defun backward-word (&optional arg)
@@ -3623,7 +3682,7 @@ With ARG zero, exchange the object at point with the one at the mark."
 (defun emacs-edit-next-line (&optional n)
   "Move N display lines while preserving the current or explicit goal column.
 The standalone `vertical-motion' primitive owns display-line traversal."
-  (interactive "^p")
+  (interactive "p")
   (let* ((n (or n 1))
          (continuing (memq last-command '(next-line previous-line
                                           emacs-edit-next-line emacs-edit-previous-line)))
@@ -3641,7 +3700,7 @@ The standalone `vertical-motion' primitive owns display-line traversal."
 
 (defun emacs-edit-previous-line (&optional n)
   "Move N display lines backward, retaining the vertical goal column."
-  (interactive "^p")
+  (interactive "p")
   (emacs-edit-next-line (- (or n 1))))
 
 (defun emacs-edit-native-kill-line (&optional arg)
