@@ -147,6 +147,11 @@ envelope.")
     comint-send-input
     ;; GNU shell.el's `shell' command (4211 printed characters).
     shell
+    ;; GNU replace.el: query-replace-regexp's interactive spec, the occur
+    ;; collector and the engine behind every (query-)replace command.
+    query-replace-regexp
+    occur-engine
+    perform-replace
     ;; The baked regex bridge calls this on every string/buffer match.
     ;; Eliding it to a nil stub silently kills the whole regex surface.
     nelisp-rx--match-from

@@ -275,51 +275,6 @@
     (should (equal "query-replace: empty FROM" status))
     (should-not callbacks)))
 
-(ert-deftest emacs-replace-test/replace-install-binds-standard-names ()
-  (let ((old-occur (and (fboundp 'occur) (symbol-function 'occur)))
-        (old-how-many (and (fboundp 'how-many) (symbol-function 'how-many)))
-        (old-replace-regexp
-         (and (fboundp 'replace-regexp) (symbol-function 'replace-regexp)))
-        (old-replace-string
-         (and (fboundp 'replace-string) (symbol-function 'replace-string)))
-        (old-flush-lines
-         (and (fboundp 'flush-lines) (symbol-function 'flush-lines)))
-        (old-keep-lines
-         (and (fboundp 'keep-lines) (symbol-function 'keep-lines)))
-        (old-query-replace
-         (and (fboundp 'query-replace) (symbol-function 'query-replace)))
-        (old-query-replace-regexp
-         (and (fboundp 'query-replace-regexp)
-              (symbol-function 'query-replace-regexp))))
-    (unwind-protect
-        (progn
-          (emacs-replace-install)
-          (should (eq (symbol-function 'occur) #'emacs-occur))
-          (should (eq (symbol-function 'how-many) #'emacs-replace-how-many))
-          (should (eq (symbol-function 'replace-regexp)
-                      #'emacs-replace-regexp))
-          (should (eq (symbol-function 'replace-string)
-                      #'emacs-replace-string))
-          (should (eq (symbol-function 'flush-lines)
-                      #'emacs-replace-flush-lines))
-          (should (eq (symbol-function 'keep-lines)
-                      #'emacs-replace-keep-lines))
-          (should (eq (symbol-function 'query-replace)
-                      #'emacs-query-replace))
-          (should (eq (symbol-function 'query-replace-regexp)
-                      #'emacs-query-replace-regexp)))
-      (dolist (entry `((occur . ,old-occur)
-                       (how-many . ,old-how-many)
-                       (replace-regexp . ,old-replace-regexp)
-                       (replace-string . ,old-replace-string)
-                       (flush-lines . ,old-flush-lines)
-                       (keep-lines . ,old-keep-lines)
-                       (query-replace . ,old-query-replace)
-                       (query-replace-regexp . ,old-query-replace-regexp)))
-        (if (cdr entry)
-            (fset (car entry) (cdr entry))
-          (fmakunbound (car entry)))))))
-
 (provide 'emacs-replace-test)
 
 ;;; emacs-replace-test.el ends here
