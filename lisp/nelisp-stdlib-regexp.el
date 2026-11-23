@@ -2913,6 +2913,59 @@ it; 16 (the exec declines) when that predicate has no answer."
             nlre--nat-cls-key key
             nlre--nat-cls-gen nlre--syntax-cache-generation))))
 
+;; Class programs (SYNCLS) are used only by `nlre--nat-looking-at' and the
+;; `string-match' entry in `nlre-string-match-lisp' (both without a harvested
+;; row), through the functions below, which are not harvested either.  The
+;; harvested `nlre--nat-program', `nlre--nat-program-syn' and `nlre--nat-bsearch'
+;; keep declining class atoms, so re-search-forward/backward are unchanged.
+(defvar nlre--nat-cls-enable nil
+  "Non-nil lets class atoms (\\w \\sC ...) run on the native matcher.
+Default nil: the generation-keyed class map does not see a raw `aset' on a
+syntax table (the Lisp predicates read the live table), so enabling it is a
+shipping decision; see the F414 entry.")
+(defvar nlre--nat-cprogs (make-hash-table :test 'equal)
+  "Regexp -> (PROGRAM . GROUPS) of a class program, or :no; case-sensitive.")
+(defvar nlre--nat-cprogs-fold (make-hash-table :test 'equal)
+  "Like `nlre--nat-cprogs' for case-folding searches.")
+
+(defun nlre--nat-program-cls (re fold)
+  "Return (PROGRAM . GROUPS) for RE when it compiles with class atoms, else nil.
+Programs without a class op answer nil: the plain routes already handled them."
+  (let* ((tbl (if fold nlre--nat-cprogs-fold nlre--nat-cprogs))
+         (p (gethash re tbl)))
+    (if p (if (eq p :no) nil p)
+      (when (> (hash-table-count tbl) 2000) (clrhash tbl))
+      (let* ((prog (let ((nlre--nat-allow-syn t) (nlre--nat-allow-cls t))
+                     (nlre--nat-compile re fold)))
+             (e (and prog (not (= 0 (logand (aref prog 8) 32)))
+                     (cons prog (aref (nlre--compiled-pattern re) 1)))))
+        (puthash (copy-sequence re) (or e :no) tbl)
+        e))))
+
+(defun nlre--nat-cls-ensure (entry)
+  "Ready the syntax maps ENTRY's program reads; nil when it must not run natively."
+  (let ((fl (aref (car entry) 8)))
+    (and (>= (length nlre--nat-caps) 460)
+         (not (and (boundp 'parse-sexp-lookup-properties) parse-sexp-lookup-properties))
+         (progn (nlre--nat-cls-fill)
+                (unless (= 0 (logand fl 16)) (nlre--nat-syn-ensure))
+                t))))
+
+(defun nlre--nat-sm-cls (regexp string start max-end)
+  "`string-match' for class programs.  Return t when declined."
+  (let ((fold (and case-fold-search t)))
+    (if (or search-spaces-regexp nlre--cap-track
+            (and fold (not (nlre--nat-fold-default-p))))
+        t
+      (let ((entry (nlre--nat-program-cls regexp fold)))
+        (if (or (null entry) (not (nlre--nat-cls-ensure entry))) t
+          (let* ((n (length string))
+                 (r (nlre--nat-run entry string (or start 0)
+                                   (if max-end (max 0 (min n max-end)) n) nil n)))
+            (cond ((eq r t) t)
+                  ((null r) nil)
+                  (t (nlre--nat-publish (cdr entry) 0)))))))))
+
 (defun nlre--nat-run (entry string start limit anchored n)
   "Run ENTRY on STRING.  Return t (declined), nil (no match) or the packed span."
   (nelisp--rx-exec (car entry) string start limit (if anchored (1+ (* 2 n)) (* 2 n))
@@ -3008,14 +3061,21 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
             search-spaces-regexp
             (and case-fold-search (not (nlre--nat-fold-default-p))))
         t
-      (let ((entry (nlre--nat-program-syn regexp (and case-fold-search t))))
+      (let ((entry (or (nlre--nat-program-syn regexp (and case-fold-search t))
+                       (and nlre--nat-cls-enable
+                            (nlre--nat-program-cls regexp (and case-fold-search t))))))
         (if (null entry) t
           (let* ((pt (or (aref b 12) (1+ (aref b 13))))
                  (text (nlre--nat-buffer-text b)))
             (if (null text) t
-              (let ((r (progn
-                         (unless (= 0 (logand (aref (car entry) 8) 16)) (nlre--nat-syn-ensure))
-                         (nlre--nat-run entry text (1- pt) (aref b 14) t (aref b 14)))))
+              (let ((r (let ((fl (aref (car entry) 8)))
+                         (if (= 0 (logand fl 32))
+                             (progn
+                               (unless (= 0 (logand fl 16)) (nlre--nat-syn-ensure))
+                               (nlre--nat-run entry text (1- pt) (aref b 14) t (aref b 14)))
+                           (if (nlre--nat-cls-ensure entry)
+                               (nlre--nat-run entry text (1- pt) (aref b 14) t (aref b 14))
+                             t)))))
                 (cond ((eq r t) t)
                       ((null r) nil)
                       (t (nlre--nat-publish (cdr entry) 1)
@@ -3100,7 +3160,7 @@ its start position, or nil.  This is either a bare `:lit'/`:any'/`:set'/
   (let ((r (if nlre--nat-have (nlre--nat-sm regexp string start max-end nil) t)))
     (if (eq r t) (nlre-string-match-lisp regexp string start max-end) r)))
 
-(defun nlre-string-match-lisp (regexp string &optional start max-end)
+(defun nlre--string-match-lisp-1 (regexp string &optional start max-end)
   "Pure-elisp `string-match'; return match start index, or nil.
 START is the first candidate start.  If MAX-END is non-nil, require the
 match to end at or before that index while preserving anchors against all
@@ -3324,6 +3384,14 @@ of STRING.  Sets `nlre--match-data' as usual."
     (when hit
       (setq nlre--last-caps caps)
       hit)))))
+
+(defun nlre-string-match-lisp (regexp string &optional start max-end)
+  "`string-match' for what the plain native route declined: class programs
+(when `nlre--nat-cls-enable'), else the Lisp matcher."
+  (let ((r (if (and nlre--nat-cls-enable nlre--nat-have)
+               (nlre--nat-sm-cls regexp string start max-end)
+             t)))
+    (if (eq r t) (nlre--string-match-lisp-1 regexp string start max-end) r)))
 
 (defun nlre-match-beginning (n)
   (unless (fixnump n)
