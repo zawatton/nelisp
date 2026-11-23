@@ -69362,7 +69362,12 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
     (error "Runtime/compiler sources changed during the reader build; rebuild"))
   (let* ((image (nelisp-standalone--cold-image-path binary))
          (skip-key (unless (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
-                     (ignore-errors (nelisp-standalone--cold-skip-key binary)))))
+                     ;; A digest failure means "do not skip"; never hide it.
+                     (condition-case err
+                         (nelisp-standalone--cold-skip-key binary)
+                       (error
+                        (message "[standalone-reader] cold skip key unavailable (%S); re-dumping" err)
+                        nil)))))
     ;; Early cutoff: identical binary bytes, bake inputs and flags, and an
     ;; image whose digest file records the same key => keep the image.
     (if (and skip-key (nelisp-standalone-cachekey-sidecar-fresh-p image skip-key))
@@ -69387,7 +69392,7 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
             (nelisp-standalone-cachekey-bake-input-digest
              (mapcar (lambda (d) (expand-file-name d nelisp-standalone--repo-root))
                      '("lisp" "src" "vendor" "packages"))
-             (list (format "revision=%s" (nelisp-standalone--build-source-revision))
+             (list (format "revision=%s" nelisp-standalone--build-source-revision)
                    (let ((defs (car (nelisp-standalone-cachekey--read-script nelisp-standalone--this-file))))
                      (prin1-to-string
                       (mapcar (lambda (n) (gethash (intern (concat "nelisp-standalone--" n)) defs))

@@ -102,31 +102,66 @@
     (should-not (seq-some (lambda (m) (string-match-p "global key" m)) msgs))))
 
 
+(defmacro nl-kw--with-cold-root (&rest body)
+  "Run BODY with a tiny temp repo root, a fresh bake memo and a fixed revision.
+Does not bind the memo to a literal, so the real digest path runs."
+  `(let* ((dir (make-temp-file "nl-cold" t))
+          (root (expand-file-name "root" dir))
+          (bin (expand-file-name "nelisp" dir))
+          (nelisp-standalone--repo-root root)
+          (nelisp-standalone--bake-input-memo nil)
+          (nelisp-standalone--build-source-revision "rev-1")
+          (nelisp-standalone--native-cache-source-receipt nil))
+     (make-directory (expand-file-name "lisp" root) t)
+     (make-directory (expand-file-name "scripts" root) t)
+     (make-directory (expand-file-name "target" root) t)
+     (with-temp-file (expand-file-name "lisp/a.el" root) (insert "(a 1)"))
+     (unwind-protect (progn ,@body) (delete-directory dir t))))
+
+(defun nl-kw--write (root rel text)
+  (with-temp-file (expand-file-name rel root) (insert text)))
+
 (ert-deftest nl-kw-cold-image-early-cutoff ()
-  "Identical binary + bake inputs + flags skip the dump; every other case re-bakes."
-  (let* ((dir (make-temp-file "nl-cold" t)) (bin (expand-file-name "nelisp" dir)) (dumps 0)
-         (nelisp-standalone--native-cache-source-receipt nil)
-         (nelisp-standalone--bake-input-memo "bake-1"))
-    (unwind-protect
-        (cl-letf (((symbol-function 'nelisp-standalone--cold-image-path) (lambda (b) (concat b ".cold")))
-                  ((symbol-function 'nelisp-standalone--build-cold-image-2)
-                   (lambda (_b image) (cl-incf dumps) (with-temp-file image (insert "img")))))
-          (with-temp-file bin (insert "bin-1"))
-          (nelisp-standalone--build-cold-image bin)
-          (should (= dumps 1))
-          (nelisp-standalone--build-cold-image bin)
-          (should (= dumps 1))                       ; skipped
-          (let ((nelisp-standalone--bake-input-memo "bake-2"))   ; bake input changed
-            (nelisp-standalone--build-cold-image bin) (should (= dumps 2)))
-          (let ((process-environment (cons "NELISP_STANDALONE_NATIVE_COMPILER_COLD=1" process-environment))
-                (nelisp-standalone--bake-input-memo "bake-2"))
-            (nelisp-standalone--build-cold-image bin) (should (= dumps 3)))   ; flag
-          (with-temp-file bin (insert "bin-2"))      ; binary bytes changed
-          (nelisp-standalone--build-cold-image bin) (should (= dumps 4))
-          (nelisp-standalone--build-cold-image bin) (should (= dumps 4))
-          (delete-file (concat bin ".cold.digest"))  ; sidecar digest missing
-          (nelisp-standalone--build-cold-image bin) (should (= dumps 5)))
-      (delete-directory dir t))))
+  "Identical binary + bake inputs + flags skip the dump; every other case re-bakes.
+Runs the real bake digest (no memo bound), so a broken accessor fails here."
+  (nl-kw--with-cold-root
+   (let ((dumps 0))
+     (cl-letf (((symbol-function 'nelisp-standalone--cold-image-path) (lambda (b) (concat b ".cold")))
+               ((symbol-function 'nelisp-standalone--build-cold-image-2)
+                (lambda (_b image) (cl-incf dumps) (with-temp-file image (insert "img")))))
+       (with-temp-file bin (insert "bin-1"))
+       (nelisp-standalone--build-cold-image bin)
+       (should (= dumps 1))
+       (setq nelisp-standalone--bake-input-memo nil)     ; fresh process
+       (nelisp-standalone--build-cold-image bin)
+       (should (= dumps 1))                              ; skipped
+       (nl-kw--write root "lisp/a.el" "(a 2)")           ; bake input changed
+       (setq nelisp-standalone--bake-input-memo nil)
+       (nelisp-standalone--build-cold-image bin) (should (= dumps 2))
+       (let ((process-environment (cons "NELISP_STANDALONE_NATIVE_COMPILER_COLD=1" process-environment)))
+         (setq nelisp-standalone--bake-input-memo nil)
+         (nelisp-standalone--build-cold-image bin) (should (= dumps 3)))   ; flag
+       (setq nelisp-standalone--bake-input-memo nil)
+       (with-temp-file bin (insert "bin-2"))              ; binary bytes changed
+       (nelisp-standalone--build-cold-image bin) (should (= dumps 4))
+       (nelisp-standalone--build-cold-image bin) (should (= dumps 4))
+       (delete-file (concat bin ".cold.digest"))          ; sidecar digest missing
+       (nelisp-standalone--build-cold-image bin) (should (= dumps 5))))))
+
+(ert-deftest nl-kw-cold-skip-key-failure-does-not-skip-and-is-logged ()
+  "A digest failure must mean re-dump, with a log line (no ignore-errors)."
+  (nl-kw--with-cold-root
+   (let ((dumps 0) (msgs nil))
+     (cl-letf (((symbol-function 'nelisp-standalone--cold-image-path) (lambda (b) (concat b ".cold")))
+               ((symbol-function 'nelisp-standalone--cold-skip-key) (lambda (_b) (error "boom")))
+               ((symbol-function 'message) (lambda (f &rest a) (push (apply #'format f a) msgs)))
+               ((symbol-function 'nelisp-standalone--build-cold-image-2)
+                (lambda (_b image) (cl-incf dumps) (with-temp-file image (insert "img")))))
+       (with-temp-file bin (insert "bin-1"))
+       (nelisp-standalone--build-cold-image bin)
+       (nelisp-standalone--build-cold-image bin)
+       (should (= dumps 2))
+       (should (seq-some (lambda (m) (string-match-p "skip key unavailable" m)) msgs))))))
 
 (provide 'nelisp-standalone-key-wiring-test)
 
