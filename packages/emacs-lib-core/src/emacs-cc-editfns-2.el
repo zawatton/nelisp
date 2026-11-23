@@ -53,7 +53,7 @@ message line to stderr, whatever the text is."
         (1+ (string-bytes (buffer-substring-no-properties (point-min) pos)))))))
 
 (unless (fboundp 'replace-region-contents)
-  (defun replace-region-contents (beg end source &optional _max-secs _max-costs inherit)
+  (defun replace-region-contents (beg end source &optional max-secs _max-costs inherit)
     "Replace BEG..END with SOURCE, returning non-nil on a comparison replacement."
     (let ((start-check (if (markerp beg) (marker-position beg) beg))
           (end-check (if (markerp end) (marker-position end) end)))
@@ -78,6 +78,23 @@ message line to stderr, whatever the text is."
            (finish (if (markerp end) (marker-position end) end))
            (start (if (markerp beg) (marker-position beg) beg))
            (opoint (point)))
+      ;; Unless MAX-SECS is 0, GNU diffs the old and new text and touches
+      ;; only what changed, so point, markers and properties in the
+      ;; unchanged parts survive.  Trimming the common prefix and suffix
+      ;; gives the same result for a single contiguous change.
+      (unless (and (numberp max-secs) (<= max-secs 0))
+        (let* ((old (buffer-substring-no-properties start finish))
+               (olen (length old)) (nlen (length text))
+               (pre 0) (suf 0))
+          (while (and (< pre olen) (< pre nlen)
+                      (eq (aref old pre) (aref text pre)))
+            (setq pre (1+ pre)))
+          (while (and (< suf (- olen pre)) (< suf (- nlen pre))
+                      (eq (aref old (- olen suf 1)) (aref text (- nlen suf 1))))
+            (setq suf (1+ suf)))
+          (setq text (substring text pre (- nlen suf))
+                start (+ start pre)
+                finish (- finish suf))))
       (goto-char start)
       (delete-region start finish)
       (goto-char start)
