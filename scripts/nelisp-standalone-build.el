@@ -73,6 +73,7 @@
 (require 'nelisp-boot-image)
 (require 'nelisp-version)
 (require 'nelisp-standalone-cachekey)
+(require 'nelisp-standalone-chunk)
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
@@ -2139,6 +2140,17 @@ position and under `data-addr'."
     ("rootstack.o" "arena.o" "string-blocks.o")
     ("fxir-native.o" "arena.o" "string-blocks.o")
     ("applyfn-reader.o" "arena.o" "string-blocks.o")
+    ;; Chunks of the applyfn main unit (`nelisp-standalone-chunk-split'): the
+    ;; same imports as the unsplit unit, so a chunk sees the helpers it saw.
+    ("applyfn-chunk-1.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-2.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-3.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-4.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-5.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-6.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-7.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-8.o" "arena.o" "string-blocks.o")
+    ("applyfn-chunk-9.o" "arena.o" "string-blocks.o")
     ("combiner-apply-fix.o" "arena.o" "string-blocks.o")
     ("combiner-cons-mxcache.o" "arena.o" "string-blocks.o")
     ("reader-catch-throw.o" "arena.o" "string-blocks.o")
@@ -3971,6 +3983,17 @@ Idempotent: a defun whose F_w is already defined in SOURCE is left alone."
     "combiner-apply-fix.o" "applyfn-frame-0.o" "applyfn-frame-1.o")
   "Units a parallel build compiles in child processes, most expensive first.")
 
+(defun nelisp-standalone--prewarm-unit-list ()
+  "`nelisp-standalone--prewarm-units' plus the applyfn chunks of this build.
+The chunks (flag NELISP_STANDALONE_APPLYFN_CHUNKS) follow applyfn-reader.o,
+which is chunk 0.  A unit the build never reaches would make its child replay
+the whole build for nothing, so chunk names appear only when chunking is on."
+  (let ((k (nelisp-standalone-chunk-count)) (base nelisp-standalone--prewarm-units))
+    (if (<= k 1) base
+      (append (list (car base))
+              (cl-loop for i from 1 below k collect (nelisp-standalone-chunk-unit-name i))
+              (cdr base)))))
+
 (defvar nelisp-standalone--prewarm-unit nil
   "In a prewarm child: the name of the one unit it compiles.")
 
@@ -4001,8 +4024,8 @@ Idempotent: a defun whose F_w is already defined in SOURCE is left alone."
            ;; One private log directory per build: concurrent builds must not
            ;; share (or delete) each other's logs, which `--prewarm-wait' reads.
            (log-dir (and (> n 0) (make-temp-file "nelisp-prewarm-" t))))
-      (dolist (unit (butlast nelisp-standalone--prewarm-units
-                                     (max 0 (- (length nelisp-standalone--prewarm-units) n))))
+      (dolist (unit (let ((all (nelisp-standalone--prewarm-unit-list)))
+                      (butlast all (max 0 (- (length all) n)))))
         ;; Output goes to a log file, not a pipe: the build reads no
         ;; process output while it compiles, and a child blocked on a full
         ;; pipe would stop compiling.
@@ -68710,14 +68733,34 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (applyfn-split (nelisp-standalone--applyfn-split-units
                          (nelisp-standalone--patch-autoload-lookups
                           (nelisp-standalone--applyfn-source))))
+         ;; NELISP_STANDALONE_APPLYFN_CHUNKS=K (default unset = 1 = the single
+         ;; unit) splits the main unit into K stably assigned chunks
+         ;; (`nelisp-standalone-chunk-split'); chunk 0 keeps the name
+         ;; applyfn-reader.o, the others link right after it.
+         (applyfn-chunks (let ((k (nelisp-standalone-chunk-count)))
+                           (nelisp-standalone-chunk-split
+                            (car applyfn-split) k
+                            (nelisp-standalone-chunk-load-table k))))
          (applyfn (let ((nelisp-aot-compiler--x86-direct-only-defuns
                          nelisp-standalone--direct-only-reader-defuns))
                     (nelisp-standalone--cached-unit
-                     "applyfn-reader.o" (car applyfn-split)
+                     "applyfn-reader.o" (car applyfn-chunks)
                      nelisp-standalone--this-file)))
+         (applyfn-chunk-units
+          (let ((index 0))
+            (mapcar (lambda (source)
+                      (setq index (1+ index))
+                      (let ((nelisp-aot-compiler--x86-direct-only-defuns
+                             nelisp-standalone--direct-only-reader-defuns))
+                        (nelisp-standalone--cached-unit
+                         (nelisp-standalone-chunk-unit-name index) source
+                         nelisp-standalone--this-file)))
+                    (cdr applyfn-chunks))))
          ;; Share main-unit helpers rather than duplicating their internal
-         ;; relocations in each argv entry.
-         (applyfn-frames (nelisp-standalone--applyfn-frame-units applyfn-split))
+         ;; relocations in each argv entry.  The chunks link before them, so
+         ;; K = 1 keeps the historical unit order.
+         (applyfn-frames (append applyfn-chunk-units
+                                 (nelisp-standalone--applyfn-frame-units applyfn-split)))
          ;; M4: keyword self-eval patched eval-inner, PLUS perf/macroexpansion-
          ;; cache's `nl_ei_cons_dispatch'/`nl_ei_cons_tail' form-threading
          ;; (composed after the M4 patch; unit renamed so any pre-existing
