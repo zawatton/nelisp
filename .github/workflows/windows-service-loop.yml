@@ -14,6 +14,13 @@ on:
       parallel:
         description: Concurrent test runs
         default: '4'
+      selector:
+        description: ERT test name regex (default runs the full service suite)
+        default: '^nelisp-service-test'
+      retirement_metrics:
+        description: Collect aggregate connection retirement metrics (diagnostic only)
+        type: boolean
+        default: false
 
 jobs:
   loop:
@@ -48,6 +55,8 @@ jobs:
         env:
           ITERATIONS: ${{ inputs.iterations }}
           PARALLEL: ${{ inputs.parallel }}
+          TEST_SELECTOR: ${{ inputs.selector }}
+          NELISP_SERVICE_RETIREMENT_METRICS: ${{ inputs.retirement_metrics && '1' || '' }}
         run: |
           set -u
           logdir="$RUNNER_TEMP/service-loop"
@@ -61,12 +70,16 @@ jobs:
           echo "bash=$BASH timeout=$(command -v timeout) emacs=$(command -v emacs)"
           run_one() {
             i=$1
+            if ! ulimit -v 8388608; then
+              echo 'fail memory-limit' >"$logdir/iter-$i.result"
+              return
+            fi
             # /usr/bin/timeout: a bare `timeout' can be Windows' timeout.exe.
             # shellcheck disable=SC2086
             if /usr/bin/timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
                  -L scripts -L tools --eval '(setq load-prefer-newer t)' -l ert \
                  -l packages/nelisp-service/test/nelisp-service-test.el \
-                 --eval '(ert-run-tests-batch-and-exit "^nelisp-service-test")' \
+                 --eval '(let ((selector (or (getenv "TEST_SELECTOR") "^nelisp-service-test"))) (unless (ert-select-tests selector t) (error "No tests match selector %S" selector)) (ert-run-tests-batch-and-exit selector))' \
                  </dev/null >"$logdir/iter-$i.log" 2>&1; then
               echo pass >"$logdir/iter-$i.result"
             else
@@ -97,3 +110,11 @@ jobs:
           done
           echo "LOOP total=$total failed=$failed"
           [ "$failed" -eq 0 ]
+
+      - name: Preserve service loop results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-loop-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/service-loop
+          if-no-files-found: warn
