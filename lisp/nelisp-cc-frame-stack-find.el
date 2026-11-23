@@ -565,15 +565,44 @@
                  (record-slot-set frame 3 new-names) 0))
         1))
 
+    ;; Slot 3 run marker (F402).  GNU Fdefvar pushes a bare marker with no
+    ;; membership check, so a repeated (defvar SYM) records SYM again and the
+    ;; view must show every copy.  To keep a defvar loop from growing slot 3
+    ;; (and every let membership walk) without bound, an adjacent repeat is
+    ;; stored as a fixnum run marker: the fixnum K (word 4K+1) stands for K
+    ;; EXTRA copies of the element after it, so (K NAME . rest) is K+1 copies
+    ;; of NAME.  The marker is only written at the head and only when the head
+    ;; element is NAME; existing conses are never mutated.  Readers: contains
+    ;; skips a fixnum (non-match), `nl_capture_local_names_w' modes 0/3 expand
+    ;; it so the closure view stays byte-identical, mode 2 skips it.
+    ;; KIND: 1 head is a run marker over NAME, 2 head is NAME, 0 plain push.
     (defun nelisp_frame_local_declare_one (frame name)
       (if (> (record-slot-count frame) 3)
-          ;; GNU Fdefvar pushes a bare marker with no membership check, so a
-          ;; repeated (defvar SYM) records SYM again; only the global
-          ;; declared-special test (bf_declare_local_status) skips a write.
-          (let* ((names (record-slot-ref-ptr frame 3))
-                 (new-names (alloc-bytes 32 8)))
-            (seq (cons-make-with-clone name names new-names)
-                 (record-slot-set frame 3 new-names) 0))
+          (let* ((names (nl_record_slot_word frame 3))
+                 (head (if (= (nl_val_tag names) 7) (nl_cons_car_word names) 0))
+                 (kind (if (= (nl_val_tag names) 7)
+                           (if (= (logand head 1) 1)
+                               (let* ((c2 (nl_cons_cdr_word names)))
+                                 (if (= (nl_val_tag c2) 7)
+                                     (let* ((x (nl_cons_car_word c2)))
+                                       (if (= (logand x 1) 0)
+                                           (if (= (logand x 7) 2) 0
+                                             (if (= (extern-call nelisp_symbol_key_equal x name) 1) 1 0))
+                                         0))
+                                   0))
+                             (if (= (logand head 7) 2) 0
+                               (if (= (extern-call nelisp_symbol_key_equal head name) 1) 2 0)))
+                         0)))
+            (if (= kind 1)
+                (let* ((nw (nelisp_cons_construct_w (+ head 4) (nl_cons_cdr_word names) 0)))
+                  (seq (record-slot-set frame 3 nw) 0))
+              (if (= kind 2)
+                  (let* ((nw (nelisp_cons_construct_w 5 names 0)))
+                    (seq (record-slot-set frame 3 nw) 0))
+                (let* ((old (record-slot-ref-ptr frame 3))
+                       (new-names (alloc-bytes 32 8)))
+                  (seq (cons-make-with-clone name old new-names)
+                       (record-slot-set frame 3 new-names) 0)))))
         1))
 
     (defun nelisp_frame_local_declare_walk (backing i name)
@@ -615,9 +644,22 @@
     ;; the pre-b665d7f30 install produced; the install predicate of
     ;; `nelisp_frame_captured_decls' minus its special test filters pairs,
     ;; immediates and non-names.  No allocation outside the conses.
+    ;; A fixnum run marker (see `nelisp_frame_local_declare_one') is expanded in
+    ;; modes 0 and 3, so the view keeps every copy GNU's defvar pushes.
+    ;; LMODE bits 2 and up are a pending run count (F402): NAMES is then the
+    ;; cell of a run's element, which is consed that many extra times onto ACC
+    ;; before the walk goes on in the mode of the low two bits.
     (defun nl_capture_local_names_w (names acc roots lmode)
+      (if (> lmode 3)
+          (let* ((word (nelisp_cons_construct_w (nl_cons_car_word names) acc 0)))
+            (seq (nl_capture_root_set_word roots 0 word)
+                 (nl_capture_local_names_w names word roots (- lmode 4))))
       (if (= (nl_val_tag names) 7)
           (let* ((item (nl_cons_car_word names)))
+            (if (if (= (logand item 1) 1) (if (= lmode 1) 0 (if (= lmode 2) 0 1)) 0)
+                ;; Run marker K: expand K extra copies of the next element.
+                (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots
+                                          (+ lmode (* 4 (sar item 2))))
             (if (= lmode 2)
                 (if (= (nl_val_tag item) 7) 1
                   (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots 2))
@@ -642,8 +684,8 @@
                         (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 3)))
                   (let* ((word (nelisp_cons_construct_w item acc 0)))
                     (nl_capture_root_set_word roots 0 word)
-                    (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 0))))))
-        (if (= lmode 2) 0 acc)))
+                    (nl_capture_local_names_w (nl_cons_cdr_word names) word roots 0)))))))
+        (if (= lmode 2) 0 acc))))
 
     (defun nl_capture_local_declarations_w (frame acc roots)
       (let* ((names (nelisp_frame_local_names frame)))
