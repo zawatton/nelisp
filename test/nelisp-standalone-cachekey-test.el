@@ -120,6 +120,21 @@
    (should (member "?nope" (let ((load-path (list (expand-file-name "lisp" dir))))
                              (nelisp-standalone-cachekey-require-closure '("nope") dir load-path))))))
 
+(ert-deftest nelisp-cachekey-refuses-incomplete-key ()
+  "An unresolved nelisp feature or unavailable native-load must not be cached."
+  (should-error (nelisp-standalone-cachekey-check-files '("/x/a.el" "?nelisp-gone")))
+  (should-error (nelisp-standalone-cachekey-check-settings
+                 (nelisp-standalone-cachekey-settings-string
+                  '(("k" . :native-load-unavailable)))))
+  ;; Negative controls: a complete closure (stdlib gaps tolerated) and normal
+  ;; settings pass, and the explicit opt-out restores the old behaviour.
+  (should (equal (nelisp-standalone-cachekey-check-files '("/x/a.el" "?cl-lib")) '("/x/a.el" "?cl-lib")))
+  (should (stringp (nelisp-standalone-cachekey-check-settings "settings=((a . 1))")))
+  (let ((process-environment (cons "NELISP_STANDALONE_UNIT_CACHE_ALLOW_INCOMPLETE=1"
+                                   process-environment)))
+    (should (nelisp-standalone-cachekey-check-files '("?nelisp-gone")))
+    (should (nelisp-standalone-cachekey-check-settings ":native-load-unavailable"))))
+
 (ert-deftest nelisp-cachekey-settings-follow-env ()
   (let ((base (nelisp-standalone-cachekey-settings-string (nelisp-standalone-cachekey-env-alist))))
     (dolist (var '("NELISP_STACKMAP" "NELISP_ALIGNHOT_PERTURB" "NC2_LAZY" "NELISP_LINUX_ARENA_SIZE"))

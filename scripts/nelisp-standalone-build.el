@@ -3621,7 +3621,8 @@ compatibility, while new entries carry base64-encoded byte sections."
   "Return a digest of the compiler/linker sources that produce a unit."
   (or nelisp-standalone--toolchain-digest
       (setq nelisp-standalone--toolchain-digest
-            (nelisp-standalone-cachekey-files-digest (nelisp-standalone--dep-files)))))
+            (nelisp-standalone-cachekey-files-digest
+             (nelisp-standalone-cachekey-check-files (nelisp-standalone--dep-files))))))
 
 (defun nelisp-standalone--codegen-settings-string ()
   "Env, host version and live codegen settings that shape a unit's code.
@@ -3631,7 +3632,8 @@ plus the compiler source hash); the rest are inputs read outside it:
 NELISP_STACKMAP (compile-to-unit smap-cell), NELISP_ALIGNHOT_PERTURB
 \(nelisp-aot-compiler.el:287), NC2_LAZY (nelisp-cc-fxir-native.el:347) and the
 arena size, which `arena-rewrite' consumes after the key was taken."
-  (nelisp-standalone-cachekey-settings-string
+  (nelisp-standalone-cachekey-check-settings
+   (nelisp-standalone-cachekey-settings-string
    (nelisp-standalone-cachekey-env-alist
     (list (cons 'linux-arena-size nelisp-standalone--linux-arena-size)
           (cons 'alignhot-perturb (bound-and-true-p nelisp-aot-compiler-alignhot-perturb))
@@ -3639,7 +3641,7 @@ arena size, which `arena-rewrite' consumes after the key was taken."
           (cons 'codegen-settings
                 (if (require 'nelisp-native-load nil t)
                     (nelisp-native-load-codegen-settings)
-                  :native-load-unavailable))))))
+                  :native-load-unavailable)))))))
 
 (defconst nelisp-standalone--direct-only-reader-defuns
   '(bf_identity_hash m5_length nl_ht_reindex nl_ht_identity_key_hash nl_apply_builtin_name_key

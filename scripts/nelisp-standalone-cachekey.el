@@ -89,6 +89,27 @@ are included), which can only cost a miss, never a stale hit."
         (concat (if (string-prefix-p "?" f) f (file-name-nondirectory f)) ":-")))
     files "\n")))
 
+(defun nelisp-standalone-cachekey-allow-incomplete-p ()
+  "Non-nil when NELISP_STANDALONE_UNIT_CACHE_ALLOW_INCOMPLETE=1 (explicit opt-out)."
+  (equal (getenv "NELISP_STANDALONE_UNIT_CACHE_ALLOW_INCOMPLETE") "1"))
+
+(defun nelisp-standalone-cachekey-check-files (files)
+  "Signal an error when FILES (a closure result) hides an unresolved nelisp feature.
+An unresolved repository feature is hashed as a constant, so editing it would
+never re-key and the cache could return stale code.  Refuse instead of caching.
+Emacs stdlib features that do not resolve are tolerated."
+  (let ((bad (seq-filter (lambda (f) (string-prefix-p "?nelisp" f)) files)))
+    (when (and bad (not (nelisp-standalone-cachekey-allow-incomplete-p)))
+      (error "Unit cache key incomplete: unresolved toolchain features %S" bad))
+    files))
+
+(defun nelisp-standalone-cachekey-check-settings (settings)
+  "Signal an error when the codegen SETTINGS text records an unavailable native-load."
+  (when (and (string-match-p ":native-load-unavailable" settings)
+             (not (nelisp-standalone-cachekey-allow-incomplete-p)))
+    (error "Unit cache key incomplete: nelisp-native-load is unavailable"))
+  settings)
+
 (defun nelisp-standalone-cachekey-env-alist (&optional extra)
   "Alist of the codegen-affecting environment plus EXTRA (live settings)."
   (append (mapcar (lambda (n) (cons n (getenv n))) nelisp-standalone-cachekey-env-names)
