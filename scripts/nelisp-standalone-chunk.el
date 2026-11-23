@@ -42,6 +42,21 @@ Entries override the name hash.  Written only by an explicit rebalance.")
   "Regexps: an atom whose representative name matches is pinned to chunk 0.
 Keeps a hot cluster in one object so intra-unit inlining survives.")
 
+(defvar nelisp-standalone-chunk-pinned-names nil
+  "Defun names whose whole atom is pinned to chunk 0 (the F1 closure cluster).")
+
+(defun nelisp-standalone-chunk-load-pins ()
+  "The committed pinned-name list (tools/dev/applyfn-chunk-pins.el), or nil."
+  (let ((file (expand-file-name "tools/dev/applyfn-chunk-pins.el"
+                                (file-name-directory
+                                 (directory-file-name
+                                  (file-name-directory (or load-file-name buffer-file-name
+                                                           (locate-library "nelisp-standalone-chunk"))))))))
+    (when (file-readable-p file)
+      (let ((nelisp-standalone-chunk-pinned-names nil))
+        (load file nil t t)
+        nelisp-standalone-chunk-pinned-names))))
+
 (defun nelisp-standalone-chunk-count ()
   "Chunk count requested by NELISP_STANDALONE_APPLYFN_CHUNKS (1 = old path).
 Unset, empty, 0 or 1 select the unsplit unit; \"on\" selects the default count."
@@ -142,7 +157,7 @@ the atom (by name), else the first defun name; a singleton's REP is its name."
            0)
           (t (mod (nelisp-standalone-chunk-name-hash rep) k)))))
 
-(defun nelisp-standalone-chunk-split (source k &optional table)
+(defun nelisp-standalone-chunk-split (source k &optional table pins)
   "Split the unit SOURCE, a (seq FORM...), into K (seq ...) chunk sources.
 K <= 1 returns (SOURCE).  Forms keep their source order inside a chunk.  Every
 form lands in exactly one chunk, or the function signals."
@@ -150,7 +165,9 @@ form lands in exactly one chunk, or the function signals."
     (let* ((atoms (nelisp-standalone-chunk-atoms (cdr source)))
            (buckets (make-vector k nil)) (seen (make-hash-table :test #'eq)) (n 0))
       (dolist (a atoms)
-        (let ((c (nelisp-standalone-chunk-assign (car a) k table)))
+        (let ((c (if (cl-some (lambda (f) (and (eq (car-safe f) 'defun) (memq (cadr f) pins))) (cdr a))
+                     0
+                   (nelisp-standalone-chunk-assign (car a) k table))))
           (dolist (f (cdr a))
             (when (and (eq (car-safe f) 'defun) (gethash (cadr f) seen))
               (error "applyfn chunk: %s defined twice" (cadr f)))

@@ -167,4 +167,28 @@
       (should (> pairs 10))
       (should (eq (gethash 'bf_env_capture_roots names) (gethash 'bf_env_capture_roots_w names))))))
 
+(ert-deftest nelisp-chunk-gc-closure-cluster-stays-in-chunk-0 ()
+  ;; The F1 prelink closure must not grow past its 384 policy (F373): the
+  ;; applyfn members of the closure stay together in chunk 0.
+  (skip-unless (require 'nelisp-standalone-build nil t))
+  (let* ((pins (nelisp-standalone-chunk-load-pins))
+         (main (car (nelisp-standalone--applyfn-split-units
+                     (nelisp-standalone--patch-autoload-lookups (nelisp-standalone--applyfn-source)))))
+         (k 8) (table (nelisp-standalone-chunk-load-table k))
+         (defs (cl-loop for f in (cdr main) when (eq (car-safe f) 'defun) collect (cadr f)))
+         (where (lambda (chunks name)
+                  (cl-position-if (lambda (u) (cl-some (lambda (f) (eq (cadr f) name)) (cdr u))) chunks)))
+         (pinned (cl-remove-if-not (lambda (n) (memq n defs)) pins))
+         (with (nelisp-standalone-chunk-split main k table pins))
+         (without (nelisp-standalone-chunk-split main k table nil)))
+    (should (> (length pins) 50))
+    (should (= (length pinned) (length pins)))
+    (dolist (n pinned) (should (eql 0 (funcall where with n))))
+    ;; Twins of a pinned defun follow it.
+    (dolist (n pinned)
+      (let ((w (intern (format "%s_w" n))))
+        (when (memq w defs) (should (eql 0 (funcall where with w))))))
+    ;; NEGATIVE CONTROL: without the pins the same cluster is spread out.
+    (should (> (cl-count-if-not (lambda (n) (eql 0 (funcall where without n))) pinned) 40))))
+
 (provide 'nelisp-standalone-chunk-test)

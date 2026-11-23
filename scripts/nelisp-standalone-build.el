@@ -68740,7 +68740,8 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (applyfn-chunks (let ((k (nelisp-standalone-chunk-count)))
                            (nelisp-standalone-chunk-split
                             (car applyfn-split) k
-                            (nelisp-standalone-chunk-load-table k))))
+                            (nelisp-standalone-chunk-load-table k)
+                            (nelisp-standalone-chunk-load-pins))))
          (applyfn (let ((nelisp-aot-compiler--x86-direct-only-defuns
                          nelisp-standalone--direct-only-reader-defuns))
                     (nelisp-standalone--cached-unit
