@@ -1,0 +1,23 @@
+;;; -*- lexical-binding: t; -*-
+;; KNOWN-DIV F392: condition-case VAR is bound lexically by GNU 31 (lexical-binding), even for a special or locally declared name; NeLisp binds it in the frame store where symbol-value sees it.  par-condcase-kd.gnu = GNU, par-condcase-kd.known = recorded NeLisp output.
+(defmacro row (n f) `(princ (format "%-26s %S\n" ,n (condition-case e ,f (error (list 'ERR (car e)))))))
+(defun fe-rd (s) (if (boundp s) (symbol-value s) 'unbound))
+(defun fe-vw (c) (delq t (copy-sequence (aref c 2))))
+(defun fe-two (form e1 e2 warm-first &rest args)
+  "Closures of one FORM under envs E1, E2; warm one 300x; call both."
+  (let ((a (eval form e1)) (b (eval form e2)))
+    (dotimes (_ 300) (apply (if warm-first a b) args))
+    (cons a b)))
+(defvar fe-gs 0)
+(defvar f392-gs 0)
+(row "E5 condcase b-warm" (let ((p (fe-two '(lambda () (condition-case fe-cv (signal 'error '(1)) (error (fe-rd 'fe-cv)))) '(fe-cv t) '(t) nil))) (list (funcall (car p)) (funcall (cdr p)))))
+(row "E5a condcase a-warm" (let ((p (fe-two '(lambda () (condition-case fe-cv (signal 'error '(1)) (error (fe-rd 'fe-cv)))) '(fe-cv t) '(t) t))) (list (funcall (car p)) (funcall (cdr p)))))
+(row "E5g condcase global sp" (funcall (eval '(lambda () (condition-case fe-gs (signal 'error '(1)) (error (fe-rd 'fe-gs)))) t)))
+(row "E5c cold condcase decl" (funcall (eval '(lambda () (condition-case fe-cv (signal 'error '(1)) (error (fe-rd 'fe-cv)))) '(fe-cv t))))
+(defun f392-rd (s) (if (boundp s) (symbol-value s) 'unbound))
+(row "g1 global special" (condition-case f392-gs (signal 'error '(1)) (error (list (f392-rd 'f392-gs) f392-gs))))
+(row "g2 eval global special" (funcall (eval '(lambda () (condition-case f392-gs (signal 'error '(1)) (error (f392-rd 'f392-gs)))) t)))
+(row "g3 eval local decl" (funcall (eval '(lambda () (condition-case f392-cv (signal 'error '(1)) (error (f392-rd 'f392-cv)))) '(f392-cv t))))
+(row "g4 eval decl+global" (funcall (eval '(lambda () (condition-case f392-gs (signal 'error '(1)) (error (f392-rd 'f392-gs)))) '(f392-gs t))))
+(row "g5 body sees var" (funcall (eval '(lambda () (condition-case f392-gs (signal 'error '(1)) (error f392-gs))) t)))
+(row "g8 success var" (eval '(condition-case f392-gs 5 (error (f392-rd 'f392-gs))) t))
