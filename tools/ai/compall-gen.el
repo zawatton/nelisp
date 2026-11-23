@@ -38,10 +38,17 @@
 ;; `string<' order: no id is assigned by hand, and regenerating after a source change
 ;; renumbers deterministically.  Prints "GEN NAME ok ID", "GEN NAME skip REASON" and a
 ;; final "compall-gen: rows=N skipped=M".
+(defun compall-gen--fn (f)
+  "F as the list (closure ENV ARGS . BODY) when F is an interpreted closure.
+Closures are their own heap type since 02a1dccef; the fx machinery reads the
+wrapped list, so the generator does too."
+  (if (and (fboundp 'nelisp--closure-p) (nelisp--closure-p f) (not (consp f)))
+      (nelisp--closure-cons f)
+    f))
 (defvar compall-gen--boot-names
   (let ((names nil))
     (mapatoms (lambda (s) (when (and (fboundp s)
-                                     (or (eq (car-safe (symbol-function s)) 'closure)
+                                     (or (eq (car-safe (compall-gen--fn (symbol-function s))) 'closure)
                                          (byte-code-function-p (symbol-function s))))
                             (push s names))))
     names)
@@ -129,7 +136,7 @@ name PROBE (the real name keeps its image definition); nil if not a closure."
   (let ((probe (or probe (make-symbol "compall-gen-probe"))))
     (condition-case nil
         (progn (eval (cons 'defun (cons probe (nthcdr 2 form))) t)
-               (let ((fn (symbol-function probe)))
+               (let ((fn (compall-gen--fn (symbol-function probe))))
                  (and (eq (car-safe fn) 'closure) fn)))
       (error nil))))
 (defun compall-gen--source-same-p (forms ir code args)
@@ -261,7 +268,7 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
            ;; from its one source definition: with a row the pass keeps it as source.
            (probe (and bc compall-gen--bytecode (= (length forms) 1) (make-symbol "compall-gen-probe")))
            (fn (if bc (and probe (compall-gen--closure-of (car forms) probe))
-                 (symbol-function name)))
+                 (compall-gen--fn (symbol-function name))))
            (rec (and fn (progn (if probe (ignore-errors (nelisp--fx-register-fn probe fn))
                                  (ignore-errors (nelisp--fx-register name)))
                                (gethash (nthcdr 3 fn) nelisp--fx-table))))
