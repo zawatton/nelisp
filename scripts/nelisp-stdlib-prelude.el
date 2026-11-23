@@ -31640,6 +31640,18 @@ the variables a closure and the compiled code must share."
 
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
+See `nelisp--fx-compile-1'.  The caller's match data survive: a function
+is compiled on its first call, and expanding its macros may search, so a
+call made right after a search (GNU compile.el's
+`compilation-error-properties') would otherwise read clobbered match data."
+  (let ((md (and (fboundp 'match-data) (match-data t))))
+    (unwind-protect
+        (nelisp--fx-compile-1 form params)
+      (when (and md (fboundp 'set-match-data))
+        (set-match-data md t)))))
+
+(defun nelisp--fx-compile-1 (form &optional params)
+  "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller.
 The same walk also builds the code's fxir (see `nelisp--fx-ir'); it is
 kept in `nelisp--fx-ir-table' under CODE when `nelisp--fx-want-ir' is set.
