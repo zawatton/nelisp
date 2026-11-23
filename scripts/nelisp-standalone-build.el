@@ -69491,7 +69491,10 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
             (nelisp-standalone-cachekey-bake-input-digest
              (mapcar (lambda (d) (expand-file-name d nelisp-standalone--repo-root))
                      '("lisp" "src" "vendor" "packages"))
+             ;; root=: the checkout path (the dump runs with it on its load-path),
+             ;; so identical bytes in another checkout never share a skip key.
              (list (format "revision=%s" nelisp-standalone--build-source-revision)
+                   (format "root=%s" (expand-file-name nelisp-standalone--repo-root))
                    (nelisp-standalone--cold-dump-body-text))))))
 
 (defun nelisp-standalone--cold-dump-body-text ()
@@ -69627,6 +69630,9 @@ files and directories read by `build-cold-image-2'."
                     (call-process "wine" nil t nil (expand-file-name binary) "--eval" form)
                   (call-process (expand-file-name binary) nil t nil "--eval" form)))
           (setq output (string-trim (buffer-string))))
+        (unless (eql status 0)
+          (when (file-exists-p image) (delete-file image))
+          (error "Cold image dump exited with status %S: %s" status output))
         (if (and (eql status 0)
                  (string-match-p "\\`[0-9]+\\'" output)
                  (> (string-to-number output) 0)

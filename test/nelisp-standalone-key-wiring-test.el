@@ -212,6 +212,29 @@ Runs the real bake digest (no memo bound), so a broken accessor fails here."
           (should-not (equal before after)))
       (delete-file tmp))))
 
+
+;;;; Evidence A3: the cold skip key carries the checkout path.
+
+(ert-deftest nl-kw-bake-digest-tracks-repo-root-path ()
+  "Same bytes under a different absolute checkout path must not share a skip key."
+  (nl-kw--with-cold-root
+   (let ((a (nelisp-standalone--bake-input-digest))
+         (root2 (expand-file-name "root2" dir)))
+     (make-directory (expand-file-name "lisp" root2) t)
+     (with-temp-file (expand-file-name "lisp/a.el" root2) (insert "(a 1)"))
+     (let ((nelisp-standalone--repo-root root2)
+           (nelisp-standalone--bake-input-memo nil))
+       (should-not (equal a (nelisp-standalone--bake-input-digest)))))))
+
+(ert-deftest nl-kw-cold-dump-nonzero-exit-fails-build ()
+  "A cold dump whose process exits nonzero fails the build instead of warning."
+  (nl-kw--with-cold-root
+   (with-temp-file bin (insert "#!/bin/sh\nexit 3\n"))
+   (set-file-modes bin #o755)
+   (cl-letf (((symbol-function 'nelisp-standalone--target-runnable-on-host-p) (lambda () t))
+             ((symbol-function 'message) (lambda (&rest _) nil)))
+     (should-error (nelisp-standalone--build-cold-image-2 bin (concat bin ".cold"))))))
+
 (provide 'nelisp-standalone-key-wiring-test)
 
 (ert-deftest nl-kw-install-linked-binary-cutoff ()
