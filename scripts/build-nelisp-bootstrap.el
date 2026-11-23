@@ -451,7 +451,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-xref.el"
     "xref.el"
     "emacs-compile.el"
-    "compile.el"
     "emacs-vc.el"
     "vc.el"
     "emacs-comint.el"
@@ -1302,7 +1301,6 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-replace.el" . "replace.el")
                     ("emacs-comint.el" . "comint.el")
                     ("emacs-vc.el" . "vc.el")
-                    ("emacs-compile.el" . "compile.el")
                     ("emacs-xref.el" . "xref.el")
                     ("emacs-faces.el" . "emacs-faces-builtins.el")
                     ("emacs-frame.el" . "emacs-frame-builtins.el")
