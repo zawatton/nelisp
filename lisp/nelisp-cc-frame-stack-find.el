@@ -581,7 +581,7 @@
           (let* ((names (nl_record_slot_word frame 3))
                  (head (if (= (nl_val_tag names) 7) (nl_cons_car_word names) 0))
                  (kind (if (= (nl_val_tag names) 7)
-                           (if (= (logand head 1) 1)
+                           (if (= (logand head 3) 1)
                                (let* ((c2 (nl_cons_cdr_word names)))
                                  (if (= (nl_val_tag c2) 7)
                                      (let* ((x (nl_cons_car_word c2)))
@@ -656,7 +656,7 @@
                  (nl_capture_local_names_w names word roots (- lmode 4))))
       (if (= (nl_val_tag names) 7)
           (let* ((item (nl_cons_car_word names)))
-            (if (if (= (logand item 1) 1) (if (= lmode 1) 0 (if (= lmode 2) 0 1)) 0)
+            (if (if (= (logand item 3) 1) (if (= lmode 1) 0 (if (= lmode 2) 0 1)) 0)
                 ;; Run marker K: expand K extra copies of the next element.
                 (nl_capture_local_names_w (nl_cons_cdr_word names) acc roots
                                           (+ lmode (* 4 (sar item 2))))
