@@ -486,3 +486,55 @@ Each FROM must occur exactly once: an edit that misses is a test error."
     ;; compile-to-unit is traced, so it must be in the closure (it was once cut).
     (should (member "nelisp-standalone--abi-box-split-source" trace))
     (should (member "nelisp-standalone--abi-box-split-source" names))))
+
+;;;; Design2 C: sidecar skip key and bake-input digest.
+
+(defun nelisp-cachekey-test--write (file text)
+  (make-directory (file-name-directory file) t)
+  (with-temp-file file (insert text)))
+
+(ert-deftest nelisp-cachekey-bake-input-digest-tracks-inputs ()
+  (let* ((root (make-temp-file "nl-bake" t))
+         (a (expand-file-name "a.el" (expand-file-name "lisp" root)))
+         (outside (expand-file-name "other/x.el" root))
+         (roots (list (expand-file-name "lisp" root))))
+    (unwind-protect
+        (progn
+          (nelisp-cachekey-test--write a "(a)")
+          (nelisp-cachekey-test--write outside "(x)")
+          (let ((base (nelisp-standalone-cachekey-bake-input-digest roots '("rev=1"))))
+            (should (equal base (nelisp-standalone-cachekey-bake-input-digest roots '("rev=1"))))
+            ;; Edit a read input: changes. Extra (revision): changes. Unrelated file: no.
+            (nelisp-cachekey-test--write outside "(x2)")
+            (should (equal base (nelisp-standalone-cachekey-bake-input-digest roots '("rev=1"))))
+            (should-not (equal base (nelisp-standalone-cachekey-bake-input-digest roots '("rev=2"))))
+            (nelisp-cachekey-test--write a "(a2)")
+            (should-not (equal base (nelisp-standalone-cachekey-bake-input-digest roots '("rev=1"))))))
+      (delete-directory root t))))
+
+(ert-deftest nelisp-cachekey-sidecar-skip-requires-equal-digest ()
+  (let* ((dir (make-temp-file "nl-side" t)) (bin (expand-file-name "nelisp" dir))
+         (img (expand-file-name "nelisp.cold" dir)))
+    (unwind-protect
+        (progn
+          (nelisp-cachekey-test--write bin "binary-1")
+          (nelisp-cachekey-test--write img "image")
+          (let ((k (nelisp-standalone-cachekey-sidecar-key bin "bake" '("NL_TEST_FLAG"))))
+            ;; Missing digest file: never skip.
+            (should-not (nelisp-standalone-cachekey-sidecar-fresh-p img k))
+            (nelisp-standalone-cachekey-sidecar-write img k)
+            (should (nelisp-standalone-cachekey-sidecar-fresh-p img k))
+            ;; Each key part moves S: binary bytes, bake input, env flag.
+            (should-not (equal k (nelisp-standalone-cachekey-sidecar-key bin "bake2" '("NL_TEST_FLAG"))))
+            (nelisp-cachekey-test--with-env ((NL_TEST_FLAG . 1))
+              (should-not (equal k (nelisp-standalone-cachekey-sidecar-key bin "bake" '("NL_TEST_FLAG")))))
+            (nelisp-cachekey-test--write bin "binary-2")
+            (should-not (nelisp-standalone-cachekey-sidecar-fresh-p
+                         img (nelisp-standalone-cachekey-sidecar-key bin "bake" '("NL_TEST_FLAG"))))
+            ;; Poisoned digest file / missing image: never skip.
+            (nelisp-cachekey-test--write (concat img ".digest") "deadbeef\n")
+            (should-not (nelisp-standalone-cachekey-sidecar-fresh-p img k))
+            (nelisp-standalone-cachekey-sidecar-write img k)
+            (delete-file img)
+            (should-not (nelisp-standalone-cachekey-sidecar-fresh-p img k))))
+      (delete-directory dir t))))

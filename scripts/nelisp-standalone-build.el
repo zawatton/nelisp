@@ -69330,8 +69330,51 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
              (not (equal nelisp-standalone--native-cache-source-receipt
                          (nelisp-standalone--native-cache-source-identity))))
     (error "Runtime/compiler sources changed during the reader build; rebuild"))
-  (let ((image (nelisp-standalone--cold-image-path binary)))
+  (let* ((image (nelisp-standalone--cold-image-path binary))
+         (skip-key (unless (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
+                     (ignore-errors (nelisp-standalone--cold-skip-key binary)))))
+    ;; Early cutoff: identical binary bytes, bake inputs and flags, and an
+    ;; image whose digest file records the same key => keep the image.
+    (if (and skip-key (nelisp-standalone-cachekey-sidecar-fresh-p image skip-key))
+        (message "[standalone-reader] cold image unchanged, skipped")
+      (nelisp-standalone--build-cold-image-1 binary image skip-key))))
+
+(defun nelisp-standalone--cold-skip-key (binary)
+  "Skip key of BINARY's cold image: binary bytes + bake inputs + flags (design2 C)."
+  (nelisp-standalone-cachekey-sidecar-key
+   binary
+   (nelisp-standalone--bake-input-digest)
+   (append nelisp-standalone-cachekey-env-names
+           '("NELISP_STANDALONE_NATIVE_COMPILER_COLD" "NELISP_STANDALONE_COLD_IMAGE"
+             "NELISP_STANDALONE_COLD_RUNNER" "NELISP_BOX_CENSUS"))))
+
+(defvar nelisp-standalone--bake-input-memo nil)
+(defun nelisp-standalone--bake-input-digest ()
+  "BAKE_IN: every elisp tree a bake reads, this script's bake driver, and the revision.
+`source_revision' stays in until the c6 probe shows no sidecar embeds it."
+  (or nelisp-standalone--bake-input-memo
+      (setq nelisp-standalone--bake-input-memo
+            (nelisp-standalone-cachekey-bake-input-digest
+             (mapcar (lambda (d) (expand-file-name d nelisp-standalone--repo-root))
+                     '("lisp" "src" "vendor" "packages"))
+             (list (format "revision=%s" (nelisp-standalone--build-source-revision))
+                   (let ((defs (car (nelisp-standalone-cachekey--read-script nelisp-standalone--this-file))))
+                     (prin1-to-string
+                      (mapcar (lambda (n) (gethash (intern (concat "nelisp-standalone--" n)) defs))
+                              '("build-cold-image-1" "cold-image-path" "cold-skip-key")))))))))
+
+(defun nelisp-standalone--build-cold-image-1 (binary image skip-key)
+  "Dump BINARY's cold IMAGE unconditionally and record SKIP-KEY beside it."
+  (let ((_ binary))
     (when (file-exists-p image) (delete-file image))
+    (when (file-exists-p (concat image ".digest")) (delete-file (concat image ".digest")))
+    (nelisp-standalone--build-cold-image-2 binary image)
+    (when (and skip-key (file-exists-p image))
+      (nelisp-standalone-cachekey-sidecar-write image skip-key))))
+
+(defun nelisp-standalone--build-cold-image-2 (binary image)
+  "Original body of the cold dump (see `nelisp-standalone--build-cold-image')."
+  (progn
     (if (or (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
             (and (not (nelisp-standalone--target-runnable-on-host-p))
                  (not (and (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)

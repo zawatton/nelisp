@@ -101,4 +101,31 @@
     (funcall run "1")
     (should-not (seq-some (lambda (m) (string-match-p "global key" m)) msgs))))
 
+
+(ert-deftest nl-kw-cold-image-early-cutoff ()
+  "Identical binary + bake inputs + flags skip the dump; every other case re-bakes."
+  (let* ((dir (make-temp-file "nl-cold" t)) (bin (expand-file-name "nelisp" dir)) (dumps 0)
+         (nelisp-standalone--native-cache-source-receipt nil)
+         (nelisp-standalone--bake-input-memo "bake-1"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'nelisp-standalone--cold-image-path) (lambda (b) (concat b ".cold")))
+                  ((symbol-function 'nelisp-standalone--build-cold-image-2)
+                   (lambda (_b image) (cl-incf dumps) (with-temp-file image (insert "img")))))
+          (with-temp-file bin (insert "bin-1"))
+          (nelisp-standalone--build-cold-image bin)
+          (should (= dumps 1))
+          (nelisp-standalone--build-cold-image bin)
+          (should (= dumps 1))                       ; skipped
+          (let ((nelisp-standalone--bake-input-memo "bake-2"))   ; bake input changed
+            (nelisp-standalone--build-cold-image bin) (should (= dumps 2)))
+          (let ((process-environment (cons "NELISP_STANDALONE_NATIVE_COMPILER_COLD=1" process-environment))
+                (nelisp-standalone--bake-input-memo "bake-2"))
+            (nelisp-standalone--build-cold-image bin) (should (= dumps 3)))   ; flag
+          (with-temp-file bin (insert "bin-2"))      ; binary bytes changed
+          (nelisp-standalone--build-cold-image bin) (should (= dumps 4))
+          (nelisp-standalone--build-cold-image bin) (should (= dumps 4))
+          (delete-file (concat bin ".cold.digest"))  ; sidecar digest missing
+          (nelisp-standalone--build-cold-image bin) (should (= dumps 5)))
+      (delete-directory dir t))))
+
 (provide 'nelisp-standalone-key-wiring-test)

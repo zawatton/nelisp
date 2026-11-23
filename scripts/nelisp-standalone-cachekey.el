@@ -532,5 +532,48 @@ codegen input the key never sees."
     (format "dynamic=%S"
             (mapcar (lambda (v) (cons v (if (boundp v) (symbol-value v) :unbound))) vars))))
 
+;;;; Step 3 (design2 C): early cutoff of the post-link bakes.
+;;
+;; A sidecar (cold image) is skipped only when a `NAME.digest' file holds the
+;; skip key S = sha256(binary bytes, BAKE_IN, env flags).  Missing sidecar,
+;; missing digest file or any mismatch means: rebuild.  BAKE_IN is a digest of
+;; every input a bake reads besides the binary.
+
+(defun nelisp-standalone-cachekey-bake-input-digest (roots &optional extra)
+  "Digest of every .el file under ROOTS (directories) plus the strings in EXTRA.
+Files are named relative to their root so a moved tree hashes the same.  Over
+approximates what a bake reads, so an edit can only cost a re-bake."
+  (let (parts)
+    (dolist (r roots)
+      (when (file-directory-p r)
+        (dolist (f (sort (directory-files-recursively r "\\.el\\'" nil
+                                                      (lambda (d) (not (member (file-name-nondirectory d) '(".git" "target")))))
+                         #'string<))
+          (push (concat (file-relative-name f r) ":"
+                        (with-temp-buffer (set-buffer-multibyte nil)
+                                          (insert-file-contents-literally f)
+                                          (secure-hash 'sha1 (current-buffer))))
+                parts))))
+    (secure-hash 'sha1 (mapconcat #'identity (append (nreverse parts) extra) "\n"))))
+
+(defun nelisp-standalone-cachekey-sidecar-key (binary bake-in &optional env-names)
+  "Skip key for a sidecar of BINARY: its bytes, BAKE-IN and the values of ENV-NAMES."
+  (secure-hash 'sha256
+               (concat (with-temp-buffer (set-buffer-multibyte nil)
+                                         (insert-file-contents-literally binary)
+                                         (secure-hash 'sha256 (current-buffer)))
+                       "\0" bake-in "\0"
+                       (format "%S" (mapcar (lambda (n) (cons n (getenv n))) env-names)))))
+
+(defun nelisp-standalone-cachekey-sidecar-fresh-p (file key)
+  "Non-nil only when FILE and FILE.digest exist and the digest equals KEY."
+  (let ((d (concat file ".digest")))
+    (and (file-exists-p file) (file-readable-p d)
+         (equal (string-trim (with-temp-buffer (insert-file-contents d) (buffer-string))) key))))
+
+(defun nelisp-standalone-cachekey-sidecar-write (file key)
+  "Record KEY as the skip key of the sidecar FILE."
+  (nelisp-standalone-cachekey-atomic-write (concat file ".digest") (concat key "\n")))
+
 (provide 'nelisp-standalone-cachekey)
 ;;; nelisp-standalone-cachekey.el ends here
