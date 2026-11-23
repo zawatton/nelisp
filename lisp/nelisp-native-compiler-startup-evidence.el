@@ -245,7 +245,10 @@
              "Create a separate opaque constructor proof after actual ownership checks.\nNumeric and call operation eligibility remain refused.")
             ((and generator (equal object '(template (expand-file-name "templates/nelisp-native-compiler-runtime-proof.el.in" root))))
              '(template nelisp-native-compiler-startup-evidence--template))
-            ((equal object '(<= 1 (length (alist-get 'records closure)) 128))
+            ;; The generator's records cap is 256 since the split layout (A6,
+            ;; 23f0ecdbb); the compiler proof keeps its 192 step, which the
+            ;; funcall evidence widens to 384.
+            ((equal object '(<= 1 (length (alist-get 'records closure)) 256))
              (setq bounds (1+ bounds)) '(<= 1 (length (alist-get 'records closure)) 192))
             ((equal object '(<= 15 (length functions) 128))
              (setq bounds (1+ bounds)) '(<= 15 (length functions) 192))
