@@ -36,7 +36,7 @@ def verify_manifest(manifest, metadata, directory, data_owner, source_root):
             or hashlib.sha256(data_bytes).hexdigest() != document["generated-data-sha256"]):
         raise ValueError("Changed active metadata or data owner")
     records = document["units"]
-    if not isinstance(records, list) or not 1 <= len(records) <= 128:
+    if not isinstance(records, list) or not 1 <= len(records) <= 256:
         raise ValueError("Active build unit count bound")
     selected, text_units, total = {}, set(), 0
     for record in records:

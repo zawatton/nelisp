@@ -31,7 +31,7 @@ def unit_owners(metadata, directory):
     """Retain every function boundary, including unexported same-unit helpers."""
     owners = {}
     units = json.loads(bounded_read(metadata, 4 * 1024 * 1024))
-    if not isinstance(units, list) or len(units) > 128:
+    if not isinstance(units, list) or len(units) > 256:
         raise ValueError("Unit metadata bound")
     total_unit_bytes = 0
     for unit in units:

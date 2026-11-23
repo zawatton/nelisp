@@ -60,7 +60,7 @@ during the build, where `format' made encoding the units cost ~8.5 s.")
 Return manifest, metadata and generated data paths. This does not issue a
 runtime certificate; the caller must decode the units and generate startup
 evidence before compiling the driver. Unknown or ambiguous inputs are refused."
-  (unless (and (proper-list-p units) (<= 1 (length units) 128)
+  (unless (and (proper-list-p units) (<= 1 (length units) 256)
                (file-directory-p root))
     (error "Rooted active unit input bound"))
   (let* ((relative (file-relative-name (file-truename builder) (file-truename root)))
