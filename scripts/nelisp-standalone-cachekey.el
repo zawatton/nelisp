@@ -213,6 +213,12 @@ is split off."
     (file-missing (cons nil 'missing))
     (file-error (cons nil 'missing))))
 
+(defun nelisp-standalone-cachekey-touch (file)
+  "Set FILE's mtime to now so age-based collection sees the entry as in use.
+Failure (read-only seed, race with a collector) is ignored."
+  (ignore-errors (set-file-times file (current-time)))
+  nil)
+
 (defun nelisp-standalone-cachekey-prune-p ()
   "Non-nil when a miss may delete older entries of the same unit name.
 Pruning is safe only in a lane-private directory: in a directory shared

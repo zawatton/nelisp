@@ -247,6 +247,25 @@
        (should (equal (nelisp-standalone-cachekey-entry-read new nelisp-cachekey-test--key2)
                       '(t . "old-code")))))))
 
+(ert-deftest nelisp-cachekey-touch-refreshes-mtime ()
+  "A hit moves the mtime forward, so nl-cache-gc.sh keeps a hot entry."
+  (nelisp-cachekey-test--with-dir
+   (let ((f (expand-file-name "u.unit" dir))
+         (old (time-subtract (current-time) (* 40 86400))))
+     (nelisp-standalone-cachekey-entry-write f nelisp-cachekey-test--key "p")
+     (set-file-times f old)
+     ;; Negative control: reading alone leaves it 40 days old.
+     (nelisp-standalone-cachekey-entry-read f nelisp-cachekey-test--key)
+     (should (> (float-time (time-subtract (current-time)
+                                           (file-attribute-modification-time (file-attributes f))))
+                (* 30 86400)))
+     (nelisp-standalone-cachekey-touch f)
+     (should (< (float-time (time-subtract (current-time)
+                                           (file-attribute-modification-time (file-attributes f))))
+                60))
+     ;; A vanished file is not an error.
+     (should-not (nelisp-standalone-cachekey-touch (expand-file-name "none" dir))))))
+
 (ert-deftest nelisp-cachekey-atomic-write-unique-temp-names ()
   (nelisp-cachekey-test--with-dir
    (let ((f (expand-file-name "x.unit" dir)) (names nil))

@@ -4060,6 +4060,9 @@ directory tracks the tree rather than accumulating every key ever built."
      ((and target (car entry))
       (throw 'nelisp-standalone--prewarm-done cache))
      ((car entry)
+      ;; Mark the entry as recently used: tools/dev/nl-cache-gc.sh ages
+      ;; entries by mtime, and a read does not move it.
+      (nelisp-standalone-cachekey-touch cache)
       ;; A miss is counted inside `nelisp-standalone--compile-to-unit'.
       (nelisp-standalone--box-census-record name source)
       (when nelisp-standalone--build-trace-path
