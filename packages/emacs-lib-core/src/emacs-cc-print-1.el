@@ -49,8 +49,17 @@ newline, even when the stdout text already ended in a newline.")
   "Native `print' that notes batch printing to stdout."
   (when more
     (signal 'wrong-number-of-arguments (list 'print (+ 2 (length more)))))
-  (prog1 (emacs-cc-print-1--native-print object printcharfun)
-    (emacs-cc-print-1--note-stdout printcharfun)))
+  (let ((dest (or printcharfun standard-output)))
+    (if (bufferp dest)
+        ;; GNU prints into a buffer through one PRINTPREPARE/PRINTFINISH
+        ;; pair: the newline, the object and the newline are one insertion
+        ;; at that buffer's point (one change notification, not three).
+        (progn
+          (let ((text (concat "\n" (prin1-to-string object) "\n")))
+            (with-current-buffer dest (insert text)))
+          object)
+      (prog1 (emacs-cc-print-1--native-print object printcharfun)
+        (emacs-cc-print-1--note-stdout printcharfun)))))
 
 (defun emacs-cc-print-1--terpri (&optional printcharfun ensure &rest more)
   "Native `terpri' that notes batch printing to stdout."
