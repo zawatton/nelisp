@@ -2406,7 +2406,13 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
 ;; around the position from a 128-entry map held in the capture vector after
 ;; the 204 capture slots (`nlre--nat-syn-ensure', called by the buffer routes
 ;; right before the run; `nlre--nat-program' never compiles these ops); a
-;; non-ASCII neighbour makes the VM decline.  A literal non-ASCII character compiles to the CHAR
+;; non-ASCII neighbour makes the VM decline.  22 SYNCLS MASK NEG matches one
+;; character of an ASCII syntax class (\w \W \sC \SC): the class code 0..15
+;; (GNU syntax.h order) of the byte is read from a second 128-entry map at caps
+;; slots 332..459 (`nlre--nat-cls-fill'), it matches iff bit CODE of MASK
+;; differs from NEG; a byte >= 128 or a code outside 0..15 declines.  Header
+;; flag 32 marks such a program: the exec declines it when the caps vector is
+;; shorter than 460.  A literal non-ASCII character compiles to the CHAR
 ;; ops of its UTF-8 bytes (outside repetition), as GNU matches the bytes of a
 ;; multibyte pattern.
 (defvar nlre--nat-code nil)
@@ -2420,6 +2426,9 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
 (defvar nlre--nat-pattern nil)
 (defvar nlre--nat-allow-syn nil
   "Non-nil while compiling for a caller that fills the syntax map first.")
+(defvar nlre--nat-allow-cls nil
+  "Non-nil while compiling for a caller that also fills the class map.")
+(defvar nlre--nat-needs-cls nil)
 (defconst nlre--nat-inf 4294967295)
 (defconst nlre--nat-header 37)
 (defconst nlre--nat-max-words 6000)
@@ -2560,6 +2569,19 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
       (setq i (1+ i)))
     (dolist (f fixups) (aset nlre--nat-code f nlre--nat-pc))))
 
+;; Mask of the class codes a class atom accepts (bit K = code K).  The Lisp
+;; matcher compares the designator of a code with the class character
+;; (`nlre--syntax-p'; ?- stands for the space designator); \w is code 2.
+(defun nlre--nat-cls-mask (node)
+  (if (eq (car node) :word) 4
+    (let ((c (nth 1 node)) (k 0) (m 0) (bit 1))
+      (unless (integerp c) (nlre--nat-decline))
+      (when (eq c ?-) (setq c 32))
+      (while (< k 16)
+        (when (eq (aref nlre--syntax-designators k) c) (setq m (+ m bit)))
+        (setq k (1+ k) bit (* bit 2)))
+      m)))
+
 (defun nlre--nat-node (node)
   (let ((tag (car node)))
     (cond
@@ -2567,6 +2589,11 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
       (nlre--nat-emit-char (nth 1 node)))
      ((memq tag '(:lit :any :set))
       (apply #'nlre--nat-emit (nlre--nat-atom-words node)))
+     ((memq tag '(:word :syntax))
+      (unless (and nlre--nat-allow-syn nlre--nat-allow-cls) (nlre--nat-decline))
+      (setq nlre--nat-needs-cls t)
+      (nlre--nat-emit 22 (nlre--nat-cls-mask node)
+                      (if (nth (if (eq tag :word) 1 2) node) 1 0)))
      ((eq tag :wordedge) (unless nlre--nat-allow-syn (nlre--nat-decline)) (setq nlre--nat-needs-syn t) (nlre--nat-emit (if (nth 1 node) 17 16)))
      ((eq tag :wordb) (unless nlre--nat-allow-syn (nlre--nat-decline)) (setq nlre--nat-needs-syn t) (nlre--nat-emit (if (nth 1 node) 19 18)))
      ((eq tag :symedge) (unless nlre--nat-allow-syn (nlre--nat-decline)) (setq nlre--nat-needs-syn t) (nlre--nat-emit (if (nth 1 node) 21 20)))
@@ -2649,6 +2676,10 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
      ;; never skips a start byte >= 128.
      ((and (eq tag :lit) (integerp (nth 1 node)) (>= (nth 1 node) 128)) nil)
      ((memq tag '(:lit :any :set)) (nlre--nat-first-atom node fm) nil)
+     ;; A class atom consumes one character whose class depends on the table:
+     ;; every ASCII start byte is possible.
+     ((memq tag '(:word :syntax))
+      (let ((c 0)) (while (< c 128) (aset fm c 1) (setq c (1+ c)))) nil)
      ((memq tag '(:bol :eol :bos :eos :wordb :wordedge :symedge)) t)
      ((eq tag :seq) (nlre--nat-first-seq (nth 1 node) fm))
      ((eq tag :alt)
@@ -2703,6 +2734,7 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
              (nlre--nat-closed nil)
              (nlre--nat-nonascii nil)
              (nlre--nat-needs-syn nil)
+             (nlre--nat-needs-cls nil)
              (nlre--nat-pattern pat)
              (fm (make-vector 128 0))
              (top (nlre--seq-nodes ast))
@@ -2714,6 +2746,7 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
           (setq flags (logior flags 2)))
         (when nlre--nat-nonascii (setq flags (logior flags 8)))
         (when nlre--nat-needs-syn (setq flags (logior flags 16)))
+        (when nlre--nat-needs-cls (setq flags (logior flags 32)))
         (when (eq (car-safe (car top)) :bos) (setq flags (logior flags 1)))
         (let ((words (append (list (+ (* 2 nlre--nat-ng) nlre--nat-nloops)
                                    nlre--nat-ng flags nlre--nat-header 0)
@@ -2738,9 +2771,11 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
   "Like `nlre--nat-lits' for case-folding searches.")
 (defvar nlre--nat-scratch nil
   "Preallocated registers, undo log and backtrack frames of `nelisp--rx-exec'.")
-(defvar nlre--nat-caps (make-vector 332 -1)
+(defvar nlre--nat-caps (make-vector 460 -1)
   "Capture positions written by `nelisp--rx-exec' (two per group, 204 slots),
-then the 128-entry syntax map read by the word and symbol assertions.")
+then the 128-entry syntax map read by the word and symbol assertions (204..331)
+and the 128-entry class-code map read by SYNCLS (332..459).  An image whose
+vector is shorter (a defvar does not resize it) never runs class programs.")
 (defvar nlre--nat-syn-key nil
   "The syntax table `nlre--nat-caps' slots 204..331 were filled from.")
 (defvar nlre--nat-syn-gen -1
@@ -2837,6 +2872,46 @@ contract as the compiled-pattern cache (`nlre-clear-syntax-cache')."
       (setq nlre--syntax-table nil
             nlre--nat-syn-key key
             nlre--nat-syn-gen nlre--syntax-cache-generation))))
+
+;; The class map (caps slots 332..459) feeds SYNCLS.  Same cache contract as
+;; the word/symbol map: reused while the table object and
+;; `nlre--syntax-cache-generation' are unchanged, so a raw `aset' on a syntax
+;; table (which neither changes the object nor the generation) is not seen
+;; until `nlre-clear-syntax-cache'; the Lisp predicates read the live table.
+(defvar nlre--nat-cls-key nil
+  "The syntax table `nlre--nat-caps' slots 332..459 were filled from.")
+(defvar nlre--nat-cls-gen -1
+  "`nlre--syntax-cache-generation' when the class map was filled.")
+
+(defun nlre--nat-cls-code (table c)
+  "GNU class code (0..15) of ASCII char C under TABLE as `nlre--syntax-p' reads
+it; 16 (the exec declines) when that predicate has no answer."
+  (if (symbolp table)
+      (if (eq table t)
+          (let ((sc (nlre--provider-char-syntax c)) (k 0))
+            (while (and (< k 16) (not (eq (aref nlre--syntax-designators k) sc)))
+              (setq k (1+ k)))
+            k)
+        16)
+    (let ((e (aref table c)))
+      (cond ((not (consp e)) 0)
+            ((integerp (car e)) (logand (car e) 255))
+            (t 16)))))
+
+(defun nlre--nat-cls-fill ()
+  "Fill the class map of `nlre--nat-caps' for the current syntax table."
+  (nlre--install-syntax-cache-hook)
+  (let ((key (and nlre--syntax-table-reader (funcall nlre--syntax-table-reader))))
+    (unless (and (eq key nlre--nat-cls-key)
+                 (= nlre--syntax-cache-generation nlre--nat-cls-gen))
+      (setq nlre--syntax-table nil)
+      (let ((table (nlre--setup-syntax-table)) (c 0))
+        (while (< c 128)
+          (aset nlre--nat-caps (+ 332 c) (nlre--nat-cls-code table c))
+          (setq c (1+ c))))
+      (setq nlre--syntax-table nil
+            nlre--nat-cls-key key
+            nlre--nat-cls-gen nlre--syntax-cache-generation))))
 
 (defun nlre--nat-run (entry string start limit anchored n)
   "Run ENTRY on STRING.  Return t (declined), nil (no match) or the packed span."

@@ -1,7 +1,8 @@
 ;;; test-ref.el --- check nlre--nat-compile + refvm against GNU string-match  -*- lexical-binding: t; -*-
 (let ((root (expand-file-name "../../.." (file-name-directory load-file-name))))
   (load (expand-file-name "lisp/nelisp-stdlib-regexp.el" root) nil t)
-  (load (expand-file-name "target/rxnative/compile-block-loaded.el" root) nil t)
+  (let ((blk (expand-file-name "target/rxnative/compile-block-loaded.el" root)))
+    (when (file-exists-p blk) (load blk nil t)))
   (load (expand-file-name "tools/ai/rxnative/refvm.el" root) nil t))
 (defvar rt-bad 0) (defvar rt-ok 0) (defvar rt-decl 0)
 (defun rt-gnu (re s st fold)

@@ -4,6 +4,7 @@
 (let ((root (expand-file-name "../../.." (file-name-directory load-file-name))))
   (load (expand-file-name "tools/ai/rxnative/refvm.el" root) nil t)
   (defvar nelisp-casetab--epoch 0)
+  (defvar nelisp--current-buffer (current-buffer))
   (defvar nelisp-casetab--epoch-owner nil)
   (defun nelisp--rx-exec (prog string start limit flags capvec _scratch)
     (let* ((ng (aref prog 4)) (r (rxn-exec prog string start limit (= (mod flags 2) 1) capvec)))

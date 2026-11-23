@@ -43,6 +43,19 @@
                 ((= op 18) (if (= b1 a1) 0 1))
                 (t (if (= b1 a1) 1 0))))))))
 
+;; Mirror of m5_rx_cls: SYNCLS MASK NEG at byte POS.  The class code of byte B is
+;; read from the map at SM slot 332+B (tagged ints in the build, plain here).
+;; 1 holds, 0 fails, -2 declines (byte >= 128, code outside 0..15 or unfilled).
+(defun rxn-cls (tp pos lim mask neg sm)
+  (if (>= pos lim) 0
+    (let ((b (aref tp pos)))
+      (if (>= b 128) -2
+        (let ((cls (aref sm (+ 332 b))))
+          (if (or (< cls 0) (>= cls 16)) -2
+            (let ((m mask) (k cls))
+              (while (> k 0) (setq m (/ m 2) k (1- k)))
+              (if (= (- m (* (/ m 2) 2)) neg) 0 1))))))))
+
 (defun rxn-run (w prog tp n lim pc0 pos0 regs &optional sm)
   "Run from PC0 at POS0; return end byte, -1 no match, -2 decline."
   (let ((pc pc0) (pos pos0) (frames nil) (sp 0) (undo nil) (usp 0)
@@ -130,6 +143,9 @@
            ((and (>= op 16) (<= op 21))
             (let ((r (rxn-bnd tp n pos op sm)))
               (cond ((= r 1) (setq pc (1+ pc))) ((= r 0) (setq failing t)) (t (setq res -2)))))
+           ((= op 22)
+            (let ((r (rxn-cls tp pos lim (aref w (+ pc 1)) (aref w (+ pc 2)) sm)))
+              (cond ((= r 1) (setq pos (1+ pos) pc (+ pc 3))) ((= r 0) (setq failing t)) (t (setq res -2)))))
            (t (setq res -2))))))
     res))
 
@@ -145,6 +161,7 @@
          (i sb) (found nil) (res -3) (done nil))
     (when (and (/= 0 (logand flags 8)) uni) (setq done t res -2))
     (when (and (/= 0 (logand flags 16)) (or (null sm) (< (length sm) 332))) (setq done t res -2))
+    (when (and (/= 0 (logand flags 32)) (or (null sm) (< (length sm) 460))) (setq done t res -2))
     (when (and (/= 0 (logand flags 1)) (> sb 0)) (setq done t))
     (while (and (not done) (<= i lb))
       (let ((skip nil))
