@@ -26,9 +26,16 @@
   (let ((top (nelisp-build--git root "rev-parse" "--show-toplevel")))
     (and top (file-equal-p root top))))
 
+(defun nelisp-build--reproducible-p ()
+  "Non-nil when NELISP_REPRODUCIBLE_BUILD=1: identity comes from the env only.
+The pinned identity makes two builds of the same sources byte-identical;
+Git describe embeds the commit distance and a dirty flag, so it is skipped."
+  (equal (getenv "NELISP_REPRODUCIBLE_BUILD") "1"))
+
 (defun nelisp-build-source-revision (root)
   "Return ROOT's source revision, if known."
-  (or (and (nelisp-build--git-root-p root)
+  (or (and (not (nelisp-build--reproducible-p))
+           (nelisp-build--git-root-p root)
            (nelisp-build--git root "rev-parse" "HEAD"))
       (let ((revision (getenv "NELISP_SOURCE_REVISION")))
         (and revision (string-match-p "\\`[[:xdigit:]]\\{7,64\\}\\'" revision)
@@ -42,7 +49,8 @@ CLI version contract is exactly one line."
   (let ((version
          (or (let ((override (getenv "NELISP_VERSION")))
                (and override (not (string-empty-p override)) override))
-             (and (nelisp-build--git-root-p root)
+             (and (not (nelisp-build--reproducible-p))
+                  (nelisp-build--git-root-p root)
                   (nelisp-build--git root "describe" "--tags" "--long"
                                      "--always" "--dirty"))
              (let ((revision (nelisp-build-source-revision root)))
