@@ -29,8 +29,15 @@ sample)
   # then run on a scratch copy carrying the donor edit (EF FROM TO, replaced once).
   # FULL_KEY side: EMPTY cache, same scratch tree.  Both sides starting from empty
   # caches (the old form) never consult a cache entry, so no stale hit could show.
-  rm -rf "$out/cache" "$out/fullcache" "$out/scratch"
-  "$here/nl-gate-units.sh" "$tree" "$out/pop" "$n" "$out/cache" || { echo "RED: cache-populating run failed"; exit 1; }
+  # SAMPLE_CACHE=DIR (G5): use that existing shared cache as the warm side instead of
+  # populating one, so its entries are re-verified against a FULL_KEY recompile.
+  rm -rf "$out/fullcache" "$out/scratch"
+  if [ -n "${SAMPLE_CACHE:-}" ]; then
+    mkdir -p "$out"; rm -rf "$out/cache"; cp -a "$SAMPLE_CACHE" "$out/cache" || exit 1
+  else
+    rm -rf "$out/cache"
+    "$here/nl-gate-units.sh" "$tree" "$out/pop" "$n" "$out/cache" || { echo "RED: cache-populating run failed"; exit 1; }
+  fi
   t2=$tree
   if [ -n "$ef" ]; then
     t2=$out/scratch; mkdir -p "$t2"
