@@ -49417,10 +49417,13 @@ file key covers COMBINED with the repository root factored out, the bytes
 of every src/, lisp/ and scripts/ file plus the embedded vendor subr.el
 \(`nelisp-standalone--native-cache-source-identity'), the parity fixtures and
 the host Emacs version: the GNU byte-code transform reads nothing else.  Only
-used when NELISP_STANDALONE_UNIT_CACHE_DIR names a shared cache and COMBINED
-does not already contain `nelisp-standalone--prelude-cache-root-token'."
+used when NELISP_STANDALONE_UNIT_CACHE_DIR names a shared cache,
+NELISP_STANDALONE_PRELUDE_DISK_CACHE is not 0, and COMBINED does not already contain `nelisp-standalone--prelude-cache-root-token'."
   (let ((dir (getenv "NELISP_STANDALONE_UNIT_CACHE_DIR")))
     (when (and dir (not (string= dir ""))
+               ;; Entries here are not self-verifying (unlike unit entries), so
+               ;; tools/dev/nl-build.sh turns this cache off.
+               (not (equal (getenv "NELISP_STANDALONE_PRELUDE_DISK_CACHE") "0"))
                (not (string-search nelisp-standalone--prelude-cache-root-token
                                    combined)))
       (expand-file-name

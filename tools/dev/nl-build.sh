@@ -17,6 +17,8 @@
 # variables (PWD, HOME, TMPDIR, NELISP_* knobs, ...) cannot reach codegen or
 # the cold image.  The tree path is embedded in the driver source, so two
 # builds are comparable only from the SAME path (the script prints it).
+# The prelude-src disk cache (not self-verifying) is switched off for these
+# builds (NELISP_STANDALONE_PRELUDE_DISK_CACHE=0); only unit entries are cached.
 # Build only: this script never runs tests.
 set -u
 root=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 2
@@ -71,5 +73,6 @@ exec env -i \
   NELISP_STANDALONE_UNIT_CACHE_PRUNE="$prune" \
   NELISP_STANDALONE_UNIT_CACHE_NOPRUNE="$((1 - prune))" \
   NELISP_STANDALONE_JOBS="${NL_BUILD_JOBS:-5}" \
+  NELISP_STANDALONE_PRELUDE_DISK_CACHE=0 \
   ${NL_BUILD_ENV_EXTRA:-} \
   $launcher make EMACS="$emacs_bin" "$@" standalone-reader
