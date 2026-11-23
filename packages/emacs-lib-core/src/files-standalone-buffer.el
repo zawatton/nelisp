@@ -1330,22 +1330,25 @@ via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
       (setq i (1- i)))
     (1+ i)))
 
-(defun files--native-unnarrowed-p ()
-  "Non-nil when the current buffer is native and not narrowed.
-gnu562: such a buffer is read in place with `char-after' instead of
-copying its text (`files--buffer-string-value', `files--bol-position')."
+(defun files--native-buffer-p ()
+  "Non-nil when the current buffer is native.
+gnu562: such a buffer is read in place with `char-after' and `pos-bol',
+which honour narrowing, instead of copying its text
+(`files--buffer-string-value', `files--bol-position').  The copying
+path indexes the accessible text from 1, so it must not be used for a
+narrowed native buffer: `move-to-column' landed at `point-min' there,
+which broke `fill-region-as-paragraph' under narrowing."
   (and (fboundp 'pos-bol)
-       (files--host-buffer-available-p)
-       (eq (point-min) 1)
-       (eq (point-max) (1+ (buffer-size)))))
+       (files--host-buffer-available-p)))
 
 (defun files--column-at (pos)
   "Return the zero-based display column of POS honouring tab stops."
-  (if (files--native-unnarrowed-p)
-      (let* ((end (max 1 (min pos (1+ (buffer-size)))))
+  (if (files--native-buffer-p)
+      (let* ((beg (point-min))
+             (end (max beg (min pos (point-max))))
              (bol (if (eq end (point)) (pos-bol)
                     (let ((b end))
-                      (while (and (> b 1) (not (eq (char-after (1- b)) ?\n)))
+                      (while (and (> b beg) (not (eq (char-after (1- b)) ?\n)))
                         (setq b (1- b)))
                       b)))
              (tw (files--tab-width))
@@ -1372,10 +1375,10 @@ copying its text (`files--buffer-string-value', `files--bol-position')."
 (when (files--install-fallback-function-p 'current-indentation)
   (defun current-indentation ()
     "Return the indentation column of the current line (leading whitespace)."
-    ;; gnu562: an unnarrowed native buffer is scanned in place from
+    ;; gnu562: a native buffer (narrowed or not) is scanned in place from
     ;; `pos-bol'; the general path below copies the whole buffer twice
     ;; (the text, then again to find the line start: about 80 us).
-    (if (files--native-unnarrowed-p)
+    (if (files--native-buffer-p)
         (let ((tw (files--tab-width)) (p (pos-bol)) (col 0) ch)
           (while (and (setq ch (char-after p)) (or (eq ch ?\s) (eq ch ?\t)))
             (setq col (if (eq ch ?\t) (* (1+ (/ col tw)) tw) (1+ col))
@@ -1400,7 +1403,7 @@ copying its text (`files--buffer-string-value', `files--bol-position')."
 With FORCE t, pad a too-short line with spaces to reach COLUMN."
     (unless (and (integerp column) (>= column 0))
       (signal 'wrong-type-argument (list 'wholenump column)))
-    (if (files--native-unnarrowed-p)
+    (if (files--native-buffer-p)
         (let ((tw (files--tab-width)) (p (pos-bol)) (col 0) ch)
           (while (and (< col column)
                       (setq ch (char-after p))
