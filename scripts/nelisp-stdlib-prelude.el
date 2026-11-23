@@ -19179,7 +19179,12 @@ filter it already wrote."
       (or (null destination) (eq destination t) (bufferp destination)
           (stringp destination))))
   (defun call-process (program &optional infile destination display &rest args)
-    (let* ((resolved (or (executable-find program) program))
+    ;; GNU callproc.c: PROGRAM is searched with openp in `exec-path'; a miss
+    ;; signals `file-missing' instead of running and answering 127.
+    (let* ((resolved (or (executable-find program)
+                         (signal 'file-missing
+                                 (list "Searching for program"
+                                       "No such file or directory" program))))
            (_valid (unless (nelisp--process-valid-destination-p destination)
                      (error "Unsupported call-process destination: %S" destination)))
            (spec (if (consp destination) destination
