@@ -8,3 +8,7 @@ g3 eval local decl         unbound
 g4 eval decl+global        0
 g5 body sees var           (error 1)
 g8 success var             5
+g6 dynamic mode            (error 1)
+g7 dyn mode defvar         (error 1)
+g9 let of special stays dyn (7 7)
+g10 let special in condcase (9 (error 1))

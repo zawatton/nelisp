@@ -1,5 +1,5 @@
 ;;; -*- lexical-binding: t; -*-
-;; KNOWN-DIV F392: condition-case VAR is bound lexically by GNU 31 (lexical-binding), even for a special or locally declared name; NeLisp binds it in the frame store where symbol-value sees it.  par-condcase-kd.gnu = GNU, par-condcase-kd.known = recorded NeLisp output.
+;; F392/F408: condition-case VAR is bound lexically by GNU 31 (lexical-binding), even for a special or locally declared name; only dynamic-binding mode binds it dynamically.  par-condcase-kd.gnu = GNU; NeLisp must equal it (the former .known file is gone).
 (defmacro row (n f) `(princ (format "%-26s %S\n" ,n (condition-case e ,f (error (list 'ERR (car e)))))))
 (defun fe-rd (s) (if (boundp s) (symbol-value s) 'unbound))
 (defun fe-vw (c) (delq t (copy-sequence (aref c 2))))
@@ -21,3 +21,7 @@
 (row "g4 eval decl+global" (funcall (eval '(lambda () (condition-case f392-gs (signal 'error '(1)) (error (f392-rd 'f392-gs)))) '(f392-gs t))))
 (row "g5 body sees var" (funcall (eval '(lambda () (condition-case f392-gs (signal 'error '(1)) (error f392-gs))) t)))
 (row "g8 success var" (eval '(condition-case f392-gs 5 (error (f392-rd 'f392-gs))) t))
+(row "g6 dynamic mode" (let ((lexical-binding nil)) (eval '(condition-case f392-dv (signal 'error '(1)) (error (f392-rd 'f392-dv))) nil)))
+(row "g7 dyn mode defvar" (eval '(condition-case f392-gs (signal 'error '(1)) (error (f392-rd 'f392-gs))) nil))
+(row "g9 let of special stays dyn" (let ((f392-gs 7)) (list (f392-rd 'f392-gs) f392-gs)))
+(row "g10 let special in condcase" (condition-case f392-gs (signal 'error '(1)) (error (let ((f392-gs 9)) (list (f392-rd 'f392-gs) f392-gs)))))
