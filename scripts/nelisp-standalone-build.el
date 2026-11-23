@@ -3193,13 +3193,52 @@ symbols are local to their object, so another unit could not link it."
      (nelisp-standalone--abi-box-split-source
       (nelisp-standalone--target-arena-source)))))
 
-(defun nelisp-standalone--xinline-digest ()
-  "Digest of the cross-unit table: part of every unit's cache key."
+(defun nelisp-standalone--xinline-used-entries (source)
+  "Names of the table entries `--xinline-expand' would inline into SOURCE.
+Mirrors the expander's walk exactly (call heads only, `quote' and `data-addr'
+subtrees skipped, own defuns excluded, arity must match, clone bodies
+untouched) without expanding, so the key and the CG7 guard on a cache hit see
+the same set as a compile.  Sorted list of symbols."
+  (when (and nelisp-standalone--xinline-table (eq (car-safe source) 'seq))
+    (let ((own (make-hash-table :test 'eq)) (used (make-hash-table :test 'eq)))
+      (dolist (form (cdr source))
+        (when (eq (car-safe form) 'defun) (puthash (cadr form) t own)))
+      (cl-labels
+          ((walk (x)
+             (when (and (consp x) (not (memq (car x) '(quote data-addr))))
+               (let ((args (cdr x)))
+                 (while (consp args) (walk (car args)) (setq args (cdr args)))
+                 (let ((cand (and (symbolp (car x))
+                                  (not (nelisp-standalone--no-inline-p (car x)))
+                                  (not (gethash (car x) own))
+                                  (gethash (car x) nelisp-standalone--xinline-table))))
+                   (when (and (consp cand) (= (length (cdr x)) (length (car cand))))
+                     (puthash (car x) t used)))))))
+        (dolist (form (cdr source))
+          (when (and (eq (car-safe form) 'defun) (consp (cddr form)))
+            (unless (nelisp-standalone--inline-clone-p (cdddr form))
+              (dolist (b (cdddr form)) (walk b))))))
+      (sort (let (l) (maphash (lambda (k _) (push k l)) used) l)
+            (lambda (a b) (string< (symbol-name a) (symbol-name b)))))))
+
+(defun nelisp-standalone--xinline-mark-used (source)
+  "Mark the table entries SOURCE would inline as used (CG7), on a cache hit.
+A compile marks them while expanding; a hit never expands, so without this a
+later redefinition would silently become `conflict' instead of the cold error."
+  (dolist (n (nelisp-standalone--xinline-used-entries source))
+    (puthash n t nelisp-standalone--xinline-used)))
+
+(defun nelisp-standalone--xinline-digest (&optional source)
+  "Digest of the cross-unit table entries that SOURCE uses (part of its cache key).
+Without SOURCE: the whole table (diagnostics only)."
   (if (not nelisp-standalone--xinline-table)
       "xinline=off"
     (let ((entries nil))
-      (maphash (lambda (k v) (push (cons (symbol-name k) v) entries))
-               nelisp-standalone--xinline-table)
+      (if source
+          (dolist (k (nelisp-standalone--xinline-used-entries source))
+            (push (cons (symbol-name k) (gethash k nelisp-standalone--xinline-table)) entries))
+        (maphash (lambda (k v) (push (cons (symbol-name k) v) entries))
+                 nelisp-standalone--xinline-table))
       (secure-hash
        'sha1
        (let ((print-length nil) (print-level nil) (print-circle t))
@@ -3763,7 +3802,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                ;; Driver-bound variables the closure reads (design2 A.4): by value.
                                (nelisp-standalone-cachekey-dynamic-values
                                 nelisp-standalone-cachekey-dynamic-vars) "\0"
-                               (nelisp-standalone--xinline-digest) "\0"
+                               (nelisp-standalone--xinline-digest source) "\0"
                                (prin1-to-string source)
                                (when (bound-and-true-p nelisp-standalone--inline-import-sources)
                                  (concat "\0imports="
@@ -4089,7 +4128,7 @@ directory tracks the tree rather than accumulating every key ever built."
                       (with-temp-file (expand-file-name (concat name ".el") dir)
                         (prin1 (list source nelisp-standalone--inline-import-sources
                                      nelisp-aot-compiler--x86-direct-only-defuns
-                                     (nelisp-standalone--xinline-digest))
+                                     (nelisp-standalone--xinline-digest source))
                                (current-buffer))))))))
     (cond
      (stub (list :name name :sections nil :nelisp-prewarm-stub t))
@@ -4099,6 +4138,8 @@ directory tracks the tree rather than accumulating every key ever built."
       ;; Mark the entry as recently used: tools/dev/nl-cache-gc.sh ages
       ;; entries by mtime, and a read does not move it.
       (nelisp-standalone-cachekey-touch cache)
+      ;; CG7 on a hit: the used entries are not expanded, so mark them here.
+      (nelisp-standalone--xinline-mark-used source)
       ;; A miss is counted inside `nelisp-standalone--compile-to-unit'.
       (nelisp-standalone--box-census-record name source)
       (when nelisp-standalone--build-trace-path
