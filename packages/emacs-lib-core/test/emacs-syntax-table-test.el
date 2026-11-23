@@ -586,6 +586,70 @@ Expected values come from host emacs-31.1 -Q --batch (fundamental mode)."
       (should (= 2 (skip-syntax-forward s)))
       (should (= -2 (skip-syntax-backward s))))))
 
+;; The next tests reach the HASH path of `emacs-syntax-table--skip-fastmap': the
+;; last-string fast path is bypassed by alternating strings.  Mutation
+;; procedure: test/emacs-lib/skip-syntax-mutants.sh (M1-M3b must each go red).
+
+(ert-deftest emacs-syntax-table-test/skip-syntax-fastmap-hash-hit-aba ()
+  "Alternating A,B,A,B must return the cached map objects (hash hits)."
+  (let* ((ma (emacs-syntax-table--skip-fastmap (copy-sequence "w_")))
+         (mb (emacs-syntax-table--skip-fastmap (copy-sequence "."))))
+    (should-not (eq ma mb))
+    (should (eq ma (emacs-syntax-table--skip-fastmap (copy-sequence "w_"))))
+    (should (eq mb (emacs-syntax-table--skip-fastmap (copy-sequence "."))))
+    (should (eq ma (emacs-syntax-table--skip-fastmap (copy-sequence "w_"))))
+    (should (aref ma 2)) (should (aref ma 3)) (should-not (aref ma 1))
+    (should (aref mb 1)) (should-not (aref mb 2))))
+
+(ert-deftest emacs-syntax-table-test/skip-syntax-fastmap-key-is-private-copy ()
+  "Mutating the caller's string after a call must not corrupt the hash key
+and must not return the old map for the mutated content."
+  ;; Start from an empty cache: an earlier test may already hold the "w" entry,
+  ;; in which case S would never become a hash key.
+  (clrhash emacs-syntax-table--skip-map-cache)
+  (setq emacs-syntax-table--skip-last-syntax nil)
+  (let* ((s (copy-sequence "w"))
+         (ma (emacs-syntax-table--skip-fastmap s)))
+    ;; Move the last-string fast path away so the next lookups use the hash.
+    (emacs-syntax-table--skip-fastmap (copy-sequence "."))
+    (aset s 0 ?_)
+    (should (eq ma (emacs-syntax-table--skip-fastmap (copy-sequence "w"))))
+    (emacs-syntax-table--skip-fastmap (copy-sequence "."))
+    (let ((m2 (emacs-syntax-table--skip-fastmap s)))
+      (should-not (eq m2 ma))
+      (should (aref m2 3)) (should-not (aref m2 2)))
+    ;; The "w" entry is still the original map.
+    (emacs-syntax-table--skip-fastmap (copy-sequence "."))
+    (should (eq ma (emacs-syntax-table--skip-fastmap (copy-sequence "w"))))))
+
+(ert-deftest emacs-syntax-table-test/skip-syntax-fastmap-cache-is-bounded ()
+  "70 distinct SYNTAX strings keep the cache at 64 entries or fewer and every
+map stays correct; a clear at the bound must not corrupt earlier lookups."
+  (let ((first (emacs-syntax-table--skip-fastmap (copy-sequence "w"))))
+    (should (aref first 2))
+    (dotimes (i 70)
+      (let ((m (emacs-syntax-table--skip-fastmap (format "w%c" (+ 40 i)))))
+        (should (aref m 2))
+        (should (<= (hash-table-count emacs-syntax-table--skip-map-cache) 64))))
+    (let ((again (emacs-syntax-table--skip-fastmap (copy-sequence "w"))))
+      (should (aref again 2)) (should-not (aref again 3)) (should-not (aref again 0)))
+    (let ((again2 (emacs-syntax-table--skip-fastmap (copy-sequence "_"))))
+      (should (aref again2 3)) (should-not (aref again2 2)))))
+
+(ert-deftest emacs-syntax-table-test/skip-syntax-same-string-two-tables ()
+  "The map depends on the SYNTAX content only, never on the syntax table."
+  (let ((st (make-syntax-table)))
+    (modify-syntax-entry ?- "w" st)
+    (with-temp-buffer
+      (insert "ab-cd") (goto-char 1)
+      (let ((a (skip-syntax-forward "w")))
+        (goto-char 1)
+        (set-syntax-table st)
+        (let ((b (skip-syntax-forward "w")))
+          (goto-char 1)
+          (set-syntax-table (standard-syntax-table))
+          (should (equal (list a b (skip-syntax-forward "w")) '(2 5 2))))))))
+
 (ert-deftest emacs-syntax-table-test/skip-syntax-honours-dynamic-table ()
   (let ((st (make-syntax-table)))
     (modify-syntax-entry ?- "w" st)
