@@ -28,9 +28,6 @@
 (require 'emacs-keymap)
 (require 'emacs-mode)
 
-(defvar describe-symbol-backends nil
-  "Backends consulted by callers that extend `describe-symbol'.")
-
 (unless (fboundp 'describe-prefix-bindings)
   (defun describe-prefix-bindings ()
     "Describe the bindings of the prefix used to reach this command."
@@ -285,28 +282,6 @@ KIND is either `function' or `variable'."
             (list symbol "ARGS")))))
     (prin1-to-string signature)))
 
-(defun emacs-help--function-candidates ()
-  "Return a list of function symbols for minibuffer completion."
-  (or (and (fboundp 'apropos-internal)
-           (apropos-internal "" #'fboundp))
-      (let (acc)
-        (mapatoms
-         (lambda (sym)
-           (when (fboundp sym)
-             (push sym acc))))
-        acc)))
-
-(defun emacs-help--variable-candidates ()
-  "Return a list of bound variable symbols for minibuffer completion."
-  (or (and (fboundp 'apropos-internal)
-           (apropos-internal "" #'boundp))
-      (let (acc)
-        (mapatoms
-         (lambda (sym)
-           (when (boundp sym)
-             (push sym acc))))
-        acc)))
-
 (defun emacs-help-prefix-candidates (input names)
   "Return sorted strings from NAMES whose prefix matches INPUT."
   (let ((prefix (or input ""))
@@ -415,26 +390,6 @@ NAMES is an optional alist mapping integer keysyms to display strings."
                   (format " '%c'" unicode)
                 "")))
     (format "%s mods=%d%s" named mods uni)))
-
-(defun emacs-help--read-symbol (prompt candidates predicate)
-  "Read a symbol with PROMPT from CANDIDATES satisfying PREDICATE."
-  (let* ((choice (completing-read prompt candidates predicate t nil nil))
-         (symbol (if (symbolp choice) choice (intern choice))))
-    (unless (funcall predicate symbol)
-      (user-error "%s is not available" choice))
-    symbol))
-
-(defun emacs-help--read-function ()
-  "Read a defined function symbol from the minibuffer."
-  (emacs-help--read-symbol "Describe function: "
-                           (emacs-help--function-candidates)
-                           #'fboundp))
-
-(defun emacs-help--read-variable ()
-  "Read a bound variable symbol from the minibuffer."
-  (emacs-help--read-symbol "Describe variable: "
-                           (emacs-help--variable-candidates)
-                           #'boundp))
 
 (defun emacs-help--insert-section (title body)
   "Insert TITLE followed by BODY and a blank line."
@@ -1081,72 +1036,25 @@ display core."
     (funcall emacs-help--nav-current)))
 
 ;;;###autoload
-(defun describe-function (function)
-  "Render help for FUNCTION in the shared `*Help*' buffer."
-  (interactive (list (emacs-help--read-function)))
-  (emacs-help--render-function function))
-
-;;;###autoload
-(defun describe-variable (variable)
-  "Render help for VARIABLE in the shared `*Help*' buffer."
-  (interactive (list (emacs-help--read-variable)))
-  (emacs-help--render-variable variable))
-
-;;;###autoload
-(defun describe-symbol (symbol)
-  "Render help for SYMBOL as a function or variable."
-  (interactive
-   (list (emacs-help--read-symbol
-          "Describe symbol: "
-          (append (emacs-help--function-candidates)
-                  (emacs-help--variable-candidates))
-          (lambda (sym) (or (fboundp sym) (boundp sym))))))
-  (cond
-   ((fboundp symbol)
-    (describe-function symbol))
-   ((boundp symbol)
-    (describe-variable symbol))
-   (t
-    (user-error "%s is not a defined function or bound variable" symbol))))
-
-;;;###autoload
 (defun describe-key (key &optional buffer)
   "Render help for KEY and its bound command in the shared `*Help*' buffer."
   (interactive (list (read-key-sequence "Describe key: ")))
   (ignore buffer)
   (emacs-help--render-key key))
 
-;; Snapshot our `describe-*' implementations at load time so we can
-;; reassert them later.  Host Emacs's `help-fns' / `help.el' install
-;; their own definitions whenever something autoload-loads them (e.g.
-;; `find-function-library' loads `find-func' which loads `help-fns'),
-;; silently overwriting our polyfills via plain `defun'.  Tests after
-;; that point would otherwise route through host help, breaking the
-;; *Help*-buffer rendering contract this module owns.
-(defvar emacs-help--describe-function-impl
-  (symbol-function 'describe-function)
-  "Captured nelisp-emacs `describe-function' implementation.")
-
-(defvar emacs-help--describe-variable-impl
-  (symbol-function 'describe-variable)
-  "Captured nelisp-emacs `describe-variable' implementation.")
-
+;; `describe-function', `describe-variable' and `describe-symbol' come from
+;; GNU help-fns.el (vendored, autoloaded from loaddefs).  Only `describe-key'
+;; (GNU help.el) is still this module's; snapshot it at load time so a later
+;; load of help.el does not silently replace the *Help* rendering this
+;; module owns.
 (defvar emacs-help--describe-key-impl
   (symbol-function 'describe-key)
   "Captured nelisp-emacs `describe-key' implementation.")
 
-(defvar emacs-help--describe-symbol-impl
-  (symbol-function 'describe-symbol)
-  "Captured nelisp-emacs `describe-symbol' implementation.")
-
 (defun emacs-help--reassert-overrides ()
-  "Reinstall our `describe-*' implementations.
-Run from `emacs-help--ensure-global-bindings' so any host library that
-re-defined these symbols (via `help-fns' autoload, `find-func' load,
-etc.) is silently re-shadowed before the binding step."
-  (fset 'describe-function emacs-help--describe-function-impl)
-  (fset 'describe-variable emacs-help--describe-variable-impl)
-  (fset 'describe-symbol emacs-help--describe-symbol-impl)
+  "Reinstall our `describe-key' implementation.
+Run from `emacs-help--ensure-global-bindings' so a host library that
+re-defined it is re-shadowed before the binding step."
   (fset 'describe-key emacs-help--describe-key-impl))
 
 (defun emacs-help--ensure-global-bindings ()

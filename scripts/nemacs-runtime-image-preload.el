@@ -288,13 +288,10 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
       (nemacs-runtime-image-preload--install-help-command symbol))
     (provide 'help-mode)
     (nemacs-runtime-image-preload--define-help-button-types))
-  (unless (featurep 'help-fns)
-    (dolist (symbol '(describe-function
-                      describe-variable
-                      describe-symbol
-                      describe-key))
-      (nemacs-runtime-image-preload--install-help-command symbol))
-    (provide 'help-fns))
+  ;; `describe-function', `describe-variable' and `describe-symbol' are GNU
+  ;; help-fns.el's (autoloaded from loaddefs); only `describe-key' is still
+  ;; rendered by `emacs-help'.
+  (nemacs-runtime-image-preload--install-help-command 'describe-key)
   t)
 
 (defun nemacs-runtime-image-preload--install-module-command
