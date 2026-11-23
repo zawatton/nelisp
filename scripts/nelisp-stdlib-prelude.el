@@ -31680,7 +31680,7 @@ meanwhile would otherwise record `none' again behind the compilation)."
                                                               (append capnames (car shape)))
                         (error (setq failed t) nil))))
               (setq nelisp--fx-last-transient
-                    (and (null c) (or nelisp--fx-missing failed) t))
+                    (and (null c) nelisp--fx-missing t))
               (if c (setq nelisp--fx-compiled-ok t)
                 (when (and name failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
