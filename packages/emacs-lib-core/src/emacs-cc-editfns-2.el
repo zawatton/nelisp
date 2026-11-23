@@ -53,31 +53,41 @@ message line to stderr, whatever the text is."
         (1+ (string-bytes (buffer-substring-no-properties (point-min) pos)))))))
 
 (unless (fboundp 'replace-region-contents)
-  (defun replace-region-contents (beg end source &optional max-secs _max-costs inherit)
+  (defun replace-region-contents (beg end source &optional _max-secs _max-costs inherit)
     "Replace BEG..END with SOURCE, returning non-nil on a comparison replacement."
     (let ((start-check (if (markerp beg) (marker-position beg) beg))
           (end-check (if (markerp end) (marker-position end) end)))
       (unless (and (integerp start-check) (integerp end-check)
                    (<= (point-min) start-check end-check) (<= end-check (point-max)))
         (signal 'args-out-of-range (list (current-buffer) start-check end-check))))
+    ;; GNU calls a function SOURCE with the buffer narrowed to the region
+    ;; and replaces with what it returns.
+    (when (and (functionp source) (not (stringp source)))
+      (setq source (save-excursion
+                     (save-restriction
+                       (narrow-to-region beg end)
+                       (goto-char (point-min))
+                       (funcall source)))))
     (let* ((text (cond ((stringp source) source)
                        ((bufferp source) (with-current-buffer source (buffer-substring (point-min) (point-max))))
                        ((and (vectorp source) (= (length source) 3) (bufferp (aref source 0)))
                         (with-current-buffer (aref source 0)
                           (buffer-substring (aref source 1) (aref source 2))))
-                       ((functionp source) (replace-region-contents beg end (funcall source) max-secs nil inherit))
                        ((null source) "")
                        (t (signal 'wrong-type-argument (list '(or stringp bufferp vectorp functionp) source)))))
            (finish (if (markerp end) (marker-position end) end))
-           (start (if (markerp beg) (marker-position beg) beg)))
+           (start (if (markerp beg) (marker-position beg) beg))
+           (opoint (point)))
       (goto-char start)
       (delete-region start finish)
       (goto-char start)
-      (if (and max-secs (<= max-secs 0))
-          (progn (if inherit (insert-before-markers-and-inherit text) (insert text)) t)
-        (goto-char start)
-        (if inherit (insert-before-markers-and-inherit text) (insert text))
-        t))))
+      (if inherit (insert-before-markers-and-inherit text) (insert text))
+      ;; Point as GNU leaves it: unchanged before the region, at the end
+      ;; of the new text inside it, shifted by the size change after it.
+      (goto-char (cond ((<= opoint start) opoint)
+                       ((<= opoint finish) (+ start (length text)))
+                       (t (+ opoint (- (length text) (- finish start))))))
+      t)))
 
 (unless (fboundp 'translate-region-internal)
   (defun translate-region-internal (start end table)
