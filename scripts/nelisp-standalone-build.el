@@ -61207,10 +61207,21 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                            ;; Bare declarations use the same identity/name
                            ;; keys as frame lookup, including tag-16 symbols
                            ;; and inline or boxed strings from source capture.
-                           (if (or (= (extern-call nelisp_frame_stack_find_word_name_p
-                                                   pair_ptr) 1)
-                                   (= (sexp-tag pair_ptr) 6)
-                                   (= (sexp-tag pair_ptr) 15))
+                           (if (if (= (sexp-tag pair_ptr) 4)
+                                   ;; A globally special interned name needs
+                                   ;; no per-call frame marker (see
+                                   ;; nelisp_frame_captured_decls); the name
+                                   ;; WORD is the car of the alist cell.
+                                   (if (= (bf_declared_special_p
+                                           mirror_ptr (nl_cons_car_word alist_ptr)) 1)
+                                       0
+                                     1)
+                                 (if (or (= (extern-call nelisp_frame_stack_find_word_name_p
+                                                         pair_ptr) 1)
+                                         (= (sexp-tag pair_ptr) 6)
+                                         (= (sexp-tag pair_ptr) 15))
+                                     1
+                                   0))
                                (nelisp_frame_local_prepend_fresh
                                 (vector-ref-ptr (record-slot-ref-ptr frames_ptr 0)
                                  (- (sar (nelisp_frame_slot_raw_word frames_ptr 1) 2) 1))

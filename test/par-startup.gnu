@@ -19,3 +19,8 @@ c special after          (1 2)
 d eval-and-compile closure ((6 7) (6 7) 1)
 e bundle closure         ((5 6 7) 1 1)
 e bundle marker count    80
+h call special dyn       ((9 5 1) (9 5 1) 1)
+h view unchanged by call t
+h view after call n      (st-cs1 st-cn1 st-cs2 st-cs1)
+h late special           (3 3)
+h big alist call         ((9 5 1) 401)

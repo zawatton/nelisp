@@ -504,9 +504,20 @@
         (let* ((p (nl_cons_car_word al)))
           (seq (if (= (logand p 1) 1)
                    0
-                 (if (or (= (nelisp_frame_stack_find_word_name_p p) 1)
-                         (= (sexp-tag p) 6)
-                         (= (sexp-tag p) 15))
+                 (if (if (= (sexp-tag p) 4)
+                         ;; Call-time cost: a globally special interned name
+                         ;; needs no frame marker (a let of it is dynamic
+                         ;; anyway), so the per-call install skips it.  The
+                         ;; stored env view is unchanged.  frames = env+32,
+                         ;; the mirror is env+0 (same as nl_n3_eval_bind_pairs).
+                         (if (= (extern-call bf_declared_special_p (- frames 32) p) 1)
+                             0
+                           1)
+                       (if (or (= (nelisp_frame_stack_find_word_name_p p) 1)
+                               (= (sexp-tag p) 6)
+                               (= (sexp-tag p) 15))
+                           1
+                         0))
                      (nelisp_frame_local_prepend_fresh
                       (vector-ref-ptr
                        (nl_record_slot_word frames 0)

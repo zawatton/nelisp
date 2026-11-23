@@ -44,3 +44,12 @@
 (row "e bundle closure" (list (funcall st-b-f) (funcall st-b-g) st-b-special))
 (row "e bundle marker count" (st-bare st-b-f))
 (delete-file st-load-file)
+;; F293 call-time install: a closure made under an alist with special names must behave the same
+;; when CALLED (the per-call install skips globally special names; the stored view above is unchanged).
+(defvar st-cs1 1) (defvar st-cs2 2)
+(defun st-call-mk (al) (eval '(lambda () (list (let ((st-cs1 9)) (funcall (lambda () st-cs1))) (let ((st-cn1 5)) (symbol-value 'st-cn1)) st-cs1)) al))
+(row "h call special dyn" (let ((f (st-call-mk '(st-cs1 st-cs2 st-cn1 t)))) (list (funcall f) (funcall f) st-cs1)))
+(row "h view unchanged by call" (let* ((f (st-call-mk '(st-cs1 st-cn1 st-cs2 st-cs1 t))) (v0 (copy-sequence (aref f 2)))) (funcall f) (funcall f) (equal v0 (aref f 2))))
+(row "h view after call n" (let ((f (st-call-mk '(st-cs1 st-cn1 st-cs2 st-cs1 t)))) (funcall f) (delq t (copy-sequence (aref f 2)))))
+(row "h late special" (let ((f (eval '(lambda () (let ((st-late2 3)) (funcall (lambda () (condition-case nil (symbol-value 'st-late2) (void-variable 'void)))))) '(st-late2 t)))) (list (funcall f) (progn (defvar st-late2 0) (funcall f)))))
+(row "h big alist call" (let* ((al (append (mapcar (lambda (i) (intern (format "st-cs%d" (1+ (% i 2))))) (number-sequence 1 400)) '(st-cn1 t))) (f (st-call-mk al))) (list (funcall f) (length (delq t (copy-sequence (aref f 2)))))))
