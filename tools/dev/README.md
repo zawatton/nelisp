@@ -200,3 +200,22 @@ step (v56 vs v55) showed `buffer:string-as-multibyte` and `buffer:decode-coding-
 four commits d48a4fa43^..82359c5da: 8 drivers, 13 rows, covering every row the full suite moved by more than 15%
 except `query:menu-or-popup-active-p`.  The run compares the engines of the image you pass; it does not by itself say
 whether a row changed between two images (run it once per image and diff).
+
+## Incremental-build key notes (evidence items A1-A6)
+
+- Loaded .elc: the toolchain digest hashes the .el of every closure library and, for each one that `load-history` shows
+  loaded from a .elc (the build and the prewarm children load with `load-prefer-newer`), that .elc's bytes as well.
+  Trees without a loaded .elc keep their old keys.
+- Sidecar keys (`nl-sidecar-key.sh`, `mk/emacs-lib.mk`) also cover `BIN.cold`, the makefile holding the bake recipe and
+  the absolute checkout path (`-x`).  Early cutoff never fires after a source edit (the binary bytes change); it only
+  skips a rebuild with no change.  A nonzero cold-dump exit now fails the build.
+- `nl-build-incr-gate.sh sample TREE OUT N [FILE FROM TO]` runs the closure key on a warm cache after the donor edit
+  and FULL_KEY on an empty cache; its `selftest` shows the old both-empty form cannot see a poisoned entry.
+- XINLINE=1 fresh argument names come from `nelisp-standalone--inline-counter`, which `compile-to-unit` rebinds to 0
+  per unit, so they are a function of the unit source and need no extra key term.
+- Headroom: the unit-count caps in `nelisp-native-rooted-unit-metadata.el` and `nelisp-native-rooted-startup-evidence.el`
+  are 256 (capacity only).  Related fixed sizes: nl_rootstack_region is 131072 32-byte slots (4 MiB) and the root-pin
+  table is 16384 slots; nothing here is keyed, a change to either changes the generated glue and so every unit.
+- Non-defun top-level forms are assigned to units by index; reordering them re-assigns.  Documented, not changed.
+- Not done here: the stale rows (bf_identity_hash . 2) and (nelisp_apply_function_w . 5) live in
+  tools/dev/applyfn-chunk-map.el on lane/split and are fixed there with A2.

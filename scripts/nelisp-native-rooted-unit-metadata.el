@@ -14,7 +14,7 @@
                             (append (json-read-file selection) nil)))
                 (directory-files directory t "\\.unit\\'")))
        (total 0) (records nil) (excluded nil))
-  (unless (and output (<= (length files) 128)) (error "Unit count/output rejected"))
+  (unless (and output (<= (length files) 256)) (error "Unit count/output rejected"))
   (dolist (path files)
     (let ((size (file-attribute-size (file-attributes path))))
       (if (> size (* 16 1024 1024))

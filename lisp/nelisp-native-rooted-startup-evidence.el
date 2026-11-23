@@ -203,7 +203,7 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                  (equal (alist-get 'generated-data-sha256 manifest)
                         (cdr data-input))
                  (equal (alist-get 'owner-source-sha256 data) builder-hash)
-                 (<= 1 (length (alist-get 'records closure)) 128)
+                 (<= 1 (length (alist-get 'records closure)) 256)
                  ;; 640 KiB: the F1 closure measures 530,615 B on Win64
                  ;; (296 functions, call-path merge 915e1a17a plus the
                  ;; Schannel arity fix), 538,922 B at the symbols-lane tip,
