@@ -32,8 +32,11 @@ if [ -n "${NL_BUILD_EXPECT_ROOT:-}" ] && [ "$NL_BUILD_EXPECT_ROOT" != "$root" ];
   echo "nl-build: tree path $root differs from expected $NL_BUILD_EXPECT_ROOT" >&2
   exit 2
 fi
-emacs_bin=${NL_BUILD_EMACS:-$(command -v emacs) } || exit 2
-emacs_bin=${emacs_bin% }
+emacs_bin=${NL_BUILD_EMACS:-$(command -v emacs || true)}
+if [ -z "$emacs_bin" ] || [ ! -x "$emacs_bin" ]; then
+  echo "nl-build: emacs not found or not executable: '${emacs_bin}' (set NL_BUILD_EMACS)" >&2
+  exit 2
+fi
 home=$root/target/nl-build-home
 mkdir -p "$home" "$root/target/tmp" || exit 2
 if [ -n "${NL_BUILD_SHARED_CACHE:-}" ]; then
