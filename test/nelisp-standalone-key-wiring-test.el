@@ -76,4 +76,13 @@
                              (nelisp-standalone--recompiled '(x)))
                          (nelisp-standalone--unit-cache-key src)))))))
 
+(ert-deftest nl-kw-form-level-hash-reflow-vs-constant ()
+  "B: comment, blank-line and reflow edits of closure defuns keep every key; a constant does not."
+  (let ((base (nl-kw--key nil)))
+    (should (equal base (nl-kw--key '(("(defun nelisp-standalone--xinline-enabled-p ()\n"
+                                       . "(defun nelisp-standalone--xinline-enabled-p\n    ()   ;; reflowed\n\n\n")
+                                      ("(defun nelisp-standalone--unit-cache-key (source)"
+                                       . "(defun nelisp-standalone--unit-cache-key (source) ;; trailing   \n")))))
+    (should-not (equal base (nl-kw--key '(("(format \"inline=%s/%d\\0\"" . "(format \"inline2=%s/%d\\0\"")))))))
+
 (provide 'nelisp-standalone-key-wiring-test)
