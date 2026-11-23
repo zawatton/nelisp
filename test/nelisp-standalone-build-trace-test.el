@@ -15,6 +15,7 @@
 (require 'nelisp-static-linker)
 (require 'nelisp-standalone-arena-rewrite)
 (require 'nelisp-version)
+(require 'nelisp-standalone-cachekey)
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-cc-fxir-native)
 

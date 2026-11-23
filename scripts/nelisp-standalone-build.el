@@ -72,6 +72,7 @@
 (require 'nelisp-vendor-source)
 (require 'nelisp-boot-image)
 (require 'nelisp-version)
+(require 'nelisp-standalone-cachekey)
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
@@ -564,12 +565,18 @@ Capability is asymmetric between the two additions -- see
       (_ nil))))
 
 (defun nelisp-standalone--dep-files ()
-  "Toolchain source files; any newer than a cache entry forces recompile."
-  (delq nil (cons nelisp-standalone--this-file
-                  (mapcar #'locate-library
-                          '("nelisp-aot-compiler" "nelisp-standalone-arena-rewrite" "nelisp-static-linker"
-                            "nelisp-elf-write" "nelisp-cc-runtime" "nelisp-standalone-argframe.el"
-                            "nelisp-heap-accessors" "nelisp-cc-fxir-native")))))
+  "Toolchain source files whose content is part of every unit key.
+The resolved .el source (never a stale .elc) of this script and of the
+`require' closure of `nelisp-standalone-cachekey-root-features'.  The
+assembler (lisp/nelisp-asm-x86_64.el, required at nelisp-aot-compiler.el:112),
+nelisp-sexp-layout (:113), nelisp-cc-fxir-rows/effects
+\(nelisp-cc-fxir-native.el:57-58) and the stack-map emitter (the
+`nelisp-aot-compiler--stackmap-*' code, nelisp-aot-compiler.el:251-259, and
+`nelisp-standalone--compile-to-unit' smap1 at this file) were missing before."
+  (cons nelisp-standalone--this-file
+        (nelisp-standalone-cachekey-require-closure
+         nelisp-standalone-cachekey-root-features
+         nelisp-standalone--repo-root load-path)))
 
 
 (defun nelisp-standalone--windows-rebase-arena-source (source)
@@ -3614,17 +3621,25 @@ compatibility, while new entries carry base64-encoded byte sections."
   "Return a digest of the compiler/linker sources that produce a unit."
   (or nelisp-standalone--toolchain-digest
       (setq nelisp-standalone--toolchain-digest
-            (secure-hash
-             'sha1
-             (mapconcat
-              (lambda (f)
-                (if (and f (file-readable-p f))
-                    (with-temp-buffer
-                      (set-buffer-multibyte nil)
-                      (insert-file-contents-literally f)
-                      (secure-hash 'sha1 (current-buffer)))
-                  "-"))
-              (nelisp-standalone--dep-files) "\n")))))
+            (nelisp-standalone-cachekey-files-digest (nelisp-standalone--dep-files)))))
+
+(defun nelisp-standalone--codegen-settings-string ()
+  "Env, host version and live codegen settings that shape a unit's code.
+Evaluated per key (not memoised): flags may be let-bound between units.
+`nelisp-native-load-codegen-settings' covers every compiler switch (flags
+plus the compiler source hash); the rest are inputs read outside it:
+NELISP_STACKMAP (compile-to-unit smap-cell), NELISP_ALIGNHOT_PERTURB
+\(nelisp-aot-compiler.el:287), NC2_LAZY (nelisp-cc-fxir-native.el:347) and the
+arena size, which `arena-rewrite' consumes after the key was taken."
+  (nelisp-standalone-cachekey-settings-string
+   (nelisp-standalone-cachekey-env-alist
+    (list (cons 'linux-arena-size nelisp-standalone--linux-arena-size)
+          (cons 'alignhot-perturb (bound-and-true-p nelisp-aot-compiler-alignhot-perturb))
+          (cons 'nc2-eager (bound-and-true-p nelisp-cc-fxir-native--eager))
+          (cons 'codegen-settings
+                (if (require 'nelisp-native-load nil t)
+                    (nelisp-native-load-codegen-settings)
+                  :native-load-unavailable))))))
 
 (defconst nelisp-standalone--direct-only-reader-defuns
   '(bf_identity_hash m5_length nl_ht_reindex nl_ht_identity_key_hash nl_apply_builtin_name_key
@@ -3699,6 +3714,7 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
     ;; The inliner runs inside `nelisp-standalone--compile-to-unit', so its
     ;; settings are part of what compiles SOURCE.
     (secure-hash 'sha1 (concat (nelisp-standalone--toolchain-digest) "\0"
+                               (nelisp-standalone--codegen-settings-string) "\0"
                                (format "compile-mode=%S\0" compile-mode)
                                (format "inline=%s/%d\0" (nelisp-standalone--inline-level)
                                        nelisp-standalone--inline-max-nodes)
