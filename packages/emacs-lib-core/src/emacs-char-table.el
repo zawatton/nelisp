@@ -73,9 +73,10 @@ New tables allocate the count specified by their subtype property.")
 The lightweight runtime has no native per-buffer category-table slot yet;
 the shared table still gives vendor libraries real mutation semantics.")
 
-(defvar nelisp--chartab-lisp-epoch 0
-  "Count of Lisp-path char-table writes; see the same variable in the prelude.
-Every writer below bumps it so a cache keyed on it sees a raw write.")
+(unless (boundp 'nelisp--chartab-lisp-epoch)
+  (defvar nelisp--chartab-lisp-epoch 0
+    "Count of Lisp-path char-table writes; see the same variable in the prelude.
+Every writer below bumps it so a cache keyed on it sees a raw write."))
 
 (defconst emacs-char-table--max-char #x3FFFFF
   "Largest character code (Doc 05: UTF-8 / Unicode range).")

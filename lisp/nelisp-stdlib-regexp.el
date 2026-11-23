@@ -2898,8 +2898,9 @@ contract as the compiled-pattern cache (`nlre-clear-syntax-cache')."
 ;; the sum moved, voids the generation stamp of the assertion map, the class
 ;; map and the setup answer so each is refilled by its next user.  Compiled
 ;; pattern caches are untouched, as in GNU.
-(defvar nelisp--chartab-lisp-epoch 0
-  "Count of Lisp-path char-table writes (the prelude and emacs-char-table.el).")
+(unless (boundp 'nelisp--chartab-lisp-epoch)
+  (defvar nelisp--chartab-lisp-epoch 0
+    "Count of Lisp-path char-table writes (the prelude and emacs-char-table.el)."))
 (defvar nlre--ct-epoch-native (fboundp 'nelisp--char-table-epoch)
   "Non-nil when the native char-table write counter exists (resolved at load).")
 (defvar nlre--ct-seen -1
