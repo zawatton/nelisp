@@ -857,3 +857,65 @@ registration into a later test in the same batch Emacs process."
 
 (provide 'emacs-buffer-test)
 ;;; emacs-buffer-test.el ends here
+
+;;; Named `substring' / `copy-sequence' wrappers (no :around advice)
+
+(defmacro emacs-buffer-test--with-native-wrappers (&rest body)
+  "Run BODY with the native-function aliases the wrappers call defined."
+  (declare (indent 0) (debug (body)))
+  `(cl-letf (((symbol-function 'emacs-buffer--native-substring)
+              (symbol-function 'substring))
+             ((symbol-function 'emacs-buffer--native-copy-sequence)
+              (symbol-function 'copy-sequence)))
+     ,@body))
+
+(ert-deftest emacs-buffer-test/substring-wrapper-gnu-semantics ()
+  (emacs-buffer-test--with-native-wrappers
+    (should (equal (emacs-buffer--substring "abcdef") "abcdef"))
+    (should (equal (emacs-buffer--substring "abcdef" 2) "cdef"))
+    (should (equal (emacs-buffer--substring "abcdef" -3) "def"))
+    (should (equal (emacs-buffer--substring "abcdef" 1 -1) "bcde"))
+    (should (equal (emacs-buffer--substring [1 2 3 4] 1 3) [2 3]))
+    (should (equal (emacs-buffer--substring [1 2 3]) [1 2 3]))
+    (should-error (emacs-buffer--substring "abc" 9) :type 'args-out-of-range)
+    (should-error (emacs-buffer--substring 5 0) :type 'wrong-type-argument)
+    (should (equal (should-error (emacs-buffer--substring "abc" 0 1 2))
+                   '(wrong-number-of-arguments substring 4)))))
+
+(ert-deftest emacs-buffer-test/substring-wrapper-clips-sidecar-runs ()
+  (emacs-buffer-test--with-native-wrappers
+    (let ((s (copy-sequence "abcdef")))
+      (emacs-buffer-string-text-property 'add s 2 4 '(k 1))
+      (let ((r (emacs-buffer--substring s 1 5))
+            (n (emacs-buffer--substring s -3)))
+        (should (equal (emacs-buffer-string-text-property 'runs r)
+                       '((1 3 (k 1)))))
+        (should (equal (emacs-buffer-string-text-property 'runs n)
+                       '((0 1 (k 1)))))
+        (should (equal (emacs-buffer-string-text-property
+                        'runs (emacs-buffer--substring s 0 2))
+                       nil))))))
+
+(ert-deftest emacs-buffer-test/copy-sequence-wrapper-copies-sidecar-runs ()
+  (emacs-buffer-test--with-native-wrappers
+    (let ((s (copy-sequence "abcd")))
+      (emacs-buffer-string-text-property 'add s 1 3 '(k 1))
+      (let ((c (emacs-buffer--copy-sequence s)))
+        (should-not (eq c s))
+        (should (equal (emacs-buffer-string-text-property 'runs c)
+                       '((1 3 (k 1)))))
+        (emacs-buffer-string-text-property 'add c 0 1 '(k 2))
+        (should (equal (emacs-buffer-string-text-property 'runs s)
+                       '((1 3 (k 1)))))))
+    (should (equal (emacs-buffer--copy-sequence '(1 2 3)) '(1 2 3)))
+    (should (equal (emacs-buffer--copy-sequence [1 2]) [1 2]))
+    (should (equal (should-error (emacs-buffer--copy-sequence "a" "b"))
+                   '(wrong-number-of-arguments copy-sequence 2)))))
+
+(ert-deftest emacs-buffer-test/no-closure-advice-on-substring ()
+  ;; The wrappers are installed by name, so `substring' and `copy-sequence'
+  ;; carry no advice closure that the fx tier cannot compile.
+  (should-not (advice-member-p #'emacs-buffer--substring 'substring))
+  (should-not (advice-member-p #'emacs-buffer--copy-sequence 'copy-sequence))
+  (should-not (fboundp 'emacs-buffer--substring-around))
+  (should-not (fboundp 'emacs-buffer--copy-sequence-around)))

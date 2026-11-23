@@ -2286,33 +2286,47 @@ Preserve the stored extra-slot count independently of subtype properties."
                (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
       copy)))
 
-(defun emacs-buffer--copy-sequence-around (orig sequence &rest args)
-  "Copy sparse char-tables and preserve copied strings' sidecar runs.
-Delegate native char-tables to ORIG."
-  (let ((result (if (and (null args)
-                         (fboundp 'emacs-char-table-p)
-                         (emacs-char-table-p sequence)
-                         (not (emacs-char-table--native-p sequence)))
-                    (emacs-buffer--copy-char-table sequence)
-                  (apply orig sequence args))))
-    (when (and (stringp sequence) (stringp result)
-               (gethash sequence emacs-buffer--string-state))
-      (emacs-buffer-string-text-property 'copy sequence result))
-    result))
+;; `copy-sequence' and `substring' are wrapped by named functions installed
+;; in place of the native ones, not by :around advice: both are called from
+;; everywhere, and the generic advice dispatch cost about 6 us a call where
+;; the wrapper costs about 1 us.  `emacs-buffer--native-copy-sequence' and
+;; `emacs-buffer--native-substring' hold the functions found at install time.
+;; Arguments past the native arity signal the error GNU gives a direct call.
 
-(defun emacs-buffer--substring-around (orig sequence start &optional end)
-  "Preserve clipped sidecar runs when native `substring' copies a string."
-  (setq start (or start 0))
-  (let ((result (funcall orig sequence start end)))
-    (when (and (stringp sequence) (stringp result)
-               (gethash sequence emacs-buffer--string-state))
-      (let* ((length (length sequence))
-             (lo (if (< start 0) (+ length start) start))
-             (raw-end (or end length))
-             (hi (if (< raw-end 0) (+ length raw-end) raw-end)))
-        (emacs-buffer--copy-runs-to-string
-         result (emacs-buffer-string-text-property 'runs sequence) lo hi)))
-    result))
+(defun emacs-buffer--copy-sequence (sequence &rest more)
+  "Native `copy-sequence' that copies sparse char-tables and sidecar runs.
+A sparse char-table is copied by `emacs-buffer--copy-char-table'; a string
+with sidecar text properties gets them copied to the result."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'copy-sequence (1+ (length more))))
+    (let ((result (if (and (not (stringp sequence))
+                           (fboundp 'emacs-char-table-p)
+                           (emacs-char-table-p sequence)
+                           (not (emacs-char-table--native-p sequence)))
+                      (emacs-buffer--copy-char-table sequence)
+                    (emacs-buffer--native-copy-sequence sequence))))
+      (when (and (stringp sequence) (stringp result)
+                 (gethash sequence emacs-buffer--string-state))
+        (emacs-buffer-string-text-property 'copy sequence result))
+      result)))
+
+(defun emacs-buffer--substring (string &optional from to &rest more)
+  "Native `substring' that keeps STRING's clipped sidecar runs."
+  (if more
+      (signal 'wrong-number-of-arguments
+              (list 'substring (+ 3 (length more))))
+    (let ((result (emacs-buffer--native-substring string from to)))
+      (when (and (stringp string) (stringp result)
+                 (gethash string emacs-buffer--string-state))
+        (let* ((length (length string))
+               (start (or from 0))
+               (lo (if (< start 0) (+ length start) start))
+               (raw-end (or to length))
+               (hi (if (< raw-end 0) (+ length raw-end) raw-end)))
+          (emacs-buffer--copy-runs-to-string
+           result (emacs-buffer-string-text-property 'runs string) lo hi)))
+      result)))
 
 (defun emacs-buffer--delete-region-around-advice (orig start end)
   "Around-advice for compatibility and native region deletion.
@@ -2413,10 +2427,17 @@ read back after a subsequent insertion.  Failed erasures retain their state."
                       (indirect-function 'nelisp-ec-buffer-substring))))
     (advice-add 'buffer-substring :around
                 #'emacs-buffer--native-buffer-substring-around))
+  ;; Capture each native function once, so loading this file again does
+  ;; not wrap the wrapper.
   (when (fboundp 'copy-sequence)
-    (advice-add 'copy-sequence :around #'emacs-buffer--copy-sequence-around))
+    (unless (fboundp 'emacs-buffer--native-copy-sequence)
+      (defalias 'emacs-buffer--native-copy-sequence
+        (symbol-function 'copy-sequence)))
+    (defalias 'copy-sequence (symbol-function 'emacs-buffer--copy-sequence)))
   (when (fboundp 'substring)
-    (advice-add 'substring :around #'emacs-buffer--substring-around)))
+    (unless (fboundp 'emacs-buffer--native-substring)
+      (defalias 'emacs-buffer--native-substring (symbol-function 'substring)))
+    (defalias 'substring (symbol-function 'emacs-buffer--substring))))
 
 ;;;###autoload
 (defun emacs-buffer-bump-modified-tick (&optional buf)
