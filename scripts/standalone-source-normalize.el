@@ -1673,9 +1673,17 @@ runtime meaning."
     (mapcar #'standalone-source-normalize-form (cdr form)))
    ;; Other top-level `eval-when-compile' forms are byte/compiler-only.  The
    ;; standalone loader has no byte compiler, so dropping them avoids pulling
-   ;; in irrelevant compile-time dependencies.
+   ;; in irrelevant compile-time dependencies.  Definitions inside are kept:
+   ;; loading GNU source evaluates the body, and later functions of the same
+   ;; file use those macros unexpanded (compile.el's `compilation-assq').
    ((and (consp form) (eq (car form) 'eval-when-compile))
-    nil)
+    (let ((out nil))
+      (dolist (sub (cdr form))
+        (when (and (consp sub)
+                   (memq (car sub) '(defmacro defun defsubst define-inline
+                                     defconst defvar)))
+          (push (standalone-source-normalize-form sub) out)))
+      (nreverse out)))
    ;; `calendar.el' later passes the two popup menu variables defined by
    ;; cal-menu.el to `easy-menu-binding'.  Keep those symbols bound even
    ;; though standalone replay intentionally drops the actual UI menu wiring.
