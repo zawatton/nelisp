@@ -77,10 +77,11 @@
 TEST defaults to `equal'; custom owned-table calls use its topology helper."
       (if (and (fboundp 'emacs-char-table--owned-p)
                (emacs-char-table--owned-p char-table))
-          (if (null test)
-              nil
+          ;; chartab.c optimize_sub_char_table: a nil TEST compares with
+          ;; `equal'.
+          (progn
             (if (fboundp 'emacs-char-table--owner-optimize)
-                (emacs-char-table--owner-optimize char-table test)
+                (emacs-char-table--owner-optimize char-table (or test #'equal))
               (funcall emacs-cc-chartab-1--previous-optimize-char-table
                        char-table test)))
         (funcall emacs-cc-chartab-1--previous-optimize-char-table
