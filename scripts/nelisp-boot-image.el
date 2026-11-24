@@ -477,19 +477,25 @@ name that is already defined is not replaced."
                                                 (file-exists-p
                                                  (expand-file-name (concat lib ".el") dir)))
                                               dirs)))))
-              ;; A minor mode's loaddefs entry is `(defvar MODE nil DOC)', then
-              ;; `custom-autoload', then `autoload'.  Keep the defvar of a
-              ;; present library so the mode variable is bound before the
-              ;; library loads (savehist's defcustom :set reads it at load).  Only constant
-              ;; initial values are kept; computed ones would call functions that
-              ;; the image may not define yet.
+              ;; A loaddefs.el option or minor mode is `(defvar SYM VALUE DOC)'
+              ;; (or a `defcustom' with :initialize) followed by `custom-autoload' and `autoload'.  GNU binds SYM at
+              ;; startup whether or not the library has loaded, so keep the
+              ;; defvar of every such entry, present library or not: savehist's
+              ;; defcustom :set reads `savehist-mode' while loading, and time.el
+              ;; reads `rmail-spool-directory' without requiring rmail.  A
+              ;; computed value is wrapped in `ignore-errors': one that needs a
+              ;; function the image lacks stays unbound, as before.
               (cond
-               ((and (eq (car-safe form) 'defvar) (cddr form)
-                     (or (atom (nth 2 form)) (eq (car-safe (nth 2 form)) 'quote)))
-                (setq pending-defvar (buffer-substring-no-properties start (point))
+               ((and (memq (car-safe form) '(defvar defcustom)) (cddr form))
+                (setq pending-defvar
+                      (let ((text (buffer-substring-no-properties start (point))))
+                        (if (and (eq (car form) 'defvar)
+                                 (or (atom (nth 2 form)) (eq (car-safe (nth 2 form)) 'quote)))
+                            text
+                          (concat "(ignore-errors " text ")")))
                       pending-sym (nth 1 form)))
                ((eq (car-safe form) 'custom-autoload)
-                (when (and present pending-defvar (eq (nth 1 (cadr form)) pending-sym))
+                (when (and pending-defvar (eq (nth 1 (cadr form)) pending-sym))
                   (push pending-defvar forms))
                 (setq pending-defvar nil))
                (t
