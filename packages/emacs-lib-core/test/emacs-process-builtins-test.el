@@ -720,7 +720,11 @@
 
 (ert-deftest emacs-process-builtins-test/standalone-call-process-infile-shell-wrapper ()
   "INFILE is represented through the shell redirection wrapper."
-  (let ((captured nil))
+  ;; No usable `default-directory', so no cwd wrapper: this test pins only
+  ;; the infile and stderr wrappers.  (A batch `default-directory' is an
+  ;; abbreviated "~/..." name, which the cwd helper now expands.)
+  (let ((captured nil)
+        (default-directory nil))
     (cl-letf (((symbol-function 'nelisp-process-start)
                (lambda (&rest command) (setq captured command) 'p))
               ((symbol-function 'nelisp-process-read-output) (lambda (_p _n) nil))

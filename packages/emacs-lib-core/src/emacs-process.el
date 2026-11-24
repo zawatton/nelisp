@@ -924,12 +924,16 @@ let-binds `default-directory' (e.g. Magit running git inside a
 repository that is not the parent's cwd) silently executes in the wrong
 directory.  Returns nil when no chdir is needed (no usable
 `default-directory', or it is not a local absolute path this simple
-shell wrapper can handle)."
-  (and (boundp 'default-directory)
-       (stringp default-directory)
-       (> (length default-directory) 0)
-       (= (aref default-directory 0) ?/)
-       default-directory))
+shell wrapper can handle).  As GNU callproc.c `get_current_directory'
+does, the directory is expanded first, so ~/... works."
+  (let ((dir (and (boundp 'default-directory)
+                  (stringp default-directory)
+                  (> (length default-directory) 0)
+                  (expand-file-name default-directory))))
+    (and dir
+         (> (length dir) 0)
+         (= (aref dir 0) ?/)
+         dir)))
 
 (defun emacs-process--call-process-command (program infile args)
   "Return command list for PROGRAM ARGS with optional INFILE redirection.
