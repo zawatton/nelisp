@@ -213,36 +213,6 @@
     map-into
     map-put!
     map-insert
-    forward-sexp
-    backward-sexp
-    mark-sexp
-    forward-list
-    backward-list
-    down-list
-    up-list
-    backward-up-list
-    kill-sexp
-    backward-kill-sexp
-    buffer-end
-    forward-sexp-default-function
-    beginning-of-defun
-    beginning-of-defun-raw
-    beginning-of-defun-comments
-    end-of-defun
-    mark
-    set-mark
-    push-mark
-    mark-defun
-    narrow-to-defun
-    insert-pair
-    insert-parentheses
-    delete-pair
-    kill-backward-up-list
-    raise-sexp
-    move-past-close-and-reindent
-    check-parens
-    field-complete
-    lisp-complete-symbol
     describe-buffer-case-table
     case-table-get-table
     get-upcase-table
@@ -317,15 +287,6 @@
     files--buffer-modified-flags
     max-mini-window-lines
     indent-line-function
-    defun-prompt-regexp
-    parens-require-spaces
-    forward-sexp-function
-    beginning-of-defun-function
-    end-of-defun-function
-    end-of-defun-moves-to-eol
-    narrow-to-defun-include-comments
-    insert-pair-alist
-    delete-pair-blink-delay
     emacs-process--fallback-tag
     emacs-process--fallback-processes
     emacs-process--fallback-next-pid
@@ -336,7 +297,6 @@
     emacs-process-shell-command-switch
     emacs-process-call-process-region-input-file
     emacs-process-shell-command-on-region-output-file
-    lisp--mark
     mark-active
     nelisp-casetab--standard
     nelisp-casetab--current
@@ -487,7 +447,6 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-subr-x-core
                  nemacs-runtime-image-preload--install-seq-core
                  nemacs-runtime-image-preload--install-map-core
-                 nemacs-runtime-image-preload--install-lisp-core
                  nemacs-runtime-image-preload--install-case-table-core
                  nemacs-runtime-image-preload--install-cdl-core
                  nemacs-runtime-image-preload--install-range-core
@@ -699,7 +658,7 @@ The preload installers only `require' it when it is not yet a feature."
     (should (featurep 'emacs-frame-builtins))
     (should (featurep 'tab-bar))
     (should (featurep 'tab-line))
-    (dolist (feature '(subr-x seq map lisp case-table cdl range regi))
+    (dolist (feature '(subr-x seq map case-table cdl range regi))
       (should (featurep feature)))
     (dolist (feature '(hex-util map-ynp charprop charscript emoji-labels
                                 iso-transl cp51932 eucjp-ms fontset
@@ -758,15 +717,16 @@ The preload installers only `require' it when it is not yet a feature."
     (with-temp-buffer
       (insert "alpha")
       (goto-char (point-min))
-      (insert-pair)
-      (should (equal (buffer-string) "()alpha"))
+      ;; GNU lisp.el: `parens-require-spaces' adds the space before "alpha".
+      (let ((last-command-event ?\()) (insert-pair))
+      (should (equal (buffer-string) "() alpha"))
       (should (= (point) 2))
       (goto-char (point-min))
       (delete-pair)
-      (should (equal (buffer-string) "alpha")))
+      (should (equal (buffer-string) " alpha")))
     (with-temp-buffer
       (insert "(ok) )")
-      (should-error (check-parens) :type 'scan-error))
+      (should-error (check-parens) :type 'user-error))
     (with-temp-buffer
       (insert "'foo bar")
       (goto-char (point-min))
@@ -1180,7 +1140,7 @@ The preload installers only `require' it when it is not yet a feature."
             (should (= (point) (point-max)))
             (goto-char (point-min))
             (open-line 1)
-            (insert-pair)
+            (let ((last-command-event ?\()) (insert-pair))
             (should (equal (buffer-string) "()\n(alpha beta)"))
             (should (equal (save-buffer) input-file))
             (with-temp-buffer
@@ -1258,7 +1218,7 @@ The preload installers only `require' it when it is not yet a feature."
                 (should (= (point) (point-max)))
                 (goto-char (point-min))
                 (open-line 1)
-                (insert-pair)
+                (let ((last-command-event ?\()) (insert-pair))
                 (should (equal (buffer-string) "()\n(alpha beta)"))
                 (should (eq (save-buffer) 'saved-buffer))
                 (should (equal saved-text "()\n(alpha beta)")))

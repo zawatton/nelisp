@@ -117,8 +117,11 @@ nil means infer each paragraph's direction from its own content."))
     "Function used by `beginning-of-defun' when non-nil."))
 
 (unless (boundp 'end-of-defun-function)
-  (defvar end-of-defun-function nil
-    "Function used by `end-of-defun' when non-nil."))
+  ;; GNU lisp.el's default; a nil here shadows that defvar and makes
+  ;; `end-of-defun' call nil.
+  (defvar end-of-defun-function
+    (lambda () (forward-sexp 1))
+    "Function for `end-of-defun' to call."))
 
 (unless (boundp 'next-error-function)
   (defvar next-error-function nil

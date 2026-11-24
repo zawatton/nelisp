@@ -45,6 +45,12 @@
 (unless (boundp 'window-combination-limit)
   (defvar window-combination-limit 'window-size
     "If non-nil, splitting a window makes a new parent window."))
+;; buffer.c DEFVAR_PER_BUFFER (buffer.c:5756): one value per buffer, nil
+;; by default.
+(unless (boundp 'mark-active)
+  (defvar mark-active nil
+    "Non-nil means the mark and region are currently active in this buffer."))
+(make-variable-buffer-local 'mark-active)
 ;; coding.c DEFVAR (coding.c:12000, C default nil); GNU jka-compr.el
 ;; reads and binds it when writing a compressed file.
 (unless (boundp 'last-coding-system-used)

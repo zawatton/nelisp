@@ -435,8 +435,7 @@ is relative to `nelisp-bootstrap-repo-root'."
     (sort names #'string<)))
 
 (defvar nelisp-bootstrap-late-extra-files
-  `("lisp.el"
-    "emacs-fileio.el"
+  `("emacs-fileio.el"
     "case-table.el"
     "emacs-process-events.el"
     "regi.el"
