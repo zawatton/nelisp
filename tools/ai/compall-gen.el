@@ -181,6 +181,20 @@ representations are admitted (never byte code or malformed objects)."
 (defun compall-gen--fn-part (fn key)
   "KEY (:arglist or :body) of FN's validated source parts, or nil."
   (plist-get (nelisp-function--source-parts fn) key))
+(defun compall-gen--fx-record (name fn)
+  "Get or compile NAME's fx record for FN's validated source body."
+  (let ((parts (nelisp-function--source-parts fn)))
+    (when parts
+      (let* ((body (plist-get parts :body))
+             (rec (gethash body nelisp--fx-table)))
+        (unless (vectorp rec)
+          ;; The offline harvest can compile now, even if startup left this
+          ;; body waiting for more calls. FORCE also retries an old `none'.
+          (when (integerp rec)
+            (remhash body nelisp--fx-table))
+          (ignore-errors (nelisp--fx-register-fn name fn t))
+          (setq rec (gethash body nelisp--fx-table)))
+        rec))))
 (defun compall-gen--gensym-p (x)
   (and (symbolp x) x (not (eq (intern-soft (symbol-name x)) x))))
 (defun compall-gen--same-p (a b)
@@ -343,11 +357,11 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
            ;; A byte-code function (adopted by the build's byte-code pass) is compiled
            ;; from its one source definition: with a row the pass keeps it as source.
            (probe (and bc compall-gen--bytecode (= (length forms) 1) (make-symbol "compall-gen-probe")))
+           ;; Lisp-backed primitives report as subrs to function-info. Use
+           ;; their canonical backing closure, including its live fx key.
            (fn (if bc (and probe (compall-gen--closure-of (car forms) probe))
-                 (symbol-function name)))
-           (rec (and fn (progn (if probe (ignore-errors (nelisp--fx-register-fn probe fn))
-                                 (ignore-errors (nelisp--fx-register name)))
-                               (gethash (compall-gen--fn-part fn :body) nelisp--fx-table))))
+                 (compall-gen--fn (symbol-function name))))
+           (rec (and fn (compall-gen--fx-record (or probe name) fn)))
            (c (and (vectorp rec) (not (memq (aref rec 1) '(-1 -2)))
                    (ignore-errors (nelisp-fxir-recompile fn))))
            (irlen (and c (nth 2 c) (length (prin1-to-string (nth 2 c)))))

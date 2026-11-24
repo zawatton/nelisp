@@ -1407,7 +1407,7 @@ standalone-chunk-growth-test|scripts/nelisp-standalone-build.el|s/(let\* ((new_c
 # the native closure-kind builtin the prelude uses, so requiring nelisp-eval
 # made every interpreted closure report type-of cons with closurep nil.  RED
 # prints `nelisp-eval-closure-standalone-smoke: FAIL closurep fresh lambda'.
-nelisp-eval-closure-standalone-smoke|src/nelisp-eval.el|s/(defsubst nelisp-eval-closure-p (x)/(defsubst nelisp--closure-p (x)/|requiring nelisp-eval overwrites the native closure predicate again
+nelisp-eval-closure-standalone-smoke|src/nelisp-eval.el|s/(defsubst nelisp-eval--closure-p (x)/(defsubst nelisp--closure-p (x)/|requiring nelisp-eval overwrites the native closure predicate again
 
 # standalone-string-block-leak-smoke (2026-11-14): put back the old early
 # return of `nl_compact_small_strings', which skipped the whole pass -- the

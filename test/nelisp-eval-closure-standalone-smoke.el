@@ -8,7 +8,7 @@
 ;; `nelisp--closure-p', which is also the native closure-kind builtin the
 ;; prelude relies on.  After the require, every interpreted closure
 ;; reported `(type-of c)' = cons with `closurep' and `functionp' nil.  The
-;; interpreter's own predicate is now `nelisp-eval-closure-p'.
+;; interpreter's own predicate is now `nelisp-eval--closure-p'.
 ;;
 ;; Run from the repository root:
 ;;
