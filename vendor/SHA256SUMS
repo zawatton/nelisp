@@ -1151,3 +1151,6 @@ ac5f4987cca50bbdbc70f8abeeec426ed54e8694728eaff3efee790b75e33e2d  vendor/staged-
 aa5bbc34cf01d1fb659429ffad73041902c35a6dca69d3f19257f0fcd20fb156  vendor/emacs-lisp/ibuf-macs.el
 071ecb706c543d98b528f89f7020a6d9cb88697930d529ea0a88be2e9df2f234  vendor/emacs-lisp/progmodes/cc-bytecomp.el
 38d72016099eb0488d59afbae8f9b333300fb9bc02af6a08c10dcbbc4887d56d  vendor/emacs-lisp/eshell/esh-module-loaddefs.el
+509a79d5a5b729f6af5b7d2a38e52e1aff5bd585acba4bc75ea34e76ba879e76  vendor/emacs-lisp/epa-hook.el
+3ddc94fa89f9c757347f1ed88b58635f79c4b2d2c5e99e2a6857532e69d5d777  vendor/emacs-lisp/textmodes/bibtex.el
+5a53bdb5a5caa1c8696e4a5553cc7eaa575a15543fa609a0ae4a76e8e4b503e6  vendor/emacs-lisp/textmodes/table.el

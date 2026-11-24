@@ -61,5 +61,41 @@
       (call-process "sync" nil nil nil))
     nil))
 
+(unless (fboundp 'directory-files-recursively)
+  ;; GNU lisp/files.el (not vendored); org-persist-gc, project and indexers call
+  ;; it.  Same contract (depth first, sorted per directory, absolute names),
+  ;; built on `directory-files' instead of `file-name-all-completions'.
+  (defun directory-files-recursively (dir regexp
+                                          &optional include-directories predicate
+                                          follow-symlinks)
+    "Return list of all files under directory DIR whose names match REGEXP."
+    (let ((result nil)
+          (files nil)
+          (dir (directory-file-name dir)))
+      (dolist (leaf (directory-files dir nil nil nil))
+        (unless (member leaf '("." ".."))
+          (let ((full-file (concat dir "/" leaf)))
+            (if (file-directory-p full-file)
+                (progn
+                  (when (and (or (not (file-symlink-p full-file)) follow-symlinks)
+                             (or (eq predicate nil) (eq predicate t)
+                                 (funcall predicate full-file)))
+                    (let ((sub-files
+                           (if (eq predicate t)
+                               (condition-case nil
+                                   (directory-files-recursively
+                                    full-file regexp include-directories
+                                    predicate follow-symlinks)
+                                 (file-error nil))
+                             (directory-files-recursively
+                              full-file regexp include-directories
+                              predicate follow-symlinks))))
+                      (setq result (nconc result sub-files))))
+                  (when (and include-directories (string-match regexp leaf))
+                    (setq result (nconc result (list full-file)))))
+              (when (string-match regexp leaf)
+                (push full-file files))))))
+      (nconc result (nreverse files)))))
+
 (provide 'emacs-cc-fileio-2)
 ;;; emacs-cc-fileio-2.el ends here

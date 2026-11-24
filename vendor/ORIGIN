@@ -1167,3 +1167,6 @@ staged-emacs-lisp/mule.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/intern
 emacs-lisp/ibuf-macs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/ibuf-macs.el	sha256=aa5bbc34cf01d1fb659429ffad73041902c35a6dca69d3f19257f0fcd20fb156
 emacs-lisp/progmodes/cc-bytecomp.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-bytecomp.el	sha256=071ecb706c543d98b528f89f7020a6d9cb88697930d529ea0a88be2e9df2f234
 emacs-lisp/eshell/esh-module-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/eshell/esh-module-loaddefs.el	sha256=38d72016099eb0488d59afbae8f9b333300fb9bc02af6a08c10dcbbc4887d56d
+emacs-lisp/epa-hook.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/epa-hook.el	sha256=509a79d5a5b729f6af5b7d2a38e52e1aff5bd585acba4bc75ea34e76ba879e76
+emacs-lisp/textmodes/bibtex.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/bibtex.el	sha256=3ddc94fa89f9c757347f1ed88b58635f79c4b2d2c5e99e2a6857532e69d5d777
+emacs-lisp/textmodes/table.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/table.el	sha256=5a53bdb5a5caa1c8696e4a5553cc7eaa575a15543fa609a0ae4a76e8e4b503e6

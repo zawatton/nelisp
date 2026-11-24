@@ -1,0 +1,12 @@
+#+TITLE: Smoke
+* TODO First task
+SCHEDULED: <2026-11-24 Tue>
+Body text one.
+** Sub heading
+Sub body *bold* and /italic/.
+* DONE Second
+CLOSED: [2026-11-20 Fri 10:00]
+- item a
+- item b
+* Third :tag1:
+Some text.
