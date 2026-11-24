@@ -16629,14 +16629,11 @@ CATEGORY-SET, recorded in TABLE's extra slot 1."
   "Build GNU 31.1's standard category table from the generated data."
   (let ((table (nelisp--category-empty-table)))
     (when (boundp 'nelisp--unicode-category-runs)
-      (let ((docs (char-table-extra-slot table 0))
-            (sets (make-vector (length nelisp--unicode-category-sets) nil))
+      ;; No docstrings: as in GNU's init_category_once they start empty and
+      ;; international/characters.el's define-category supplies them.
+      (let ((sets (make-vector (length nelisp--unicode-category-sets) nil))
             (runs nelisp--unicode-category-runs)
             (i 0) (n 0))
-        (while (< i 95)
-          (aset docs i (aref nelisp--unicode-category-docstrings i))
-          (setq i (1+ i)))
-        (setq i 0)
         (while (< i (length sets))
           (aset sets i (nelisp--category-hash-get
                         table (nelisp--category-make-category-set
