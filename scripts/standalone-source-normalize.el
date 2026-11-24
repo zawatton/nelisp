@@ -139,6 +139,10 @@ envelope.")
 
 (defvar standalone-source-normalize-retained-large-defun-symbols
   '(nelisp-rx--build
+    ;; GNU startup owns the init path and its command-line control flow.
+    normal-top-level
+    command-line
+    command-line-1
     ;; Every VC backend command (`vc-diff', `vc-print-log', ...) runs through
     ;; `vc-do-command'; an elided body makes the VC workflow unusable.
     vc-do-command

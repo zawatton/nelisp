@@ -22,6 +22,7 @@
   (require 'emacs-eval nil t))
 
 (declare-function nelisp--syscall-stat-field "nelisp-runtime" (path offset))
+(defvar user-init-file nil)
 (declare-function nelisp--syscall-path-int "nelisp-runtime"
                   (number path integer))
 
@@ -4229,6 +4230,10 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
      (t
       (let* ((base (file-name-nondirectory resolved))
              (source (emacs-load--read-file-string resolved))
+             ;; As in GNU Fload, publish the resolved init file before
+             ;; executing it, including when evaluation subsequently fails.
+             (_init-file (when (and source (eq user-init-file t))
+                           (setq user-init-file resolved)))
              (compiled (and (stringp source)
                             (or (string-suffix-p ".elc" resolved)
                                 (string-suffix-p ".elc.gz" resolved)

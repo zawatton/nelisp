@@ -1172,3 +1172,4 @@ emacs-lisp/textmodes/bibtex.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/t
 emacs-lisp/textmodes/table.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/table.el	sha256=5a53bdb5a5caa1c8696e4a5553cc7eaa575a15543fa609a0ae4a76e8e4b503e6
 staged-emacs-lisp/frame.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/frame.el.gz	sha256=a424b330983676eea5dec092c62d50257a9aa5871c13cacd5833d8f9b604e62d
 staged-emacs-lisp/mule-cmds.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/international/mule-cmds.el.gz	sha256=04fe2ad62ca70565f6c59ad6ca02e200869942dc8c7df03fbec74244ddc98e51
+emacs-lisp/startup.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/startup.el	sha256=856927b8ef69c4028a5aea917fad5ddcce5d4eff1c677ea85ed8db47f7dba0ce
