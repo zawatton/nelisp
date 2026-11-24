@@ -123,6 +123,8 @@
       (dolist (fn planners) (advice-remove fn #'nelisp-aot-shrink-wrap-test--plan)))))
 
 (ert-deftest nelisp-aot-shrink-wrap/native-fast-cold-read-once-fullword-ABI ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "nelisp-shrink-wrap-" t))
          (c (expand-file-name "probe.c" dir))
          (counts nil) (frames nil))
@@ -156,6 +158,8 @@
       (delete-directory dir t))))
 
 (ert-deftest nelisp-aot-shrink-wrap/native-private-label-export-collisions ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "nelisp-shrink-collision-" t))
          (o (expand-file-name "probe.o" dir))
          (c (expand-file-name "probe.c" dir))

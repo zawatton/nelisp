@@ -4,6 +4,7 @@
 (require 'nelisp-native-template-stencils)
 (require 'nelisp-native-template-pin)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
+(eval-when-compile (require 'nelisp-native-template-source-pin nil t))
 (defconst nelisp-native-template-proof-version "template-proof-v3")
 (defconst nelisp-native-template-entry "nl_native_template_probe_v1")
 (defvar nelisp-native-template--validation-count 0)
@@ -122,7 +123,7 @@
     (setq nelisp-native-cache--addresses (nelisp-native-load-root-v2-addresses)))
   (unless (fboundp 'nelisp--native-pin-copy-v2) (error "Template pin-copy unavailable"))
   nelisp-native-template--abi)
-(defun nelisp-native-template-frame-states (rows table arity maximum)
+(defun nelisp-native-template-frame-states (_rows table arity maximum)
   "Validate interned typed handler/unwind chains including every entry poll.
 States contain only chain IDs; no path copies a chain. The 4096-state bound
 is an admission limit, never an execution limit."

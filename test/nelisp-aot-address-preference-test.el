@@ -1,6 +1,8 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'nelisp-aot-address-fold-test)
 (ert-deftest nelisp-address-preference/legacy-safe-and-dependencies ()
+ (skip-unless (and (eq system-type 'gnu/linux)
+                   (string-match-p "x86_64" system-configuration)))
  (let ((nelisp-aot-compiler--x86-affine-addresses t)
        (nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
        (nelisp-aot-compiler--os 'linux) (nelisp-aot-compiler--checked-arith nil))

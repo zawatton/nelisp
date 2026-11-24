@@ -22,8 +22,16 @@
 
 (require 'nelisp-native-poll)
 
+(declare-function nelisp-bytecode-native-rooted-cfg--gateway-import "nelisp-bytecode-native-rooted-cfg-plan" (operation))
+(declare-function nelisp-bytecode-native-rooted-cfg--input-root "nelisp-bytecode-native-rooted-cfg-plan" (token state))
+(declare-function nelisp-bytecode-native-rooted-cfg--canonical-input-p
+                  "nelisp-bytecode-native-rooted-cfg-plan" (input))
+(declare-function nelisp-bytecode-native-rooted-cfg--unsupported "nelisp-bytecode-native-rooted-cfg-plan" (reason))
+(declare-function nelisp-bytecode-native-rooted-cfg--safe-input-p "nelisp-bytecode-native-rooted-cfg-plan" (input))
+(declare-function nelisp-bytecode-native-rooted-cfg--block-map "nelisp-bytecode-native-rooted-cfg-plan" (blocks))
+
 ;; Resolve cl-every's autoload before the planner seals its function cell.
-(cl-every #'identity nil)
+(ignore (cl-every #'identity nil))
 
 (let ((guard-owners nil) (guard-context nil) (arithmetic-context nil)
       (source-shapes (make-hash-table :test #'eql))

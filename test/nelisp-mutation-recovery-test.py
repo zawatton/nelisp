@@ -17,11 +17,13 @@ class MutationRecovery(unittest.TestCase):
                 (root / name).mkdir()
             script = root / "tools/nelisp-gate-mutation.sh"
             shutil.copy2(ROOT / "tools/nelisp-gate-mutation.sh", script)
+            shutil.copy2(ROOT / "tools/nelisp-standalone-reader-build.sh", root / "tools/nelisp-standalone-reader-build.sh")
             (root / "tools/gate-mutations.txt").write_text('sample|lisp/sample.el|s/OLD/NEW/|injected defect\n')
             original = b'OLD\nlocal uncommitted content\n'
             source = root / "lisp/sample.el"
             source.write_bytes(original)
-            (root / "Makefile").write_text('sample:\n\t@! grep -q NEW lisp/sample.el\n')
+            # The harness warms up `standalone-reader' once before the first row.
+            (root / "Makefile").write_text('standalone-reader:\n\t@:\nsample:\n\t@! grep -q NEW lisp/sample.el\n')
             fake = root / "bin/cp"
             fake.write_text('''#!/bin/sh
 if [ "$FAIL_RESTORE" = 1 ] && [ "$2" = "lisp/sample.el" ]; then exit 1; fi

@@ -1,0 +1,30 @@
+S5.1 evidence: NELISP_GATE_DIR does not reach the standalone-reader build
+Linux x86_64, host Emacs 31.1, tree = HEAD 9fb8587e7 plus the uncommitted stamp-diagnostics edits (version string reports -dirty).
+Both builds ran under `ulimit -v 8388608' via bin/heavy-run.sh with `timeout 3600', in the same worktree, same output path,
+with the same warm unit cache (target/standalone-units, target/nelisp-vendor-bytecode).
+
+(a) Static: where the build's input surface mentions GATE_DIR
+  grep -rn GATE_DIR scripts lisp src packages templates standalone-compat Makefile tools/nelisp-standalone-reader-build.sh
+  Makefile:2616   a comment ("Measured ... NELISP_GATE_DIR=target/gates: 310121 ...") in a GC note; not in any recipe.
+  tools/nelisp-standalone-reader-build.sh   only the denylist entry and its comment added with this change.
+  No hit in scripts/, lisp/, src/, packages/, templates/ or standalone-compat/.
+  The `standalone-reader' recipe (Makefile ~605) runs the stamp tool, which runs
+  `$EMACS --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build -f nelisp-standalone-build-reader'.
+  Every getenv in scripts/nelisp-standalone-build.el names a fixed variable (UNIT_CACHE_DIR, LINUX_ARENA_SIZE,
+  READER_DYNAMIC, TCO, BUILD_TRACE_FNS, READER_OUTPUT, REPR_CENSUS); no getenv builds a name dynamically and nothing
+  enumerates process-environment in the build path.  The only other getenv in the prelude is the locale probe
+  (LC_ALL, LC_CTYPE, LANG).
+  (tools/ai/*, tools/nelisp-gate-mutation.sh, test/* mention GATE_DIR; they are gate drivers, not build inputs.)
+
+(b) Empirical
+  1. NELISP_STANDALONE_JOBS=4 make standalone-reader
+       stamp key e50f0803c3e4, target/nelisp sha256
+       31ed44fd080159aa8e750f1be968c8c6964610c3fcac492fe60f8dc75e0da015
+  2. NELISP_GATE_DIR=<repo>/target/gates-other make -s standalone-reader-status
+       standalone-reader: up to date (key e50f0803c3e4, output sha256 31ed44fd0801)
+  3. NELISP_STANDALONE_FORCE_REBUILD=1 NELISP_GATE_DIR=<repo>/target/gates-other NELISP_STANDALONE_JOBS=4 make standalone-reader
+       (a real rebuild, 76 s; stamp rewritten)
+       stamp key e50f0803c3e4, target/nelisp sha256
+       31ed44fd080159aa8e750f1be968c8c6964610c3fcac492fe60f8dc75e0da015
+  The two binaries are identical and the key is the same, so the build output does not depend on the variable and
+  the variable is safe to leave out of the key.

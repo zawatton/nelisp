@@ -1,6 +1,8 @@
 ;;; nelisp-native-rooted-startup-evidence-test.el --- Generic rendering controls -*- lexical-binding: t; -*-
 ;; Generation fixtures do not grant native capability or verify a new image.
 (require 'ert)
+;; Fixtures are hashed byte-exactly; keep LF on CRLF-default hosts (Windows).
+(setq-default buffer-file-coding-system 'utf-8-unix)
 (require 'nelisp-native-rooted-startup-evidence)
 
 (ert-deftest nelisp-root-startup-pins-current-inputs-and-refuses-mutation ()

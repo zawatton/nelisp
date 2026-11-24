@@ -20,6 +20,8 @@
           (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally bin) (buffer-string)))
       (delete-directory dir t))))
 (ert-deftest nelisp-aot-direct-stack-push/GNUas-signed-limits-alias-register-depth ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((cases '((-2147483648 "push -2147483648") (-129 "push -129")
                  (-128 "push -128") (0 "push 0") (127 "push 127")
                  (128 "push 128") (2147483647 "push 2147483647")))
@@ -152,6 +154,8 @@
    "int main(int argc,char**argv){U v[13],x[64],y[64];U pool[]={0,1,2,6,~0ULL,0x80000000ULL,0xffffffffULL,0x100000001ULL,0x8000000000000000ULL,0x7fffffffffffffffULL,0xabcdef0123456786ULL,0xffffffff80000000ULL};U literals[]={0xffffffff80000000ULL,(U)-129,(U)-128,127,128,2147483647,4294967295,0x7fffffffffffffffULL,0x8000000000000000ULL};unsigned ns[]={7,10,13},count=0;for(unsigned a=0;a<3;a++)for(unsigned m=0;m<3;m++)for(unsigned k=0;k<12;k++){for(unsigned i=0;i<13;i++)v[i]=pool[(i+k)%12];if(capture(calls[a][m][0],v,x)||capture(calls[a][m][1],v,y))return 1;if(memcmp(x,y,sizeof x))return 2;U expected[13];memcpy(expected,v,sizeof v);for(unsigned i=7;m&&i<ns[a];i++)expected[i]=literals[(i-7+(m==1?0:4))%9];if(x[0]!=expected[6])return 3;for(unsigned i=0;i<6;i++)if(x[i+1]!=expected[i])return 4;for(unsigned i=6;i<ns[a];i++)if(x[16+i-6]!=expected[i])return 5;if((x[10]&15)!=8||x[32]!=0xabcdeffedcba1234ULL)return 6;for(unsigned i=0;i<5;i++)if(x[32+11+i]!=0x1122334455667701ULL+i)return 7;count++;}\n"
    "if(argc!=5)return 8;obs=mmap((void*)0x30000000,4096,3,0x32,-1,0);U*frame=mmap((void*)0x31000000,8192,3,0x32,-1,0);if(obs==(void*)-1||frame==(void*)-1)return 9;fake=frame+1024;for(unsigned i=0;i<13;i++)fake[-(intptr_t)(15+i)]=101+i;fake[-601]=777;struct sigaction sa={0};sa.sa_sigaction=fault;sa.sa_flags=SA_SIGINFO;sigaction(SIGSEGV,&sa,0);if(mprotect(frame,4096,0))return 10;for(unsigned i=0;i<4;i++){void*p=loadcode(argv[i+1]);if(!p)return 11;pushed=i%2?6:0;pid_t child=fork();if(child==0){((U(*)(U*))p)(fake);_exit(43);}int status;waitpid(child,&status,0);if(!WIFEXITED(status)||WEXITSTATUS(status))return 12;}printf(\"NATIVE %u ENTRY EXIT FAULT4\\n\",count);return 0;}\n"))
 (ert-deftest nelisp-aot-direct-stack-push/native-full64-entry-exit-order-fault-WORD-SP-callees ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "direct-stack-native-" t))
          (c (expand-file-name "p.c" dir)) (s (expand-file-name "p.s" dir))
          (exe (expand-file-name "p" dir)) (on (expand-file-name "on.o" dir))

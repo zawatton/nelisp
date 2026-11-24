@@ -1,4 +1,20 @@
-;;; nelisp-stdlib-plist-str.el --- Sweep 9 G4 plist + simple string  -*- lexical-binding: t; -*-
+;;; nelisp-stdlib-plist-str.el --- Sweep 9 G4 plist + simple string  -*- lexical-binding: t; byte-compile-warnings: (not redefine); -*-
+
+;; Compile-time hints for runtime-provided names (no-ops when evaluated).
+(declare-function nelisp--casify-fast "ext:nelisp-runtime")
+(declare-function nelisp--check-plist "ext:nelisp-runtime")
+(declare-function nelisp--check-string "ext:nelisp-runtime")
+(declare-function nelisp--compare-strings-subarray "ext:nelisp-runtime")
+(declare-function nelisp--concat-ints "ext:nelisp-runtime")
+(declare-function nelisp--format-float-body "ext:nelisp-runtime")
+(declare-function nelisp--make-mut-string "ext:nelisp-runtime")
+(declare-function nelisp--signal-wrong-type "ext:nelisp-runtime")
+(declare-function nelisp-casetab--get-extra-slot "ext:nelisp-runtime")
+(declare-function nelisp-casetab--ref "ext:nelisp-runtime")
+(declare-function nl-jit-call-out-1 "ext:nelisp-runtime")
+(declare-function nl-jit-call-out-2 "ext:nelisp-runtime")
+(declare-function unibyte-string-p "ext:nelisp-runtime")
+(defvar nelisp-casetab--native-extra)
 
 (unless (fboundp 'nelisp--check-plist)
   (defun nelisp--check-plist (x)

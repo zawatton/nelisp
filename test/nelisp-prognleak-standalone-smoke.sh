@@ -68,7 +68,11 @@ check_load() {
         findings=$((findings + 1))
         return
     fi
-    if ! grep -q "void-function: ($want_symbol)" "$out_dir/$name.err"; then
+    # Either NeLisp's own condition print or, when the error escapes eager
+    # macro-expansion of `eval-and-compile'/`eval-when-compile', GNU's
+    # wrapped "Eager macro-expansion failure: (void-function SYMBOL)".
+    if ! grep -q -F -e "void-function: ($want_symbol)" \
+            -e "(void-function $want_symbol)" "$out_dir/$name.err"; then
         echo "FAIL $name: stderr does not name (void-function $want_symbol)"
         cat "$out_dir/$name.err"
         findings=$((findings + 1))
@@ -104,10 +108,12 @@ check_load macro-defined-later \
 (defmacro nelisp-prognleak-undef-fwd (a b) (list (quote +) a b))' \
     nelisp-prognleak-undef-fwd
 
+# GNU Emacs names the alias, not its unbound target:
+# (void-function nelisp-prognleak-alias-undef).
 check_load defalias-undefined-target \
     "(defalias 'nelisp-prognleak-alias-undef 'nelisp-prognleak-undef-target)
 (nelisp-prognleak-alias-undef 1 2)" \
-    nelisp-prognleak-undef-target
+    nelisp-prognleak-alias-undef
 
 # check_defalias_macro_works: a name resolved through `defalias' to a
 # REAL macro must still dispatch as a macro (not fall through the same

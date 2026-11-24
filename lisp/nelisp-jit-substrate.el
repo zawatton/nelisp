@@ -39,6 +39,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 ;;;; --- 1. cons / car / cdr / setcar / setcdr wrappers ----
 ;;
 ;; Lifted from `nelisp-jit-strategy.el' lines 73-91.  Must precede

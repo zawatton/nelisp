@@ -3,6 +3,19 @@
 (require 'cl-lib)
 (require 'nelisp-bytecode-compiler-input)
 
+(defvar nelisp-runtime-reload-gc-contract)
+(declare-function nelisp-native-load-running-binary-sha256 "nelisp-native-load" ())
+(declare-function nelisp-native-load--runtime-abi-v2 "nelisp-native-load" ())
+(declare-function nelisp-native-load-raw-v2-compile-file "nelisp-native-load"
+                  (source-path artifact-path &optional build-id binary-sha256
+                               call1-template rooted-stack-spec
+                               conditional-spec rooted-branch-spec
+                               rooted-branch-join-spec rooted-cfg-spec
+                               safe-v3-spec validation-receiver
+                               source-snapshot cache-only))
+(declare-function nelisp-runtime-reload-contract-matches-p
+                  "nelisp-runtime-reload-abi" ())
+
 (defun nelisp-bytecode-native-unary-chain-operations (input)
   "Return the verified GNU 31.1 CAR/CDR sequence in INPUT, or nil.
 

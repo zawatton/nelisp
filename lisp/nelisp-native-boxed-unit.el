@@ -106,7 +106,7 @@ MINIMUM-USER-ARITY are supplied as nil."
 
 (defun nelisp-native-boxed-unit-open-rest
     (artifact name constants required-count)
-  "Open NAME as a fixed boxed entry receiving REQUIRED-COUNT args and one REST list."
+  "Open NAME as a boxed entry receiving REQUIRED-COUNT args and one REST list."
   (unless (and (integerp required-count) (>= required-count 0))
     (error "native-boxed-unit: invalid REST required count"))
   (nelisp-native-boxed-unit-open-with-constants

@@ -20,7 +20,7 @@ while [ "$#" -gt 0 ]; do
     --b) B="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --build-only|--emit-only) BUILD_ONLY=1; shift ;;
-    *) echo "usage: $0 [--op +|-|*] [--a N] [--b N] [--target macos-aarch64|macos-x86_64] [--build-only]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--op +|-|*] [--a N] [--b N] [--target macos-aarch64] [--build-only]" >&2; exit 2 ;;
   esac
 done
 
@@ -37,19 +37,9 @@ cd "$REPO_ROOT"
 if [ -z "$TARGET" ]; then
   case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
     Darwin-arm64) TARGET="macos-aarch64" ;;
-    # NOT macos-x86_64.  scripts/nelisp-standalone-build.el says so at
-    # length: the Mach-O writer and the x86_64 assembler both support the
-    # primitives, but the per-target orchestration (-abi, -arch, -os, the
-    # arena source and the start unit) "has no `macos-x86_64' clause
-    # anywhere and falls into an explicit \"unsupported target\" error",
-    # and calls closing that "real follow-up work, not something this
-    # predicate can or should paper over".
-    #
-    # Choosing it here is what asked for that error.  An Intel host
-    # cross-builds the aarch64 target instead -- which is the only macOS
-    # target that exists -- and verify-cross-platform.sh already declines
-    # to execute what it builds there.
-    Darwin-x86_64) TARGET="macos-aarch64" ;;
+    Darwin-x86_64)
+      echo "[macos-standalone-eval] FAIL: macOS x86_64 (Intel) is not supported; use an arm64 Mac" >&2
+      exit 2 ;;
     *) TARGET="macos-aarch64" ;;
   esac
 fi
@@ -74,7 +64,6 @@ case "$TARGET" in
   # an arch suffix, and aarch64 is the host arch here (same rule the reader
   # smoke documents for `target/nelisp').
   macos-aarch64) EXE="$REPO_ROOT/target/nelisp-standalone-eval" ;;
-  macos-x86_64) EXE="$REPO_ROOT/target/nelisp-standalone-eval-macos-x86_64" ;;
   *) echo "[macos-standalone-eval] FAIL: unsupported target $TARGET" >&2; exit 2 ;;
 esac
 if [ ! -f "$EXE" ]; then
@@ -85,7 +74,6 @@ fi
 HOST_TARGET=""
 case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
   Darwin-arm64) HOST_TARGET="macos-aarch64" ;;
-  Darwin-x86_64) HOST_TARGET="macos-x86_64" ;;
 esac
 if [ "$HOST_TARGET" != "$TARGET" ] || [ "$BUILD_ONLY" -eq 1 ]; then
   file "$EXE"

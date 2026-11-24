@@ -33,7 +33,8 @@
 (load "packages/nl-prelude/src/nl-prelude.el")
 (load "packages/nl-prelude/test/nl-prelude-test.el")
 
-(let ((tests (reverse nl-smoke--tests))
+(let ((tests (mapcar (lambda (tt) (cons (ert-test-name tt) (ert-test-body tt)))
+                      (ert-select-tests t t)))
       (ran 0)
       (omitted 0)
       (deep-tests '(nl-prelude-loop-1e6-does-not-overflow

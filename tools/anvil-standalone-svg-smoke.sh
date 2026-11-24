@@ -48,7 +48,6 @@ if [ "$ANVIL_BIN" = "$REPO_ROOT/bin/anvil" ]; then
       "$REPO_ROOT/target/nelisp" \
       "$REPO_ROOT/target/nelisp.exe" \
       "$REPO_ROOT/target/nelisp-macos-aarch64" \
-      "$REPO_ROOT/target/nelisp-macos-x86_64" \
       "$REPO_ROOT/target/nelisp-aarch64" \
       "$REPO_ROOT/target/nelisp-aarch64.exe" \
   ; do

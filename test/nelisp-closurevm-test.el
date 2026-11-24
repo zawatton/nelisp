@@ -20,14 +20,32 @@
     (condition-case nil
         (while t
           (let ((form (read (current-buffer))))
+            ;; The closure-object accessors (`nelisp--closure-cons' & co) are
+            ;; defined by the prelude's `(unless (fboundp 'nelisp--closure-p) ...)'
+            ;; fallback for an older image; host Emacs takes that branch.
+            (when (equal (cadr form) '(fboundp 'nelisp--closure-p))
+              (eval form t))
             (when (and (memq (car-safe form) '(defun defvar defconst))
                        (symbolp (cadr form))
                        (or (string-prefix-p "nelisp--fx-" (symbol-name (cadr form)))
                            ;; The compiler's helpers and state (Doc 243 S5).
                            (string-prefix-p "nelisp--fxc-" (symbol-name (cadr form)))
-                           (eq (cadr form) 'nelisp-fx-enabled)))
+                           (eq (cadr form) 'nelisp-fx-enabled)
+                           ;; 14bfa2a7f: the local-lambda inliner's switches.
+                           (memq (cadr form) '(nelisp-fx-inline-local-lambdas
+                                               nelisp-fx-inline-inner-binders))))
               (eval form t))))
       (end-of-file nil))))
+
+;; The FX code calls the closure-kind builtins `nelisp--closure-p' and
+;; `nelisp--closure-cons' (02a1dccef).  Host Emacs lacks them and the load
+;; filter above skips the prelude's `unless fboundp' fallback, so define the
+;; cons-shaped fallback here; otherwise results depend on which earlier test
+;; file happened to define them.
+(unless (fboundp 'nelisp--closure-p)
+  (defun nelisp--closure-p (x) (eq (car-safe x) 'closure)))
+(unless (fboundp 'nelisp--closure-cons)
+  (defun nelisp--closure-cons (x) (and (eq (car-safe x) 'closure) x)))
 
 (defmacro closurevm-isolated (&rest body)
   `(let ((nelisp--fx-table (make-hash-table :test 'eq))

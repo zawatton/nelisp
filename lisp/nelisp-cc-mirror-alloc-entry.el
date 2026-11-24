@@ -92,8 +92,8 @@
   "AOT source for Doc 119 §119.A `mirror_alloc_entry'.
 
 Allocates a fresh nine-slot `symbol-entry' Record (Doc 226 D1) via
-`record-make' (§115.3); slots 4-8 start nil and four refcount-safe `record-slot-set'
-(§111.B) installs populate slots 0-3. Replaces
+`record-make' (§115.3); slots 4-8 start nil and four refcount-safe
+`record-slot-set' (§111.B) installs populate slots 0-3. Replaces
 the ~12 LOC Rust helper `Env::mirror_insert_new_entry' (= the
 slot-pre-resolution + `Sexp::record(...)' allocator branch).
 The bucket-prepend follow-up lives in `nelisp-cc-mirror-bucket-prepend.el'.")

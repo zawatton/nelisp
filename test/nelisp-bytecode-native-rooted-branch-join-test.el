@@ -129,19 +129,19 @@
          (pin "nl_root_pin_slot_v2")
          (params '(u64 u64 u64 u64 u64 u64))
          (gateway-import (list :name gateway :kind 'func
-                               :abi nelisp-native-load-raw-runtime-abi-v2
+                               :abi (nelisp-native-load--runtime-abi-v2)
                                :arity 6 :params params :return 'u64
                                :address-mode 'native-bridgeable-v1
                                :index (cl-position gateway
                                                    nelisp-native-load-bridgeable-symbols
                                                    :test #'equal)))
          (pin-import (list :name pin :kind 'func
-                           :abi nelisp-native-load-raw-runtime-abi-v2
+                           :abi (nelisp-native-load--runtime-abi-v2)
                            :arity 6 :params params :return 'u64
                            :address-mode 'conditional-root-slot-v1
                            :index (nelisp-native-load--raw-v2-conditional-import-index pin)))
          (export (list :name entry :value 1 :size 64 :type 'func
-                       :abi nelisp-native-load-raw-runtime-abi-v2 :arity 4
+                       :abi (nelisp-native-load--runtime-abi-v2) :arity 4
                        :return 'u64 :params '(u64 u64 u64 u64)))
          (manifest
           (list :native (list :imports (list gateway-import pin-import)

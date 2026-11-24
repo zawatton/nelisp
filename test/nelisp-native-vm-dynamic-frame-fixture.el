@@ -16,7 +16,7 @@
   ("bad-optional" (setq binder (cl-subst 0 '(wf_write_nil value) binder :test #'equal)))
   ("bad-unbind" (setq dispatcher (cl-subst 0 '(wf_bytecode_unbind (+ env 32) bound) dispatcher :test #'equal)))
   ("bad-arity" (setq dispatcher (cl-subst nil '(< argc required) dispatcher :test #'equal)))
-  ("bad-exhaustion" (setq dispatcher (cl-subst '(wf_bytecode_execute code constants depth env out 0 0 0 0) '(if (< bound 0) 1 (wf_bytecode_execute code constants depth env out 0 0 0 0)) dispatcher :test #'equal))))
+  ("bad-exhaustion" (setq dispatcher (cl-subst '(wf_bytecode_execute_frame (nl_record_slot_word func 1) (nl_record_slot_word func 2) (wf_bytecode_w_int (nl_record_slot_word func 3)) env out 0 0 0 0 0 0 0 0 0) '(if (< bound 0) 1 (wf_bytecode_execute_frame (nl_record_slot_word func 1) (nl_record_slot_word func 2) (wf_bytecode_w_int (nl_record_slot_word func 3)) env out 0 0 0 0 0 0 0 0 0)) dispatcher :test #'equal))))
  (cl-labels ((emit (x) (push x checks))
              (check (x) (emit `(if ,x 0 (seq (ptr-write-u64 ,base 24 ,(cl-incf count)) (syscall-direct 1 1 ,base 32 0 0 0) (syscall-direct 60 2 0 0 0 0 0)))))
              (slot (p tag a b c) (cl-loop for v in (list tag a b c) for k from 0 do (emit `(ptr-write-u64 ,p ,(* k 8) ,v))))
@@ -34,8 +34,10 @@
              (reset (spec argc)
               (emit `(wf_bytecode_copy ,formals (nl_val_load ,(word spec) ,formals)))
               (emit `(wf_write_nil ,args)) (emit `(wf_bytecode_build_args ,frame 0 ,argc ,args))
-              (slot func 17 box 0 0) (emit `(ptr-write-u64 ,box 32 ,data)) (emit `(ptr-write-u64 ,box 48 4))
-              (emit `(ptr-write-u64 ,data 0 ,formals)) (emit `(ptr-write-u64 ,data 8 ,code)) (emit `(ptr-write-u64 ,data 16 ,constants)) (emit `(ptr-write-u64 ,data 24 33))
+              ;; FUNC is a record view; its backing BOX holds the header, the type word and the
+              ;; descriptor / code / constants / depth slot words (compact record layout).
+              (slot func 17 box 0 0) (emit `(ptr-write-u64 ,box 0 ,(+ 17 (* 4 256)))) (emit `(ptr-write-u64 ,box 8 3))
+              (emit `(ptr-write-u64 ,box 16 ,formals)) (emit `(ptr-write-u64 ,box 24 ,code)) (emit `(ptr-write-u64 ,box 32 ,constants)) (emit `(ptr-write-u64 ,box 40 ,(+ (* 33 4) 1)))
               (dolist (offset '(0 8 48 56 64 72 80 88 96 104)) (emit `(ptr-write-u64 ,base ,offset 0)))
               (dotimes (i 8) (slot (+ records (* i 32)) 99 88 77 66)) (slot out 99 88 77 66)))
   (dotimes (i 6) (slot (+ frame (* i 32)) 2 (+ 10 i) 0 0))
@@ -67,12 +69,15 @@
         (cl-loop for x in (if (< i argc) (list 2 (+ 10 i) 0 0) '(0 0 0 0)) for k from 0 do (check `(= (ptr-read-u64 ,(+ records (* i 32)) ,(* k 8)) ,x)))
         (if (= extra 0) (dotimes (k 4) (check `(= (ptr-read-u64 ,(+ records (* i 32)) ,(* k 8)) 0)))
          (progn
+          ;; The binding holds a cons view; its cells chain by direct cons words (cell | 2).
           (emit `(setq cursor ,(+ records (* i 32))))
+          (check '(= (ptr-read-u64 cursor 0) 7)) (check '(= (ptr-read-u64 cursor 16) 0)) (check '(= (ptr-read-u64 cursor 24) 0))
+          (emit '(setq cursor (ptr-read-u64 cursor 8)))
           (dotimes (j extra)
-           (check '(= (ptr-read-u64 cursor 0) 7)) (check '(= (ptr-read-u64 cursor 16) 0)) (check '(= (ptr-read-u64 cursor 24) 0))
-           (check `(= (ptr-read-u64 (ptr-read-u64 cursor 8) 0) ,(+ (* (+ 10 fixed j) 4) 1)))
-           (if (= j (1- extra)) (check '(= (ptr-read-u64 (ptr-read-u64 cursor 8) 8) 3))
-            (emit '(setq cursor (ptr-read-u64 (ptr-read-u64 cursor 8) 8)))))))))))))
+           (check `(= (ptr-read-u64 cursor 0) ,(+ (* (+ 10 fixed j) 4) 1)))
+           (if (= j (1- extra)) (check '(= (ptr-read-u64 cursor 8) 3))
+            (progn (check '(= (logand (ptr-read-u64 cursor 8) 7) 2))
+                   (emit '(setq cursor (- (ptr-read-u64 cursor 8) 2))))))))))))))
   ;; Both full dynamic dispatchers preserve shape/arity errors, all bound-cell
   ;; cleanup, and the original code/constant/depth snapshots across binding.
   (dolist (kind '(old new))
@@ -83,14 +88,16 @@
    (dolist (status '(0 1))
     (reset '(a &optional b &rest r) 6) (emit `(ptr-write-u64 ,base 80 ,status)) (emit `(ptr-write-u64 ,base 96 1))
     (check `(= (,(if (eq kind 'old) 'wf_bytecode_dynamic_function 'wf_bytecode_dynamic_function_frame) ,func ,formals ,(if (eq kind 'old) args frame) 6 77 ,out) ,status))
-    (check `(= (ptr-read-u64 ,base 64) 1)) (check `(= (ptr-read-u64 ,base 72) 3)) (check `(= (ptr-read-u64 ,base 88) ,code)) (check `(= (ptr-read-u64 ,base 8) 3)) (check `(= (ptr-read-u64 ,base 48) 0))))
+    (check `(= (ptr-read-u64 ,base 64) 1)) (check `(= (ptr-read-u64 ,base 72) 3)) ;; Since cf189fce6 the dispatcher reads code/constants/depth after the binding
+    ;; (GNU funcall_lambda evaluates them after specbind), so the rewrite made while
+    ;; binding is the code that runs.
+    (check `(= (ptr-read-u64 ,base 88) ,out)) (check `(= (ptr-read-u64 ,base 8) 3)) (check `(= (ptr-read-u64 ,base 48) 0))))
   ;; New checked scratch-root failure must not execute or unbind nonexistent cells.
   (reset '(a) 1) (emit `(ptr-write-u64 ,base 56 1))
   (check `(= (wf_bytecode_dynamic_function_frame ,func ,formals ,frame 1 77 ,out) 1))
   (check `(= (ptr-read-u64 ,base 0) 0)) (check `(= (ptr-read-u64 ,base 64) 0)) (check `(= (ptr-read-u64 ,base 72) 0)) (check `(= (ptr-read-u64 ,base 104) 1)) (check `(= (ptr-read-u64 ,base 48) 0))
-  (let* ((common (cl-loop for f in '(val-load sexp-clone-into nlconsbox-alloc nlconsbox-set-car nlconsbox-set-cdr nlconsbox-clone nlvector-clone nlstr-clone nlchartable-clone nlboolvector-clone nlcell-clone nlrecord-clone nlrecord-slot-ptr jit-cons-car-ptr jit-cons-cdr-ptr) append (let ((x (symbol-value (intern (format "nelisp-cc-%s--source" f))))) (if (eq (car x) 'seq) (cdr x) (list x)))))
-         (source `(seq ,binder ,dispatcher ,legacy ,legacy-dispatch ,nelisp-cc-cons-construct--source ,@common
-           ,@(mapcar #'od-def '(wf_bytecode_slot wf_bytecode_copy wf_copy32 wf_write_nil wf_bytecode_build_args wf_bytecode_arglist_shape wf_bytecode_optional_marker_p wf_bytecode_rest_marker_p wf_bytecode_copy_arg_tail))
+  (let* ((source `(seq ,binder ,dispatcher ,legacy ,legacy-dispatch 
+
            (defun nl_bind_clone_force_flag () 0) (defun nl_cons_alloc () 0) (defun nl_gc_in_arena (p) 0) (defun nl_gc_is_boot (p) 0)
            (defun nl_alloc_str (a b c) (syscall-direct 60 199 0 0 0 0 0)) (defun nl_alloc_symbol (a b c) (syscall-direct 60 199 0 0 0 0 0))
            (defun wf_dirty () (ptr-write-u64 ,base 8 (+ (ptr-read-u64 ,base 8) 1)))
@@ -101,16 +108,17 @@
            (defun wf_bytecode_root_exhausted () (seq (ptr-write-u64 ,base 104 1) 1))
            (defun wf_bytecode_varbind (env name value)
             (let ((i (ptr-read-u64 ,base 0)))
-             (seq (ptr-write-u64 ,names (* i 8) name) (wf_copy32 (+ ,records (* i 32)) value) (ptr-write-u64 ,base 0 (+ i 1))
-              (if (= (ptr-read-u64 ,base 96) 1) (ptr-write-u64 ,data 8 ,out) 0) 0)))
+             (seq (ptr-write-u64 ,names (* i 8) name) (nl_sexp_clone_into value (+ ,records (* i 32))) (ptr-write-u64 ,base 0 (+ i 1))
+              (if (= (ptr-read-u64 ,base 96) 1) (ptr-write-u64 ,box 24 ,out) 0) 0)))
            (defun wf_bytecode_unbind (frames bound) (seq (ptr-write-u64 ,base 72 bound) 0))
            (defun bf_wrong_number_of_args (func argc) (seq (ptr-write-u64 ,out 0 4) 1))
            (defun nl_apply_stash_invalid_function (env func) (seq (ptr-write-u64 ,out 0 5) 1))
-           (defun wf_bytecode_execute (code constants depth env out args argc maxargs rest)
+           (defun bf_subr_arity_name (func env) func)
+           (defun wf_bytecode_execute_frame (code constants depth env out initial-args initial-argc initial-maxargs initial-rest initial-frame initial-words outw formals pre)
             (seq (ptr-write-u64 ,base 64 (+ (ptr-read-u64 ,base 64) 1)) (ptr-write-u64 ,base 88 code) (ptr-read-u64 ,base 80)))
-           (defun nl_alloc_bytes (size align) (let ((p (ptr-read-u64 ,base 16))) (seq (ptr-write-u64 ,base 16 (+ p size)) p)))
+           (defun nl_alloc_bytes (size align) (if (= (ptr-read-u64 ,base 56) 1) 0 (let ((p (ptr-read-u64 ,base 16))) (seq (ptr-write-u64 ,base 16 (+ p size)) p))))
            (defun audit_run () (let ((cursor 0)) (seq (syscall-direct 9 ,base 16777216 3 50 -1 0) (ptr-write-u64 (data-addr nl_arena_base) 0 ,base) (ptr-write-u64 ,base 192 1) (ptr-write-u64 ,base 16 ,(+ base 1048576)) ,@(nreverse checks) (ptr-write-u64 ,base 24 0) (syscall-direct 1 1 ,base 32 0 0 0) 0)))
            (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "dynamic-frame-audit.o" (append source nelisp-aot-test-runtime-link-defuns)) (nelisp-standalone--arena-base-slot-unit)) "_start")
+   (let ((inhibit-message t)) (nelisp-aot-test-runtime-link-units output "dynamic-frame-audit.o" source (list (nelisp-standalone--arena-base-slot-unit)) "_start"))
    (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
    (princ (format "DYNAMIC-NATIVE-COMPILED variant=%s checks=%d\n" variant count)))))

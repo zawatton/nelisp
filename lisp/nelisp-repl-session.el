@@ -34,6 +34,9 @@
   "Validate FORM and return its bounded printed representation."
   (unless (nelisp-repl-session--readable-p form)
     (error "REPL session refuses circular or unreadable value"))
+  ;; `read-eval' is not special in every host Emacs; without this the
+  ;; binding below is lexical and `read' still evaluates `#.' forms.
+  (defvar read-eval)
   (let* ((print-length nil) (print-level nil) (read-eval nil)
          (text (prin1-to-string form)))
     (when (> (string-bytes text) nelisp-repl-session-max-form-bytes)

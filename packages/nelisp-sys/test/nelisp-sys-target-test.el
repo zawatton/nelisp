@@ -4,19 +4,18 @@
 
 ;;; Commentary:
 ;; Stage 132.1 gate: query tests for pointer width / object format / C ABI
-;; plus a descriptor snapshot for all five supported targets.
+;; plus a descriptor snapshot for all four supported targets.
 
 ;;; Code:
 
 (require 'ert)
 (require 'nelisp-sys-target)
 
-(ert-deftest nelisp-sys-target-lists-five ()
-  "Exactly the five Doc 132 targets are registered."
+(ert-deftest nelisp-sys-target-lists-four ()
+  "Exactly the four supported targets are registered."
   (should (equal (sort (copy-sequence (nelisp-sys-target-list)) #'string<)
                  (sort (list "aarch64-apple-darwin"
                              "aarch64-unknown-linux-gnu"
-                             "x86_64-apple-darwin"
                              "x86_64-pc-windows-msvc"
                              "x86_64-unknown-linux-gnu")
                        #'string<))))
@@ -26,6 +25,13 @@
   (should-not (nelisp-sys-target-p "riscv64-unknown-linux-gnu"))
   (should-error (nelisp-sys-target-get "riscv64-unknown-linux-gnu")
                 :type 'nelisp-sys-target-error))
+
+(ert-deftest nelisp-sys-target-rejects-x86_64-apple-darwin ()
+  "Intel macOS was dropped; it must hit the normal unknown-target error."
+  (should-not (nelisp-sys-target-p "x86_64-apple-darwin"))
+  (should-error (nelisp-sys-target-get "x86_64-apple-darwin")
+                :type 'nelisp-sys-target-error)
+  (should (nelisp-sys-target-p "aarch64-apple-darwin")))
 
 (ert-deftest nelisp-sys-target-query-pointer-width ()
   "All current targets are 64-bit little-endian with 8-byte pointers."
@@ -37,7 +43,6 @@
 (ert-deftest nelisp-sys-target-query-object-format ()
   (should (eq 'elf64 (nelisp-sys-target-object-format "x86_64-unknown-linux-gnu")))
   (should (eq 'elf64 (nelisp-sys-target-object-format "aarch64-unknown-linux-gnu")))
-  (should (eq 'mach-o64 (nelisp-sys-target-object-format "x86_64-apple-darwin")))
   (should (eq 'mach-o64 (nelisp-sys-target-object-format "aarch64-apple-darwin")))
   (should (eq 'pe-coff (nelisp-sys-target-object-format "x86_64-pc-windows-msvc"))))
 
@@ -65,7 +70,6 @@ Catches accidental ABI drift in the descriptor table."
       snap
       '(("aarch64-apple-darwin" aarch64 macos mach-o64 aapcs64 16 "start")
         ("aarch64-unknown-linux-gnu" aarch64 linux elf64 aapcs64 16 "_start")
-        ("x86_64-apple-darwin" x86_64 macos mach-o64 sysv-amd64 16 "start")
         ("x86_64-pc-windows-msvc" x86_64 windows pe-coff win64 16 "mainCRTStartup")
         ("x86_64-unknown-linux-gnu" x86_64 linux elf64 sysv-amd64 16 "_start"))))))
 

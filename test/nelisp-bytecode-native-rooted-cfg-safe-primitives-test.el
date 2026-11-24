@@ -123,6 +123,4 @@
                            :status)
                 'unsupported))))
 
-(ert-run-tests-batch-and-exit)
-
 ;;; nelisp-bytecode-native-rooted-cfg-safe-primitives-test.el ends here

@@ -1,0 +1,7 @@
+# CI run 43141614135 (workflow_dispatch, main f6472a2bd), 2026-11-12
+# run wall: 02:28:05Z -> 03:21:21Z (53.3 min), conclusion failure (reds triaged separately)
+# tier extras legs (criterion S4.5: each <= 15 min):
+tier extras (variants) | success | 2026-11-12T02:32:44Z -> 2026-11-12T02:38:13Z
+tier extras (parity) | success | 2026-11-12T02:32:45Z -> 2026-11-12T02:39:30Z
+tier extras (smokes) | success | 2026-11-12T02:32:44Z -> 2026-11-12T02:33:57Z
+tier extras (build) | success | 2026-11-12T02:32:45Z -> 2026-11-12T02:36:26Z

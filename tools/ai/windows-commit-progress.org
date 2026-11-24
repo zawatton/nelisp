@@ -1,0 +1,39 @@
+#+TITLE: Batch redundant Windows arena commits without changing allocation semantics
+
+# Dedicated slice, seeded from the validated AUX-link owner overlay.
+# The original load-speed and macroexp VM ledgers remain authoritative for
+# their unchanged broader criteria. No native compiler/loader guards change.
+
+* S1 Memory correctness
+
+** S1.1 Exact generated helpers pass sequential, batch-boundary, failure, and watermark initialization models
+#+NOTE: The host model evaluates the generated descriptor initializer, commit helper and allocator; this does not cover arena bootstrap or cold restoration.
+evidence: target/ai/windows-commit-models/none.log sha256=5138ccc5d3a216b45e80c58bf56cbe007a39b46fc394536f9b4262a9a97280dc
+evidence: scripts/nelisp-standalone-build.el sha256=9c83bc1ef1a59a7ece7966922a70af2a6517bc32803f35ef0607f98e694c456e
+evidence: test/standalone-windows-chunk-commit-check.el sha256=4fff525b40125372f060484cf026fe223eb8ee8c37261f26d652539988aa411b
+
+** S1.2 Deterministic concurrent publication models pass and reject premature-publication and per-object-commit controls
+#+NOTE: The coordinator reran the identical production-helper model in all three modes. Production passed 38 checks; the real premature and per-object mutations exited 1 with 8 and 12 failed checks. These are deterministic host interleavings, not real preemption or VirtualAlloc.
+evidence: target/ai/windows-commit-models/premature.log sha256=1416e68fe8f77a0809361c857cda87e7c2a8c690645bc3d699f03ef27e2b4615
+evidence: target/ai/windows-commit-models/per-object.log sha256=25ee7a36b6d58a4500c476bec730a0c38a446a8c93769eceb9e1aa1fb291b82f
+
+** S1.3 Real Windows allocation, GC, thread roots, and cold-image boot preserve checked values
+#+NOTE: The current candidate passes real allocation/GC checks, but has not rerun explicit cold-image restoration or real thread tests. Linux automatic cold-v5 is a different route: the earlier Windows 1efc2e970061 binary passed explicit v4 --cold-load-from and nine heap-image scenarios (Anvil worklog 336). Do not call all Windows cold restore unsupported or infer this candidate's cold-image PASS from descriptor models or ordinary startup.
+pending
+
+* S2 Measured application effect
+
+** S2.1 Seven checked basic bytecode-loop pairs show no median regression over 5% against the AUX-link baseline
+#+NOTE: AUX baseline 113.0 ns/step, candidate 116.9 ns/step; ratio 1.035. No basic-loop speedup is claimed.
+evidence: target/ai/windows-commit-cache/bench-fixed/report.json sha256=75d6b1df602cc8f481344757fb52dfe0b5a24bef44a3665b4c07284ed8ce0038
+
+** S2.2 Both real macro corpora are at least 5% faster and win six of seven checked pairs against the original baseline
+#+NOTE: State 1.113618 -> 0.509634 s; conditional 13.036092 -> 9.459680 s, both 7/7 faster. CPU0 fresh alternating processes, 8 GiB jobs, explicit idle-check waiver. Conditional is a checked 5+2 continuation after the original total-budget timeout; all five complete prefix pairs retained, orphan excluded, no timing-based selection. Derived report uses original runner statistics; failed raw stays failed. Sixteen adapter mutation controls reject bad evidence.
+evidence: target/ai/windows-commit-cache/bench-state/report.json sha256=c21224c8fb281132f246119bfb2d1cc3fb32e31eeac334371c2e71d7c28e0424
+evidence: target/ai/windows-commit-cache/bench-conditional-verified/report.json sha256=d6e667934d85ec130f2dd53b605b8b06b0a4ffe5969347a954bfb59c5305c676
+evidence: target/ai/windows-commit-cache/continuation-selftest-verified.log sha256=f489865421bbe48f2ae7bf4228c58bb01a0b79f10e5a0e7599b3eecc6ad99dd1
+evidence: target/ai/windows-commit-cache/acceptance.log sha256=dbc0b5de796e140f745ee77690f71c36a9469248521ebae7c9ba1dd8b331bae9
+
+** S2.3 The isolated compiled newDTW runtime loads within four seconds and all nine scenario frames match GNU
+#+NOTE: Existing compiled-runtime gate in the isolated clone checks fresh elc-only loads: 3.0 seconds (limit 4), nine identical scenarios. Additional direct candidate frames also match all nine existing GNU goldens.
+evidence: target/ai/windows-commit-cache/compiled-runtime-gate.log sha256=5d5d60f4ab351d905c9810a21a3e067d95f50f35030a0be4f05ce2b208c6e052

@@ -149,6 +149,4 @@
     (should (= (nth 1 result) 0))
     (should (equal (nth 4 row) "host-cl-struct-artifact-in-constants"))))
 
-(ert-run-tests-batch-and-exit)
-
 ;;; nelisp-prelude-bytecode-selector-test.el ends here

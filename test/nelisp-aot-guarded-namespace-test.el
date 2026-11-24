@@ -4,6 +4,8 @@
 (require 'nelisp-aot-compiler)
 (require 'nelisp-standalone-build)
 (ert-deftest nelisp-aot-guarded-namespace/standalone-unit-private-public-collision ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "guarded-names-" t)) (exe (expand-file-name "probe" dir))
          (nelisp-standalone--target 'linux-x86_64)
          (nelisp-aot-compiler--object-hidden-boundary-symbols nil)

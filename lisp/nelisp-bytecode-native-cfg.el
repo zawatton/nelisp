@@ -20,6 +20,7 @@
 (eval-when-compile (require 'nelisp-native-load))
 (declare-function nelisp-native-load-raw-check "nelisp-native-load"
                   (manifest &optional name))
+(declare-function nelisp-native-load-running-binary-sha256 "nelisp-native-load" ())
 
 (defun nelisp-bytecode-native-cfg--unsupported (reason frame-ir)
   (list :status 'unsupported :reason reason :frame-ir frame-ir
@@ -180,7 +181,7 @@ backedges while keeping initial raw arguments unproven."
      (t nil))))
 
 (defun nelisp-bytecode-native-cfg--validate-frame
-    (blocks constants boolean-values arity)
+    (blocks constants boolean-values _arity)
   "Return a reason if BLOCKS exceeds the raw-i64 slot proof slice."
   (let ((failure nil))
     (dolist (block (append blocks nil))

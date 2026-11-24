@@ -1,5 +1,7 @@
 ;;; nelisp-stdlib-search.el --- Sweep 9 G3 list search  -*- lexical-binding: t; -*-
 
+(declare-function nelisp--check-list "nelisp-runtime")
+
 (unless (fboundp 'memq)
   (defun memq (elt list)
     (unless (listp list) (signal 'wrong-type-argument (list 'listp list)))

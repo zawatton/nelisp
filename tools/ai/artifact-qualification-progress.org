@@ -1,0 +1,61 @@
+#+TITLE: Artifact-bound qualification under owner-approved contract r2
+
+The existing Doc256 twelve-criterion and B0 six-criterion ledgers remain unchanged.
+This supplementary objective starts after the owner approval of proposal r2.
+The rejected private G2c checks and their six-submission history remain archived;
+this ledger does not claim those checks were repaired or their contract completed.
+
+* S1 Coherent reduced adapter
+
+** S1.1 Owner approval and versioned evidence contract are pinned
+evidence: target/sequence-foundations/artifact-contract-r2/owner-approval-and-contract.json sha256=ac7710f922e917ac5b78001397599306b8311aa8915dc36eab4838f27fce00a0
+
+** S1.2 Adapter source reads and preserves accepted components with calibrated controls
+#+NOTE: 2026-11-15 criterion change: repointed from the frozen r1 submissions (partial-adapter-r1, adapter-bridge-r1, both superseded and rejected) to the repaired submission adapter-r3 (owner option A: pinned components repaired under review; all edits in pinned-r3/, pin-changes-r3.json). Independent reviews a3/a4 (gpt-6.1-sol): ACCEPT-WITH-FIXES limited to S1.2; the a4 fix (permission bits in the live guard) is verified by guard controls and gate-33, not re-reviewed. Calibration: the same check against the r1 factory/bridge exits 1.
+cmd: ulimit -v 8388608; target/sequence-foundations/artifact-contract-r2/review-submissions/adapter-r3/ledger-check.sh
+evidence: target/sequence-foundations/artifact-contract-r2/review-submissions/adapter-r3/pinned-r3/partial-factory.el sha256=53a6b9151f0eab01442e93d7242c5c62cb4b4232b358b0edbf49c0f8d09f0570
+evidence: target/sequence-foundations/artifact-contract-r2/adapter-r2-review/a4/sol-review.txt sha256=af2c82989fb45fd90d541d829a87e4f0373b1ca1169f03139e734037cef7118d
+
+** S1.3 Genuine C1/C2 adapter lifecycle completes with matching actual values
+#+NOTE: 2026-11-15 criterion change: was pending. Runtime gate (run-probe.sh --gate, genuine nelisp-standalone-build-reader with real settings, no shims) passed at gate-33: C1 key admission, C2, finish observed once, RUNNER-OK, typed live-tree guard clean. The gate writes new mktemp dirs into the eq-foundation target/ and takes ~100 s, so it is recorded as evidence, not rerun by the meter. Not covered: Emacs 30, cold image, artifact runtime cache, sealed qualification (S3).
+evidence: target/sequence-foundations/artifact-contract-r2/review-submissions/adapter-r3/gate-33.stdout sha256=5fc9f8417994b78c308fbb476b4faba96ab3aaf50ff43495966866987a89150a
+evidence: target/sequence-foundations/artifact-contract-r2/review-submissions/adapter-r3/gate-33.live-after.json sha256=728ce3ed1ae0f14fc2d57e7f3164186ac1cf61afdfed7434efc8e247d5a7aa2b
+
+* S2 Enforced input boundary
+
+** S2.1 Exact recipe and allowed external filesystem inputs are inventoried
+#+NOTE: 2026-11-15 criterion change: pending -> failing cmd (known red). Inventory recipe-r3 (r1 rejected by gpt-6.1-sol, recipe-r3-review/r1; r2 repairs every finding, 14 negative controls). The checker fails closed while open_gaps is non-empty: the cold-image and artifact-runtime-cache stages were not traced (the traced gate skips them), so their dynamic reads are unobserved. Closing the gap needs a traced run of those stages, which counts against the build budget (118 s remaining, no increase approved). Undetermined recipe fields (no r3 controller; ambient env) and eight blocking mismatches (env, output map, cache, v5 manifest, git, eln-cache, donor, queue) are recorded in recipe-r3.json.
+cmd: ulimit -v 8388608; PYTHONDONTWRITEBYTECODE=1 python3 -I -B target/sequence-foundations/artifact-contract-r2/review-submissions/recipe-r3/check-inventory.py
+#+NOTE: 2026-11-15: r3 independent review (gpt-6.1-sol, recipe-r3-review/r3) ACCEPT-AS-RED: red is caused only by the declared 2 open_gaps (untraced cold-image/artifact-runtime-cache stages; untraced JOBS=1 route) and 6 undetermined recipe fields (no r3 controller, ambient env).
+evidence: target/sequence-foundations/artifact-contract-r2/recipe-r3-review/r3/sol-review.txt sha256=4ece83960f410f95526c22e1dbf9a48a082548c7217acadad7a540ec73df43c0
+
+** S2.2 Input validator and runner reject manifest, path and undeclared-input mutations
+#+NOTE: Expanded to include the calibrated stdin isolation control; actual genuine recipe execution and denied access remain required by S2.3. The denominator remains nine.
+#+NOTE: Original r1 red command/output remains archived; repaired unit was independently reviewed before integration.
+cmd: ulimit -v 8388608; PYTHONDONTWRITEBYTECODE=1 ../../bin/heavy-run.sh python3 target/sequence-foundations/artifact-contract-r2/review/check-validator-extra-controls-r2.py --module tools/ai/artifact-qualification/artifact_qualifier.py
+evidence: tools/ai/artifact-qualification/artifact_qualifier.py sha256=18f59330113d8e3867c11d6beb08b56803b13eb8b63b67ac97fa45b005479369
+evidence: target/sequence-foundations/artifact-contract-r2/review/qualifier-validator-r2-sol.json sha256=88bc29b6eb465cb3a3c0a52e24eeca932c7c7d32f93b279d1e817cc84eb114f0
+#+NOTE: The same stdin checker rejected frozen runner r1 and accepted independently reviewed r2. The red ledger remains archived in artifact-contract-r2/ledger-runner-r1-red.org.
+cmd: ulimit -v 8388608; PYTHONDONTWRITEBYTECODE=1 ../../bin/heavy-run.sh python3 tools/ai/artifact-qualification/stdin-acceptance-probe.py --unit-dir tools/ai/artifact-qualification
+evidence: tools/ai/artifact-qualification/sealed_runner.py sha256=78e0049d2216038bf9b2b7d870b770aac545a821fa085aa6f35cad6849a51cd3
+evidence: target/sequence-foundations/artifact-contract-r2/review/sealed-runner-r2-sol-20261113.json sha256=f8c9f4bf8da887bb293a1ff37a528be3a82da9259e8514be725c150bc2f3cd5f
+#+NOTE: 2026-11-14: Subject changed from the rejected r1 cache view to the dedicated-UID runner (isolation-alt-r1). The r1 failure is a fact about the rejected candidate. Its raw observation stays below as archived evidence, and the trust contract is unchanged. The owner told the coordinator to proceed with the recommended dedicated-UID route. Sonnet implemented the runner; independent gpt-6.1-sol reviews r1-r9 ended in ACCEPT. The owner installed it with sudo on 2026-11-14 at 16:50.
+#+NOTE: Archived r1 red observation (not re-checked): target/sequence-foundations/artifact-contract-r2/review/cache-view-r1-sibling-probe.stdout sha256=64935d3423c73f88036416845faf4c0273b0040141f87c7afe11ed6d4ea4c284
+#+NOTE: Live control: same-UID sibling writes through /proc/<pid>/root into the nelisp-qual sandbox's private/out and cache/view must all be denied. The same attack must still land on the same-UID runner (negative control). cache/view is modelled as a second tmpfs, not the r1 sealed memfd leaf.
+evidence: target/sequence-foundations/artifact-contract-r2/isolation-alt-r1/review-r9/sol-review.txt sha256=343225f8f0862b2e26920e2d3b87de279d7f6549b329dabface904526697cabd
+evidence: target/sequence-foundations/artifact-contract-r2/isolation-alt-r1/live-controls-r1/c_host_out.stdout sha256=3e9ccf18463cd81c5cd55671f4da440e2e835af5578ee795bc313d74cff25ee7
+cmd: ulimit -v 8388608; PYTHONDONTWRITEBYTECODE=1 ../../bin/heavy-run.sh python3 target/sequence-foundations/artifact-contract-r2/isolation-alt-r1/accepted-r9/uidalt/controls/c_host_out.py
+
+** S2.3 Same qualifier runs the genuine control command and denies undeclared filesystem access
+pending
+
+* S3 Reviewed qualification and real artifacts
+
+** S3.1 Q0-Q8 control matrix has pinned variants and intended failure oracles
+pending
+
+** S3.2 Independent coherent source and control review closes the release gate
+pending
+
+** S3.3 Bounded genuine build and native gates qualify exact produced artifacts
+pending

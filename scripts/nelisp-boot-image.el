@@ -47,6 +47,15 @@ the entry points of the others are autoloaded by loaddefs.el and cl-loaddefs.el
 `nelisp-boot-image--providers' these register no autoload for each definition,
 so the natives that exist before the first load are not replaced by stubs.")
 
+;; Byte-code reports go where the standalone build puts its other outputs
+;; (`nelisp-standalone--target-file'): under the user's build cache when a
+;; project build runs from an installed, read-only toolchain.
+(defun nelisp-boot-image--report-file (relative)
+  "Return the path of report RELATIVE."
+  (if (fboundp 'nelisp-standalone--target-file)
+      (nelisp-standalone--target-file relative)
+    (expand-file-name (concat "target/" relative) nelisp-boot-image--root)))
+
 (defun nelisp-boot-image--pcase-source (source path &optional name)
   "Bake GNU SOURCE (pcase.el, or the file named NAME) like its `.elc'."
   (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") source
@@ -60,9 +69,8 @@ so the natives that exist before the first load are not replaced by stubs.")
                        (expand-file-name "vendor/emacs-lisp"
                                          nelisp-boot-image--root)))
            (result (nelisp-prelude-bytecode-vendor-transform source path dirs))
-           (report (expand-file-name (format "target/nelisp-boot-image/%s-bytecode.tsv"
-                                             (or name 'pcase))
-                                     nelisp-boot-image--root)))
+           (report (nelisp-boot-image--report-file
+                    (format "nelisp-boot-image/%s-bytecode.tsv" (or name 'pcase)))))
       (make-directory (file-name-directory report) t)
       (nelisp-prelude-bytecode-write-report report (nth 2 result))
       (nelisp-boot-image--expand-load-time-macros (car result)))))
@@ -87,12 +95,31 @@ build host.")
     (defcustom) (defgroup) (defface))
   "Macro environment for build-time expansion of load-time forms.")
 
+;; Deterministic gensyms (2026-11-10).  Macros such as `pcase' and
+;; `cl-defstruct' name their temporaries with `gensym', whose counter is
+;; process-global, so the baked text read `#:x540' or `#:x523' depending on
+;; how many gensyms the build had made before -- an interpreted and a
+;; byte-compiled toolchain linked binaries that differed only there (and in
+;; the build digest over them).  Every expansion below starts the counter at
+;; 0.  The names carry no meaning: each form is printed with `print-circle'
+;; and `print-gensym', so a temporary's identity travels as a #N= label and
+;; reading `#:x0' twice still yields two distinct symbols.
+(defun nelisp-boot-image--expand-all (form &optional environment)
+  "`macroexpand-all' FORM in ENVIRONMENT with `gensym-counter' at 0."
+  (let ((gensym-counter 0))
+    (macroexpand-all form environment)))
+
+(defun nelisp-boot-image--expand-1 (form &optional environment)
+  "`macroexpand-1' FORM in ENVIRONMENT with `gensym-counter' at 0."
+  (let ((gensym-counter 0))
+    (macroexpand-1 form environment)))
+
 (defun nelisp-boot-image--expand-rx (form)
   "Return FORM with each `rx' call expanded, skipping quoted data."
   (cond ((not (consp form)) form)
         ((memq (car form) '(quote \`)) form)
         ((eq (car form) 'rx)
-         (macroexpand-all form nelisp-boot-image--expansion-environment))
+         (nelisp-boot-image--expand-all form nelisp-boot-image--expansion-environment))
         (t (let ((head (nelisp-boot-image--expand-rx (car form)))
                  (tail (cdr form)))
              (cons head
@@ -131,7 +158,7 @@ them at compile time)."
                              ;; expansion would load cl-seq.el (GNU's `.elc' has it
                              ;; expanded).
                              (equal (nth 1 form) '(fboundp 'cl-generic-define-method)))
-                         (macroexpand-all form nelisp-boot-image--expansion-environment))
+                         (nelisp-boot-image--expand-all form nelisp-boot-image--expansion-environment))
                         ((and (memq (car-safe form) '(defun defalias defvar defconst))
                               (nelisp-boot-image--tree-has-rx-p form))
                          (nelisp-boot-image--expand-rx form)))))
@@ -165,7 +192,7 @@ and booting the image loads no cl-seq.el."
     (unless (and at macro-start (< macro-start at))
       (error "cl-macs.el cl--defnumtype block not found"))
     (eval (car (read-from-string text macro-start)) t)
-    (let ((expansion (macroexpand-all (car (read-from-string call))
+    (let ((expansion (nelisp-boot-image--expand-all (car (read-from-string call))
                                       nelisp-boot-image--expansion-environment)))
       (when (string-match-p "#\\[" (prin1-to-string expansion))
         (error "Host byte-code leaked into the baked derived-type block"))
@@ -195,11 +222,83 @@ and booting the image loads no cl-seq.el."
                        (expand-file-name "vendor/emacs-lisp"
                                          nelisp-boot-image--root)))
            (result (nelisp-prelude-bytecode-vendor-transform source path dirs))
-           (report (expand-file-name "target/nelisp-boot-image/macroexp-bytecode.tsv"
-                                     nelisp-boot-image--root)))
+           (report (nelisp-boot-image--report-file
+                    "nelisp-boot-image/macroexp-bytecode.tsv")))
       (make-directory (file-name-directory report) t)
       (nelisp-prelude-bytecode-write-report report (nth 2 result))
       (car result))))
+
+;; Lane F2: the expansion of every `defun' in a program runs byte-run.el's `defun'
+;; expander and `byte-run--parse-body'.  Both are source forms the whole-file
+;; bake keeps (a `defmacro' and a `defalias' of a lambda), so they ran on the fx
+;; interpreter.  Compile them with the host compiler and install the byte-code right
+;; after the source forms; the source forms stay in front, so every property the
+;; source `defmacro' sets (doc-string-elt, indent, autoload-macro) is unchanged.
+(defvar byte-optimize--dynamic-vars)
+(defvar byte-compile-warnings)
+(defvar byte-compile-verbose)
+(defvar nelisp-prelude-bytecode--opcodes)
+(declare-function nelisp-prelude-bytecode--nested-unsupported "nelisp-prelude-bytecode")
+(declare-function nelisp-prelude-bytecode--decode-opcodes "nelisp-prelude-bytecode")
+
+(defconst nelisp-boot-image--byte-run-baked '(byte-run--parse-body defun)
+  "Names of the byte-run.el definitions the byte-run bake compiles.")
+
+(defun nelisp-boot-image--byte-run-lambda (form)
+  "Return (NAME MACRO-P LAMBDA) for a bakeable byte-run.el FORM, or nil."
+  (cond
+   ((and (eq (car-safe form) 'defalias) (eq (car-safe (nth 1 form)) 'quote)
+         (memq (cadr (nth 1 form)) nelisp-boot-image--byte-run-baked)
+         (eq (car-safe (nth 2 form)) 'function)
+         (eq (car-safe (cadr (nth 2 form))) 'lambda))
+    (list (cadr (nth 1 form)) nil (cadr (nth 2 form))))
+   ((and (eq (car-safe form) 'defmacro) (memq (nth 1 form) nelisp-boot-image--byte-run-baked))
+    ;; Drop the (declare ...) form: the source defmacro already applied it.
+    (let ((body (nthcdr 3 form)) (head nil))
+      (when (stringp (car body)) (push (pop body) head))
+      (when (eq (car-safe (car body)) 'declare) (pop body))
+      (list (nth 1 form) t (cons 'lambda (cons (nth 2 form) (append (nreverse head) body))))))))
+
+(defun nelisp-boot-image--byte-run-compile (name macro-p lambda-form)
+  "Return the boot text installing the compiled LAMBDA-FORM as NAME, or nil.
+Refuse (nil) unless every opcode is one the VM runs."
+  (require 'bytecomp)
+  (require 'byte-opt)
+  (let ((compiled (with-temp-buffer
+                    (setq-local lexical-binding t)
+                    (let ((byte-compile-warnings nil) (byte-compile-verbose nil)
+                          (byte-optimize--dynamic-vars nil))
+                      (condition-case nil (byte-compile lambda-form) (error nil))))))
+    (when (and (byte-code-function-p compiled)
+               (stringp (aref compiled 1))
+               (null (cl-remove-if (lambda (op) (memq op nelisp-prelude-bytecode--opcodes))
+                                   (nelisp-prelude-bytecode--decode-opcodes (aref compiled 1))))
+               (not (nelisp-prelude-bytecode--nested-unsupported compiled)))
+      (let ((print-escape-nonascii t) (print-escape-multibyte t)
+            (print-escape-control-characters t) (print-length nil) (print-level nil)
+            (fn (list 'make-byte-code (aref compiled 0)
+                      (cons 'unibyte-string (string-to-list (aref compiled 1)))
+                      (aref compiled 2) (aref compiled 3)
+                      (and (> (length compiled) 4) (aref compiled 4)))))
+        (concat "\n"
+                (prin1-to-string
+                 (list 'fset (list 'quote name) (if macro-p (list 'cons ''macro fn) fn)))
+                "\n")))))
+
+(defun nelisp-boot-image--byte-run-bake (text)
+  "Return TEXT (byte-run.el boot text) with compiled `defun' and parse-body."
+  (require 'nelisp-prelude-bytecode)
+  (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") text
+    (let ((patches nil))
+      (dolist (span (nelisp-prelude-bytecode--top-level-spans text))
+        (let ((spec (nelisp-boot-image--byte-run-lambda (nth 2 span))))
+          (when spec
+            (let ((baked (apply #'nelisp-boot-image--byte-run-compile spec)))
+              (when baked (push (cons (nth 1 span) baked) patches))))))
+      (dolist (patch patches)             ; latest first: offsets stay valid
+        (setq text (concat (substring text 0 (car patch)) (cdr patch)
+                           (substring text (car patch)))))
+      text)))
 
 (defun nelisp-boot-image-provider (name)
   "Return NAME's provider for embedding, with a trailing form.
@@ -216,7 +315,13 @@ providers and source-only builds retain their exact source text."
     ;; The executable build digest binds these bytes to its heap companion.
     (concat
      (cond ((eq name 'macroexp) (nelisp-boot-image--macroexp-source source path))
-           ((memq name '(pcase gv help cl-macs cl-preloaded oclosure cl-generic nadvice))
+           ;; byte-run and backquote are GNU preloaded `.elc' files: bake their defuns
+           ;; (`backquote-process', `backquote-listify', ...) as byte-code like
+           ;; pcase, so macro expansion does not run them interpreted on the fx VM.
+           ((eq name 'byte-run)
+            (nelisp-boot-image--byte-run-bake
+             (nelisp-boot-image--pcase-source source path name)))
+           ((memq name '(pcase gv help cl-macs cl-preloaded oclosure cl-generic nadvice backquote))
             (nelisp-boot-image--pcase-source source path name))
            ;; GNU's cl-lib.elc has `cl-old-struct-compat-mode' already expanded.
            ((eq name 'cl-lib) (nelisp-boot-image--expand-load-time-macros source))
@@ -250,7 +355,7 @@ providers and source-only builds retain their exact source text."
    ((and (symbolp (car form))
          (memq (car form) nelisp-boot-image--prelude-expanded-macros)
          (nelisp-boot-image--cl-target-p form))
-    (let ((new (macroexpand-1 form nelisp-boot-image--expansion-environment)))
+    (let ((new (nelisp-boot-image--expand-1 form nelisp-boot-image--expansion-environment)))
       (when (equal new form)
         (error "Host cannot expand prelude %S use: %S" (car form) form))
       (nelisp-boot-image--cl-post (nelisp-boot-image--cl-walk new))))
@@ -325,7 +430,7 @@ are defined on the host first, so GNU's gv resolves them as the runtime will."
               (when (eq (car-safe form) 'nelisp--define-core-record)
                 (when (fboundp (intern (format "%s-p" (cadr form))))
                   (error "Host already defines %S" (cadr form)))
-                (dolist (def (cdr (macroexpand-1 form)))
+                (dolist (def (cdr (nelisp-boot-image--expand-1 form)))
                   (when (memq (car-safe def) '(defun))
                     (push (cadr def) defined)))
                 (eval form nil))))
@@ -366,7 +471,7 @@ GNU's `.elc' has them expanded (through `define-inline') at compile time."
   (let ((patches nil))
     (dolist (span (nelisp-prelude-bytecode--top-level-spans text))
       (when (eq (car-safe (nth 2 span)) 'cl-defstruct)
-        (let* ((new (macroexpand-all (nth 2 span)
+        (let* ((new (nelisp-boot-image--expand-all (nth 2 span)
                                      nelisp-boot-image--expansion-environment))
                (printed (let ((print-length nil) (print-level nil)
                               (print-circle t) (print-gensym t)
@@ -664,12 +769,78 @@ memory must be available before the first Lisp form or heap restoration."
                       ,@(nelisp-standalone--byte-write-forms '(+ path n) ".cold")
                       (ptr-write-u8 (+ path n) 5 0)
                       (nl_boot_image_pin scratch path)))))))))
+        ;; BINARY.artifact.cold: heap image of the artifact/source substrate
+        ;; (see `nelisp-standalone--build-substrate-image').  Same discovery
+        ;; and pinning policy as the plain companion above, plus a whole-file
+        ;; check BEFORE the arena loader sees it: the build appends a 32-byte
+        ;; footer (magic, length of everything before it, checksum).  A
+        ;; truncated, extended or flipped file fails it and the launch takes the
+        ;; source path; the loader's own rejection path is not relied upon.
+        ;; checksum: s = s*31 + word over the whole 8-byte words, then the
+        ;; remaining bytes one by one (wrapping 64-bit arithmetic).
+        (defun nl_artifact_image_sum (buf want sum)
+          (let ((i 0) (s sum) (w (/ want 8)))
+            (seq
+             (while (< i w)
+               (seq (setq s (+ (* s 31) (heap-read-u64 buf (* i 8))))
+                    (setq i (+ i 1))))
+             (setq i (* w 8))
+             (while (< i want)
+               (seq (setq s (+ (* s 31) (heap-read-u8 buf i)))
+                    (setq i (+ i 1))))
+             s)))
+        (defun nl_artifact_image_ok_p (path)
+          (let* ((fd (nl_os_open_read path)))
+            (if (< fd 0) 0
+              (let* ((size (syscall-direct ,(if arm 62 8) fd 0 2 0 0 0))
+                     (buf (nl_os_alloc_chunk 4194304)))
+                (if (or (= buf 0) (< size 4128))
+                    (seq (if (= buf 0) 0 (nl_os_free_chunk buf 4194304))
+                         (nl_os_close_handle fd) 0)
+                  (let* ((_p (syscall-direct ,(if arm 62 8) fd (- size 32) 0 0 0 0))
+                         (n (nl_fa_read_all fd buf 32 0))
+                         (len (heap-read-u64 buf 8))
+                         (want (heap-read-u64 buf 16))
+                         (ok (if (and (= n 32) (= (heap-read-u64 buf 0) 21754199712812110)
+                                      (= len (- size 32)))
+                                 1 0))
+                         (_q (syscall-direct ,(if arm 62 8) fd 0 0 0 0 0))
+                         (sum 0) (left len))
+                    (seq
+                     (while (and (= ok 1) (> left 0))
+                       (let* ((chunk (if (> left 4194304) 4194304 left))
+                              (r (nl_fa_read_all fd buf chunk 0)))
+                         (if (= r chunk)
+                             (seq (setq sum (nl_artifact_image_sum buf chunk sum))
+                                  (setq left (- left chunk)))
+                           (setq ok 0))))
+                     (nl_os_free_chunk buf 4194304)
+                     (nl_os_close_handle fd)
+                     (if (and (= ok 1) (= sum want)) 1 0))))))))
+        (defun nl_boot_artifact_companion ()
+          (let* ((scratch (nl_os_alloc_chunk 8192)))
+            (if (= scratch 0) 0
+              (let* ((path (+ scratch 32)))
+                (seq
+                 ,@(nelisp-standalone--byte-write-forms 'scratch "/proc/self/exe")
+                 (ptr-write-u8 scratch 14 0)
+                 (let* ((n (nl_os_readlink_path scratch path 4090)))
+                   (if (or (<= n 0) (>= n 4080))
+                       (seq (nl_os_free_chunk scratch 8192) 0)
+                     (seq
+                      ,@(nelisp-standalone--byte-write-forms '(+ path n) ".artifact.cold")
+                      (ptr-write-u8 (+ path n) 14 0)
+                      (let* ((pinned (nl_boot_image_pin scratch path)))
+                        (if (= pinned 0) 0
+                          (if (= (nl_artifact_image_ok_p pinned) 1) pinned
+                            (seq (nl_boot_image_release pinned) 0))))))))))))
         (defun nl_boot_image_release (path)
           (if (= path 0) 0
             (let ((scratch (- path 4672)))
               (seq (nl_os_close_handle (heap-read-u64 scratch 4640))
                    (nl_os_free_chunk scratch 8192))))))))
    (t '((defun nl_boot_image_companion () 0)
+        (defun nl_boot_artifact_companion () 0)
         (defun nl_boot_image_release (_path) 0)))))
 
 (defun nelisp-boot-image--windows-native-forms ()
@@ -698,6 +869,7 @@ memory must be available before the first Lisp form or heap restoration."
             0
           (extern-call EqualSid (heap-read-u64 exe_owner 0)
                        (heap-read-u64 image_owner 0)))))
+    (defun nl_boot_artifact_companion () 0) ; no artifact boot image on Windows
     (defun nl_boot_image_companion ()
       ;; 32768 UTF-16 units plus metadata. This mapping must survive arena
       ;; restoration; no pathname or handle is allocated inside the heap.

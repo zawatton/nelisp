@@ -13,7 +13,6 @@ blur the NeLisp Sexp runtime ABI.
 |--------+------+----+--------+-------|
 | =x86_64-unknown-linux-gnu= | x86_64 | linux | ELF64 | SysV AMD64 |
 | =aarch64-unknown-linux-gnu= | aarch64 | linux | ELF64 | AAPCS64 |
-| =x86_64-apple-darwin= | x86_64 | macos | Mach-O 64 | SysV AMD64 / Darwin |
 | =aarch64-apple-darwin= | aarch64 | macos | Mach-O 64 | AAPCS64 / Darwin |
 | =x86_64-pc-windows-msvc= | x86_64 | windows | PE/COFF | Microsoft x64 |
 

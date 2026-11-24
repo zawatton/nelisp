@@ -195,8 +195,10 @@
   (= (+ (1- most-positive-fixnum) 1) most-positive-fixnum))
 (bignum-smoke--check "in-range * unaffected"
   (= (* most-positive-fixnum 1) most-positive-fixnum))
-(bignum-smoke--check "expt overflow-check unaffected (Doc 187 precedent, unchanged)"
-  (eq (condition-case nil (expt 2 61) (overflow-error 'ok)) 'ok))
+;; GNU Emacs 31.1 has bignums: (expt 2 61) is the exact integer, not an
+;; overflow-error.  NeLisp matches since the frozen12-based tree.
+(bignum-smoke--check "expt 2 61 is the exact bignum (GNU 31.1 parity)"
+  (= (expt 2 61) 2305843009213693952))
 
 ;; -- GC stress round (Doc 190's own risk zone): allocate many distinct
 ;; bignums across several garbage-collect cycles, keep every one referenced,
@@ -430,38 +432,24 @@
   (let ((r (/ 2305843009213693952 2)))
     (and (= r 1152921504606846976) (not (bignump r)))))
 
-;; -- mod//: divisor at the scoped bound (2^31 = 2147483648) and just
-;; past it (2147483649, still a plain fixnum, but this build's
-;; single-limb division loop cannot safely divide by it -- see the bound
-;; derivation next to `nl_bignum_divmod_small_loop').
+;; -- mod//: divisor at and just past 2^31 (2147483648 / 2147483649).
 (bignum-smoke--check "/ big+ divisor at the 2^31 bound, exact"
   (= (/ 123456789012345678901234567890 2147483648) 57489047298368848348))
 (bignum-smoke--check "mod big+ divisor at the 2^31 bound, exact"
   (= (mod 123456789012345678901234567890 2147483648) 1312754386))
-(bignum-smoke--check "/ divisor just past the 2^31 bound signals the unsupported condition"
-  (eq (condition-case nil
-          (/ 123456789012345678901234567890 2147483649)
-        (nelisp-bignum-division-unsupported 'ok))
-      'ok))
-
-;; -- /,%,mod: a genuine Bignum DIVISOR is explicitly out of scope and
-;; must signal the new named condition -- not a silent wrong answer, not
-;; the misleading `wrong-type-argument' (the divisor IS a number).
-(bignum-smoke--check "/ bignum divisor signals nelisp-bignum-division-unsupported"
-  (eq (condition-case nil
-          (/ 123456789012345678901234567890 987654321098765432109876543210)
-        (nelisp-bignum-division-unsupported 'ok))
-      'ok))
-(bignum-smoke--check "% bignum divisor signals nelisp-bignum-division-unsupported"
-  (eq (condition-case nil
-          (% 123456789012345678901234567890 987654321098765432109876543210)
-        (nelisp-bignum-division-unsupported 'ok))
-      'ok))
-(bignum-smoke--check "mod bignum divisor signals nelisp-bignum-division-unsupported"
-  (eq (condition-case nil
-          (mod 123456789012345678901234567890 987654321098765432109876543210)
-        (nelisp-bignum-division-unsupported 'ok))
-      'ok))
+;; Expected values read from GNU Emacs 31.1 (`emacs --batch').  The old
+;; nelisp-bignum-division-unsupported signals are gone: division by a
+;; divisor past 2^31 or by a genuine bignum is exact, as in GNU.
+(bignum-smoke--check "/ divisor just past the 2^31 bound, exact"
+  (= (/ 123456789012345678901234567890 2147483649) 57489047271598424590))
+(bignum-smoke--check "/ bignum divisor, exact"
+  (= (/ 123456789012345678901234567890 987654321098765432109876543210) 0))
+(bignum-smoke--check "% bignum divisor, exact"
+  (= (% 123456789012345678901234567890 987654321098765432109876543210)
+     123456789012345678901234567890))
+(bignum-smoke--check "mod bignum divisor, exact"
+  (= (mod 123456789012345678901234567890 987654321098765432109876543210)
+     123456789012345678901234567890))
 
 (princ (format "BIGNUM-SMOKE cases=%d mismatches=%d\n"
                bignum-smoke--n bignum-smoke--bad))

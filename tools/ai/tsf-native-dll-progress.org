@@ -1,0 +1,127 @@
+#+TITLE: Native TSF/COM DLL from restricted Elisp (2026-11-11)
+
+* S1 PE DLL output in nelisp
+
+** S1.1 nelisp-pe-write emits a PE32+ DLL (IMAGE_FILE_DLL, export directory, base relocations, DllMain entry)
+cmd: (ulimit -v 8388608; timeout 600 emacs --batch -Q -L lisp -L src -l ert -l test/nelisp-pe-write-dll-test.el -f ert-run-tests-batch-and-exit </dev/null)
+
+** S1.2 objdump -p reports the DLL's exports and base relocation table
+cmd: bash tools/ai/pe-dll/objdump-check.sh
+
+** S1.3 E2E - under wine, a nelisp-built EXE LoadLibrary()s the nelisp-built DLL, calls two exported functions via GetProcAddress, and gets the expected results
+cmd: bash tools/ai/pe-dll/wine-e2e.sh
+
+** S1.4 E2E - the DLL still works when loaded at a non-preferred base (relocations applied)
+cmd: bash tools/ai/pe-dll/wine-e2e.sh --force-rebase
+
+* S2 COM in-proc server from restricted Elisp
+
+** S2.1 COM DSL (GUID/UTF-16 blobs, vtables, com-call) has ERT coverage
+cmd: (ulimit -v 8388608; timeout 600 emacs --batch -Q -L lisp -L src -l ert -l test/nelisp-com-dsl-test.el -f ert-run-tests-batch-and-exit </dev/null)
+
+** S2.2 E2E - under wine: regsvr32 registers, CoCreateInstance returns an object whose method returns 42, regsvr32 /u removes it
+cmd: bash tools/ai/com-dll/wine-e2e.sh
+
+* S3 TSF text service (parity with the C++ shim)
+
+** S3a.1 COM DSL foundations (defstruct, try, msctf IID table, :fields/:extra-iids, wbuf library, HKCU/HKCR hive) have ERT golden coverage
+cmd: (ulimit -v 8388608; timeout 600 emacs --batch -Q -L lisp -L src -l ert -l test/nelisp-com-dsl-test.el -l test/nelisp-com-dsl-s3a-test.el -f ert-run-tests-batch-and-exit </dev/null)
+
+** S3a.2 E2E - under wine: wbuf library, struct accessors, try macro, :fields and :extra-iids class run in a nelisp-built DLL (client exits 42)
+cmd: bash tools/ai/com-dll/wbuf-e2e.sh
+
+** S3a.3 E2E - under wine: the default build registers under HKCU, the NELISP_COM_HIVE=hkcr build under HKCR, both unregister
+cmd: bash tools/ai/com-dll/reg-e2e.sh
+
+** S3a.4 E2E - thread-safe dynalign: 6 threads x 20000 dynamic-align imports pass; the old global-slot emission crashes
+cmd: bash tools/ai/com-dll/dynalign-threads-e2e.sh
+
+** S3b.1 E2E - real-msctf test host (nelisp-skk-ime) loads a TIP DLL as tsf_host.cpp does and runs a key script under wine
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/host-wine-e2e.sh"
+
+** S3b.2 E2E - mock TSF host records a golden trace for a stub TIP; a reordered golden fails
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/host-mock-e2e.sh"
+
+** S3c.1 E2E - under wine: native shim registers (COM class, NativeIME values, TSF profile, 6 categories) and unregisters cleanly
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/shim-reg-e2e.sh"
+
+** S3d.1 E2E - under wine via the DirectThreadMgr proxy: native shim Activate/Deactivate, core loader with ABI checks, key forwarding match the golden
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/shim-activate-e2e.sh"
+
+** S3e.1 E2E - under wine: settings parsing, registry watcher thread and published state match C++ semantics
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/settings-e2e.sh"
+
+** S3g.1 E2E - under wine: native RealtimeFrontend traces are byte-identical to the C++ oracle
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/realtime-e2e.sh"
+
+** S3h.1 E2E - under wine: native shim loads the native core; activation, open/close and key claim match the golden
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/core-e2e.sh"
+
+** S3f.1 E2E - under wine: native engine client talks TLV/text to a stub host, with timeout, RESET-after-failure and spawn throttle
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/engine-client-e2e.sh"
+
+** S3.1 E2E - under wine msctf: ActivateLanguageProfile reaches the TIP's Activate and AdviseKeyEventSink succeeds
+#+NOTE: wine's ThreadMgr rejects AdviseKeyEventSink for the TIP's client id (E_INVALIDARG); real msctf activation is covered by S3.4 on Windows
+pending
+
+** S3.2 E2E - under wine: OnKeyDown called on the sink (as tsf_host.cpp does) reaches the TIP's handler
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/shim-activate-e2e.sh"
+
+** S3.3 Composition / edit sessions, candidate window, language bar, display attributes, settings match the C++ shim feature list
+#+NOTE: umbrella criterion, split into S3i.1..S3p.1 below (2026-11-12); passes when all of them pass
+pending
+
+** S3i.1 E2E - composition / edit sessions, display attributes and caret map (text_service.cpp 74-165, 2447-3190) match the C++ shim on the mock TSF host
+pending
+
+** S3j.1 E2E - OnKeyDown core path (text_service.cpp 1788-1948, 2038) drives the engine and applies its state; ledger S4.2 end to end
+pending
+
+** S3k.1 E2E - engine worker threads, provider window and deferred keys behave as in the C++ shim
+pending
+
+** S3l.1 E2E - conversion, segments, registration mode and the Ctrl+G emergency paths (text_service.cpp 1952-1991, 2084-2447)
+pending
+
+** S3m.1 E2E - candidate list UI element
+pending
+
+** S3n.1 E2E - language bar items and GDI icons
+pending
+
+** S3o.1 E2E - mode indicator window and settings launcher
+pending
+
+** S3p.1 E2E - hot swap, function provider and diagnostics
+pending
+
+** S3.4 E2E - on real Windows (CI), the native TIP passes the existing TSF host gate
+#+NOTE: needs CI
+pending
+
+* S4 Engine communication
+
+** S4.1 Engine replies in a binary TLV variant (text protocol kept) with tests in nelisp-skk-ime
+#+REQUIRES: SKK_IME_ROOT
+#+NOTE: host wiring (windows/host/main.cpp) is unbuilt until Windows CI
+cmd: bash "$SKK_IME_ROOT/windows/native/test/tlv-e2e.sh"
+
+** S4.2 E2E - a key event is forwarded over the named pipe to an engine stub and the TLV reply is applied
+pending
+
+* S5 Unwind info before real-Windows validation
+
+** S5.1 DLL output emits .pdata/.xdata for every exported and callback function
+pending
+
+** S5.2 E2E - an access violation raised inside a DLL function is caught by an SEH handler in the host EXE under wine
+pending

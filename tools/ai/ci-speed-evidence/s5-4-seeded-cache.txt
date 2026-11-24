@@ -1,0 +1,20 @@
+S5.4 evidence: a tree seeded only with the unit cache builds the cold build's binary, in a fraction of the time
+Commit a55c521b0, clean worktree (no -dirty), Linux x86_64, `ulimit -v 8388608`, JOBS=4, default output target/nelisp.
+The binary embeds the repo root path, so reference and seeded build must use the same root. Both ran in one worktree
+directory (ref): first a cold build, then target/ was emptied except target/standalone-units and
+target/nelisp-vendor-bytecode (moved aside and back), and `make standalone-reader` was run again.
+
+cold build (empty target/):        705 s   peak RSS sum 2.22 GB   sha256 6bf1d941b60e6732aaa07f8f0079d5703a7fbc17e13bcc541186ebdd78acc2dc
+seeded build (only the 2 cache dirs): 69 s   peak RSS sum 0.87 GB   sha256 6bf1d941b60e6732aaa07f8f0079d5703a7fbc17e13bcc541186ebdd78acc2dc   IDENTICAL
+Seeded is 10.2x faster. The build log prints no cache-hit messages for units; the proof of hits is the time.
+The prelude and core byte-code lines in a warm build say "shared cache hit" (wt rebuild).
+.cold: cold 8fb41230e2cbd0e42942234d5fc7c051276f2eceff3f89531df7b953b11756d4, seeded cdef300998781abd518bdbc7789e87b580d4f87aa11709f6c03cd75b1b0e44e2
+(differ; see s5-2-jobs-identity.txt, .cold is not reproducible).
+
+First attempt, for the record: a second clean worktree (path .../fresh) seeded from the j4 unit cache built in 81 s
+to 6fe706812a16114495bebfb321f68ab921cc07d5c0e9cce991b1600ec96e2a64, which differs from the reference above only
+because the root path differs (strings diff: 87 changed lines, all containing the root path).
+The cache itself was copied across worktrees and hit, so unit entries do not depend on the tree path.
+
+gate-mutation build-stamp row (host-only) with the denylist change, run in the clean tree after this build:
+  NELISP_GATE_MUTATION_ONLY=build-stamp: warm-up rebuild 82 s (cache hit), "build-stamp: went red as it should", PASS, total 88 s.

@@ -1314,6 +1314,71 @@ resolves at static-link time."
             (should (string-match-p "UND[ \t]+ext_helper" ss-out))))
       (ignore-errors (delete-file path)))))
 
+;; ------------------------------------------- byte-compile cleanup B0 (bcc)
+
+(defconst nelisp-elf-write-test--bcc-lisp-file
+  (expand-file-name
+   "../lisp/nelisp-elf-write.el"
+   (file-name-directory (or load-file-name buffer-file-name
+                            default-directory)))
+  "Path of lisp/nelisp-elf-write.el for the bcc regression tests.")
+
+(ert-deftest nelisp-elf-write-bcc-rel-macros-expand-in-earlier-callers ()
+  "Callers defined before ET_REL helpers see the positional emit macros.
+Loading the source in a fresh Emacs eagerly macroexpands each defun; if the
+`nelisp-elf--build-rel-*' macros were defined after their first use, the
+earlier callers would keep plain function calls to the (macro) symbols."
+  (let* ((file nelisp-elf-write-test--bcc-lisp-file)
+         (form
+          (format
+           "(progn (load %S nil t)
+ (dolist (fn '(nelisp-elf--build-rich nelisp-elf--build-rel))
+   (let ((s (prin1-to-string (symbol-function fn))))
+     (dolist (m '(\"(nelisp-elf--build-rel-shdr\" \"(nelisp-elf--build-rel-sym\"
+                  \"(nelisp-elf--build-rel-rela\"))
+       (when (string-search m s) (princ (format \"UNEXPANDED %%s in %%s\\n\" m fn)))))))"
+           file))
+         (out (with-temp-buffer
+                (call-process (expand-file-name invocation-name invocation-directory)
+                              nil t nil "--batch" "-Q" "--eval" form)
+                (buffer-string))))
+    (should-not (string-match-p "UNEXPANDED" out))))
+
+(ert-deftest nelisp-elf-write-bcc-rel-macros-no-defined-too-late ()
+  "Byte-compiling the module reports no `defined too late' macro warning."
+  (let* ((file nelisp-elf-write-test--bcc-lisp-file)
+         (tmp (make-temp-file "nelisp-elf-bcc-" nil ".el"))
+         (elc (concat tmp "c"))
+         (out ""))
+    (unwind-protect
+        (progn
+          (copy-file file tmp t)
+          (setq out (with-temp-buffer
+                      (call-process (expand-file-name invocation-name
+                                                      invocation-directory)
+                                    nil t nil "--batch" "-Q" "-f"
+                                    "batch-byte-compile" tmp)
+                      (buffer-string)))
+          (should-not (string-match-p "defined too late" out)))
+      (ignore-errors (delete-file tmp))
+      (ignore-errors (delete-file elc)))))
+
+(ert-deftest nelisp-elf-write-bcc-rich-direct-writes-once ()
+  "The direct ET_EXEC path writes the file once and leaks no `exec-direct'."
+  (let ((path (make-temp-file "nelisp-elf-direct-"))
+        (writes 0)
+        (orig (symbol-function 'write-region)))
+    (makunbound 'exec-direct)
+    (unwind-protect
+        (cl-letf (((symbol-function 'write-region)
+                   (lambda (&rest args)
+                     (cl-incf writes)
+                     (apply orig args))))
+          (nelisp-elf-write-binary path (nelisp-elf-write-test--rich-exit-0))
+          (should (= writes 1))
+          (should-not (boundp 'exec-direct)))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-write-test)
 
 ;;; nelisp-elf-write-test.el ends here

@@ -9,6 +9,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'nelisp-eln-system-loader)
 (require 'nelisp-eln-objects)
 (require 'nelisp-eln-raw-call)

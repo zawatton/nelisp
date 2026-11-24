@@ -3,6 +3,8 @@
 #+STATUS: SHIPPED in the uncommitted worktree (build31); ledger 100% of 8
 #+SCOPE: Shrink the FLAT cold image that every process reads and (under Doc 240) hashes, without changing what the restored heap contains
 #+LEDGER: tools/ai/image-size-progress.org
+#+VERIFIED-BY: ert-full
+# ert-full runs test/nelisp-cold-sparse-intern-test.el, the doc's own test file (5 tests, green 2026-11-09).
 
 * Why this document exists
 

@@ -1,0 +1,35 @@
+#+TITLE: newDTW standalone file-copy host support
+
+* S1 Byte-preserving file copy for game saves
+
+** S1.1 File-copy content and error behavior matches GNU Emacs on the supported noninteractive cases
+#+REQUIRES: NDTW_NELISP_BIN
+#+TIMEOUT: 600
+cmd: flock /tmp/notes-heavy.lock sh tools/ai/ndtw-host-copy-check.sh focused
+
+** S1.2 Prelude name-addition ratchets pass without hiding known failures
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets parens-check
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets emacs-compat
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets ns-gate
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets ns-inventory
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets fallback-inventory
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets substrate-presence-corpus-check
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets doc200-census
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets unsafe-inventory
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets native-inventory
+#+TIMEOUT: 600
+cmd: sh tools/ai/ndtw-host-copy-check.sh ratchets core-purity
+
+** S1.3 The newDTW save/load and death probes pass with the file-copy implementation
+#+REQUIRES: NDTW_NELISP_BIN,NDTW_ROOT
+#+TIMEOUT: 600
+cmd: flock /tmp/notes-heavy.lock sh tools/ai/ndtw-host-copy-check.sh game

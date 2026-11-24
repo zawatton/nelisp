@@ -49,6 +49,8 @@
   ;; This is the production selector's actual return, not a fabricated plan.
   (when result (push t nelisp-aot-affine-loop-test--plans)) result)
 (ert-deftest nelisp-aot-affine-result/fullword-hot-cold-stores-flags-native ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   ;; Keep the original AE test and its complete C/WORD/frame/FLAGS model
   ;; unchanged.  In this wrapper both objects retain accepted AE; the old
   ;; test's two-mode switch controls only AH.  Count actual register-CMP

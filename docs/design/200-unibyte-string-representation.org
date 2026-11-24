@@ -264,7 +264,8 @@ Emacs 30.1 にはこの関数が無いため parity corpus へ強制せず、gen
 standalone-only extra names に追加した。corpus check は 783→784 names の stale
 failureを先に示し、再生成後 784 names / findings 0。runtime smoke も
 =(list (unibyte-string-p (unibyte-string 200)) (unibyte-string-p "abc"))=
-→ =(t nil)= を直接検査する。
+→ =(t t)= を直接検査する（20b1ee832 の GNU string block 移植以後、ASCII 文字列は
+GNU と同じく unibyte。当初は =(t nil)=）。
 
 ** §8.6 Reader literals — implemented after the bounded-work checkpoint
 

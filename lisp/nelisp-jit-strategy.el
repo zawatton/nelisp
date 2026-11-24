@@ -42,6 +42,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 ;; ---------- type-of ------------------------------------------------
 ;;
 ;; Doc 86 §86.1.a (2026-05-10) — `type-of' migrated from Rust to elisp

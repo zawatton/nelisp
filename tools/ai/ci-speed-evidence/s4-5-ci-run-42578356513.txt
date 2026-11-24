@@ -1,0 +1,32 @@
+# S4.5 evidence: CI run 42578356513 (workflow_dispatch, 3d6469608), job `tier smokes'.
+# Per-smoke duration lines arrive while the gate runs (timestamps span the whole run),
+# then the slowest-targets table and GATE-COUNT.
+
+## first and last 5 per-smoke lines (of 53)
+2026-11-09T07:43:38.4771282Z [reader-smokes] standalone-reader-alloc-bytes-int-root-smoke done in 0s (ok)
+2026-11-09T07:43:38.5212110Z [reader-smokes] standalone-reader-async-core-smoke done in 0s (ok)
+2026-11-09T07:43:38.5258156Z [reader-smokes] standalone-reader-catch-throw-tag-smoke done in 0s (ok)
+2026-11-09T07:43:38.7531548Z [reader-smokes] standalone-reader-cl-dolist-return-smoke done in 0s (ok)
+2026-11-09T07:43:38.7532479Z [reader-smokes] standalone-reader-checked done in 0s (ok)
+...
+2026-11-09T08:03:12.1786588Z [reader-smokes] standalone-reader-tls-smoke done in 1s (ok)
+2026-11-09T08:03:30.7963924Z [reader-smokes] standalone-reader-ffi-unsupported-smoke done in 18s (ok)
+2026-11-09T08:05:21.5803813Z [reader-smokes] standalone-reader-prelude-test done in 111s (ok)
+2026-11-09T08:06:47.0486201Z [reader-smokes] standalone-reader-repl-smoke done in 86s (ok)
+2026-11-09T08:08:13.1111122Z [reader-smokes] standalone-reader-malformed-input-smoke done in 86s (ok)
+
+## end of gate
+[reader-smokes] slowest targets
+    1158s  standalone-reader-ffi-smoke
+     111s  standalone-reader-prelude-test
+      86s  standalone-reader-malformed-input-smoke
+      86s  standalone-reader-repl-smoke
+      18s  standalone-reader-ffi-unsupported-smoke
+       9s  standalone-reader-network-process-nowait-smoke
+       8s  standalone-reader-native-load-slot-pin-smoke
+       7s  standalone-reader-shadow-smoke
+       3s  standalone-reader-checked-soak
+       3s  standalone-reader-fileattrs-smoke
+GATE-COUNT checked=53 findings=0
+[reader-smokes] PASS: 53 smokes (-P 4)
+gate report: target/gates/standalone-reader-smokes.json (pass, ran 53, failed 0)

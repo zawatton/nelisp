@@ -58,6 +58,10 @@ Return plist :rc :unwinds (remaining event names) :writes :dirty :lean-calls."
                 ((symbol-function 'nelisp_mirror_lookup_entry)
                  (lambda (_e name) (if (funcall entry-ok name) (+ 50000 (* name 64)) 0)))
                 ((symbol-function 'nl_word_payload) #'identity)
+                ;; The production restore callee (plain-cell branch only here).
+                ((symbol-function 'wf_bytecode_w_lean_store)
+                 (eval (cons 'lambda (cddr (sst--host-form
+                                            (sst--function 'wf_bytecode_w_lean_store)))) t))
                 ((symbol-function 'wf_dirty) (lambda () (cl-incf dirty) 1))
                 ((symbol-function 'wf_bytecode_w_lean_unbind)
                  (lambda (_e ev) (cl-incf lean)
@@ -140,6 +144,10 @@ cell, default fixnum-coded 8), :bind-rc, :unbind-rc, :nconst, :env."
     (cl-loop for w in stack for i from 0 do (puthash (+ mem (* i 8)) w words))
     (puthash cell 1 words) (puthash (+ cell 8) (1+ (* 4 mem)) words)
     (puthash (+ foot 40) (or (plist-get opts :aux) (1+ (* 4 777))) words)
+    ;; 8cd4fa972: a frame without an aux block (foot +40 = 3) builds one in the
+    ;; loop when the frame state word (env +176) is non-zero.  0 here keeps the
+    ;; "no AUX yet" case on the declining path these tests assert.
+    (puthash (+ env 176) (or (plist-get opts :state-word) 0) words)
     (let ((before (copy-hash-table words)))
       (cl-letf (((symbol-function 'heap-read-u8)
                  (lambda (p o)

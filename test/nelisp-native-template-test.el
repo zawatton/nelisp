@@ -66,6 +66,8 @@
     (dolist (value (list (1- (- (expt 2 31))) (expt 2 31)))
       (should-error (nelisp-native-template-patch32 (unibyte-string 0 0 0 0) 0 value)))))
 (ert-deftest nelisp-native-template-grammar-negative-controls ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((lib (nelisp-native-template-open-library)) (fragment (cdr (assq 'copy (plist-get lib :fragments)))))
     (dolist (change '((:width . 8) (:signed . nil) (:kind . pointer) (:offset . -1) (:mask . (1 0 0 0))))
       (let* ((broken (copy-tree fragment)) (hole (car (plist-get broken :holes))))
@@ -101,6 +103,8 @@
       (delete-file path))))
 (ert-deftest nelisp-native-template-library-mode-gate ()
   "A group-writable checkout opens; a world-writable library is refused."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((snapshot (with-temp-buffer (set-buffer-multibyte nil)
                      (insert-file-contents-literally nelisp-native-template--library-path)
                      (buffer-string)))
@@ -117,6 +121,8 @@
                 (should-error (nelisp-native-template-open-library))))))
       (delete-file path))))
 (ert-deftest nelisp-native-template-immutable-snapshot ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((library (nelisp-native-template-open-library))
          (fragment (cdr (assq 'copy (plist-get library :fragments)))))
     (aset (plist-get fragment :bytes) 0 255)
@@ -132,6 +138,8 @@
                        (nelisp-native-template-test--recipe '(192 135) nil 129)))
     (should-error (nelisp-native-template-validate recipe))))
 (ert-deftest nelisp-native-template-assembler-composes-labelled-fragments ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((recipe (nelisp-native-template-test--recipe '(192 137 66 135)))
          (cert (nelisp-native-template-validate recipe))
          (assembled (nelisp-native-template-assemble cert (nelisp-native-template-open-library)))
@@ -142,6 +150,8 @@
                    (sort (delete-dups (mapcar (lambda (r) (plist-get r :symbol)) (plist-get assembled :relocs))) #'string<)))
     (dolist (range ranges) (should (<= (nth 1 range) (nth 2 range))))))
 (ert-deftest nelisp-native-template-public-proof-checks-all-emission ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (cl-letf (((symbol-function 'nelisp-native-load-running-binary-sha256) (lambda () (make-string 64 ?a))))
     (let* ((recipe (nelisp-native-template-test--recipe '(192 137 66 135)))
            (certificate (nelisp-native-template-validate recipe))
@@ -190,6 +200,8 @@
                    (nelisp-native-template-test--recipe code [nil t 42])))))
 
 (ert-deftest nelisp-native-template-ordinary-switch-landing-domain ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((recipe (nelisp-native-template-test--recipe '(192 193 183 194 135 195 135) [7 nil 42 99]))
          (certificate (nelisp-native-template-validate recipe))
          (info (car (plist-get certificate :switch-targets)))
@@ -202,6 +214,8 @@
     (should (nelisp-native-template-validate recipe))))
 
 (ert-deftest nelisp-native-template-every-instruction-polls-and-root-bank ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((certificate (nelisp-native-template-validate
                        (nelisp-native-template-test--recipe '(192 136 130 0 0))))
          (assembled (nelisp-native-template-assemble certificate (nelisp-native-template-open-library)))
@@ -226,6 +240,8 @@
   (should-error (funcall (make-byte-code 257 (unibyte-string 0 135) [] 2) 42)))
 
 (ert-deftest nelisp-native-template-full-frame-actions ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (dolist (recipe (list
                   (nelisp-native-template-test--recipe '(193 24 8 41 135) [template-dynamic 42])
                   (nelisp-native-template-test--recipe '(97 192 135))
@@ -238,6 +254,8 @@
                        :key (lambda (r) (plist-get r :symbol)) :test #'equal)))))
 
 (ert-deftest nelisp-native-template-handler-only-cycle-poll-states ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   ;; A callback may throw back into PC 1 twice before returning. There are
   ;; no ordinary branches; the exceptional transfer itself creates the cycle.
   (let* ((recipe (nelisp-native-template-test--recipe '(192 50 1 0 193 32 48 135) [tag callback]))

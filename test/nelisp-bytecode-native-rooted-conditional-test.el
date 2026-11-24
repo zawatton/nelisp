@@ -51,10 +51,10 @@
   (let* ((index (nelisp-native-load--raw-v2-conditional-import-index
                  "nl_root_pin_slot_v2"))
          (entry (list :name "nl_native_rooted_conditional_probe_v1" :type 'func
-                      :abi nelisp-native-load-raw-runtime-abi-v2 :arity 4
+                      :abi (nelisp-native-load--runtime-abi-v2) :arity 4
                       :params '(u64 u64 u64 u64) :return 'u64))
          (import (list :name "nl_root_pin_slot_v2" :kind 'func
-                       :abi nelisp-native-load-raw-runtime-abi-v2 :index index
+                       :abi (nelisp-native-load--runtime-abi-v2) :index index
                        :address-mode 'conditional-root-slot-v1 :arity 6
                        :params '(u64 u64 u64 u64 u64 u64) :return 'u64))
          (hash (nelisp-native-load--sha256

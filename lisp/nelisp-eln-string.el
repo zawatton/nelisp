@@ -79,7 +79,9 @@
                    (fboundp 'decode-coding-string))
         (nelisp-eln-string--fail 'utf8-conversion-unavailable))
       (condition-case data
-          (setq encoded (encode-coding-string string 'utf-8 t))
+          ;; No NOCOPY: with it GNU hands back an ASCII-only multibyte
+          ;; STRING itself, still multibyte, instead of its bytes.
+          (setq encoded (encode-coding-string string 'utf-8))
         (error (nelisp-eln-string--fail 'utf8-encoding-failed data)))
       (unless (and (stringp encoded)
                    (not (multibyte-string-p encoded)))
@@ -206,7 +208,8 @@ descriptor address to trusted native code only while the owner is live; use
          (chars (nth 2 descriptor))
          (bytes (nth 3 descriptor))
          (unibyte (nth 4 descriptor))
-         (raw (string-make-unibyte (make-string bytes 0)))
+         (raw (with-no-warnings
+                (string-make-unibyte (make-string bytes 0))))
          (index 0))
     (while (< index bytes)
       (aset raw index (ptr-read-u8 data index))

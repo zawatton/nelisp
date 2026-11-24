@@ -31,6 +31,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'nelisp-heap-accessors)
 
 (require 'cl-lib)
@@ -50,7 +52,8 @@
 (defconst nelisp-eln-handler-substrate-handler-next-offset #x20)
 (defconst nelisp-eln-handler-substrate-handler-jmp-offset #x40)
 (defconst nelisp-eln-handler-substrate--region-size 24576
-  "Bytes of the private mapping: thread block, cell, sentinel and 75 handler blocks.")
+  "Bytes of the private mapping.
+It holds the thread block, cell, sentinel and 75 handler blocks.")
 (defconst nelisp-eln-handler-substrate--cell-offset #x80)
 (defconst nelisp-eln-handler-substrate--sentinel-offset #x100)
 (defconst nelisp-eln-handler-substrate--pool-offset #x240)

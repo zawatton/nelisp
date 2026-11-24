@@ -36,7 +36,8 @@ the landed one.")
     (let ((default-directory nelisp-fx-vector--root))
       (unless (eq 0 (call-process "git" nil t nil "show"
                                   (concat commit ":lisp/nelisp-cc-fx-call-primitives.el")))
-        (error "Commit %s is not available in this clone" commit)))
+        ;; A shallow CI checkout has no history: nothing to compare against.
+        (ert-skip (format "Commit %s is not available in this clone" commit))))
     (unless (equal (secure-hash 'sha256 (current-buffer)) sha256)
       (error "Source at %s differs from the pinned hash" commit))
     (set-buffer-multibyte t)

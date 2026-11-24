@@ -110,6 +110,8 @@
 (defun nelisp-flag-zero-test--s64 (n)
  (let ((n (nelisp-flag-zero-test--u64 n))) (if (>= n #x8000000000000000) (- n #x10000000000000000) n)))
 (ert-deftest nelisp-flag-zero/native-GNU-full64-order-fault-WORD-ABI-disabled ()
+ (skip-unless (and (eq system-type 'gnu/linux)
+                   (string-match-p "x86_64" system-configuration)))
  (let* ((dir (make-temp-file "flag-zero-" t)) (c (expand-file-name "probe.c" dir))
         (o (expand-file-name "probe.o" dir)) (exe (expand-file-name "probe" dir)) (changes nil) (objects nil)
         (values '(0 1 2 6 -1 4294967295 4294967296 4294967297 -9223372036854775808 9223372036854775807 -6066930334832433274))

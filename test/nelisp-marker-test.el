@@ -25,6 +25,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-buffer)
+(require 'nelisp-host-arith-restore)
 
 ;; These public-API assertions also run unchanged on GNU Emacs and, via
 ;; tools/nelisp-text-property-check.el, on the dynamically redefined prelude.

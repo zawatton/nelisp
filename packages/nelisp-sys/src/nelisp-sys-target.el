@@ -38,13 +38,6 @@
      :pointer-width 64 :pointer-align 8
      :stack-align 16 :max-align 16
      :c-abi aapcs64 :entry-symbol "_start")
-    ("x86_64-apple-darwin"
-     :triple "x86_64-apple-darwin"
-     :arch x86_64 :os macos :env nil
-     :object mach-o64 :endian little
-     :pointer-width 64 :pointer-align 8
-     :stack-align 16 :max-align 16
-     :c-abi sysv-amd64 :entry-symbol "start")
     ("aarch64-apple-darwin"
      :triple "aarch64-apple-darwin"
      :arch aarch64 :os macos :env nil
@@ -145,8 +138,11 @@ host arch/OS is consulted; cross targets must be named explicitly."
                      (t 'x86_64)))
          (triple (cond
                   ((eq arch 'aarch64) "aarch64-unknown-linux-gnu")
+                  ;; Intel macOS is unsupported: resolve to an
+                  ;; unrecognised triple so `nelisp-sys-target-get'
+                  ;; signals the normal unknown-target error.
                   ((string-match-p "darwin" system-configuration)
-                   "x86_64-apple-darwin")
+                   "x86_64-unsupported-darwin")
                   ((string-match-p "mingw\\|windows\\|msvc" system-configuration)
                    "x86_64-pc-windows-msvc")
                   (t "x86_64-unknown-linux-gnu"))))

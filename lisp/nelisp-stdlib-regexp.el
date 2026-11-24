@@ -7,6 +7,24 @@
 
 ;; ---- parser: pattern string -> node list (a "seq") ----
 
+;; Compile-time hints for runtime-provided names (no-ops when evaluated).
+(declare-function nelisp--rx-exec "ext:nelisp-runtime")
+(declare-function nelisp--string-search-chars "ext:nelisp-runtime")
+(declare-function nelisp-buffer-blen "ext:nelisp-runtime")
+(declare-function nelisp-buffer-len "ext:nelisp-runtime")
+(declare-function nelisp-buffer-narrow-end "ext:nelisp-runtime")
+(declare-function nelisp-buffer-narrow-start "ext:nelisp-runtime")
+(declare-function nelisp-buffer-string "ext:nelisp-runtime")
+(declare-function nelisp-buffer-tcache "ext:nelisp-runtime")
+(declare-function nelisp-buffer-tick "ext:nelisp-runtime")
+(defvar nelisp-casetab--epoch)
+(defvar nelisp-casetab--epoch-owner)
+(defvar nelisp-casetab--native-extra)
+(defvar nelisp-casetab--native-range)
+(defvar nelisp--current-buffer)
+(defvar nlre--last-buffer)
+(defvar nlre--last-caps)
+
 (defvar nlre--gcount 0 "Group counter during a parse.")
 (defvar nlre--fold nil "Non-nil while the current match folds case.")
 (defvar nlre--inhibit-search-fastmap nil "Non-nil for direct looking-at matches.")
@@ -81,7 +99,7 @@ with raw syntax-table writes and the syntax cache.")
 (defvar nlre--current-buffer-function #'current-buffer
   "`current-buffer', called through this variable in the hot entries.
 Its inline opcode (112) is not in the VM allowlist and one such opcode
-demotes a whole function to the interpreter; `funcall' of #'current-buffer
+demotes a whole function to the interpreter; `funcall' of the literal function
 is folded back into that opcode by the byte optimizer.")
 (defvar nlre--translate-memo-buffer nil
   "Buffer whose case-fold translation `nlre--translate-memo' holds.")
@@ -2832,7 +2850,8 @@ private copy -- the buffer routes' most recently used pattern, checked first as
 in `nlre--nat-last'.")
 
 (defun nlre--nat-program-syn (re fold)
-  "Like `nlre--nat-program' for a regexp RE, also compiling word and symbol assertions."
+  "Like `nlre--nat-program' for a regexp RE, also compiling word and symbol
+assertions."
   (let ((last nlre--nat-last-syn))
     (if (and last (eq (car (cdr last)) fold) (equal re (car last)))
         (cdr (cdr last))
@@ -3632,7 +3651,7 @@ of STRING.  Sets `nlre--match-data' as usual."
 ;; existing string without copying it, so the fix is to hand it `(buffer-
 ;; string)' (itself memoized per buffer against a content tick -- see
 ;; `nelisp-buffer-string' in src/nelisp-buffer.el / this file's own
-;; scripts/nelisp-stdlib-prelude.el mirror) instead of a fresh substring,
+;; scripts/ stdlib prelude mirror) instead of a fresh substring,
 ;; with START/MAX-END doing the windowing that used to require a copy.
 ;; `nlre--caps-offset' then wants 1 (0-based full-string index -> 1-based
 ;; buffer position), not BASE, since index 0 of the whole-buffer string is

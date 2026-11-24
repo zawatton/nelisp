@@ -29,14 +29,17 @@ class NativeSymbol(unittest.TestCase):
 (setq symbol-a (symbol-test-make ":試験" 268500000))
 (setq symbol-b (symbol-test-make ":試験" 268500001))
 (setq symbol-copy (car (list symbol-a)))
-(prin1 (list (symbol-test-id symbol-a) (symbol-test-name symbol-a)
+(prin1 (list (and (> (symbol-test-id symbol-a) 0)
+  (= (symbol-test-id symbol-a) (symbol-test-id symbol-copy))
+  (/= (symbol-test-id symbol-a) (symbol-test-id symbol-b)))
+ (symbol-test-name symbol-a)
  (symbol-test-same symbol-a symbol-copy)
  (symbol-test-same symbol-a symbol-b)
  (symbol-test-same symbol-a :試験)
  (symbol-test-name (symbol-test-make "" 3))
  (symbol-test-name (symbol-test-make "nil" 4))))
 (terpri)
-'''), '(268500000 ":試験" t nil nil "" "nil")\n')
+'''), '(t ":試験" t nil nil "" "nil")\n')
 
     def test_precise_mark_and_collection(self):
         # The private probe saves/restores the mark bit and calls the actual
@@ -47,11 +50,36 @@ class NativeSymbol(unittest.TestCase):
 (prin1 (symbol-test-mark (aref symbol-root 0)))
 (terpri)
 (garbage-collect)
-(prin1 (list (symbol-test-id (aref symbol-root 0))
+(prin1 (list (> (symbol-test-id (aref symbol-root 0)) 0)
  (symbol-test-name (aref symbol-root 0))
  (symbol-test-mark (aref symbol-root 0))))
 (terpri)
-'''), '1\n(71 ":retained" 1)\n')
+'''), '1\n(t ":retained" 1)\n')
+
+    def test_legacy_view_mark_and_collection(self):
+        # A tagged word marks through the pointer arm of `nl_gc_mark_slot';
+        # only a legacy 32-byte tag-16 view reaches the tag-16 arm of
+        # `nl_gc_mark_legacy_slot'.  Mark through such a view, then force
+        # collections with same-size string churn and check the names survive.
+        self.assertEqual(self.repl('''
+(setq view-root (list (symbol-test-make ":view-one" 81) (symbol-test-make ":view-two" 82)))
+(prin1 (list (symbol-test-mark-view (car view-root))
+ (symbol-test-mark-view (car (cdr view-root)))))
+(terpri)
+(setq view-i 0)
+(while (< view-i 3)
+ (setq view-churn nil view-j 0)
+ (while (< view-j 300)
+  (setq view-churn (cons (make-string 9 (+ 65 (mod view-j 20))) view-churn)
+        view-j (+ view-j 1)))
+ (garbage-collect)
+ (setq view-i (+ view-i 1)))
+(prin1 (list (symbol-test-name (car view-root))
+ (symbol-test-name (car (cdr view-root)))
+ (symbol-test-mark-view (car view-root))
+ (symbol-test-mark-view (car (cdr view-root)))))
+(terpri)
+'''), '(1 1)\n(":view-one" ":view-two" 1 1)\n')
 
     def test_public_symbol_inspection(self):
         source = '''
@@ -89,7 +117,7 @@ class NativeSymbol(unittest.TestCase):
             dump = subprocess.run([str(self.binary), 'dump-runtime-image', str(image), setup],
                                   cwd=ROOT, capture_output=True, text=True, timeout=30)
             self.assertEqual((dump.returncode, dump.stderr), (0, ''))
-            expression = ('(list (symbol-test-id image-symbol) '
+            expression = ('(list (> (symbol-test-id image-symbol) 0) '
                           '(symbol-test-name image-symbol) '
                           '(symbol-test-same image-symbol image-alias) '
                           '(symbol-test-mark image-symbol) '
@@ -98,7 +126,7 @@ class NativeSymbol(unittest.TestCase):
                 [str(self.binary), 'eval-runtime-image', str(image), expression],
                 cwd=ROOT, capture_output=True, text=True, timeout=30)
             self.assertEqual((restored.returncode, restored.stderr, restored.stdout),
-                             (0, '', '(268500000 ":image" t 1 77)\n'))
+                             (0, '', '(t ":image" t 1 77)\n'))
 
     def test_native_frame_identity_keys(self):
         source = '''

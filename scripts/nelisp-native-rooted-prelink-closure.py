@@ -47,9 +47,9 @@ def verify_manifest(manifest, metadata, directory, data_owner, source_root):
         path = (directory / filename).resolve()
         if path.parent != directory.resolve():
             raise ValueError("Active unit file escapes owner directory")
-        unit_bytes = _owner.bounded_read(path, 16 * 1024 * 1024)
+        unit_bytes = _owner.bounded_read(path, 32 * 1024 * 1024)
         total += len(unit_bytes)
-        if total > 32 * 1024 * 1024:
+        if total > 64 * 1024 * 1024:
             raise ValueError("Active unit aggregate input bound")
         if hashlib.sha256(unit_bytes).hexdigest() != record["unit-sha256"]:
             raise ValueError("Missing or changed active unit source")

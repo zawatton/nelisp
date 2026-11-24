@@ -165,7 +165,7 @@ exit time (before the user sentinel fires)."
    (let ((p (nelisp-make-process :name "ec" :command '("true"))))
      (nelisp-process-wait-for-exit p 2.0)
      (should (eql 0 (nelisp-process-exit-code p)))
-     (should (memq (nelisp-process-status p)
+     (should (memq (nelisp-process-state p)
                    '(exit signal closed failed))))))
 
 (ert-deftest nelisp-process-filter-trampoline-invokes-host-lambda ()

@@ -23,7 +23,7 @@
                               (cl-position name nelisp-native-load-bridgeable-symbols
                                            :test #'equal))))
                 (append (list :name name :kind 'func
-                              :abi nelisp-native-load-raw-runtime-abi-v2
+                              :abi (nelisp-native-load--runtime-abi-v2)
                               :index index
                               :address-mode (if slot 'conditional-root-slot-v1
                                               'native-bridgeable-v1))
@@ -33,7 +33,7 @@
          (native (list :exports
                        (list (list :name (plist-get contract :entry)
                                    :value 16 :size 80 :type 'func
-                                   :abi nelisp-native-load-raw-runtime-abi-v2
+                                   :abi (nelisp-native-load--runtime-abi-v2)
                                    :arity 4 :params '(u64 u64 u64 u64) :return 'u64))
                        :imports imports)))
     (list :native native
@@ -337,14 +337,17 @@
             (should (> (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
                                   :runtime-key-computations)
                        before-generation)))
-          (let ((nelisp-native-load-raw-runtime-abi-v2 "changed-abi")
-                (before-abi (plist-get
-                             (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
-                             :runtime-key-computations)))
-            (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest)
-            (should (> (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
-                                  :runtime-key-computations)
-                       before-abi)))))
+          ;; Override the accessor too: on Windows it ignores the constant.
+          (cl-letf (((symbol-function 'nelisp-native-load--runtime-abi-v2)
+                     (lambda () "changed-abi")))
+            (let ((nelisp-native-load-raw-runtime-abi-v2 "changed-abi")
+                  (before-abi (plist-get
+                               (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
+                               :runtime-key-computations)))
+              (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest)
+              (should (> (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
+                                    :runtime-key-computations)
+                         before-abi))))))
       (should (>= (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics) :misses)
                   (+ (plist-get start :misses) 1))))))
 

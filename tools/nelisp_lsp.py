@@ -378,10 +378,13 @@ class Server:
         """Read the server toolchain's base registration table once per session."""
         if self.builtins is None:
             path = ROOT / 'scripts/nelisp-standalone-build.el'
+            # A bound on this one trusted toolchain file, not on user input;
+            # it grew past 4 MiB (4.2 MB on 2026-11-09).
+            limit = 8 * 1024 * 1024
             with path.open('rb') as stream:
-                source = stream.read(4 * 1024 * 1024 + 1)
-            if len(source) > 4 * 1024 * 1024:
-                raise ValueError('Reader builtin source exceeds 4 MiB')
+                source = stream.read(limit + 1)
+            if len(source) > limit:
+                raise ValueError('Reader builtin source exceeds 8 MiB')
             self.builtins = self.planner([{'path': path.as_uri(), 'text': source.decode('utf-8'),
                                           'builtin_catalog': True}], lookup=True, timeout=10)[0]['lookup']
             self.workspace.set_builtins(self.builtins)

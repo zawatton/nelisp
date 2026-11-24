@@ -8,7 +8,7 @@
             syntax-table set-syntax-table char-syntax standard-syntax-table)))
 (defconst nelisp-stdlib-text-mode-syntax--forms
   '
-((defvar text-mode-syntax-table (let ((st (make-syntax-table))) (modify-syntax-entry 34 ".   " st) (modify-syntax-entry 92 ".   " st) (modify-syntax-entry 39 "w p" st) (modify-syntax-entry 1523 "w   " st) (modify-syntax-entry 1524 "w   " st) (modify-syntax-entry 183 "w   " st) (modify-syntax-entry 8231 "w   " st) (modify-syntax-entry 65306 "w   " st) st) "Syntax table used while in `text-mode'.")))
+  ((defvar text-mode-syntax-table (let ((st (make-syntax-table))) (modify-syntax-entry 34 ".   " st) (modify-syntax-entry 92 ".   " st) (modify-syntax-entry 39 "w p" st) (modify-syntax-entry 1523 "w   " st) (modify-syntax-entry 1524 "w   " st) (modify-syntax-entry 183 "w   " st) (modify-syntax-entry 8231 "w   " st) (modify-syntax-entry 65306 "w   " st) st) "Syntax table used while in `text-mode'.")))
 (defvar nelisp-stdlib-text-mode-syntax--sealed-forms
   (copy-tree nelisp-stdlib-text-mode-syntax--forms))
 (defun nelisp-stdlib-text-mode-syntax-install ()

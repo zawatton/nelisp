@@ -244,8 +244,6 @@ standalone_nelisp_bin() {
   case "$ANVIL_OS:$arch" in
     macos:arm64|macos:aarch64)
       candidates+=("$ANVIL_HOME/target/nelisp-macos-aarch64") ;;
-    macos:x86_64|macos:amd64)
-      candidates+=("$ANVIL_HOME/target/nelisp-macos-x86_64") ;;
     linux:aarch64|linux:arm64)
       candidates+=("$ANVIL_HOME/target/nelisp-aarch64") ;;
     windows-msys:aarch64|windows-msys:arm64)
@@ -255,7 +253,6 @@ standalone_nelisp_bin() {
       "$ANVIL_HOME/target/nelisp"
       "$ANVIL_HOME/target/nelisp.exe"
       "$ANVIL_HOME/target/nelisp-macos-aarch64"
-      "$ANVIL_HOME/target/nelisp-macos-x86_64"
       "$ANVIL_HOME/target/nelisp-aarch64"
       "$ANVIL_HOME/target/nelisp-aarch64.exe"
   )
@@ -349,7 +346,7 @@ anvil_standalone_system_configuration() {
     macos)
       case "$(uname -m 2>/dev/null || echo)" in
         arm64|aarch64) printf 'aarch64-apple-darwin' ;;
-        x86_64|amd64)  printf 'x86_64-apple-darwin' ;;
+        x86_64|amd64)  printf 'unknown-apple-darwin' ;; # Intel macOS is unsupported
         *)             printf 'unknown-apple-darwin' ;;
       esac
       ;;

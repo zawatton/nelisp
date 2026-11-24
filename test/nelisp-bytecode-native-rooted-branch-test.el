@@ -55,7 +55,7 @@
   (let* ((imports nil)
          (names '("nl_native_car_v2" "nl_native_cdr_v2" "nl_root_pin_slot_v2"))
          (exports (list (list :name "nl_native_rooted_branch_probe_v1" :value 16 :size 48
-                              :type 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                              :type 'func :abi (nelisp-native-load--runtime-abi-v2)
                               :arity 4 :params '(u64 u64 u64 u64) :return 'u64)))
          (manifest nil))
     (dolist (name names)
@@ -64,7 +64,7 @@
                         (nelisp-native-load--raw-v2-conditional-import-index name)
                       (cl-position name nelisp-native-load-bridgeable-symbols :test #'equal))))
         (push (append (list :name name :kind 'func
-                            :abi nelisp-native-load-raw-runtime-abi-v2 :index index
+                            :abi (nelisp-native-load--runtime-abi-v2) :index index
                             :address-mode (if root-slot 'conditional-root-slot-v1
                                             'native-bridgeable-v1))
                       '(:arity 6 :params (u64 u64 u64 u64 u64 u64) :return u64))

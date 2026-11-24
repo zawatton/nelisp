@@ -39,9 +39,11 @@
   (load path nil t t))
 
 (ert-deftest nelisp-eln-emitter-produces-loadable-gnu-unit ()
-  (skip-unless (equal emacs-version "31.1"))
-  (should (equal emacs-version "31.1"))
-  (should (equal comp-abi-hash "ba35c031"))
+  ;; The emitter writes units for one GNU build ABI; another 31.1 build
+  ;; (a different comp-abi-hash, or no native-comp) cannot load them.
+  (skip-unless (and (equal emacs-version "31.1")
+                    (boundp 'comp-abi-hash)
+                    (equal comp-abi-hash "ba35c031")))
   (should (eq system-type 'gnu/linux))
   (let* ((dir (make-temp-file "nelisp-eln-emitter-test-" t))
          (path (expand-file-name "constant17.eln" dir))
@@ -63,9 +65,11 @@
         (delete-directory dir t)))))
 
 (ert-deftest nelisp-eln-emitter-lowers-one-argument-identity-leaf ()
-  (skip-unless (equal emacs-version "31.1"))
-  (should (equal emacs-version "31.1"))
-  (should (equal comp-abi-hash "ba35c031"))
+  ;; The emitter writes units for one GNU build ABI; another 31.1 build
+  ;; (a different comp-abi-hash, or no native-comp) cannot load them.
+  (skip-unless (and (equal emacs-version "31.1")
+                    (boundp 'comp-abi-hash)
+                    (equal comp-abi-hash "ba35c031")))
   (should (eq system-type 'gnu/linux))
   (let* ((dir (make-temp-file "nelisp-eln-emitter-identity-" t))
          (path (expand-file-name "identity.eln" dir))
@@ -94,9 +98,11 @@
         (delete-directory dir t)))))
 
 (ert-deftest nelisp-eln-emitter-lowers-bounded-conditional-ir ()
-  (skip-unless (equal emacs-version "31.1"))
-  (should (equal emacs-version "31.1"))
-  (should (equal comp-abi-hash "ba35c031"))
+  ;; The emitter writes units for one GNU build ABI; another 31.1 build
+  ;; (a different comp-abi-hash, or no native-comp) cannot load them.
+  (skip-unless (and (equal emacs-version "31.1")
+                    (boundp 'comp-abi-hash)
+                    (equal comp-abi-hash "ba35c031")))
   (let* ((dir (make-temp-file "nelisp-eln-emitter-if-" t))
          (path (expand-file-name "if.eln" dir))
          (name 'nelisp-eln-emitter-test-if)
@@ -187,9 +193,11 @@
         (delete-directory dir t)))))
 
 (ert-deftest nelisp-eln-emitter-rejects-corrupt-profile-hash-before-registration ()
-  (skip-unless (equal emacs-version "31.1"))
-  (should (equal emacs-version "31.1"))
-  (should (equal comp-abi-hash "ba35c031"))
+  ;; The emitter writes units for one GNU build ABI; another 31.1 build
+  ;; (a different comp-abi-hash, or no native-comp) cannot load them.
+  (skip-unless (and (equal emacs-version "31.1")
+                    (boundp 'comp-abi-hash)
+                    (equal comp-abi-hash "ba35c031")))
   (should (eq system-type 'gnu/linux))
   (let* ((dir (make-temp-file "nelisp-eln-emitter-hash-test-" t))
          (good (expand-file-name "good.eln" dir))

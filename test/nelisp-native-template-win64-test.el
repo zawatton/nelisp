@@ -52,6 +52,8 @@
    (should (string-match-p (regexp-quote (unibyte-string #x3d #xff #xff 0 0)) windows-native-sentinel--code))
    (should (fboundp 'windows-native-sentinel-with-entry))))
 (ert-deftest nelisp-template-win64-reference-negative-controls ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((linux (nelisp-native-template-open-library)))
     (dolist (name '(prologue epilogue call frame))
       (should-not (equal (plist-get (cdr (assq name (plist-get linux :fragments))) :bytes)
@@ -108,6 +110,9 @@
          (should (equal (plist-get row :abi) "nelisp-runtime-raw-v2:win64:v1")))
        (should-not (nelisp-native-template-check manifest))))))
 (ert-deftest nelisp-template-win64-refuses-target-change-after-selection ()
+  ;; Needs a non-Windows host: `nelisp-native-load--windows-p' reports the
+  ;; running system on Windows, so clearing the build target changes nothing.
+  (skip-unless (not (eq system-type 'windows-nt)))
   (nelisp-template-win64-test--with-target
    (nelisp-native-template-open-library)
    (let ((nelisp-native-load--build-target nil))

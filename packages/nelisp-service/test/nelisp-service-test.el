@@ -257,6 +257,33 @@
             (should (nelisp-service-get daemon :stopped)))
         (nelisp-service-daemon-close daemon)))))
 
+(ert-deftest nelisp-service-test-open-drains-reply-seen-after-close ()
+  "A rejection whose close is observed first is still reported."
+  (nelisp-service-test--with-state-dir
+    (let ((daemon (nelisp-service-daemon-start
+                   "t5" :handler #'ignore :version "old"))
+          (held nil)
+          (real-input (symbol-function 'nelisp-service-client--on-input))
+          (real-close (symbol-function 'nelisp-service-client--on-close)))
+      (unwind-protect
+          (let ((state (nelisp-service-read-plist
+                        (nelisp-service-state-file "t5" "state")))
+                (nelisp-service-client--started (+ (float-time) 1000)))
+            ;; Hold every chunk back; deliver it from a timer once the
+            ;; sentinel has run, so the close is seen before the reply.
+            (cl-letf (((symbol-function 'nelisp-service-client--on-input)
+                       (lambda (client chunk) (push (cons client chunk) held)))
+                      ((symbol-function 'nelisp-service-client--on-close)
+                       (lambda (client proc)
+                         (funcall real-close client proc)
+                         (run-at-time 0.05 nil
+                                      (lambda ()
+                                        (dolist (h (nreverse held))
+                                          (funcall real-input (car h) (cdr h))))))))
+              (should (eq 'version
+                          (nelisp-service-client--open "t5" state "new")))))
+        (nelisp-service-daemon-close daemon)))))
+
 (ert-deftest nelisp-service-test-daemon-handler-error-reaches-client ()
   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
@@ -268,6 +295,114 @@
                                            (nelisp-service-client-request
                                             client "x" 20)))))
             (nelisp-service-client-close client))
+        (nelisp-service-daemon-close daemon)))))
+
+;; Intermittent Windows failure: `process-send-string' signalled on a
+;; request frame.  Nothing reached the daemon, so one resend is safe.
+(defmacro nelisp-service-test--with-failing-req-send (failures &rest body)
+  "Run BODY with the first FAILURES request sends signalling an error.
+Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
+  (declare (indent 1))
+  `(let ((req-sends 0)
+         (real (symbol-function 'process-send-string)))
+     (cl-letf (((symbol-function 'process-send-string)
+                (lambda (proc string)
+                  (if (not (string-prefix-p "(req " string))
+                      (funcall real proc string)
+                    (setq req-sends (1+ req-sends))
+                    (when (<= req-sends ,failures)
+                      (signal 'file-error '("Process send failed" "boom")))
+                    (funcall real proc string)))))
+       ,@body)))
+
+(ert-deftest nelisp-service-test-request-resends-once-after-send-failure ()
+  (nelisp-service-test--with-state-dir
+    (let* ((runs 0)
+           (daemon (nelisp-service-daemon-start
+                    "r1" :handler (lambda (_c payload reply)
+                                    (setq runs (1+ runs))
+                                    (funcall reply (concat "ok:" payload)))))
+           (client nil))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r1" :timeout 20))
+            (nelisp-service-test--with-failing-req-send 1
+              (should (equal "ok:x" (nelisp-service-client-request client "x" 20)))
+              (should (= 2 req-sends)))
+            (should (= 1 runs))
+            ;; The old handle forwards to the fresh connection afterwards.
+            (should (nelisp-service-client-live-p client))
+            (should (equal "ok:y" (nelisp-service-client-request client "y" 20))))
+        (when client (nelisp-service-client-close
+                      (nelisp-service-client--current client)))
+        (nelisp-service-daemon-close daemon)))))
+
+(ert-deftest nelisp-service-test-superseded-handle-follows-successor ()
+  (nelisp-service-test--with-state-dir
+    (let* ((daemon (nelisp-service-daemon-start
+                    "r3" :handler (lambda (_c payload reply)
+                                    (funcall reply (concat "ok:" payload)))))
+           (client nil))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r3" :timeout 20))
+            (nelisp-service-test--with-failing-req-send 1
+              (should (equal "ok:x" (nelisp-service-client-request client "x" 20))))
+            (should (nelisp-service-get client :successor))
+            (should (nelisp-service-client-ping client 10))
+            (should (nelisp-service-client-shutdown client 10))
+            (nelisp-service-client-close client)
+            (nelisp-service-client-close client))
+        (when client (nelisp-service-client-close client))
+        (nelisp-service-daemon-close daemon)))))
+
+(ert-deftest nelisp-service-test-request-second-send-failure-surfaces ()
+  (nelisp-service-test--with-state-dir
+    (let* ((runs 0)
+           (daemon (nelisp-service-daemon-start
+                    "r2" :handler (lambda (_c _p reply)
+                                    (setq runs (1+ runs))
+                                    (funcall reply "ok"))))
+           (client nil))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r2" :timeout 20))
+            (nelisp-service-test--with-failing-req-send 2
+              (let ((err (should-error (nelisp-service-client-request
+                                        client "x" 20))))
+                (should (string-match-p "disconnected: send failed: .*boom"
+                                        (cadr err)))
+                (should (eq 'disconnected (nth 2 err)))
+                (should (= 2 req-sends))))
+            (should (= 0 runs)))
+        (when client (nelisp-service-client-close
+                      (nelisp-service-client--current client)))
+        (nelisp-service-daemon-close daemon)))))
+
+(ert-deftest nelisp-service-test-request-not-resent-after-successful-send ()
+  (nelisp-service-test--with-state-dir
+    (let* ((daemon (nelisp-service-daemon-start
+                    "r3" :handler (lambda (_c _p reply) (funcall reply "ok"))))
+           (client nil)
+           (req-sends 0)
+           (real (symbol-function 'process-send-string)))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r3" :timeout 20))
+            ;; The send succeeds, then the connection is lost before a reply.
+            (cl-letf (((symbol-function 'process-send-string)
+                       (lambda (proc string)
+                         (funcall real proc string)
+                         (when (string-prefix-p "(req " string)
+                           (setq req-sends (1+ req-sends))
+                           (delete-process proc)))))
+              (let ((err (should-error (nelisp-service-client-request
+                                        client "x" 20))))
+                (should (string-match-p "connection to daemon closed"
+                                        (cadr err)))
+                (should-not (string-match-p "send failed" (cadr err)))))
+            (should (= 1 req-sends)))
+        (when client (nelisp-service-client-close client))
         (nelisp-service-daemon-close daemon)))))
 
 (ert-deftest nelisp-service-test-daemon-idle-exit ()
@@ -286,6 +421,52 @@
                                                :stale-after 10)))
       (should daemon)
       (nelisp-service-daemon-close daemon))))
+
+;; A daemon that misses the hello timeout but still accepts connections
+;; is busy, not dead: the client must not clear its files and spawn a
+;; second one (Doc 213; three anvil daemons were seen running at once).
+(ert-deftest nelisp-service-test-busy-daemon-is-not-replaced ()
+  (nelisp-service-test--with-state-dir
+    (let* ((mute (make-network-process
+                  :name "nelisp-service-test-mute" :server t :host "127.0.0.1"
+                  ;; An ephemeral port: a fixed one collides when several
+                  ;; copies of this test run at once (windows-service-loop).
+                  :service t :family 'ipv4 :noquery t
+                  :filter #'ignore))
+           (port (process-contact mute :service))
+           (spawned 0)
+           (nelisp-service-client-hello-timeout 0.3)
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command) (setq spawned (1+ spawned)))))
+      (unwind-protect
+          (progn
+            (nelisp-service-write-plist
+             (nelisp-service-state-file "t10" "lock")
+             (list :started (- (float-time) 1000)) t)
+            (nelisp-service-write-plist
+             (nelisp-service-state-file "t10" "state")
+             (list :port port :token "tok" :version "v"))
+            (should-error (nelisp-service-client-connect
+                           "t10" :version "v" :start-command '("x")
+                           :stale-after 1 :timeout 2))
+            (should (= 0 spawned))
+            (should (file-exists-p (nelisp-service-state-file "t10" "state")))
+            (should (file-exists-p (nelisp-service-state-file "t10" "lock"))))
+        (delete-process mute)))))
+
+(ert-deftest nelisp-service-test-superseded-daemon-exits-and-keeps-files ()
+  (nelisp-service-test--with-state-dir
+    (let* ((nelisp-service-daemon-superseded-interval 0.1)
+           (daemon (nelisp-service-daemon-start "t11" :handler #'ignore))
+           (state (nelisp-service-state-file "t11" "state"))
+           (lock (nelisp-service-state-file "t11" "lock")))
+      ;; A newer daemon took over: its lock and state replace ours.
+      (nelisp-service-delete-file lock)
+      (nelisp-service-write-plist lock (list :started (+ (float-time) 5)) t)
+      (nelisp-service-write-plist state (list :port 1 :token "newer"))
+      (should (eq 'superseded (nelisp-service-daemon-run daemon 0.05)))
+      (should (equal "newer" (plist-get (nelisp-service-read-plist state) :token)))
+      (should (file-exists-p lock)))))
 
 (ert-deftest nelisp-service-test-client-autostarts-daemon ()
   (nelisp-service-test--with-state-dir

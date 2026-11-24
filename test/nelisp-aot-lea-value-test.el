@@ -100,6 +100,8 @@
 
 (ert-deftest nelisp-aot-lea-value/memory-tree-register-clobbers ()
   "LEA scratch preserves sibling RAX/R10/R11 values in a register tree."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (dolist (args '((3 7) (-3 -7) (1099511627783 -17179869193)
                   (9223372036854775807 -9223372036854775808)))
     (let* ((a (car args)) (b (cadr args)) (word -81985529216486896)
@@ -121,6 +123,8 @@
 (defvar nelisp-aot-lea-test--owner nil)
 (ert-deftest nelisp-aot-lea-value/source-multiply-add-selection ()
   "The source-level missed opportunity must use LEA and remove IMUL."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((emit (symbol-function 'nelisp-aot-compiler--emit-defun))
         (op (symbol-function 'nelisp-aot-compiler--x86-op))
         (imul (symbol-function 'nelisp-aot-compiler--x86-imul))

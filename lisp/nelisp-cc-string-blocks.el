@@ -434,7 +434,60 @@
                     (ptr-write-u64 s 0 (logand (heap-read-u64 s 0) 9223372036854775807)) 0))
               (setq i (+ i 1))))
           (setq b (heap-read-u64 b 32744)))
-        (ptr-write-u64 st 56 0) (ptr-write-u64 st 64 0) 0))
+        (ptr-write-u64 st 56 0) (ptr-write-u64 st 248 0) (ptr-write-u64 st 64 0) 0))
+    ;; Small-string block pins.  A conservative word that lands in a sblock records that block's base here, so the
+    ;; compaction pass can keep it and still free every empty block that is not pinned.  +240 holds a lazily mapped
+    ;; 4 KiB array of up to 500 bases, +248 the count; 1000000 means overflow (or a failed mapping), and then
+    ;; compaction skips everything as it did before the pin set existed.  Reset together with +56 each collection.
+    (defun nl_string_pin_block (addr)
+      (let* ((st (data-addr nl_strings_state))
+             (mapping (nl_string_mapping_holding addr)))
+        (if (/= (logand mapping 7) 4) 0
+          (let* ((base (logand mapping -8)) (n (heap-read-u64 st 248))
+                 (arr (heap-read-u64 st 240)) (i 0) (hit 0))
+            (if (>= n 1000000) 0
+              (seq
+               (if (= arr 0)
+                   (seq (setq arr (nl_string_alloc_mapping 4096))
+                        (ptr-write-u64 st 240 arr)) 0)
+               (if (= arr 0) (ptr-write-u64 st 248 1000000)
+                 (seq
+                  (while (and (< i n) (= hit 0))
+                    (seq (if (= (heap-read-u64 arr (* i 8)) base) (setq hit 1) 0)
+                         (setq i (+ i 1))))
+                  (if (= hit 1) 0
+                    (if (>= n 500) (ptr-write-u64 st 248 1000000)
+                      (seq (ptr-write-u64 arr (* n 8) base)
+                           (ptr-write-u64 st 248 (+ n 1)))))))))))))
+    (defun nl_string_block_pinned_p (b)
+      (let* ((st (data-addr nl_strings_state)) (arr (heap-read-u64 st 240))
+             (n (heap-read-u64 st 248)) (i 0) (hit 0))
+        (while (and (< i n) (= hit 0))
+          (seq (if (= (heap-read-u64 arr (* i 8)) b) (setq hit 1) 0)
+               (setq i (+ i 1))))
+        hit))
+    (defun nl_string_block_empty_p (b)
+      (let* ((from (+ b 16)) (end (heap-read-u64 b 8)) (empty 1))
+        (while (and (< from end) (= empty 1))
+          (if (/= (heap-read-u64 from 0) 0) (setq empty 0)
+            (setq from (+ from (nl_string_sdata_size (heap-read-u64 from 8))))))
+        empty))
+    ;; Unlinks and unmaps every sblock that holds no live string and is not pinned.  The head block is always kept,
+    ;; as the compacting pass keeps its first block; the tail pointer follows the last kept block.
+    (defun nl_string_free_empty_blocks ()
+      (let* ((st (data-addr nl_strings_state)) (prev 0) (b (heap-read-u64 st 16)))
+        (while (/= b 0)
+          (let* ((next (heap-read-u64 b 0)))
+            (if (if (= prev 0) 0
+                  (if (= (nl_string_block_empty_p b) 1)
+                      (= (nl_string_block_pinned_p b) 0) 0))
+                (seq (ptr-write-u64 prev 0 next)
+                     (nl_string_unregister_mapping b (+ b 8192))
+                     (nl_os_free_chunk b 8192))
+              (setq prev b))
+            (setq b next)))
+        (if (= prev 0) 0 (ptr-write-u64 st 24 prev))
+        0))
     (defun nl_string_pin_word (w)
       (let* ((st (data-addr nl_strings_state))
              (mapping (nl_string_mapping_holding w))
@@ -451,11 +504,13 @@
                         (setq s owner) 0)
                     (setq d (+ d (nl_string_sdata_size n)))))) 0))
         (if (= s 0) 0
-          (seq (nl_gc_mark_word (+ s 4)) (ptr-write-u64 st 56 1) 1))))
+          (seq (nl_gc_mark_word (+ s 4)) (nl_string_pin_block (heap-read-u64 s 24))
+               (ptr-write-u64 st 56 1) 1))))
     (defun nl_compact_small_strings ()
       (let* ((st (data-addr nl_strings_state)) (tb (heap-read-u64 st 16)))
-        (if (or (= tb 0) (/= (heap-read-u64 st 56) 0)
-                (= (nl_gc_conserv_pinned_p) 1)) 0
+        (if (or (= tb 0) (>= (heap-read-u64 st 248) 1000000)) 0
+         (if (or (/= (heap-read-u64 st 56) 0) (= (nl_gc_conserv_pinned_p) 1))
+          (nl_string_free_empty_blocks)
           (let* ((to (+ tb 16)) (b tb))
             (while (/= b 0)
               (let* ((from (+ b 16)) (end (heap-read-u64 b 8)))
@@ -481,7 +536,7 @@
                 (nl_string_unregister_mapping b (+ b 8192))
                 (nl_os_free_chunk b 8192) (setq b next)))
             (ptr-write-u64 tb 8 to) (ptr-write-u64 tb 0 0)
-            (ptr-write-u64 st 24 tb) 1))))
+            (ptr-write-u64 st 24 tb) 1)))))
     (defun nl_sweep_strings ()
       (let* ((st (data-addr nl_strings_state)) (b (heap-read-u64 st 0))
              (kept 0) (empty 0) (count 0) (bytes 0))
@@ -523,7 +578,7 @@
             (let* ((sp (heap-read-u64 fix 0)) (s (nl_string_view_header sp)))
               (if (/= s 0) (ptr-write-u64 sp 16 (heap-read-u64 s 24)) 0))
             (setq fix (heap-read-u64 fix 8))))
-        (ptr-write-u64 st 64 0) (ptr-write-u64 st 56 0)
+        (ptr-write-u64 st 64 0) (ptr-write-u64 st 56 0) (ptr-write-u64 st 248 0)
         (ptr-write-u64 st 40 count) (ptr-write-u64 st 48 bytes)
         (ptr-write-u64 st 72 (+ (heap-read-u64 st 72) 1))
         (ptr-write-u64 (data-addr nl_gc_stats) 16

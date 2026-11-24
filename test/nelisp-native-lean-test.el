@@ -20,6 +20,8 @@
     (should-error (nelisp-native-cache-prepare-cold-template))))
 
 (ert-deftest nelisp-native-lean-fence-retains-independent-data ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-native-template--source-fence nil)
         (nelisp-native-cache--build-source-identity "built")
         (nelisp-native-template-fragment-abi (copy-tree nelisp-native-template-fragment-abi)))
@@ -29,6 +31,8 @@
     (should-error (funcall nelisp-native-template--source-fence))))
 
 (ert-deftest nelisp-native-lean-fence-refuses-cyclic-identity ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-native-template--source-fence nil)
         (nelisp-native-cache--build-source-identity "built")
         (nelisp-native-template-fragment-abi (copy-tree nelisp-native-template-fragment-abi)))

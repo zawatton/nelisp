@@ -71,7 +71,8 @@ other Emacs builds.")
 
 (defun nelisp-eln-emitter--static-object (value)
   "Serialize VALUE in GNU comp.c static_obj_t format."
-  (let* ((payload (string-as-unibyte (prin1-to-string value)))
+  (let* ((payload (with-no-warnings
+                    (string-as-unibyte (prin1-to-string value))))
          (nul-payload (concat payload (unibyte-string 0))))
     (concat (nelisp-eln-emitter--u64 (length nul-payload)) nul-payload)))
 

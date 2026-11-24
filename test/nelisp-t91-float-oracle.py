@@ -73,7 +73,6 @@ def binary_for_target(target: str) -> Path:
         "linux-x86_64": "nelisp",
         "linux-aarch64": "nelisp-aarch64",
         "macos-aarch64": "nelisp",
-        "macos-x86_64": "nelisp",
         "windows-x86_64": "nelisp.exe",
         "windows-aarch64": "nelisp-aarch64.exe",
     }

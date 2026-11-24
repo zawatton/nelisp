@@ -9,6 +9,16 @@
 ;; argv values, never interpolated shell code.
 
 ;;; Code:
+;; Provided by the marker and process modules at run time.
+(declare-function nelisp-process-pid "nelisp-runtime")
+(declare-function nelisp-process-object-p "nelisp-runtime")
+(declare-function nelisp-buffer-size "nelisp-runtime")
+(declare-function nelisp-set-marker "nelisp-runtime")
+(declare-function nelisp-marker-position "nelisp-runtime")
+(declare-function nelisp-marker-buffer "nelisp-runtime")
+(declare-function nelisp-marker-p "nelisp-runtime")
+(declare-function nelisp-marker--make "nelisp-runtime")
+(defvar nelisp-process-adapter--live)
 (defvar nelisp-process-buffer--channels nil)
 (defvar nelisp-process-buffer--original-get (symbol-function 'process-get))
 (defvar nelisp-process-buffer--original-put (symbol-function 'process-put))

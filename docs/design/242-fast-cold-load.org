@@ -3,6 +3,8 @@
 #+STATUS: SHIPPED in the uncommitted worktree (build33); ledger 100% of 5
 #+SCOPE: Make restoring a cold image (bare start and Doc 240 app images) cheaper without changing the restored heap
 #+LEDGER: tools/ai/cold-load-progress.org
+#+VERIFIED-BY: ert-full
+# ert-full runs test/nelisp-cold-load-fast-test.el, the doc's own test file (5 tests, green 2026-11-09).
 
 * Why this document exists
 

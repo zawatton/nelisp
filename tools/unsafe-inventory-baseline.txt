@@ -331,7 +331,52 @@
 # scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
 # `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
 # elsewhere -- gate's own before/after totals agree exactly.
-unsafe-call 1143
+# 2026-11-18: 2581 -> 2592 (+11).  The new build-time AOT translator
+# scripts/nelisp-aot-bytecode.el carries 11 raw-pointer calls in its build-DSL
+# helpers (pinned below); scripts/nelisp-standalone-build.el is unchanged at 1975.
+# The 4 excess already present at b00e9036e (2585 vs 2581) stay red and are not
+# covered here.
+# 2026-11-18: 2592 -> 2609 (+17), all in scripts/nelisp-aot-bytecode.el (11 -> 28,
+# pinned below).  The AOT helpers read their own state, the AOT table and VM
+# frames with ptr-read-u64 instead of heap-read-u64 (no per-read heap bounds
+# check on the per-node path), and the autoload-do-load fast path reads two
+# cached words of `nl_aot_state'.
+# 2026-11-18: 2609 -> 2615 (+6), all in scripts/nelisp-aot-bytecode.el (28 -> 34,
+# pinned below).  The inline `symbol-with-pos-p' / `fboundp' call-site helpers
+# read the live function cell, the subr descriptor id and the operand's tag
+# words with ptr-read-u64 to check the callee is still the original subr.
+# 2026-11-19: 2615 -> 2616 (+1), scripts/nelisp-standalone-build.el (pinned below):
+# the GNU `gcs-done' counter bump in `nl_gc_debt_rearm'.
+# 2026-11-19: 2616 -> 2620 (+4), all in scripts/nelisp-aot-bytecode.el (34 -> 38,
+# pinned below): the leaf fast path `wf_aot_leaf' reads the cached words of
+# `nl_aot_state' and the callers' constant words with ptr-read-u64 to check that
+# macroexp--expand-all, macroexp-macroexpand and macroexpand-1 are still the
+# installed objects before it returns a non-symbol atom as is.
+# 2026-11-19: 2620 -> 2644 (+24), all in scripts/nelisp-aot-bytecode.el (38 -> 62,
+# pinned below).  The plain-function head fast paths (`wf_aot_mm', `wf_aot_fg' and
+# helpers) read the head symbol's header kind and live function cell, the cell's kind
+# and Subr descriptor id, the captured `autoload-do-load' object and the function
+# epoch / validation words of `nl_aot_state' with ptr-read-u64/u8 (read-only, on the
+# per-node path) and write one validation word.
+# 2026-11-19: 2644 -> 2645 (+1), scripts/nelisp-standalone-build.el (pinned below):
+# the allocator bump fast path `nl_alloc_bump_try'.
+# 2026-11-20: scripts/nelisp-aot-bytecode.el 62 -> 63 (+1, pinned below): the &rest entry
+# wrapper conses the rest list from the VM argument words with ptr-read-u64 (lane F2).
+# 2026-11-20: scripts/nelisp-aot-bytecode.el 63 -> 64 (+1, pinned below): `wf_aot_adl' reads the
+# `autoload' symbol word with ptr-read-u64 to test the car of a boxed cons (lane H special forms).
+# The unsafe-call total is raised by this one only (2645 -> 2646); the base tree is still above it.
+# 2026-11-21: scripts/nelisp-aot-bytecode.el 63 -> 69 (+6, pinned below): lane L extends
+# `wf_aot_plain_cell' to cons-celled function cells; `wf_aot_plain_car' and the cons arms read the
+# car word, the state epoch, the captured `autoload' word and the `macro' constant with
+# ptr-read-u8/u64 (measured on the base a2e9c24cd tree: 63 -> 69).
+# The unsafe-call total is raised by those 6 only (2646 -> 2652); the base tree's own +4 stays.
+# 2026-11-21: unsafe-call 2652 -> 2656 (+4), all in scripts/nelisp-standalone-build.el, whose
+# `pinned-kernel-call' line (1978) already counts them; only this total was never raised.
+# +1 from 982ed65ac (`nl_chunk_try_alloc' writes the new committed-watermark word, the
+# 1972 -> 1973 excess noted above) and +3 from b00e9036e (the in-loop setcar/setcdr/nreverse/
+# nconc arms of `wf_bytecode_w_fast_run' and `wf_bytecode_w_get_fast', the 1972 -> 1975 entry
+# above).  Counts measured per commit with `make unsafe-inventory' (2581 -> 2582 -> 2585).
+unsafe-call 2656
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -343,6 +388,9 @@ unsafe-call 1143
 # its first call, fails and names the file with its old and new counts.
 # Regenerate from a clean tree; do not hand-edit into drift from the scan.
 pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
+# 2026-11-07: the prelude's stat-buffer and SIGPIPE sigaction code moved here
+# (19 calls) so the prelude itself holds none; total unchanged.
+pinned-kernel-call scripts/nelisp-prelude-kernel.el 19
 # Doc 142 section 6.4's in-process `.neln' loader, pinned per-file the same
 # way the three kernel files above are.  48 unquoted calls: the mmap, the
 # per-byte writes that place machine code and patch relocations, the
@@ -350,7 +398,7 @@ pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
 # The 2026-09-11 +20 are the runtime-reload raw symbol/state/install address
 # probes and SHA256 file/binary probes.  They are explicit ABI validation and
 # diagnostics around the opt-in loader, not a new unbounded raw-memory path.
-pinned-kernel-call lisp/nelisp-native-load.el 56
+pinned-kernel-call lisp/nelisp-native-load.el 74
 # Generation table reads/writes and the CAS publisher account for six
 # scanned primitive call sites in the new native unit kernel.
 # 2026-09-12, 6 -> 7: candidate reclamation adds one `syscall-direct' call,
@@ -390,7 +438,7 @@ pinned-kernel-call lisp/nelisp-cc-env-set-value.el 4
 # available: unboxing would throw away a Sexp that is not an integer, and
 # low-bit-tagged immediates allocate nothing but nothing produces them yet
 # and the generated C harness does not decode them.
-pinned-kernel-call lisp/nelisp-aot-compiler.el 18
+pinned-kernel-call lisp/nelisp-aot-compiler.el 40
 pinned-kernel-call scripts/nelisp-flat-arena-probe.el 6
 # T110's pause-growth probe reads the collector's raw counters through two
 # u64 accesses; keep its per-file call pin explicit with the other probes.
@@ -589,7 +637,18 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 #     `default-directory'/`noninteractive' above.
 # Taken from the scanner (875) and cross-checked against `git diff', not
 # summed on paper.
-pinned-kernel-call scripts/nelisp-standalone-build.el 989
+# 2026-11-07: scripts/nelisp-standalone-build.el 1971 -> 1972.  `nl_n4_finish_w_fail' (backtrace capture before the pop of a failing VM activation) adds one ptr-write-u64 to the pop, mirroring the existing pop in `nl_n4_finish_w'.
+# 2026-11-17: scripts/nelisp-standalone-build.el 1972 -> 1975.  Macroexpansion speed stages 2a-3a add three
+# raw-pointer writes: the in-loop setcar/setcdr/nreverse/nconc arms of `wf_bytecode_w_fast_run' write the cons
+# cell and the VM stack slot directly instead of leaving the fast loop, and `wf_bytecode_w_get_fast' fills its
+# result word.  Scanner delta measured against 8cd4fa972.  The separate 1972 -> 1973 excess inherited from
+# 982ed65a is not covered here and stays red.
+# 2026-11-19: scripts/nelisp-standalone-build.el 1975 -> 1977.  GNU `gcs-done': `nl_gc_debt_rearm' bumps the
+# forwarded variable's value cell inline at the end of each completed collection (one raw read of the cached symbol
+# word, one raw ptr-write-u64; no allocation), and `nl_gcs_done_init' stores that word once per boot.
+# 2026-11-19: 1977 -> 1978.  `nl_alloc_bump_try' reserves a small block with one CAS bump (`nl_chunk_try_alloc' call site) when every free list is empty.
+pinned-kernel-call scripts/nelisp-standalone-build.el 1978
+pinned-kernel-call scripts/nelisp-aot-bytecode.el 69
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1
@@ -600,7 +659,7 @@ pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el 4
 
 pinned-kernel-call lisp/nelisp-native-cache.el 6
 
-pinned-kernel-call lisp/nelisp-native-funcall-v2.el 2
+pinned-kernel-call lisp/nelisp-native-funcall-v2.el 10
 
 pinned-kernel-call lisp/nelisp-native-gccjit.el 9
 
@@ -618,3 +677,70 @@ pinned-kernel-call lisp/nelisp-standalone-arena-rewrite.el 1
 # add each positive per-file delta to its old pin, and sum to unsafe-call.
 # New quoted-only kernel generators resolve/write alias cells and manage
 # native roots. Their identities are pinned in tools/unsafe-kernel.txt.
+
+# 2026-11-07: core-lane files registered after the 3a2862816 merge (eln loader,
+# native windows, heap accessors, ...).  Per-file pins are the measured
+# counts; total 1143 -> 2529 includes scripts/nelisp-stdlib-prelude.el (19
+# calls), which is intentionally not registered and still fails the gate.
+pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-emit.el 4
+
+pinned-kernel-call lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el 1
+
+pinned-kernel-call lisp/nelisp-eln-abi.el 4
+
+pinned-kernel-call lisp/nelisp-eln-bignum.el 2
+
+pinned-kernel-call lisp/nelisp-eln-callable-import.el 13
+
+pinned-kernel-call lisp/nelisp-eln-float.el 2
+
+pinned-kernel-call lisp/nelisp-eln-handler-port.el 24
+
+pinned-kernel-call lisp/nelisp-eln-handler-substrate.el 20
+
+pinned-kernel-call lisp/nelisp-eln-native-subr.el 10
+
+pinned-kernel-call lisp/nelisp-eln-objects.el 2
+
+pinned-kernel-call lisp/nelisp-eln-raw-call.el 3
+
+pinned-kernel-call lisp/nelisp-eln-registration-objects.el 4
+
+pinned-kernel-call lisp/nelisp-eln-registration.el 21
+
+pinned-kernel-call lisp/nelisp-eln-string.el 9
+
+pinned-kernel-call lisp/nelisp-eln-system-loader.el 5
+
+pinned-kernel-call lisp/nelisp-heap-accessors.el 23
+
+pinned-kernel-call lisp/nelisp-native-raw-file.el 7
+
+pinned-kernel-call lisp/nelisp-native-template-stencils.el 1
+
+pinned-kernel-call lisp/nelisp-native-windows.el 34
+
+pinned-kernel-call lisp/nelisp-standalone-argframe.el 2
+
+pinned-kernel-call lisp/nelisp-stdlib-filesystem-access.el 5
+
+# 2026-11-12 (user-approved): 8 -> 13, boot-image integrity check: length and
+# checksum reads of the artifact heap image (3742b98e6).
+pinned-kernel-call scripts/nelisp-boot-image.el 13
+
+pinned-kernel-call scripts/nelisp-startup-trace.el 6
+# Same commit, kernel files whose measured count had outgrown their pin:
+# standalone-build 989 -> 1971 (core-lane rooted bridges, eln callback ABI
+# glue), native-load 56 -> 74, aot-compiler 18 -> 40, native-funcall-v2 2 -> 10.
+# New pins for kernel generators that were not pinned before:
+pinned-kernel-call lisp/nelisp-cc-eln-callback.el 39
+pinned-kernel-call lisp/nelisp-cc-eln-callback7.el 40
+pinned-kernel-call lisp/nelisp-cc-evalport-aot-apply.el 4
+pinned-kernel-call lisp/nelisp-cc-fxir-inline.el 17
+pinned-kernel-call lisp/nelisp-cc-fxir-native.el 31
+pinned-kernel-call lisp/nelisp-cc-mirror-lookup-entry.el 1
+# 2026-11-12 (user-approved): +46 from the two Win64 COM generators added to the
+# kernel (lisp/nelisp-com-dsl.el 28, lisp/nelisp-com-wstr-lib.el 18).  The total
+# rose 2530 -> 2581 (+46 here, +5 from scripts/nelisp-boot-image.el 8 -> 13).
+pinned-kernel-call lisp/nelisp-com-dsl.el 28
+pinned-kernel-call lisp/nelisp-com-wstr-lib.el 18

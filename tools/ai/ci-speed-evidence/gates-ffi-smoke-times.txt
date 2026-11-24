@@ -1,0 +1,54 @@
+# gates host ERT and standalone-reader-ffi-smoke times across four CI runs.
+# Not tied to a ledger criterion; recorded for the 2026-11-09 checkpoint
+# (coordinator decision: record the confirmation run in an evidence file).
+#
+# Runs (workflow_dispatch on fix/ci-speed-20261107 unless noted):
+#   base 42418244107  b7de113af  before this lane's JOBS=4 change
+#   F    42578356513  3d6469608  gates env has NELISP_STANDALONE_JOBS=4 (9aee4c796)
+#   G    42596869405  f2c518053  same env; NELISP_GATE_DIR out of the stamp key
+#   H    42610328131  f669e4de8  gates env without NELISP_STANDALONE_JOBS
+#                                (gate_mutation=false confirmation run)
+#
+# gates ERT step = `make clean && bash tools/ai/nelisp-ai.sh test', from its
+# step header to the next step header in the job log.  Every one of the four
+# runs starts `Running 9718/9719 tests' and the step ends with exit code 139
+# (Emacs segfault) after 3837-3841 tests (last progress line, counting passed,
+# failed and skipped), so the runs cover the same tests.  Last test completed
+# before the crash: base nelisp-eln-raw-call/split-u32-round-trip-boundaries,
+# H nelisp-eln-registration-admits-genuine-multi-property-eval-effect; the
+# crashing test is the next one and is not named in the log.  About 5,900 of
+# the 9,719 tests never run on CI.  Not investigated here.
+
+## gates job
+run   ERT step   job wall
+base   631.8 s        -
+F     1729.3 s   1760 s
+G     1294.7 s   1321 s
+H      452.1 s    478 s
+
+## the four tests that slowed (seconds, from the ERT result lines)
+test                                                                base      F      G      H
+nelisp-bytecode-core-ordered/actual-producer-first-dispatch         82.2  600.1  303.3   57.1
+nelisp-codegen-state-production/actual-owner-register-dispatch      79.2  217.1  239.7   55.1
+nelisp-bytecode-core-ordered/native-signed-tails-and-effects        23.8  124.5   69.3   16.4
+nelisp-bytecode-coverage-audit-u0/valid-fixtures-execute-all-230-slots-on-gnu
+                                                                    17.4   87.9   39.2   13.4
+
+## tier smokes job: standalone-reader-ffi-smoke
+run   ffi-smoke   tier smokes job wall
+F     1158 s      1604 s
+G      116 s       507 s
+H      118 s       549 s
+
+## runner-speed control: the other tests, base vs H
+# The 3562 tests that completed on both runs, excluding the four above, took
+# 347 s on base and 250 s on H (x0.72); the longest of them ran x0.63-0.90.
+# H's runner was faster, so 452 s is the baseline range on a faster runner
+# (632 s x 0.72 = 455 s), not an improvement below it.  The fix is shown by the
+# four tests: F 600 s -> H 57 s for actual-producer-first-dispatch, the same
+# x0.70 as the rest of H against base.
+
+# Reading: removing NELISP_STANDALONE_JOBS from the gates env brings the host
+# ERT step back to the pre-lane baseline range.  The ffi-smoke drop
+# from 1158 s to about 117 s held on a second run; its cause is not
+# established (see the Notes handoff ci-speed_future-work_2026-11-09.md, item 2).

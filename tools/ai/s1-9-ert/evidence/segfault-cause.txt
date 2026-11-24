@@ -1,0 +1,59 @@
+# S1.9: why host Emacs 31.1 died with SIGSEGV (exit 139) in the single-Emacs
+# ERT run, and the fix.  Local, 2026-11-10, tree 309e53053 (main afec22e7d +
+# fix/ci-speed-20261107), host GNU Emacs 31.1.
+
+## Reproduction
+The pre-e3470413f `nelisp-ai.sh test' run (every test file in one Emacs,
+tools/ai/s1-9-ert/ert-single.sh) ends with exit 139:
+  Running 9753 tests ... last: passed 3839/9753
+  nelisp-eln-raw-call/split-u32-round-trip-boundaries
+CI showed the same stop on every run (3837-3841 of ~9719 tests).
+With a START line per test, the test that crashes is
+  nelisp-eln-registration-accepts-writable-bss-object-by-memsz
+C frames (gdb `info symbol' on the backtrace offsets):
+  plist_get + 116 <- exec_byte_code + 1344 <- apply_lambda <- eval_sub
+It passes alone, and also with every file loaded but only itself selected:
+the trigger is an earlier test, not a file load.
+
+## Bisection (only the selected tests run, all files loaded, ERT order kept)
+3839 earlier tests -> neither half alone gives exit 139, but the second half
+makes the crashing test FAIL with (wrong-type-argument hash-table-p nil).
+Bisecting on "FAIL or exit 139" ends at one test:
+  nelisp-bytecode-native-package-sealed-preflight-refuses-mutation
+  (test/nelisp-bytecode-native-package-test.el)
+That test plus the crashing test: the crashing test FAILs (hash-table-p nil).
+
+## Mechanism
+GNU Emacs 31.1 gives separately byte-compiled functions with the same
+bytecode one shared code string (stock `emacs -Q --batch'):
+  a = (byte-compile '(lambda () 'sealed-value))
+  b = (byte-compile '(lambda () 'other-value))
+  code a="\300\207" b="\300\207" eq-ab=t
+  after (aset (aref a 1) 0 (logxor 1 ...)): a="\301\207" b="\301\207"
+  (funcall b) -> exit 139
+The culprit test flips the first opcode of its function's code string in
+place (mutation `code': constant 0 -> constant 1) and never restores it;
+nelisp-bytecode-native-package-sealed-preflight-large-input-is-uncacheable
+flips the same string again, so the damage depends on test order.
+In the single-Emacs environment the crashing test's helper is byte-compiled
+(type byte-code-function at test start), so its cl-letf mock
+(lambda (&rest _) state) is a compiled closure with code "\300\207"
+(return constant 0), the shared and now flipped string.  The mock then
+returns the constant past the end of its one-element vector: nil here
+(the FAIL), a stray word in the full run (plist_get dereferences it:
+SIGSEGV).  Which earlier load makes that helper byte-compiled was not
+traced; it does not change the cause.
+
+## Fix
+test/nelisp-bytecode-native-package-test.el: the two tests that mutate
+the function use nelisp-bytecode-native-package-test--private-function,
+a make-byte-code copy that owns its code string and constants vector.
+New test nelisp-bytecode-native-package-private-function-owns-its-code
+checks that mutating the copy leaves another compiled function intact.
+
+## Checks
+- all files loaded, culprit + crashing test selected:
+  original test file -> FAILED 2/2 (hash-table-p nil); fixed -> passed 2/2
+- new test with the helper reduced to plain byte-compile (negative
+  control) -> FAILED; with the copy -> passed
+- test/nelisp-bytecode-native-package-test.el per-file: 18/18 passed

@@ -125,7 +125,7 @@
               (aset token 3 (cons record (aref token 3)))
               (+ address 5))
           (error
-           (condition-case cleanup-failure
+           (condition-case _cleanup-failure
                (nl-ffi-memory-release owner)
              (error
               ;; Keep the allocation rooted and retryable. The caller's unit

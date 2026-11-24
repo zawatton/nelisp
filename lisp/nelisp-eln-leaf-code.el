@@ -5,8 +5,9 @@
 (defun nelisp-eln-leaf-code--u32 (bytes start)
   "Read a little-endian unsigned word from BYTES at START."
   (let ((n 0))
-    (dotimes (i 4 n)
-      (setq n (logior n (ash (aref bytes (+ start i)) (* 8 i)))))))
+    (dotimes (i 4)
+      (setq n (logior n (ash (aref bytes (+ start i)) (* 8 i)))))
+    n))
 
 (defun nelisp-eln-leaf-code--s32 (bytes start)
   "Read a little-endian signed word from BYTES at START."
@@ -37,7 +38,7 @@ test, forward conditional/unconditional branches, and final return."
   (catch 'invalid
     (unless (and (stringp bytes) (> (length bytes) 0))
       (throw 'invalid nil))
-    (setq bytes (string-as-unibyte bytes))
+    (setq bytes (with-no-warnings (string-as-unibyte bytes)))
     (let* ((size (length bytes)) (offset 0) (instructions nil)
            (boundaries (make-hash-table :test #'eql))
            (targets (make-hash-table :test #'eql)))

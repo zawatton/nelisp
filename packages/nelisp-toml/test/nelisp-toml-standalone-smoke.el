@@ -30,7 +30,8 @@
 (load "packages/nelisp-toml/src/nelisp-toml.el")
 (load "packages/nelisp-toml/test/nelisp-toml-test.el")
 
-(let ((tests (reverse nl-smoke--tests))
+(let ((tests (mapcar (lambda (tt) (cons (ert-test-name tt) (ert-test-body tt)))
+                      (ert-select-tests t t)))
       (ran 0)
       (failures nil))
   (while tests

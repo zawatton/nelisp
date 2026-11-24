@@ -197,9 +197,9 @@ cost ~0.2 s per proof over the unit files)."
                              directory-real)
                 (error "Active unit file escapes owner directory"))
               (let ((unit-bytes (nelisp-native-rooted-prelink-closure--bounded-read
-                                 path (* 16 1024 1024))))
+                                 path (* 32 1024 1024))))
                 (setq total (+ total (length unit-bytes)))
-                (when (> total (* 32 1024 1024))
+                (when (> total (* 64 1024 1024))
                   (error "Active unit aggregate input bound"))
                 (unless (equal (nelisp-native-rooted-prelink-closure--sha unit-bytes)
                                (funcall ref record "unit-sha256"))
@@ -281,10 +281,10 @@ UNIT-STATE is [RELOCATIONS VALUES BUCKETS] shared by the unit's owners."
             (error "Unit source escapes its owner directory"))
           (setq total-unit-bytes
                 (+ total-unit-bytes (nelisp-native-rooted-prelink-closure--size path)))
-          (when (> total-unit-bytes (* 32 1024 1024))
+          (when (> total-unit-bytes (* 64 1024 1024))
             (error "Aggregate unit source input bound"))
           (let ((raw (nelisp-native-rooted-prelink-closure--bounded-read
-                      path (* 16 1024 1024))))
+                      path (* 32 1024 1024))))
             (unless (equal (nelisp-native-rooted-prelink-closure--sha raw)
                            (funcall ref unit "unit-sha256"))
               (error "Unit source hash differs"))

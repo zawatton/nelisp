@@ -16,13 +16,13 @@
 #
 # GATE            MIN     MAX
 unsafe-inventory  150     600
-ns-inventory      300     600
-ns-gate           1000    4000
-emacs-compat      5000    12000
+ns-inventory      800     1600
+ns-gate           5000    12000
+emacs-compat      18000   40000
 fallback-inventory 100    2000
 pkg-graph         15      2000
 bootstrap-contract 1      500
-parity-coverage   300     900
+parity-coverage   2000    5000
 emacs-parity      1000    100000
 partial-inventory 20      200
 prelude-toplevel-check 200 3000
@@ -47,3 +47,19 @@ prelude-toplevel-check 200 3000
 # than made platform-aware; if a Windows re-run after that fix still reads
 # far from ~19949, that is new evidence for a fresh investigation, not
 # grounds to retroactively read this one differently.
+#
+# 2026-11-10: ns-inventory, ns-gate, emacs-compat and parity-coverage
+# re-measured after the emacs-lib import (merge 3a2862816, 2026-11-06),
+# which added 560 .el files under packages/emacs-lib-*.  Last in-band run
+# (main 1404ced83, CI 2026-11-03) vs this tree (c461db6ba; local and CI
+# run 42748394272 read the same numbers):
+#   ns-inventory     426 ->  1098 files
+#   ns-gate         1870 ->  7638
+#   emacs-compat    9238 -> 26468 defined names
+#   parity-coverage  424 ->  3233 shared names
+# gate-selfcheck had been red since then but was hidden: earlier steps of
+# the same smoke job (unsafe-inventory, ns-inventory, partial-inventory,
+# parity-coverage) failed first on every main run until 5bd734bb3.  Each
+# new floor sits ABOVE the old measured value, so a scan that silently
+# drops packages/emacs-lib-* again lands outside its band; ceilings keep
+# the old ~1.5x headroom.

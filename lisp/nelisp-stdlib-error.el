@@ -46,6 +46,8 @@
 ;; `put' / `get' / `symbol-plist' (none of which are bootstrap
 ;; primitives at this load order).
 
+(defvar nelisp--error-conditions-alist)
+
 (setq nelisp--error-conditions-alist nil)
 
 (defun nelisp--error-register (sym parents message)

@@ -148,6 +148,18 @@ files whose gzip bytes vary between builds, so the content is pinned too.")
                                  (nelisp-bytecode-compiler-input--sha256-file bytecomp)))
              (comp-hash (and comp (file-readable-p comp)
                              (nelisp-bytecode-compiler-input--sha256-file comp)))
+             ;; Plain .el hosts (Windows zip plus the GNU source files CI adds)
+             ;; have no .el.gz to hash; report the content hash instead, so the
+             ;; evidence still carries string hashes.  A mismatch against the
+             ;; pinned content hash is rejected by the check below.
+             (bytecomp-hash (or bytecomp-hash
+                                (and library-dir
+                                     (nelisp-bytecode-compiler-input--gnu-source-content-sha256
+                                      library-dir "bytecomp"))))
+             (comp-hash (or comp-hash
+                            (and library-dir
+                                 (nelisp-bytecode-compiler-input--gnu-source-content-sha256
+                                  library-dir "comp"))))
              (opcodes (append (alist-get 'opcodes inventory) nil))
              (stack-adjust (append (alist-get 'stack-adjust inventory) nil))
              (runtime-opcodes (mapcar (lambda (name)

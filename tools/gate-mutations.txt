@@ -67,7 +67,7 @@ ns-gate|scripts/nelisp-stdlib-prelude.el|s/^(defun round (x \&optional div)/(def
 # generated table at all (so it was never counted, and removing it changed
 # nothing).  Both read as a broken gate when the gate was fine.
 parity-coverage|test/nelisp-shadow-differential-cases.el|s/generate-new-buffer/ignore-me-not-a-name/g|a covered name stops being mentioned
-prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|s/^(defun string-empty-p (s) (string-equal s ""))$/(defun string-empty-p (s) (string-equal s ""))\n  (nelisp--check-string s)/|a check lands outside a one-line defun
+prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|s/^(defun natnump (x) (and (integerp x) (>= x 0)))$/(defun natnump (x) (and (integerp x) (>= x 0)))\n  (nelisp--check-number x)/|a check lands outside a one-line defun
 # The sed expression cannot use `|' -- it is this file's field separator.
 prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|/^  (defun seq-length (seq) (length seq)))$/a\    (unless (sequencep seq) (signal (quote wrong-type-argument) (list (quote sequencep) seq)))|a check lands outside a one-line defun INSIDE an unless wrapper
 #
@@ -242,8 +242,18 @@ ert-full|lisp/nelisp-cl-macros.el|s/(signal 'cl-no-applicable-method (cons name 
 # 11/13-16 of the same smoke now assert the promoted value instead).
 standalone-reader-test|scripts/nelisp-standalone-build.el|s/(and (> v 0) (> acc (- 2305843009213693951 v)))/(and (> v 0) nil)/|wf_sum's positive-overflow half of the literal-bound check is deleted, (+ most-positive-fixnum 1) wraps silently again instead of promoting to a bignum
 standalone-reader-test|scripts/nelisp-standalone-build.el|s#(/= (/ prod acc) v)#nil#|wf_prod's div-round-trip overflow check is deleted, (* 100000000000 100000000000) wraps silently again instead of promoting to a bignum
-standalone-reader-test|lisp/nelisp-cc-reader-parser.el|s/(if (= data 0) n$/(if (= data 1) n/|the NULL guard in nelisp_reader_p_hash_pair_count is defeated, so an empty-table literal with no data key -- '#s(hash-table test equal), what Emacs 30 writes and savehist restores -- reads the tag word at address 0 and the binary faults
-standalone-reader-test|scripts/nelisp-standalone-build.el|s/(if (if (= data_slot 0) 1 (= (ptr-read-u64 data_slot 0) 0))/(if (= data_slot 0)/|nl_ht_put stops treating a materialised nil cdr as an absent data slot, so puthash into an empty reader-built table writes into a scratch view and the table stays empty
+# 2026-11-12 RETARGET of the row below (it stayed green in CI run 43199941922):
+# it used to defeat the `(= data 0)' guard of `nelisp_reader_p_hash_pair_count',
+# but that function has had no caller since the hash-table literal builder moved
+# to `nelisp_reader_p_hash_fill_table' (it is dead code), so no probe could ever
+# observe the injection; the old build only looked red while the gate itself was
+# red.  The same defect class (an empty literal with no data key reaching a
+# data walk with a 0 word) now lives in the live guard of
+# `nelisp_reader_p_build_hash_table_w'.  Defeating it makes `nl_val_tag' read
+# address 0 (`heap-read-u8 0 0'), which the generated-reader-literal smoke's
+# `'#s(hash-table test equal)' conjuncts reach.
+standalone-reader-test|lisp/nelisp-cc-reader-parser.el|s/(if (= data 0) 0$/(if (= data 1) 0/|the NULL guard in nelisp_reader_p_build_hash_table_w is defeated, so an empty-table literal with no data key -- '#s(hash-table test equal), what Emacs 30 writes and savehist restores -- is handed to nelisp_reader_p_hash_fill_table with a 0 data word, which reads the tag byte at address 0 and the binary faults
+standalone-reader-test|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 h 16 (+ cnt 4))/(ptr-write-u64 h 16 cnt)/|nl_ht_hash_put fills the pair and links its bucket but no longer bumps the table's live count, so a puthash into a reader-built table is invisible to hash-table-count and the table keeps reading as empty
 # 2026-08-26 (Doc 187 P4 continuous cost gate): the exact flag-controlled
 # guard call is made unconditional-false.  The gate compiles its one-add loop
 # twice from the same source; this mutation makes the checked and unchecked
@@ -280,7 +290,15 @@ standalone-reader-form-location-smoke|scripts/nelisp-standalone-build.el|s/(setq
 # divergence this row deliberately does not depend on.  This injection
 # fails at the very first `load' statement, before any scheduling code
 # runs, so it cannot hit that class of problem.
-nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 'generator nil t)$/(require 'generator)/|nelisp-actor becomes unloadable standalone again (file-missing: generator), the exact pre-Doc-193-§4 defect
+# Re-aimed 2026-11-10: `generator' itself is now loadable standalone
+# (`(require (quote generator))' on target/nelisp answers `generator' with
+# `iter-next' bound), so the original `(require (quote generator))' injection
+# no longer reproduces the defect and the gate rightly stayed green on it.
+# The injection now hard-requires a feature that does not exist
+# (`nl-gm-absent-feature'), which reproduces the same observable failure --
+# `nelisp: uncaught error: file-missing' at the smoke's first `load' -- and
+# the smoke goes red on it (proven on target/nelisp, clean tree PASS).
+nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 'generator nil t)$/(require 'nl-gm-absent-feature)/|nelisp-actor becomes unloadable standalone again (file-missing on a hard require of a feature the substrate cannot supply), the failure class of the pre-Doc-193-§4 defect
 # standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase A,
 # feat/bignum-p1).  The injection flips the tag byte `nl_bignum_write'
 # stamps into a freshly-constructed Bignum Sexp from 13 (Bignum) to 2
@@ -290,7 +308,7 @@ nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 
 # instead of the real digits, and comparisons read garbage.  Caught by
 # this smoke's own fencepost/printing/GC-stress checks, not by any
 # pre-existing gate (no prior gate constructs a tag-13 Sexp at all).
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(seq (ptr-write-u8  result_slot 0  13)/(seq (ptr-write-u8  result_slot 0  2)/|a constructed bignum is mis-tagged as a plain Int (its sign word read back as the "value"), corrupting bignump/prin1/comparison for every bignum the reader produces
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(seq (ptr-write-u64 box 0 (+ 13 (+ (\* sign 64)/(seq (ptr-write-u64 box 0 (+ 2 (+ (\* sign 64)/|a constructed bignum is mis-tagged as a plain Int (the Bignum object header written by nl_bignum_write_w carries the Int tag instead of 13), so its limb words are read back as the "value", corrupting bignump/prin1/comparison for every bignum the reader produces
 
 # standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase B,
 # feat/bignum-p2-arith).  New correctness property this phase introduces:
@@ -366,6 +384,12 @@ nelisp-thread-percpu-roots-smoke|tools/nelisp-thread-percpu-roots-smoke.el|s/(nt
 # wrapper), and reverting the second is harmless here since nothing in this
 # smoke exercises it.  Measured RED with this exact injection applied:
 # depth=5 at the checkpoint (want 1024); GREEN with it removed.
+# 2026-11-12: the recursion phase of the smoke no longer reaches this site (the
+# evaluator stopped pushing a context per call, so the old row stayed green in
+# CI run 43199941922).  The sites are the driver-level wrappers
+# (`nl_driver_eval_with_recorded_roots' / `..._word_with_recorded_roots'), so
+# the smoke now also nests `load' 1100 deep, past the 1024-frame ring, where
+# the failed pushes must not be popped.
 standalone-reader-frame-stack-pop-desync-smoke|scripts/nelisp-standalone-build.el|s/(if (= pushed 1) (nl_gc_ctx_pop) 0)/(nl_gc_ctx_pop)/|the recorded frame-stack depth counter under-counts during unwind past the ring's capacity (the pop/depth-cap desync this smoke exists to catch)
 # standalone-reader-bounded-backtrace-smoke: added 2026-08-23 (Doc 180
 # Phase 2 item 3).  The injection reverses `nl_bt_capture_frames_from''s
@@ -391,14 +415,35 @@ standalone-midform-gc-bounded|scripts/nelisp-standalone-build.el|s/(defun nl_os_
 # root set risks, and in the SHIPPED configuration it is invisible: measured
 # 2026-08-29, with the arm gone the reader-smoke suite (41 smokes) and the full
 # anvil module load are both still green, because the conservative native-stack
-# scan holds the form up.  With the scan off the same binary dies immediately.
+# scan holds the form up.  With the scan off the same binary then died
+# immediately (rc=139).
+# Re-aimed 2026-11-10: removing ONLY the `result' arm of
+# `nl_gc_mark_recorded_frame' stopped turning the no-conservative-scan labels
+# red (51 configurations, 0 findings), even with the pool slot walk off.  A
+# second, deliberate precise root now covers the executing form: `nl_n4_mark_env'
+# (run for every recorded frame by `nl_gc_mark_recorded_env', and by
+# `nl_gc_mark_roots') marks the backtrace activation records, and the record
+# `nl_eval_inner_w' pushes for the running special form (the top-level `while')
+# holds that form's function and argument list, i.e. its AST.  Neither root is
+# redundant by accident, so the injection removes BOTH: the `result' arm and
+# the activation-record marking (a second sed command, anchored on the defun
+# because `nl_n4_rewrite_env' has an identical first line).  The executing form
+# then has no precise root at all.  Measured with both applied: `shipped' still
+# passes (`acc=14000000 collections=6'), and `no-conservative-scan',
+# `no-conservative-scan-no-pool-walk' and `setq-collects-in-value' die with
+# rc=139 (GATE-COUNT checked=51 findings=3).  The result-arm half alone was
+# measured green (2026-11-10, checked=51 findings=0), which is why the row
+# carries both; the nl_n4_mark_env half alone was not measured.
 # RED prints: `precise_root_fail label=no-conservative-scan reason=nonzero-exit
 # rc=139' and `... label=no-conservative-scan-no-pool-walk ... rc=139', with
-# `label=shipped acc=1750000' still passing above them -- that contrast is the
+# `label=shipped acc=14000000' still passing above them -- that contrast is the
 # point of the row.  GREEN prints three `precise_root_result' lines,
-# `acc=1750000 collections=6' each.  Structural, not timing-dependent: the arm
-# is gone, so the form has no precise root at all.
-precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form . subform/(nl_seq2 0 ; MUTATION: executing form is not a root/|the executing top-level form is no longer a precise root, so only the conservative stack scan keeps it alive
+# `acc=14000000 collections=6' each.  Structural, not timing-dependent: both
+# roots are gone, so the form has no precise root at all.  The sed stays two
+# commands in one row; the harness fails the row if the combined edit changes
+# nothing, but cannot see one half going stale, so re-measure both halves when
+# either function is touched.
+precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form . subform/(nl_seq2 0 ; MUTATION: executing form is not a root/;/defun nl_n4_mark_env (env)/{n;s/(if (= (heap-read-u64 env 176) 0) 0/(if (= 1 1) 0 ; MUTATION2: backtrace records are not roots/}|the executing top-level form is no longer a precise root through either the recorded-frame result arm or the backtrace activation records, so only the conservative stack scan keeps it alive
 # precise-root-coverage gained two `setq' cases when that construct was closed.
 # They carry NO row here, deliberately: the defect they cover is an ordering
 # inside one CPS chain (the cdr taken before the eval instead of after), which
@@ -604,7 +649,7 @@ version-consistency|release/stage-d-v3.0/install-v3.ps1|s/\[string\]\$Version = 
 # diagnostic and structurally requires `nlre--string-match-calls' to remain
 # zero.  This injection is therefore proved by entering the regexp engine,
 # independent of how quickly that host executes it.
-standalone-reader-splitstring-perf-smoke|lisp/nelisp-stdlib-regexp.el|s/(if (and separators/(if (and nil separators/; s/^(defun nlre--leading-lit-char (nodes)$/(defun nlre--leading-lit-char (nodes) (setq nodes nil)/|disables BOTH literal-separator defences (the split fast path and the leading-character filter), forcing every split-string call through the full backtracking scan
+standalone-reader-splitstring-perf-smoke|scripts/nelisp-standalone-build.el|s/(if (and sep (nelisp--literal-separator-p sep))/(if (and nil sep (nelisp--literal-separator-p sep))/|disables the literal-separator fast path of the shipped `split-string' (the embedded definition), so a multi-byte literal separator falls through to the regexp-engine path
 # Doc 201 §4 item 1.  `standalone-reader-winpath-smoke' polices the three
 # windows-native path defects Doc 201 §1/§2 and its §4 follow-up fixed:
 # `path-separator' vs `system-type', `file-exists-p' answering yes/no at all,
@@ -620,7 +665,7 @@ standalone-reader-splitstring-perf-smoke|lisp/nelisp-stdlib-regexp.el|s/(if (and
 # GREEN restored:
 #   [winpath-smoke] PASS: sep=";" abs-ok=t exp-ok=t yes-ok=t no-ok=t
 #     found=".../target/tmp/winpath-smoke/nelisp-doc201-marker" pass=t
-standalone-reader-winpath-smoke|scripts/nelisp-stdlib-prelude.el|s#(concat (or drive "") "/" (mapconcat#(concat (or drive "") "/zz/" (mapconcat#|expand-file-name injects a bogus component into every name it expands
+standalone-reader-winpath-smoke|scripts/nelisp-stdlib-prelude.el|s#(concat b "/" path)#(concat b "/zz/" path)#|expand-file-name injects a bogus component into every relative name it expands against a plain absolute base (the POSIX fast path the smoke walks)
 # Doc 201 §5.3.  `standalone-reader-defvar-alloc-smoke' polices §5.1's
 # replacement of `nl_sf_defvar'/`nl_sf_defconst''s per-call AST synthesis
 # with direct primitives.  The row targets the half of that fix with a
@@ -701,7 +746,7 @@ standalone-reader-alloc-bytes-int-root-smoke|scripts/nelisp-standalone-build.el|
 # 184/200 wrong under mid-form GC, 200/200 after garbage-collect";
 # restored: "native-load-slot-pin: PASS (200 strings)".  The loader is
 # loaded from source, so no rebuild is needed.
-standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)$/      (ignore addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)/|boxed strings stop being pinned while a raw slot holds them
+standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (logand (ptr-read-u64 addr 8) 281474976710655)$/      (ignore addr (logand (ptr-read-u64 addr 8) 281474976710655)/|boxed strings stop being pinned while a raw slot holds them
 # 2026-11-03 (second row): the same gate polices the scratch-vector pin.
 # The injection drops the box pin, so a scratch vector in the mmap'd slots
 # is held only by memory the GC does not scan.  RED: "... 49/50 scratch
@@ -737,7 +782,7 @@ standalone-reader-fileattrs-smoke|scripts/nelisp-stdlib-prelude.el|s/(= (logand 
 # GREEN restored:
 #   [regexp-lead-filter-smoke] PASS: got=(2 nil 2 nil 2 0 nil 0 nil) ...
 #     ratio=0.047 pass=t
-standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/(lead (and lead (nlre--fold-char lead)))/(lead (and lead (nlre--flip-case lead)))/|the leading-character filter folds the required character the wrong way, so no leading-literal pattern matches at all
+standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/^\( *\)lead nlre--pattern-multibyte$/\1(1+ lead) nlre--pattern-multibyte/|the leading-character scan compares the wrong character instead of the required one, so leading-literal patterns skip their real matches
 # Doc 201 §5.4, row 2 of 2 (the PATH-SELECTION half).  Makes
 # `nlre--leading-lit-char' answer nil for every pattern, so the filter never
 # fires and the scan is exactly what it was before the fix.  Correctness is
@@ -763,7 +808,7 @@ standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/(lead 
 # only 0.022-0.051 across the threshold.  Ratio and times remain diagnostics,
 # but the verdict now uses the exact path-selection count: 42 clean, 0 when
 # this injection makes the filter unreachable.
-standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/^(defun nlre--leading-lit-char (nodes)$/(defun nlre--leading-lit-char (nodes) (setq nodes nil)/|the leading-character filter never fires, putting the scan back to full work at every start position
+standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/(prefix (and (> (length compiled) 4) (aref compiled 4)))/(prefix nil)/;s/(lead (and (not prefix) (nlre--leading-lit-char top)))/(lead nil)/;s/(req-atom (and (not prefix) (not lead)/(req-atom (and nil (not lead)/|none of the prefix, leading-character or required-atom filters is ever selected, so the smoke's two sweeps count no filter setups
 # Stage D1 (2026-09-03).  The Windows-scoped FFI gate must execute the PE
 # import-backed arm, not merely find the builtin name.  Replacing the mapped
 # system DLL with a nonexistent name leaves the generated dispatch intact but
@@ -778,7 +823,7 @@ standalone-reader-ffi-smoke|scripts/nelisp-standalone-build.el|s/("libm.so.6" . 
 # state v1.2.0 shipped in, so each row restores that release exactly -- which
 # is the point: the gate has to notice a REGRESSION to the previous release,
 # not just an arbitrary edit.
-standalone-reader-host-parity-smoke|scripts/nelisp-standalone-build.el|s/(bf_load_with_lfn args env out)/(bf_load_readable args env out)/|`load' stops binding `load-file-name', as in v1.2.0 -- every (or load-file-name buffer-file-name) idiom silently sees nil
+standalone-reader-host-parity-smoke|scripts/nelisp-standalone-build.el|s/(nl_env_set_value env (nl_word_canon sym) (wf_arg_word args 0))/(nl_env_set_value env (nl_word_canon sym) (heap-read-u64 old-root 0))/|`load' stops binding `load-file-name', as in v1.2.0 -- every (or load-file-name buffer-file-name) idiom silently sees nil
 standalone-reader-host-parity-smoke|scripts/nelisp-stdlib-prelude.el|s/(if (fboundp .string-as-multibyte) (string-as-multibyte str) str)))/str))/|`decode-coding-string' is the identity again, as in v1.2.0 -- decoded text stays unibyte and `length' counts bytes
 # 2026-09-05 print-large-sexp smoke (tools/print-large-sexp-smoke.el), added
 # with the nelisp-llm crash investigation (both consumer faults were the
@@ -790,7 +835,7 @@ standalone-reader-host-parity-smoke|scripts/nelisp-stdlib-prelude.el|s/(if (fbou
 # gate-mutation-verify GATE=standalone-reader-print-large-sexp-smoke' before
 # landing: mutated, the smoke prints `FAIL: 10k-int list printed length ->
 # 60002' (exit 1); restored, `PASS: 10k-int list 70001 bytes exact, ...'.
-standalone-reader-print-large-sexp-smoke|scripts/nelisp-stdlib-prelude.el|s/(unless first (nelisp--prn-chunks-add chunks " "))/(unless first (ignore chunks " "))/|list elements print with no separator between them: a 10k-int list comes out 60002 bytes instead of 70001, text no reader could take back
+standalone-reader-print-large-sexp-smoke|scripts/nelisp-standalone-build.el|s/(seq (if (= first-p 1) 0 (mut-str-push-byte ms 32))/(seq 0/|list elements print with no separator between them in the native `%S' printer (`bf_pf_list', which `prin1-to-string' reaches through `nelisp--native-format'): a 10k-int list comes out 60001 bytes instead of 70001, text no reader could take back
 #
 # native-unit-repl-smoke (WS-F, 2026-09-12): widening the raw-v1 argument
 # ceiling by one lets a seven-argument export compile and publish, which
@@ -804,6 +849,7 @@ standalone-reader-print-large-sexp-smoke|scripts/nelisp-stdlib-prelude.el|s/(unl
 # PASS' and `GATE-COUNT checked=88 findings=0' (exit 0).
 native-unit-repl-smoke|lisp/nelisp-native-load.el|s/^(defconst nelisp-native-load-raw-max-arity 6)$/(defconst nelisp-native-load-raw-max-arity 7)/|the declared six-argument ceiling widens to seven, so the refused-seven-argument-export assertion silently stops being true
 lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(require 'nelisp-native-load)\n(defun nelisp-native-unit--mutation-probe () (let ((unused 1)) nil))/|a defun with an unused lexical binding in a lisp\/ file the baseline records as clean
+lisp-byte-compile|tools/nelisp-lisp-byte-compile-gate.sh|s/{ cls = "BUG"; break }/{ cls = "STYLE"; break }/|a gate whose classifier files every BUG-class diagnostic as STYLE, so bug warnings hide under the style ceilings
 # RETIRED 2026-09-18 -- failure mode #2 above, NON-LETHAL AFTER AN IMPROVEMENT.
 # The injection below was lethal when written (2026-09-12) and is not any more,
 # and that is `f25ec9af1' working, not a regression.  Measured with the gate's
@@ -851,7 +897,7 @@ lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(
 # First differing element 59: 'nil' != '(wrong-number-of-arguments car 1)''
 # (`GATE-COUNT checked=2 findings=1'); restored, `GATE-COUNT checked=2
 # findings=0'.
-builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^  '((1 car cdr car-safe/  '((1 cdr car-safe/;s/^    (2 cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=$/    (2 car cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=/|car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior
+builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^    (1 goto-char nelisp--clear-string-bytes car cdr car-safe/    (1 goto-char nelisp--clear-string-bytes cdr car-safe/;s/^    (2 nelisp--equal-leaf /    (2 car nelisp--equal-leaf /|car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior
 #
 # special-variables: `bf_defvar_init_mode' (scripts/nelisp-standalone-
 # build.el) decides whether `defvar' may skip re-initializing an
@@ -866,17 +912,20 @@ builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^  '((1 car cdr car-safe/  '((1
 # restored + rebuilt, `GATE-COUNT checked=6 findings=0'.
 special-variables|scripts/nelisp-standalone-build.el|s/(if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)/(if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 1 1)/|defvar's override-protection is defeated: an already-bound global is reinitialized, and its VALUE form re-evaluated, on every later (defvar NAME VALUE)
 #
-# symbol-identity: `nl_next_symbol_identity' (lisp/nelisp-cc-nlstr-direct-
-# ops.el) is the atomic counter that gives every `make-symbol' call a
-# distinct identity, which `nl_uninterned_symbol_equal' reads to tell two
-# uninterned symbols apart under `equal'.  Pinning it to a constant makes
-# every uninterned symbol answer the same identity.  Baked into
-# target/nelisp, so the gate is listed in `gate_needs_rebuild'.  Verified:
-# mutated + rebuilt, the 5 tests reported 9 subtest failures,
-# including `equal-table-identities' overwriting the first key's slot
-# (`GATE-COUNT checked=5 findings=9'); restored + rebuilt, `GATE-COUNT
-# checked=5 findings=0'.
-symbol-identity|lisp/nelisp-cc-nlstr-direct-ops.el|s/(+ (atomic-fetch-add 268435544 1) 1)/1/|every make-symbol call receives the same identity number, so two uninterned symbols sharing a name collide under an equal-test hash table instead of remaining distinct
+# symbol-identity: an uninterned symbol's identity is its cell address (the
+# object WORD), not `nl_next_symbol_identity' (that counter only serves the
+# reader's `#:', the JIT make-symbol and the unbound marker), and `eq' on
+# two symbol objects short-circuits on the word, so neither `nl_symbol_word_eq'
+# nor the counter is on the path the gate exercises.  What separates two
+# same-named make-symbol results in a hash table is `nl_ht_key_hash' (the
+# object's address for tag 16) plus `nl_ht_key_match'.  The row makes tag-16
+# keys hash to one bucket and any two of them match, in both the `eq' and
+# `equal' modes.  Baked into target/nelisp, so the gate is listed in
+# `gate_needs_rebuild'.  Verified with
+# NELISP_GATE_MUTATION_ONLY=symbol-identity: went red (`GATE-COUNT checked=5
+# findings=2'), tree restored.  A key_match-only injection stayed green
+# because distinct addresses never share a bucket.
+symbol-identity|scripts/nelisp-standalone-build.el|s/(if (= mode 1) (bf_eq2 ka kb)/(if (= mode 1) (if (= (nl_val_tag ka) 16) 1 (bf_eq2 ka kb))/;s/(bf_eql2 ka kb) (wf_key_eq ka kb))/(bf_eql2 ka kb) (if (= (nl_val_tag ka) 16) 1 (wf_key_eq ka kb)))/;s/(logand (heap-sexp-payload key_ptr) 2147483647)/(logand (heap-sexp-payload key_ptr) (if (= tag 16) 0 2147483647))/|a hash-table probe stops telling uninterned symbols apart: they all hash to one bucket and the key match calls any two of them the same key, so two make-symbol results sharing a name overwrite each other's slot in eq and equal tables instead of remaining distinct
 #
 # reference-parity: `tools/nelisp-reference-parity.py' is itself the
 # checker `substrate-parity-smoke' and the CI "Emacs parity" step build
@@ -913,7 +962,12 @@ lsp-server|tools/nelisp_workspace.py|s/matches = \[item for item in plan\['symbo
 # construction and after a `dump-runtime-image'/`eval-runtime-image'
 # round trip (`GATE-COUNT checked=11 findings=2'); restored + rebuilt,
 # `GATE-COUNT checked=11 findings=0'.
-native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;s/(if (or (= tag 4) (= tag 16))\n\(.*Symbol name; +8 may be an ID.*\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
+# NOTE: the sed lands in `nl_gc_mark_legacy_slot', which `nl_gc_mark_slot'
+# reaches only for a legacy 32-byte tag-16 view; a tagged word (what
+# `symbol-test-mark' passes) takes the pointer arm instead, so that probe
+# never saw this defect and the row stayed green.  The `symbol-test-mark-view'
+# probe (test_legacy_view_mark_and_collection) marks through such a view.
+native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;N;s/(if (or (= tag 4) (= tag 16))\n\( *(nl_seq2\n *(if (= tag 16) (nl_gc_mark_symview sp) 0)\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
 #
 # Project-toolchain contract suites. None mutates code baked into
 # target/nelisp, so none needs an entry in gate_needs_rebuild.
@@ -1058,7 +1112,7 @@ ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--pt
 # f64-return-using cases, all fail their `should' assertion; the
 # f64-arg-int-return case, whose return is plain integer, is unaffected)
 # with the mutation in place; checked=20 findings=0 (GREEN) restored.
-ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float out (bits-to-f64 pcret)) 0))/(wf_write_int out pcret))/|nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result
+ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float object (bits-to-f64 pcret)) object)/(wf_write_int_w 0 pcret)/|nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result
 #
 # ffi-loader (FFI step 3 increment 2, pure-elisp ELF loader): the row moved
 # from increment 1's line (`(when (= st-shndx 0)' in
@@ -1185,7 +1239,7 @@ parity-fuzz|tools/nelisp-parity-fuzz.el|s/"\^shared-/"\^xshared-/|the shared-nam
 # GATE=emacs-compat' on 2026-09-18 reported "emacs-compat: went red as it
 # should", `passed=1 skipped=0', with `tools/emacs-compat-baseline.txt'
 # byte-identical to HEAD afterwards and no injection left in the tree.
-emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun xor (nl-gm-a nl-gm-b) (if nl-gm-a (not nl-gm-b) nl-gm-b))|a new unconditional definition shadows a stock Emacs name, pushing shared-shadowing over its baseline
+emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun caaaar (nl-gm-a) nl-gm-a)(defun caaadr (nl-gm-a) nl-gm-a)(defun caadar (nl-gm-a) nl-gm-a)(defun caaddr (nl-gm-a) nl-gm-a)(defun cadaar (nl-gm-a) nl-gm-a)(defun cadadr (nl-gm-a) nl-gm-a)(defun caddar (nl-gm-a) nl-gm-a)(defun cdaaar (nl-gm-a) nl-gm-a)(defun cdaadr (nl-gm-a) nl-gm-a)(defun cdadar (nl-gm-a) nl-gm-a)(defun cdaddr (nl-gm-a) nl-gm-a)(defun cddaar (nl-gm-a) nl-gm-a)(defun cddadr (nl-gm-a) nl-gm-a)(defun cdddar (nl-gm-a) nl-gm-a)(defun cddddr (nl-gm-a) nl-gm-a)(defun bool-vector-count-consecutive (nl-gm-a) nl-gm-a)(defun bool-vector-count-population (nl-gm-a) nl-gm-a)(defun bool-vector-exclusive-or (nl-gm-a) nl-gm-a)(defun bool-vector-intersection (nl-gm-a) nl-gm-a)(defun bool-vector-not (nl-gm-a) nl-gm-a)(defun bool-vector-set-difference (nl-gm-a) nl-gm-a)(defun bool-vector-subsetp (nl-gm-a) nl-gm-a)(defun bool-vector-union (nl-gm-a) nl-gm-a)(defun buffer-chars-modified-tick (nl-gm-a) nl-gm-a)(defun buffer-narrowed-p (nl-gm-a) nl-gm-a)(defun buffer-local-boundp (nl-gm-a) nl-gm-a)(defun car-less-than-car (nl-gm-a) nl-gm-a)(defun char-uppercase-p (nl-gm-a) nl-gm-a)(defun base64url-encode-region (nl-gm-a) nl-gm-a)(defun byte-to-string (nl-gm-a) nl-gm-a)(defun bidi-resolved-levels (nl-gm-a) nl-gm-a)(defun ccl-execute (nl-gm-a) nl-gm-a)(defun ccl-execute-on-string (nl-gm-a) nl-gm-a)(defun char-displayable-p (nl-gm-a) nl-gm-a)(defun category-set-mnemonics (nl-gm-a) nl-gm-a)(defun char-resolve-modifiers (nl-gm-a) nl-gm-a)(defun buffer-line-statistics (nl-gm-a) nl-gm-a)(defun buffer-hash (nl-gm-a) nl-gm-a)(defun backward-word-strictly (nl-gm-a) nl-gm-a)(defun assoc-delete-all (nl-gm-a) nl-gm-a)(defun accessible-keymaps (nl-gm-a) nl-gm-a)(defun bidi-find-overridden-directionality (nl-gm-a) nl-gm-a)(defun byte-to-position (nl-gm-a) nl-gm-a)(defun category-docstring (nl-gm-a) nl-gm-a)(defun char-code-property-description (nl-gm-a) nl-gm-a)(defun char-charset (nl-gm-a) nl-gm-a)(defun check-coding-systems-region (nl-gm-a) nl-gm-a)(defun buffer-text-pixel-size (nl-gm-a) nl-gm-a)(defun buffer-swap-text (nl-gm-a) nl-gm-a)(defun buffer-last-name (nl-gm-a) nl-gm-a)(defun buffer-local-toplevel-value (nl-gm-a) nl-gm-a)|sixty-odd new unconditional definitions shadow stock Emacs names that the tree otherwise defines only under a fboundp guard, pushing shared-shadowing over its baseline by far more than any host-dependent slack in the stock name set (CI's Nix Emacs 31.1 has a different set of stock names than a local build)
 
 # binary-size-ratchet (mutation coverage, 2026-09-17): `grep -c
 # '^binary-size-ratchet|' tools/gate-mutations.txt' was 0 before this row --
@@ -1238,7 +1292,13 @@ emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc
 # ceiling 7481548 (2% slack)." (the deflated ceiling, the row's visible
 # effect); restored -- byte-identical to the pre-mutation Makefile (`git
 # status` clean, `diff' empty).
-binary-size-ratchet|Makefile|s#ceiling=\$\$(( baseline + baseline \* slack / 100 ))#ceiling=\$\$(( baseline - baseline \* slack / 100 ))#|the ceiling arithmetic subtracts the slack instead of adding it, deflating the ceiling below the pinned baseline
+# 2026-11-13: the gate was split into a code (.text) budget and a payload
+# (total minus .text) budget, so the single `ceiling=' row above now targets
+# `code_ceiling' and a second row targets `payload_ceiling'.  Each is lethal
+# whenever its budget sits within 2% below its pinned baseline (the normal
+# case: the baseline is the last measurement).
+binary-size-ratchet|Makefile|s#code_ceiling=\$\$(( code_base + code_base \* slack / 100 ))#code_ceiling=\$\$(( code_base - code_base \* slack / 100 ))#|the code (.text) ceiling arithmetic subtracts the slack instead of adding it, deflating the code ceiling below the pinned baseline
+binary-size-ratchet|Makefile|s#payload_ceiling=\$\$(( payload_base + payload_base \* slack / 100 ))#payload_ceiling=\$\$(( payload_base - payload_base \* slack / 100 ))#|the payload ceiling arithmetic subtracts the slack instead of adding it, deflating the payload ceiling below the pinned baseline
 
 # standalone-reader-bignum-smoke: added this session (Doc 190 Phase C,
 # feat/bignum-bitwise): `ash`/`logand`/`logior`/`logxor`/`lognot` accept a
@@ -1249,10 +1309,10 @@ binary-size-ratchet|Makefile|s#ceiling=\$\$(( baseline + baseline \* slack / 100
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (= n0 2) 1 (if (= n0 13) 1 0))/(if (= n0 2) 1 0)/|`ash`'s dispatch entry stops accepting a Bignum N, so every Bignum-operand `ash` case reports `wrong-type-argument integerp` again instead of shifting
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nextcarry (if (= bitshift 0) 0 (shr v (- 32 bitshift))))/(nextcarry 0)/|`nl_bignum_shl_bits_loop` stops propagating the intra-limb carry on a left shift, so any `ash` left shift whose result crosses a 32-bit limb boundary silently drops the carried-out bits instead of promoting an exact wider value
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (= tg 2) 1 (if (= tg 13) 1 0))/(if (= tg 2) 1 0)/|`bf_first_non_integer_or_bignum` stops treating a Bignum as an integer, so `logand`/`logior`/`logxor` with a Bignum operand report `wrong-type-argument integer-or-marker-p` again instead of computing the bitwise result
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(bf_lognot_general (wf_arg_ptr args 0) out)/(bf_wrong_type_integerp (wf_arg_ptr args 0))/|`lognot`'s Bignum-operand arm is replaced with the fixnum-only type error, so `(lognot BIGNUM)` signals `wrong-type-argument integerp` again instead of computing -X-1
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (\* i 4)) 0) 4294967295)/(logxor (if (< i dec_count) (ptr-read-u32 dec_ptr (* i 4)) 0) 4294967294)/|`nl_bignum_twos_fill_neg`'s bit-complement mask is off by one bit, so every AND/OR/XOR with a NEGATIVE Bignum operand computes a wrong two's-complement window and returns the wrong value instead of signalling anything
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (<= mag 2147483648) 1 0)/(if (<= mag 0) 1 0)/|`nl_bignum_small_divisor_p` stops accepting any nonzero divisor, so every Bignum-dividend `/`/`%`/`mod` case (even a tiny divisor like 256) signals `nelisp-bignum-division-unsupported` instead of computing the exact answer
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_symbol sbuf 34 268435480)/(nl_alloc_symbol sbuf 0 268435480)/|`bf_signal_bignum_division_unsupported` writes a zero-length condition symbol, so `condition-case` handlers keyed on `nelisp-bignum-division-unsupported` (a genuine Bignum divisor to `/`/`%`/`mod`) no longer catch it
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(bf_lognot_general_w (wf_arg_ptr args 0) 0)/(bf_wrong_type_integerp (wf_arg_ptr args 0))/|`lognot`'s Bignum-operand arm is replaced with the fixnum-only type error, so `(lognot BIGNUM)` signals `wrong-type-argument integerp` again instead of computing -X-1
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(logxor (if (< i dec_count) (heap-read-u32 dec_ptr (\* i 4)) 0) 4294967295)/(logxor (if (< i dec_count) (heap-read-u32 dec_ptr (* i 4)) 0) 4294967294)/|`nl_bignum_twos_fill_neg`'s bit-complement mask is off by one bit, so every AND/OR/XOR with a NEGATIVE Bignum operand computes a wrong two's-complement window and returns the wrong value instead of signalling anything
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(setq r (- cur (\* q d)))/(setq r 0)/|`nl_bignum_divmod_u32_loop' (the live one-limb-divisor division path of `nl_bignum_divrem_mag') drops the running remainder, so every Bignum-dividend `/`/`%`/`mod` by a one-limb divisor (even a tiny one like 256) carries nothing between limbs and answers a wrong quotient and remainder instead of the exact answer
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_bignum_dv_copy a_ptr r_ptr m)/0/|`nl_bignum_divrem_mag' stops copying the dividend into the remainder when the dividend is smaller than the divisor, so `%`/`mod` by a larger Bignum divisor return 0 instead of the dividend (re-aimed 2026-11-11: `bf_signal_bignum_division_unsupported' has no callers since Bignum-divisor division became exact, so the old zero-length-symbol row went SED MATCHED NOTHING)
 
 # standalone-reader-checked-soak: added this session (ci/fast-release-blocker)
 # when the release blocker's soak coverage moved from a 1-hour RSS soak to
@@ -1281,7 +1341,13 @@ standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_sy
 # orders of magnitude over the threshold, so this is not a marginal proof;
 # restored -- byte-identical to the pre-mutation Makefile (`git diff`
 # empty).
-standalone-reader-checked-soak|Makefile|s#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round's garbage-collect
+# Re-aimed 2026-11-10: cons cells no longer count toward the checked
+# allocator's live-blocks (measured: retaining 8000 conses per round left
+# live-blocks flat at 8424 over 5 rounds, so the old third-loop injection
+# stayed green).  Vectors are counted: this injection grows live-blocks by
+# 4000 per round (12762 16424 20424 24424 28424), far past the 8-block slack.
+standalone-reader-checked-soak|Makefile|s#(setq acc (cons (make-vector 12 i) acc)) (setq i (+ i 1))))#(setq acc (cons (make-vector 12 i) acc)) (setq nelisp-checked-soak-retain (cons (make-vector 12 i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's second loop retains its whole batch of vectors in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round
+standalone-reader-checked-soak|Makefile|s#(setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds; cons cells live in typed blocks the live-blocks census does not walk, so only the garbage-collect cons count sees the retention
 
 # vendor-shadow-gate (Doc segI, vendor-emacs-lisp): an unconditional
 # redefinition of `days-between' (a vendor/emacs-lisp/calendar/time-date.el
@@ -1307,3 +1373,54 @@ vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(defun days-between (a b) 0)|an
 # lisp/nelisp-stdlib-misc.el' guarded / FAIL; restored -- byte-identical
 # to the pre-mutation file (`git diff' empty).
 vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(unless (fboundp (quote date-leap-year-p)) (defun date-leap-year-p (y) t))|a GUARDED defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must still fail the gate (guarded is not exempt)
+# build-stamp (2026-11-07): the stamp tool must key on NELISP_* mode switches.
+# Injected: the env filter's `NELISP_*) return 0' (include) becomes `return 1'
+# (exclude), so NELISP_TCO=0 no longer changes the key and a switched build
+# mode would be skipped as "up to date" -- a stale-binary false green.  RED:
+# test_nelisp_mode_switch_rebuilds fails (build counter stays 1 where 2 is
+# required).  Restored: GATE-COUNT checked=35 findings=0.  Host-only, no
+# binary build, structural (no timing).
+build-stamp|tools/nelisp-standalone-reader-build.sh|s/^    NELISP_\*) return 0 ;;$/    NELISP_*) return 1 ;;/|NELISP_* mode switches are dropped from the stamp key, so a changed build mode is skipped as up to date
+
+# build-stamp (2026-11-09): the manifest companion must be hashed with only its
+# :mtime/:ctime values removed.  Injected: right after `local norm h' a shell
+# function named sed is defined that strips EVERY character of the manifest, so
+# a non-timestamp manifest change no longer reaches the stamp -- a stale-cache
+# false green.  RED: the test_manifest_*_is_stale negative controls fail.
+# Host-only (build-stamp is not in gate_needs_rebuild: no binary build).
+build-stamp|tools/nelisp-standalone-reader-build.sh|s#^  local norm h$#  local norm h; sed() { command sed -E 's,.*,,' "$3"; }#|the manifest companion is hashed with its whole content stripped, so a non-timestamp manifest change is missed
+
+# standalone-chunk-growth-test builds its OWN 8 MiB-arena variant from source
+# (target/nelisp-chunk8m, private unit cache), so it is deliberately NOT in
+# gate_needs_rebuild: the harness need not rebuild target/nelisp around it.
+# The injection makes the allocator's chunk-growth step report failure, so a
+# full first chunk aborts through nl_os_alloc_fail at once (fail fast, no
+# spin); the probe then prints no arena-stats and the test goes red.  The sed
+# is anchored on the single `new_chunk' binding in nl_alloc_bytes_uncheck.
+# The variant build is near cold here (build.el is in the toolchain digest):
+# the harness gives this variant-building gate the build budget, not the
+# row budget (slice 4); moving it to main and nightly only is slice 5.
+standalone-chunk-growth-test|scripts/nelisp-standalone-build.el|s/(let\* ((new_chunk (nl_chunk_alloc_new want)))/(let* ((new_chunk 0))/|chunk growth always fails, so a full first chunk aborts instead of adding a chunk|linux-x86_64
+
+# nelisp-eval-closure-standalone-smoke (532e998b7): put back the collision the
+# smoke guards against.  src/nelisp-eval.el once defined `nelisp--closure-p',
+# the native closure-kind builtin the prelude uses, so requiring nelisp-eval
+# made every interpreted closure report type-of cons with closurep nil.  RED
+# prints `nelisp-eval-closure-standalone-smoke: FAIL closurep fresh lambda'.
+nelisp-eval-closure-standalone-smoke|src/nelisp-eval.el|s/(defsubst nelisp-eval-closure-p (x)/(defsubst nelisp--closure-p (x)/|requiring nelisp-eval overwrites the native closure predicate again
+
+# standalone-string-block-leak-smoke (2026-11-14): put back the old early
+# return of `nl_compact_small_strings', which skipped the whole pass -- the
+# loop that unmaps empty 8 KiB sblocks included -- whenever any conservative
+# word pinned string storage (strings state +56) or an arena block (bit 4 of
+# the conservative state, set on nearly every collection).  RED: RSS grows
+# ~20 MiB over the 15 measured batches against a 3 MiB bound.
+standalone-string-block-leak-smoke|lisp/nelisp-cc-string-blocks.el|s#(or (= tb 0) (>= (heap-read-u64 st 248) 1000000)) 0#(or (= tb 0) (/= (heap-read-u64 st 56) 0) (= (nl_gc_conserv_pinned_p) 1)) 0#|a pinned string block (or any arena pin) stops empty sblocks from being unmapped again -- the original leak
+
+# standalone-string-block-leak-smoke (2026-11-14): make the per-line
+# macro-expansion cache invalidation in `nl_repl_loop' add 0 instead of 1.  The
+# REPL's conservative pin keeps the moving compaction (the only other epoch
+# bump) from running, so every line's wrapped form and its literal strings stay
+# cached and live.  RED: live arena bytes grow ~1 KiB per eval (about 40 KiB
+# over 40 batches against a 16 KiB bound) and RSS grows one string block per batch.
+standalone-string-block-leak-smoke|scripts/nelisp-standalone-build.el|/The REPL keeps a conservative stack pin on every GC/,/epoch) 1)))$/s/(atomic-fetch-add (data-addr nl_mxcache_epoch) 1)))$/(atomic-fetch-add (data-addr nl_mxcache_epoch) 0)))/|the REPL no longer invalidates the macro-expansion cache per line, so each line's literals stay live

@@ -5,6 +5,7 @@
 (require 'nelisp-env)
 (require 'nelisp-native-funcall-v2)
 (require 'nelisp-bytecode-cleanup)
+(declare-function nelisp-native-frame-v2-descriptor "nelisp-native-frame-v2" ())
 (defconst nelisp-native-frame-v2-version "nelisp-native-frame-v2-3")
 (let ((descriptor
        '(:version "nelisp-native-frame-v2-3" :name "nl_native_frame_v2"

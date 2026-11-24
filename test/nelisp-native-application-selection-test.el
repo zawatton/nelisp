@@ -2,6 +2,8 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (require 'ert)
+;; Fixtures are read back byte-exactly; keep LF on CRLF-default hosts (Windows).
+(setq-default buffer-file-coding-system 'utf-8-unix)
 (require 'nelisp-native-application-producer)
 (require 'nelisp-native-application-build)
 
@@ -13,7 +15,7 @@
     (secure-hash 'sha256 (current-buffer))))
 
 (defun nnap-selection-test--fixture ()
-  (let* ((directory (make-temp-file "nnap-selection-" t))
+  (let* ((directory (file-truename (make-temp-file "nnap-selection-" t)))
          (module (expand-file-name "module.el" directory))
          (manifest-file (expand-file-name "manifest.el" directory))
          (names-file (expand-file-name "names.txt" directory))

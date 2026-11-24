@@ -303,9 +303,16 @@
              (aref object 1))
             (nelisp-bytecode-corpus--print (aref object 2))
             (nelisp-bytecode-corpus--print (aref object 3)))))
+      ;; 90 s like the other JIT lanes (`--timeout-budget'): the child
+      ;; loads lisp/nelisp-bytecode-jit.el from source first, and on a loaded
+      ;; runner the old 15 s default ran out; the timed-out lane then reached
+      ;; `make-byte-code' below as nil and failed as "Invalid byte-code
+      ;; object" (CI run 42798100102, ert ubuntu jit).
       (setq jit-result
             (nelisp-vendor-bytecode-triparity--run-child
-             vm-program (list "-Q" "--batch" "--eval" jit-form))))
+             vm-program (list "-Q" "--batch" "--eval" jit-form) 90)))
+    ;; Say why the JIT lane failed instead of failing later on its output.
+    (should (equal (plist-get jit-result :status) "ok"))
     (let* ((expected-values '(t nil nil nil))
            (jit-bytecode (plist-get jit-result :bytecode))
            (jit-object (make-byte-code

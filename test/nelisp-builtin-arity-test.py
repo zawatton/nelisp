@@ -21,7 +21,54 @@ FIXED_VALUES = {
     'recordp': ("(recordp (record 'arity-record 7))", 't'),
     'nlistp': ('(nlistp 1)', 't'),
     'special-form-p': ("(special-form-p 'quote)", 't'),
+    # libm functions: a static build signals `nelisp-unsupported-primitive'
+    # (libm needs NELISP_READER_DYNAMIC); `libm_value' accepts that there.
     'sin': ('(sin 0.0)', '0.0'), 'cos': ('(cos 0.0)', '1.0'),
+    'asin': ('(asin 0.0)', '0.0'), 'acos': ('(acos 1.0)', '0.0'),
+    'tan': ('(tan 0.0)', '0.0'),
+    'sqrt': ('(sqrt 4.0)', '2.0'), 'exp': ('(exp 0.0)', '1.0'),
+    'fceiling': ('(fceiling 1.5)', '2.0'), 'ffloor': ('(ffloor 1.5)', '1.0'),
+    'fround': ('(fround 2.5)', '2.0'), 'ftruncate': ('(ftruncate -1.5)', '-1.0'),
+    'float': ('(float 3)', '3.0'), 'logb': ('(logb 8)', '3'),
+    'bare-symbol': ("(bare-symbol 'arity-bare)", 'arity-bare'),
+    'symbol-with-pos-p': ("(symbol-with-pos-p 'arity-bare)", 'nil'),
+    'garbage-collect': ('(listp (garbage-collect))', 't'),
+    # Buffer primitives; each form makes its own buffer.  Values as GNU 31.1.
+    'point': ('(with-temp-buffer (insert "ab") (point))', '3'),
+    'point-min': ('(with-temp-buffer (insert "abc") (narrow-to-region 2 3) (point-min))', '2'),
+    'point-max': ('(with-temp-buffer (insert "abc") (narrow-to-region 2 3) (point-max))', '3'),
+    'goto-char': ('(with-temp-buffer (insert "abc") (goto-char 2))', '2'),
+    'bobp': ('(with-temp-buffer (insert "ab") (bobp))', 'nil'),
+    'eobp': ('(with-temp-buffer (insert "ab") (eobp))', 't'),
+    'bolp': ('(with-temp-buffer (insert "ab") (bolp))', 'nil'),
+    'eolp': ('(with-temp-buffer (insert "ab") (eolp))', 't'),
+    'preceding-char': ('(with-temp-buffer (insert "ab") (preceding-char))', '98'),
+    'following-char': ('(with-temp-buffer (insert "ab") (goto-char 1) (following-char))', '97'),
+    'delete-region': ('(with-temp-buffer (insert "abc") (delete-region 1 2) (buffer-string))', '"bc"'),
+    'buffer-substring': ('(with-temp-buffer (insert "abc") (buffer-substring 2 4))', '"bc"'),
+    'buffer-substring-no-properties':
+        ('(with-temp-buffer (insert "abc") (buffer-substring-no-properties 1 3))', '"ab"'),
+    'narrow-to-region': ('(with-temp-buffer (insert "abc") (narrow-to-region 2 3) (buffer-string))', '"b"'),
+    'widen': ('(with-temp-buffer (insert "abc") (narrow-to-region 2 3) (widen) (buffer-string))', '"abc"'),
+    'nelisp--equal-leaf': ('(nelisp--equal-leaf 1 1)', 't'),
+    # Internal primitives without a GNU counterpart: present as subrs; their
+    # arity is what `fixed_cases' checks.
+    'nelisp--clear-string-bytes': ("(subrp (symbol-function 'nelisp--clear-string-bytes))", 't'),
+    'nelisp--string-mark-intervals': ("(subrp (symbol-function 'nelisp--string-mark-intervals))", 't'),
+    'nelisp--pow': ("(subrp (symbol-function 'nelisp--pow))", 't'),
+    'nelisp--symbol-position-op': ("(subrp (symbol-function 'nelisp--symbol-position-op))", 't'),
+    'nelisp--gb-char': ("(subrp (symbol-function 'nelisp--gb-char))", 't'),
+    'nelisp--gb-move': ("(subrp (symbol-function 'nelisp--gb-move))", 't'),
+    'nelisp--gb-reserve': ("(subrp (symbol-function 'nelisp--gb-reserve))", 't'),
+    'nelisp--gb-insert': ("(subrp (symbol-function 'nelisp--gb-insert))", 't'),
+    'nelisp--gb-column': ("(subrp (symbol-function 'nelisp--gb-column))", 't'),
+    'nelisp--gb-delete': ("(subrp (symbol-function 'nelisp--gb-delete))", 't'),
+    'nelisp--gb-substring': ("(subrp (symbol-function 'nelisp--gb-substring))", 't'),
+    'nelisp--gb-count-nl': ("(subrp (symbol-function 'nelisp--gb-count-nl))", 't'),
+    'nelisp--gb-overwrite': ("(subrp (symbol-function 'nelisp--gb-overwrite))", 't'),
+    'nelisp--gb-count-lines': ("(subrp (symbol-function 'nelisp--gb-count-lines))", 't'),
+    'nelisp--gb-find-char': ("(subrp (symbol-function 'nelisp--gb-find-char))", 't'),
+    'nelisp--gb-insert-file': ("(subrp (symbol-function 'nelisp--gb-insert-file))", 't'),
     'symbol-function': ("(not (null (symbol-function 'car)))", 't'),
     'symbol-name': ("(symbol-name 'arity-value)", '"arity-value"'),
     'symbol-value': ("(progn (setq arity-value 7) (symbol-value 'arity-value))", '7'),
@@ -60,6 +107,17 @@ FIXED_VALUES = {
 }
 
 
+LIBM = {'sin', 'cos', 'asin', 'acos', 'tan'}
+
+
+def libm_value(name, form, expected):
+    """FORM for NAME, answering EXPECTED where libm is missing (static build)."""
+    if name not in LIBM:
+        return (form, expected)
+    return (f"(condition-case e {form} (nelisp-unsupported-primitive "
+            f"(if (eq (cadr e) '{name}) {expected} e)))", expected)
+
+
 def fixed_contracts():
     """Read shared metadata through the nonexecuting build parser, once."""
     expression = '''(let ((table (nelisp-standalone--applyfn-reader-table)))
@@ -82,7 +140,8 @@ def fixed_cases(contracts):
             arguments = ' '.join(['nil'] * count)
             records.append((f"(condition-case e (apply '(builtin {name}) '({arguments})) "
                             '(wrong-number-of-arguments e))',
-                            f'(wrong-number-of-arguments {name} {count})'))
+                            # `apply' reports the subr object, as in GNU.
+                            f'(wrong-number-of-arguments #<subr {name}> {count})'))
     return records
 
 
@@ -94,9 +153,12 @@ def cases():
             forms = [f'({name} {arguments})', f"(funcall #'{name} {arguments})",
                      f"(apply #'{name} '({arguments}))",
                      f"(apply '(builtin {name}) '({arguments}))"]
-            for form in forms:
+            for index, form in enumerate(forms):
+                # As in GNU Emacs 31.1: an interpreted call form reports the
+                # function's name, `funcall'/`apply' report the subr object.
+                culprit = name if index == 0 else f'#<subr {name}>'
                 records.append((f'(condition-case err {form} (wrong-number-of-arguments err))',
-                                f'(wrong-number-of-arguments {name} {count})'))
+                                f'(wrong-number-of-arguments {culprit} {count})'))
         records.extend([(f'({name} nil)', 'nil'),
                         (f'(condition-case err ({name} 5) (wrong-type-argument err))',
                          '(wrong-type-argument listp 5)')])
@@ -104,7 +166,9 @@ def cases():
                     ('(setq arity-state 40)', '40'),
                     ('(condition-case err (car (setq arity-state (+ arity-state 1)) nil) '
                      '(wrong-number-of-arguments err))', '(wrong-number-of-arguments car 2)'),
-                    ('arity-state', '41'), ('(+ arity-state 1)', '42')])
+                    # GNU checks a subr's arity before evaluating the
+                    # arguments, so the failed call leaves the state at 40.
+                    ('arity-state', '40'), ('(+ arity-state 1)', '41')])
     return records
 
 
@@ -129,7 +193,7 @@ class BuiltinArity(unittest.TestCase):
         contracts = fixed_contracts()
         self.assertGreaterEqual(len(contracts), 40)
         self.assertEqual(set(contracts), set(FIXED_VALUES))
-        records = fixed_cases(contracts) + [FIXED_VALUES[name] for name in contracts]
+        records = fixed_cases(contracts) + [libm_value(name, *FIXED_VALUES[name]) for name in contracts]
         source = '\n'.join(f'(progn (prin1 {form}) (terpri))' for form, _ in records) + '\n(exit 0)\n'
         run = subprocess.run([str(binary), '--repl', '--no-prompt', '--no-print'],
                              input=source, text=True, capture_output=True, timeout=15)

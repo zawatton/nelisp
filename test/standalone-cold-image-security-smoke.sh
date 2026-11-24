@@ -10,8 +10,10 @@
 #      open() it.
 #   2/3. An explicit `--cold-load-from PATH' pointed at a stale/mismatched
 #      image (bad magic, or a SLEN outside the validated bounds) must be
-#      REJECTED with a stderr diagnostic and fall through to normal boot,
-#      not trusted.
+#      REJECTED with a stderr diagnostic, not trusted.  Since 65e3ff534 an
+#      explicit `--cold-load-from' that cannot be loaded is FATAL (exit 1,
+#      "could not load dump file", like GNU load_pdump); only the
+#      executable's own `.cold' companion falls back to a normal boot (t2c).
 #
 # See docs/design/156-flat-arena-boot-install.org, "SECURITY FIX
 # (2026-09-28)" status entry, for the full rationale.
@@ -84,6 +86,23 @@ run_cold_load_from() {
   printf '(+ 1 2)\n' | "$binary" --cold-load-from "$path" --no-prompt
 }
 
+# An explicit `--cold-load-from PATH' of an unloadable image is fatal:
+# exit 1, the loader's own rejection line, then GNU's "could not load dump
+# file" line, and no evaluation output.  $1 name, $2 image, $3 diag regex.
+expect_fatal() {
+  local name="$1" img="$2" diag="$3" out rc
+  set +e
+  out="$(run_cold_load_from "$img" 2>"$work/$name.err")"
+  rc=$?
+  set -e
+  [[ "$rc" == 1 ]] || fail "$name: expected exit 1, got $rc (see $work/$name.err)"
+  [[ "$out" != *"$expect"* ]] || fail "$name: evaluation ran after a rejected image: $out"
+  grep -qi "$diag" "$work/$name.err" \
+    || fail "$name: no rejection diagnostic /$diag/ on stderr (see $work/$name.err)"
+  grep -q 'could not load dump file ".*": not a dump file' "$work/$name.err" \
+    || fail "$name: no fatal 'could not load dump file' line (see $work/$name.err)"
+}
+
 # ---------------------------------------------------------------------
 # Test 2: explicit --cold-load-from with a bad magic number is rejected.
 # ---------------------------------------------------------------------
@@ -96,12 +115,43 @@ with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<8Q", 0xdeadbeef, 64, 0, 0, 0, 0, 0, 0))
 PY
 
-got2="$(run_cold_load_from "$bad_magic" 2>"$work/t2.err")" \
-  || fail "process exited nonzero with a bad-magic cold image (see $work/t2.err)"
-[[ "$got2" == "$expect" ]] || fail "t2: expected $expect, got $got2"
-grep -qi 'cold-load rejected (invalid header)' "$work/t2.err" \
-  || fail "t2: no rejection diagnostic on stderr (see $work/t2.err)"
-echo "PASS t2: bad-magic cold image rejected with diagnostic, normal boot proceeded"
+expect_fatal t2 "$bad_magic" 'cold-load rejected (invalid header)'
+echo "PASS t2: bad-magic explicit cold image rejected, fatal exit 1"
+
+# Test 2b: an explicit --cold-load-from of a truncated real image is
+# rejected after the loader has grown chunk 0; still fatal, exit 1.
+if [[ -f "$binary.cold" ]]; then
+  trunc="$work/truncated.bin"
+  head -c "$(( $(stat -c %s "$binary.cold") / 2 ))" "$binary.cold" > "$trunc"
+  expect_fatal t2b "$trunc" 'cold-load rejected'
+  echo "PASS t2b: truncated explicit cold image rejected, fatal exit 1"
+else
+  echo "SKIP t2b: no $binary.cold"
+fi
+
+# Test 2c: the executable's OWN companion `.cold' falls back to a normal
+# boot when it is rejected after chunk 0 was grown.  The companion must be
+# mode 644: a group/other-writable companion is skipped before any load
+# attempt (nl_boot_image_pin) and would not exercise the reject path.
+# Regression: the grown chunk 0 used to stay mapped and the fallback boot
+# spun forever in mid-form GC.
+if [[ -f "$binary.cold" ]]; then
+  c2="$work/t2c"; mkdir -p "$c2"
+  cp "$binary" "$c2/nelisp"
+  head -c "$(( $(stat -c %s "$binary.cold") / 2 ))" "$binary.cold" > "$c2/nelisp.cold"
+  chmod 755 "$c2/nelisp"; chmod 644 "$c2/nelisp.cold"
+  set +e
+  got2c="$(cd "$c2" && timeout 30 ./nelisp --eval '(+ 1 2)' 2>"$work/t2c.err" </dev/null)"
+  rc2c=$?
+  set -e
+  [[ "$rc2c" == 0 ]] || fail "t2c: expected exit 0, got $rc2c (124 = hang) (see $work/t2c.err)"
+  [[ "$got2c" == "$expect" ]] || fail "t2c: expected $expect, got $got2c"
+  grep -qi 'cold-load rejected' "$work/t2c.err" \
+    || fail "t2c: reject path not exercised, no diagnostic (see $work/t2c.err)"
+  echo "PASS t2c: rejected companion image falls back to normal boot, output=$got2c"
+else
+  echo "SKIP t2c: no $binary.cold"
+fi
 
 # ---------------------------------------------------------------------
 # Test 3: explicit --cold-load-from with a valid magic but an SLEN outside
@@ -117,12 +167,8 @@ with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<8Q", 1179407692, 1 << 40, 0, 0, 0, 0, 0, 0))
 PY
 
-got3="$(run_cold_load_from "$bad_slen" 2>"$work/t3.err")" \
-  || fail "process exited nonzero with an oversized-SLEN cold image (see $work/t3.err)"
-[[ "$got3" == "$expect" ]] || fail "t3: expected $expect, got $got3"
-grep -qi 'cold-load rejected (invalid header)' "$work/t3.err" \
-  || fail "t3: no rejection diagnostic on stderr (see $work/t3.err)"
-echo "PASS t3: oversized-SLEN cold image rejected with diagnostic, normal boot proceeded"
+expect_fatal t3 "$bad_slen" 'cold-load rejected (invalid header)'
+echo "PASS t3: oversized-SLEN cold image rejected with diagnostic, fatal exit 1"
 
 # ---------------------------------------------------------------------
 # Test 4: valid magic/header bounds but a relocation-table entry pointing
@@ -142,12 +188,8 @@ with open(sys.argv[1], "wb") as f:
     f.write(hdr + tbl + region)
 PY
 
-got4="$(run_cold_load_from "$bad_reloc" 2>"$work/t4.err")" \
-  || fail "process exited nonzero with an out-of-range relocation table (see $work/t4.err)"
-[[ "$got4" == "$expect" ]] || fail "t4: expected $expect, got $got4"
-grep -qi 'cold-load rejected (invalid relocation table)' "$work/t4.err" \
-  || fail "t4: no rejection diagnostic on stderr (see $work/t4.err)"
-echo "PASS t4: out-of-range relocation-table entry rejected with diagnostic, normal boot proceeded"
+expect_fatal t4 "$bad_reloc" 'cold-load rejected (\(invalid relocation table\|not a complete version 5 packed image\)'
+echo "PASS t4: out-of-range relocation-table entry rejected with diagnostic, fatal exit 1"
 
 # ---------------------------------------------------------------------
 # Test 5: a structurally valid header with no build-digest trailer, or with
@@ -164,26 +206,29 @@ with open(sys.argv[1], "wb") as f:
     f.write(hdr + b"\x00" * 64)
 PY
 check_t5() {
-  local name="$1" img="$2" out
-  out="$(run_cold_load_from "$img" 2>"$work/$name.err")" \
-    || fail "$name: process exited nonzero (see $work/$name.err)"
-  [[ "$out" == "$expect" ]] || fail "$name: expected $expect, got $out"
-  grep -qi 'cold-load rejected (build digest mismatch)' "$work/$name.err" \
-    || fail "$name: no digest-mismatch diagnostic (see $work/$name.err)"
+  expect_fatal "$1" "$2" 'cold-load rejected (\(build digest mismatch\|not a complete version 5 packed image\)'
 }
 check_t5 t5a "$no_trailer"
 if [[ -f "$binary.cold" ]]; then
+  # The v5 trailer (magic, version 5, 32-byte digest) sits before the
+  # trailing relocation bytes, so locate it instead of using file offsets.
   bad_digest="$work/bad-digest.bin"
   cp "$binary.cold" "$bad_digest"
-  python3 - "$bad_digest" <<'PY'
-import sys
+  trailer_off="$(python3 - "$bad_digest" <<'PY'
+import struct, sys
 with open(sys.argv[1], "r+b") as f:
-    f.seek(-1, 2); b = f.read(1)
-    f.seek(-1, 2); f.write(bytes([b[0] ^ 0xff]))
+    d = f.read()
+    i = d.rfind(struct.pack("<QQ", 1195655758, 5))
+    if i < 0:
+        print(-1); sys.exit(0)
+    f.seek(i + 20); f.write(bytes([d[i + 20] ^ 0xff]))
+    print(i)
 PY
+)"
+  [[ "$trailer_off" -ge 0 ]] || fail "t5: build-digest trailer not found in $binary.cold"
   check_t5 t5b "$bad_digest"
   cp "$binary.cold" "$work/no-trailer-real.bin"
-  truncate -s -48 "$work/no-trailer-real.bin"
+  truncate -s "$trailer_off" "$work/no-trailer-real.bin"
   check_t5 t5c "$work/no-trailer-real.bin"
   echo "PASS t5: missing/incorrect build-digest trailer rejected (synthetic, flipped digest, truncated)"
 else

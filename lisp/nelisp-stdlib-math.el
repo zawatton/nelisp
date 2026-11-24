@@ -19,6 +19,8 @@
 
 ;; Doc 87 §86.1.f Tier 2 wrapper.  Uses new `:trampoline-unary-float'
 ;; ABI mode (= xmm0 → xmm0 calling convention).
+(declare-function nl-jit-call-float-unary "nelisp-runtime")
+
 (fset 'float
       (lambda (x)
         (nl-jit-call-float-unary "nl_jit_float_float" x)))

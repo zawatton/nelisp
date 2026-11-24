@@ -1,6 +1,9 @@
 ;;; nelisp-bytecode-native-rooted-stack-call.el --- checked rooted stack caller -*- lexical-binding: t; -*-
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'cl-lib)
 (require 'nelisp-native-load)
+(declare-function nelisp-bytecode-native-rooted-stack-authenticated-result-p "nelisp-bytecode-native-rooted-stack" (result))
 
 (defun nelisp-bytecode-native-rooted-stack-call--manifest-import-names (manifest)
   "Return canonical v2 import names after validating descriptor records."

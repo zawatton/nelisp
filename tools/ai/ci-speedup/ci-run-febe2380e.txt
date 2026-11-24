@@ -1,0 +1,11 @@
+# CI 43158805862 + stage-d 43158805878 (push, main febe2380e), 2026-11-12
+# CI run wall 05:03:34Z -> 05:50:41Z (47.1 min), conclusion failure (parity-fuzz, smoke ubuntu check-tier, ert windows smoke tests, verify)
+# stage-d run 05:03:34Z -> 05:21:36Z, conclusion success (all three legs)
+# Windows CHECKED allocator smoke steps: success in smoke windows and ert windows plain/jit/nojit
+smoke (windows-latest, 31.1) | success | 2026-11-12T05:07:31Z -> 2026-11-12T05:16:41Z
+ert windows-latest / nojit | failure | 2026-11-12T05:07:31Z -> 2026-11-12T05:23:33Z
+ert windows-latest / plain | failure | 2026-11-12T05:07:32Z -> 2026-11-12T05:29:19Z
+ert windows-latest / jit | failure | 2026-11-12T05:07:32Z -> 2026-11-12T05:32:07Z
+windows-x86_64 standalone | success | 2026-11-12T05:03:37Z -> 2026-11-12T05:21:35Z
+linux-x86_64 standalone | success | 2026-11-12T05:03:37Z -> 2026-11-12T05:17:17Z
+macos-aarch64 standalone | success | 2026-11-12T05:03:37Z -> 2026-11-12T05:21:16Z

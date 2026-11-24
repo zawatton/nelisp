@@ -1,0 +1,14 @@
+{
+  "format": "artifact-bundle-v1",
+  "inputs": [
+    {"source": "bin/tool", "destination": "/bundle/bin/tool", "type": "file", "mode": "0555", "sha256": "341f3b2bcd450c5bac407f2ecf859232d9ef5704bdba1c2df63297160e74aad1"},
+    {"source": "share/data", "destination": "/bundle/share/data", "type": "file", "mode": "0444", "sha256": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"},
+    {"source": "share/alias", "destination": "/bundle/share/alias", "type": "symlink", "mode": "0444", "target": "/bundle/share/data"}
+  ],
+  "execution": {
+    "argv": ["/bundle/bin/tool", "--fixed"],
+    "cwd": "/bundle",
+    "env": {"LANG": "C"},
+    "private_outputs": ["/private/out"]
+  }
+}

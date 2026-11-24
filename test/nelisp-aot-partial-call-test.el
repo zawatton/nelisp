@@ -179,7 +179,10 @@
       (let ((nelisp-aot-compiler--abi 'win64)) (should-not (folded node)))
       (let ((nelisp-aot-compiler--arch 'aarch64)) (should-not (folded node)))
       (let ((nelisp-aot-compiler--checked-arith t)) (should-not (folded node)))
-      (cl-letf (((symbol-function 'nelisp-aot-compiler--lisp-values-p) (lambda () t)))
+      ;; Bind the variable the `defsubst' returns: a byte-compiled caller
+      ;; inlines `nelisp-aot-compiler--lisp-values-p', so a function mock
+      ;; would not reach it.
+      (let ((nelisp-aot-compiler--runtime-entry-params t))
         (should-not (folded node)))
       (let ((nelisp-aot-compiler--native-emit-enabled t))
         (cl-letf (((symbol-function 'nl-jit-call-out-2) #'ignore)) (should-not (folded node)))))))

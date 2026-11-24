@@ -110,8 +110,10 @@
   ;; Mark, image mark, compaction rewrite and the image dump each give kind 20
   ;; the one-slot cell layout, so the wrapped list survives and is relocated.
   (let ((src (w2s--src)))
-    (should (>= (w2s--count "(or (= kind 11) (= kind 20))" src) 3))
-    (should (>= (w2s--count "(or (= tag 11) (= tag 20))" src) 1))
+    ;; 02a1dccef: closures (kind 23) share the same one-slot layout, so the
+    ;; walkers' test became (or (= kind 11) (= kind 20) (= kind 23)).
+    (should (>= (w2s--count "(or (= kind 11) (= kind 20) (= kind 23))" src) 3))
+    (should (>= (w2s--count "(or (= tag 11) (= tag 20) (= tag 23))" src) 1))
     (should (string-match-p "(if (= kind 11) 0 (if (= kind 20) 0 1))" src))))
 
 (ert-deftest w2s-bytecode-call-and-walkers-resolve-the-raw-cell ()

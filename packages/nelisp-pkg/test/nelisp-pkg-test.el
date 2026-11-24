@@ -210,6 +210,25 @@ read; the sequence is doubtful, not shorter."
                   (plist-get (car (plist-get result :findings)) :kind)))
       (should (= 0 (plist-get result :checked))))))
 
+(ert-deftest nelisp-pkg-load-list-resolves-a-bare-name-through-pkg-src ()
+  "A bare `(load \"x\")' is found the way `load-path' finds it."
+  (nelisp-pkg-test--with-files
+      '(("pkg/src/base.el" . "(provide 'base)\n")
+        ("pkg/test/t-test.el" . "(load \"base\" nil t)\n"))
+    (let ((result (nelisp-pkg-check-load-list
+                   (expand-file-name "pkg/test/t-test.el"))))
+      (should (null (plist-get result :findings)))
+      (should (= 1 (plist-get result :checked))))))
+
+(ert-deftest nelisp-pkg-load-list-still-flags-an-unresolvable-bare-name ()
+  (nelisp-pkg-test--with-files
+      '(("pkg/src/base.el" . "(provide 'base)\n")
+        ("pkg/test/t-test.el" . "(load \"gone\" nil t)\n"))
+    (let ((result (nelisp-pkg-check-load-list
+                   (expand-file-name "pkg/test/t-test.el"))))
+      (should (eq 'load-list-missing-file
+                  (plist-get (car (plist-get result :findings)) :kind))))))
+
 (ert-deftest nelisp-pkg-load-list-flags-a-file-loaded-too-early ()
   (nelisp-pkg-test--with-files
       '(("src/base.el" . "(provide 'base)\n")

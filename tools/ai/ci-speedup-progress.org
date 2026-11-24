@@ -1,0 +1,55 @@
+#+TITLE: NeLisp CI speed-up (2026-11-11)
+
+* S1 Workflow changes
+
+** S1.1 Every CI and stage-d job has a job-level timeout (ci <=180, stage-d <=60)
+cmd: python3 tools/ai/ci-speedup/check.py timeouts
+
+** S1.2 Both workflows cancel superseded runs, main pushes included
+cmd: python3 tools/ai/ci-speedup/check.py concurrency
+
+** S1.3 gate-mutation runs as 12 shards
+cmd: python3 tools/ai/ci-speedup/check.py shards
+
+** S1.4 parity-fuzz runs in its own job, not inside smoke
+cmd: python3 tools/ai/ci-speedup/check.py parity-split
+
+** S1.5 Existing CI structure tests pass
+cmd: python3 tools/ai/ci-speedup/check.py tests
+
+** S1.6 E2E - a CI run of this branch completes green within 60 min wall
+#+NOTE: CI run 43342897566 on main e17f41656, 34/34 jobs success, 59 min 36 s
+evidence: tools/ai/ci-speedup/ci-run-43342897566-green.txt sha256=bfb978048a47b7255d08c13d34feddb5f89a8148f0a3f191c90c4226a8212b4c
+
+* S2 Windows build C stack overflow hang
+
+** S2.1 Root cause identified with log evidence and a written diagnosis
+evidence: tools/ai/ci-speedup/win-stack-overflow-diagnosis.md sha256=4fc5a4528bb4566bd66b955407fdd58235d7248d43dbafe9e7cf38ce9f15a3fe
+
+** S2.2 E2E - Windows CHECKED build completes on CI without stack overflow
+evidence: tools/ai/ci-speedup/ci-run-febe2380e.txt sha256=19b9966d525197423ee014b9ccc5effc8878eb0a3c1647c135b92a7b6eda5d97
+
+* S3 arm64 :branch-out-of-range on macOS stage-d
+
+** S3.1 Failing case reproduced locally by a focused test (red before fix)
+cmd: (ulimit -v 8388608; timeout 900 emacs --batch -Q -L lisp -L src -L scripts -L test -l ert -l test/nelisp-arm64-branch-range-test.el -f ert-run-tests-batch-and-exit </dev/null)
+
+** S3.2 E2E - stage-d macOS legs pass on CI
+evidence: tools/ai/ci-speedup/ci-run-febe2380e.txt sha256=19b9966d525197423ee014b9ccc5effc8878eb0a3c1647c135b92a7b6eda5d97
+
+* S4 tier extras wall time (design: substrate-parity serial launches)
+
+** S4.1 extras gates split into matrix legs; every original gate in exactly one group
+cmd: bash tools/check-extras-partition.sh
+
+** S4.2 ci.yml subsystems matrix has the extras legs (parity, variants, build, smokes) plus smokes and perf
+cmd: python3 tools/ai/ci-speedup/check.py extras-legs
+
+** S4.3 substrate-parity output identical at JOBS=1 and JOBS=4 (corpus subset)
+evidence: tools/ai/ci-speedup/parity-jobs-equality.log sha256=50058b44f7d7301f5b6036bab783247a51f51f2546b70ef2734493e9a797c04d
+
+** S4.4 Root cause of slow eval-runtime-image / exec-elisp-artifact / eval-elisp-source startup identified
+evidence: tools/ai/ci-speedup/startup-step-b-spike.md sha256=be643528b0f2c644a907345a7c98680b112a0304a023d40047980b59cfb511bb
+
+** S4.5 E2E - tier extras legs each finish within 15 min on CI
+evidence: tools/ai/ci-speedup/ci-run-43141614135-extras.txt sha256=20c9422d099d858b3f503b16135d206d1c564f06d1fcbd5e6a5e1de4a2a4b8cc

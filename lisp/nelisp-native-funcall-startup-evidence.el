@@ -2,6 +2,8 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-native-compiler-startup-evidence)
 (require 'nelisp-native-frame-v2)
+(declare-function nelisp-native-f1-derived-startup-evidence-build nil
+                  (units builder root directory))
 (defun nelisp-native-funcall-startup-evidence-build (units builder root directory)
   "Derive an independent evaluator-boundary proof; preserve constructor issuance.
 The evaluator itself is a source/binary-bound terminal, since its arbitrary

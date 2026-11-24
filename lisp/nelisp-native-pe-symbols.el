@@ -5,8 +5,9 @@
   "Read a bounded little-endian field."
   (unless (<= 0 offset (+ offset width) (length bytes)) (error "PE field bounds"))
   (let ((value 0))
-    (dotimes (index width value)
-      (setq value (+ value (ash (aref bytes (+ offset index)) (* 8 index)))))))
+    (dotimes (index width)
+      (setq value (+ value (ash (aref bytes (+ offset index)) (* 8 index)))))
+    value))
 (defun nelisp-native-pe-symbols-put (bytes offset width value)
   (dotimes (index width) (aset bytes (+ offset index) (logand 255 (ash value (- (* 8 index)))))))
 

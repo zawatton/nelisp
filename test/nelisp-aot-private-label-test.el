@@ -8,6 +8,8 @@
   (cl-incf nelisp-aot-private-label-test--selected))
 
 (ert-deftest nelisp-aot-private-label/staged-K-native-export-collisions ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "nelisp-private-label-" t))
          (o (expand-file-name "probe.o" dir))
          (c (expand-file-name "probe.c" dir))

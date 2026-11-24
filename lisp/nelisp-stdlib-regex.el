@@ -16,6 +16,9 @@
 ;;; Code:
 
 ;; Doc 87 §86.1.f Tier 2 wrapper.  2-arg out-Sexp primitive call.
+(declare-function nelisp--signal-wrong-type "nelisp-runtime")
+(declare-function nl-jit-call-out-2 "nelisp-runtime")
+
 (fset 'string-match-p
       (lambda (pat text)
         (condition-case _err

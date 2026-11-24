@@ -66,6 +66,9 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
     data))
 
 (ert-deftest nelisp-eln-s6-corpus/all-pass-validates ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
+  (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (s6c-test--with-fixture (fx)
     (let ((rows (s6c-test--regen fx)))
       (should (= 19 (length rows)))
@@ -73,6 +76,9 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
       (should-not (s6c-test--validate fx)))))
 
 (ert-deftest nelisp-eln-s6-corpus/stale-binary-fails ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
+  (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (s6c-test--with-fixture (fx)
     (s6c-test--regen fx)
     (s6c-test--write binary "#!/bin/sh\n# rebuilt\n")
@@ -80,6 +86,9 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
                      (s6c-test--validate fx)))))
 
 (ert-deftest nelisp-eln-s6-corpus/missing-function-fails ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
+  (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (s6c-test--with-fixture (fx)
     (s6c-test--regen fx)
     (s6c-test--mutate evidence
@@ -92,6 +101,9 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
     (should (member "zerop: no evidence row" (s6c-test--validate fx)))))
 
 (ert-deftest nelisp-eln-s6-corpus/fail-row-fails ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
+  (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (s6c-test--with-fixture (fx)
     (s6c-test--regen fx)
     (s6c-test--mutate evidence
@@ -102,6 +114,9 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
                      (s6c-test--validate fx)))))
 
 (ert-deftest nelisp-eln-s6-corpus/tampered-sha-fails ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
+  (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (s6c-test--with-fixture (fx)
     (s6c-test--regen fx)
     (s6c-test--mutate evidence
@@ -118,6 +133,9 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
                      (s6c-test--validate fx)))))
 
 (ert-deftest nelisp-eln-s6-corpus/changed-ledger-cmd-is-stale ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
+  (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (s6c-test--with-fixture (fx)
     (s6c-test--regen fx)
     (with-temp-buffer
@@ -130,6 +148,9 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
                      (s6c-test--validate fx)))))
 
 (ert-deftest nelisp-eln-s6-corpus/pending-function-is-not-measured ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
+  (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (let* ((dir (make-temp-file "s6c-" t))
          (fx (s6c-test--fixture dir t)))
     (unwind-protect

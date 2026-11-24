@@ -1,6 +1,14 @@
 ;;; nelisp-native-windows.el --- Win64 trust and OS boundaries -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'cl-lib)
+
+(declare-function nl-ffi-call nil (name &rest args))
+(declare-function nelisp-native-pe-symbols-imports
+                  "nelisp-native-pe-symbols" (read-window sections))
+(declare-function nelisp-native-pe-symbols-u
+                  "nelisp-native-pe-symbols" (bytes offset width))
 
 (defun nelisp-native-windows-call (name &rest args)
   "Call the reader's fixed system-DLL FFI entry NAME. Unknown entries refuse."

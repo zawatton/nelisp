@@ -118,6 +118,9 @@
           (should-not (assoc "gcc_jit_result_release" calls)))))))
 
 (ert-deftest nelisp-native-gccjit/backend-key-and-in-house-dispatch ()
+  ;; The gccjit backend is refused on Windows (nelisp-native-cache.el), and its
+  ;; cache fixtures use the Linux directory path.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (let ((nelisp-native-cache--abi (make-string 64 ?a))
         (nelisp-native-cache--compiler-revision (make-string 64 ?b))
         (directory (make-temp-file "gccjit-cache-key-" t)))
@@ -161,6 +164,9 @@
       (should-error (nelisp-native-gccjit-lower (nelisp-native-gccjit-test--form n) nil)))))
 
 (ert-deftest nelisp-native-gccjit/compile-once-publish-sidecar-and-hit ()
+  ;; The gccjit backend is refused on Windows (nelisp-native-cache.el), and its
+  ;; cache fixtures use the Linux directory path.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (skip-unless (equal emacs-version "31.1"))
   (let ((nelisp-bytecode-compiler-input--root nelisp-native-gccjit-test--root)
         (directory (make-temp-file "gccjit-publish-" t))
@@ -190,6 +196,9 @@
       (delete-directory directory t))))
 
 (ert-deftest nelisp-native-gccjit/cache-load-rebinds-with-zero-validations ()
+  ;; The gccjit backend is refused on Windows (nelisp-native-cache.el), and its
+  ;; cache fixtures use the Linux directory path.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (let* ((directory (make-temp-file "gccjit-load-" t))
          (file (expand-file-name "probe.so" directory))
          (nelisp-native-cache-backend 'gccjit)

@@ -63,6 +63,26 @@
 
 (require 'cl-lib)
 
+;; Compile-time-only declarations for sibling writers loaded on demand.
+(defvar nelisp-pe--section-alignment)
+(defvar nelisp-pe--machine-arm64)
+(declare-function nelisp-mach-o-write-executable "nelisp-mach-o-write"
+                  (file-path sections))
+(declare-function nelisp-mach-o-exe-layout "nelisp-mach-o-write"
+                  (text-size data-size bss-size &optional machine))
+(declare-function nelisp-native-pe-symbols-append "nelisp-native-pe-symbols"
+                  (path symtab))
+(declare-function nelisp-pe-write-exe-binary "nelisp-pe-write"
+                  (file-path spec))
+(declare-function nelisp-pe--build-idata "nelisp-pe-write"
+                  (idata-rva imports))
+(declare-function nelisp-pe--normalize-imports "nelisp-pe-write" (imports))
+(declare-function nelisp-pe--buffer-bytes "nelisp-pe-write" (cbuf))
+(declare-function nelisp-pe--write-bytes "nelisp-pe-write" (cbuf bytes))
+(declare-function nelisp-pe--write-le32 "nelisp-pe-write" (cbuf v))
+(declare-function nelisp-pe--make-buffer "nelisp-pe-write" ())
+(declare-function nelisp-pe--align-up "nelisp-pe-write" (n align))
+
 (define-error 'nelisp-link-error "nelisp static linker error")
 (define-error 'nelisp-link--unresolved-symbol
   "nelisp static linker: unresolved symbol" 'nelisp-link-error)
@@ -197,7 +217,7 @@ reporting)."
 (defun nelisp-link--vec->ubstring (vec)
   "Convert byte VEC into a unibyte-string (= ELF writer input).
 Uses small `unibyte-string' chunks because standalone NeLisp still
-mis-handles large-arity `(apply #'unibyte-string ...)' calls."
+mis-handles large-arity `apply' calls on `unibyte-string'."
   (let ((n (length vec))
         (i 0)
         (chunks nil))
@@ -337,9 +357,21 @@ extra `:section' key naming the section in which the patch lives
         :symbols (or symbols nil) :relocs (or relocs nil)))
 
 (defun nelisp-link--copy-aot-value (value)
-  "Copy VALUE recursively, including mutable strings and vectors."
-  (cond ((consp value) (cons (nelisp-link--copy-aot-value (car value))
-                             (nelisp-link--copy-aot-value (cdr value))))
+  "Copy VALUE, including mutable strings and vectors.
+Conses are copied by iterating along the cdr spine and recursing only
+into the elements, so long lists (relocation lists of large units) do
+not consume Lisp stack depth proportional to their length."
+  (cond ((consp value)
+         (let* ((head (cons (nelisp-link--copy-aot-value (car value)) nil))
+                (tail head)
+                (rest (cdr value)))
+           (while (consp rest)
+             (let ((cell (cons (nelisp-link--copy-aot-value (car rest)) nil)))
+               (setcdr tail cell)
+               (setq tail cell
+                     rest (cdr rest))))
+           (setcdr tail (nelisp-link--copy-aot-value rest))
+           head))
         ((stringp value) (copy-sequence value))
         ((vectorp value) (vconcat (mapcar #'nelisp-link--copy-aot-value value)))
         (t value)))
@@ -836,7 +868,8 @@ deterministic order (= sorted by name)."
 
 (defun nelisp-link--check-hot-alignment (units combined layout &optional symtab machine)
   "Signal `nelisp-link-error' unless hot entries land 64-aligned absolutely.
-UNITS are the linked units (units without text are skipped); COMBINED and LAYOUT are the combined sections and section VA layout of a link.
+UNITS are the linked units (units without text are skipped); COMBINED
+and LAYOUT are the combined sections and section VA layout of a link.
 Every non-empty x86-64 text unit must start on a multiple of
 `nelisp-link-x86-text-alignment' (the compiler aligns :entry 64 relative to its
 unit start), and each of `nelisp-link-hot-entry-symbols' found in SYMTAB must
@@ -1124,6 +1157,101 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
     (when (eq machine 'x86_64)
       (require 'nelisp-native-pe-symbols)
       (nelisp-native-pe-symbols-append file-path symtab))
+    file-path))
+
+(defvar nelisp-pe-write-dll-image-base)
+(declare-function nelisp-pe-write-dll-binary "nelisp-pe-write" (file-path spec))
+
+(defun nelisp-link--pe-abs64-site-rvas (units combined layout image-base)
+  "Return sorted RVAs of every `abs64' patch site in UNITS.
+COMBINED and LAYOUT are the combined-section map and absolute section
+layout used for linking; IMAGE-BASE is subtracted from section VAs."
+  (let (rvas)
+    (dolist (unit units)
+      (let ((uname (plist-get unit :name)))
+        (dolist (rel (plist-get unit :relocs))
+          (when (eq (plist-get rel :type) 'abs64)
+            (let* ((rsec (nelisp-link--reloc-section rel))
+                   (uoff (nelisp-link--combined-offset combined rsec uname))
+                   (sec-va (cdr (assq rsec layout))))
+              (push (- (+ sec-va uoff (plist-get rel :offset)) image-base)
+                    rvas))))))
+    (sort (delete-dups rvas) #'<)))
+
+(defun nelisp-link-units-pe32-dll (file-path units exports
+                                             &optional imports options)
+  "Link UNITS and emit a PE32+ DLL to FILE-PATH.
+EXPORTS is a list of global symbol names, or (EXPORT-NAME . SYMBOL) pairs.
+IMPORTS is as for `nelisp-link-units-pe32'.  OPTIONS is a plist:
+  :image-base  preferred base (default #x180000000)
+  :dll-name    export directory DLL name (default \"nelisp.dll\")
+  :entry       DllMain symbol (default none: writer appends a TRUE stub)
+  :no-reloc    omit .reloc (negative-control hook)
+Every `abs64' relocation site in UNITS gets an IMAGE_REL_BASED_DIR64 entry.
+Exported functions use the Win64 ABI (rcx, rdx, r8, r9 -> rax) as written by
+the units; the linker does not translate calling conventions."
+  (require 'nelisp-pe-write)
+  (let* ((base (or (plist-get options :image-base) nelisp-pe-write-dll-image-base))
+         (nelisp-link--pe-image-base base)
+         (normalized-imports (nelisp-pe--normalize-imports imports))
+         (predict-units (if normalized-imports
+                            (append units
+                                    (list (nelisp-link--pe-empty-import-thunk-unit
+                                           normalized-imports 'x86_64)))
+                          units))
+         (predict-combined (nelisp-link-combine-sections predict-units 'x86_64))
+         (predict-rvas (nelisp-link--pe-section-rvas predict-combined
+                                                     normalized-imports))
+         (idata-info (and normalized-imports
+                          (nelisp-pe--build-idata
+                           (plist-get predict-rvas :idata-rva)
+                           normalized-imports)))
+         (orig-combined (nelisp-link-combine-sections units 'x86_64))
+         (orig-text-size
+          (nelisp-link--align-up
+           (nelisp-link--section-len orig-combined 'text)
+           (nelisp-link--unit-section-alignment 'text 'x86_64)))
+         (predict-layout (nelisp-link--pe-layout predict-combined
+                                                 normalized-imports base))
+         (all-units (if normalized-imports
+                        (append units
+                                (list (nelisp-link--pe-import-thunk-unit
+                                       normalized-imports
+                                       (cdr (assq 'text predict-layout))
+                                       orig-text-size idata-info 'x86_64)))
+                      units))
+         (combined (nelisp-link-combine-sections all-units 'x86_64))
+         (layout (nelisp-link--pe-layout combined normalized-imports base))
+         (link-result (nelisp-link-units-2pass all-units layout 'x86_64))
+         (bytes (plist-get link-result :bytes))
+         (symtab (plist-get link-result :symtab))
+         (data (concat (nelisp-link--bytes-or-empty bytes 'data)
+                       (make-string (or (cdr (assq 'bss bytes)) 0) 0)))
+         (resolve (lambda (sym what)
+                    (let ((e (nelisp-link-symtab-lookup symtab sym)))
+                      (unless e
+                        (signal 'nelisp-link--unresolved-symbol (list sym what)))
+                      (list :rva (- (plist-get e :value) base)))))
+         (export-specs
+          (mapcar (lambda (x)
+                    (let ((name (if (consp x) (car x) x))
+                          (sym (if (consp x) (cdr x) x)))
+                      (cons name (funcall resolve sym :export))))
+                  exports))
+         (entry (plist-get options :entry)))
+    (nelisp-pe-write-dll-binary
+     file-path
+     (list :text (nelisp-link--bytes-or-empty bytes 'text)
+           :rodata (nelisp-link--bytes-or-empty bytes 'rodata)
+           :data data
+           :imports normalized-imports
+           :exports export-specs
+           :abs64-relocs (nelisp-link--pe-abs64-site-rvas
+                          all-units combined layout base)
+           :entry-rva (and entry (cadr (funcall resolve entry :entry)))
+           :dll-name (plist-get options :dll-name)
+           :image-base base
+           :no-reloc (plist-get options :no-reloc)))
     file-path))
 
 (defun nelisp-link--macho-exec-layout (combined &optional machine)

@@ -94,5 +94,10 @@ cmd: sh tools/ai/doc211-import-check.sh core-lane
 ** S4.2 feat/emacs-lib-import is merged into origin/main
 cmd: git merge-base --is-ancestor 6f4861213 origin/main
 
-** S4.3 END-TO-END: CI on main after the landing has no host ERT failure that is absent from the pre-landing main run
-cmd: sh tools/ai/doc211-import-check.sh ci-main
+** S4.3 END-TO-END: the full host ERT suite (`make test', the CI plain variant) passes locally on a tree that contains the landing
+# Changed 2026-11-11: GitHub CI was disabled for this repository at the
+# user's request, so the former check (newest completed main CI run with
+# green Linux host ERT jobs, `ci-main') can no longer be satisfied.  The
+# suite outlasts the meter's 600 s cap, so produce the result first with
+# `sh tools/ai/doc211-import-check.sh ert-local-run' on a clean checkout.
+cmd: sh tools/ai/doc211-import-check.sh ert-local

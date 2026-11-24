@@ -1,0 +1,86 @@
+# S6.4 variants evidence, re-recorded 2026-11-09 after the stamp hashes the manifest without :mtime/:ctime (decision (c)).
+# The previous record (3b4ee07b5) ended fresh, but ffi-unsupported had warm-rebuilt target/nelisp after the dyn build changed the raw manifest hash.
+# This run prints the default status after EVERY target: built=0 for the default-binary targets proves no rebuild.
+## BEFORE smokes (default fresh)
+git status: 0 changed paths
+--status default: standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+73ef976c02237bdc  target/nelisp
+9aac3ac209daa3eb  target/nelisp.build-stamp
+842e8b6f83816cf3  target/nelisp.cold
+partition listing: e130b5261a4e5ef6 119
+## RUN standalone-reader-ffi-smoke
+target=standalone-reader-ffi-smoke rc=0 wall=89s
+[standalone-reader] linked 5454 units -> <repo>/target/nelisp-dyn (src="(+ 40 2)")
+standalone-reader: stamp written (key e4a8d85f2b51, output sha256 07c58e935648)
+[ffi-smoke libc] PASS: (nl-ffi-call "toupper" 97) -> 65
+[ffi-smoke f64 libm] PASS: (= (nl-ffi-call "sqrt" 4.0) 2.0) -> t
+[ffi-smoke f64 mixed] PASS: pow(2,10)=1024 / ldexp(1.5,3 :: f64+i64)=12 / hypot(3,4)=5 -> (t t t)
+[ffi-smoke S1 sqlite] PASS: open(:memory:)+prepare+step+column_{int64,double,text} -> (0 0 100 42 t "ok")
+[ffi-smoke D1 gnutls] PASS: gnutls_check_version -> "3." (X.)
+[ffi-smoke F1 freetype] PASS: FT_Init+Version -> (0 2) (rc=0, major)
+[ffi-smoke F2 glyph] PASS: FT_New_Face+Get_Advance('A') -> (0 36 0 2162688) (newface rc, gindex, adv rc, 16.16 advance)
+[ffi-smoke F3 bitmap] PASS: FT_Load_Glyph+FT_Render_Glyph('A') -> (0 0 35 33) (load rc, render rc, bitmap rows, width)
+stamp-lines: 0 up-to-date, 1 built
+git status: 0 changed paths
+--status default: standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+73ef976c02237bdc  target/nelisp
+9aac3ac209daa3eb  target/nelisp.build-stamp
+842e8b6f83816cf3  target/nelisp.cold
+partition listing: e130b5261a4e5ef6 119
+## RUN ffi-dsl
+target=ffi-dsl rc=0 wall=1s
+standalone-reader: up to date (key e4a8d85f2b51, output sha256 07c58e935648)
+nl-ffi-dsl-standalone-smoke: PASS (20 tests, 0 skipped)
+"nl-ffi-dsl-standalone-smoke: PASS (20 tests, 0 skipped)
+stamp-lines: 1 up-to-date, 0 built
+git status: 0 changed paths
+--status default: standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+73ef976c02237bdc  target/nelisp
+9aac3ac209daa3eb  target/nelisp.build-stamp
+842e8b6f83816cf3  target/nelisp.cold
+partition listing: e130b5261a4e5ef6 119
+## RUN standalone-reader-tls-smoke-linux
+target=standalone-reader-tls-smoke-linux rc=0 wall=1s
+standalone-reader: up to date (key e4a8d85f2b51, output sha256 07c58e935648)
+[tls-smoke D2+D3] PASS: real handshake + HTTPS GET -> (0 "TLS1" 60 "HTTP") (handshake, proto, bytes-sent, response)
+stamp-lines: 1 up-to-date, 0 built
+git status: 0 changed paths
+--status default: standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+73ef976c02237bdc  target/nelisp
+9aac3ac209daa3eb  target/nelisp.build-stamp
+842e8b6f83816cf3  target/nelisp.cold
+partition listing: e130b5261a4e5ef6 119
+## RUN standalone-reader-ffi-unsupported-smoke
+target=standalone-reader-ffi-unsupported-smoke rc=2 wall=1s
+standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+[ffi-unsupported-smoke fboundp] PASS: (fboundp 'nl-ffi-call) -> t (static default build)
+[ffi-unsupported-smoke --load] PASS: condition-case caught nelisp-unsupported-primitive
+[ffi-unsupported-smoke bare-FILE] PASS: condition-case caught nelisp-unsupported-primitive
+[ffi-unsupported-smoke --eval] PASS: condition-case caught nelisp-unsupported-primitive
+[ffi-unsupported-smoke eval-elisp-source] FAIL: ->  (expected nl-ffi-call)
+stamp-lines: 1 up-to-date, 0 built
+git status: 0 changed paths
+--status default: standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+73ef976c02237bdc  target/nelisp
+9aac3ac209daa3eb  target/nelisp.build-stamp
+842e8b6f83816cf3  target/nelisp.cold
+partition listing: e130b5261a4e5ef6 119
+## RUN ffi-loader
+target=ffi-loader rc=2 wall=1s
+standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+FAIL ffi-loader-ptr-call-rejects-invalid-arity-before-call: (error "should failed: (equal caught (list 'wrong-number-of-arguments 'ptr-call count))")
+stamp-lines: 1 up-to-date, 0 built
+git status: 0 changed paths
+--status default: standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+73ef976c02237bdc  target/nelisp
+9aac3ac209daa3eb  target/nelisp.build-stamp
+842e8b6f83816cf3  target/nelisp.cold
+partition listing: e130b5261a4e5ef6 119
+## AFTER all smokes
+git status: 0 changed paths
+--status default: standalone-reader: up to date (key 7cda2d6adff5, output sha256 73ef976c0223)
+73ef976c02237bdc  target/nelisp
+9aac3ac209daa3eb  target/nelisp.build-stamp
+842e8b6f83816cf3  target/nelisp.cold
+partition listing: e130b5261a4e5ef6 119
+# Verdicts: ffi-unsupported (eval-elisp-source, expected nl-ffi-call) and ffi-loader (ptr-call arity) are red exactly as in the previous record and CI run 42418244107; pre-existing, unchanged by this lane.

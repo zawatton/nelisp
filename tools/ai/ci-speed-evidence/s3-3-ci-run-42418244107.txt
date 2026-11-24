@@ -1,0 +1,49 @@
+# S3.3: real CI run on fix/ci-speed-20261107
+# run 42418244107, workflow_dispatch gate_mutation=true, head b7de113af (lane slices S1-S3 only:
+# build stamp, gate-mutation row budgets, trigger policy). Slices 1-5 of the fast plan were not in it.
+# Job durations in minutes, from the GitHub jobs API (completedAt - startedAt):
+conclusion failure
+    8.3  failure    ert macos-latest / jit
+    9.1  failure    ert macos-latest / nojit
+    9.5  failure    ert macos-latest / plain
+   36.2  failure    ert ubuntu-latest / jit
+   45.9  failure    ert ubuntu-latest / nojit
+   38.3  failure    ert ubuntu-latest / plain
+    0.3  failure    ert windows-latest / jit
+    0.2  failure    ert windows-latest / nojit
+    0.3  failure    ert windows-latest / plain
+  360.3  cancelled  gate-mutation shard 0/4
+  360.2  cancelled  gate-mutation shard 1/4
+  360.3  cancelled  gate-mutation shard 2/4
+  360.3  cancelled  gate-mutation shard 3/4
+   11.0  failure    gates
+    2.6  success    smoke (macos-latest, 31.1)
+   37.9  failure    smoke (ubuntu-latest, 31.1)
+    0.3  failure    smoke (windows-latest, 31.1)
+  135.3  failure    tier extras
+   29.3  failure    tier perf
+   93.2  failure    tier smokes
+    0.4  failure    verify (every required gate produced a report)
+
+# Against the kickoff table (1404ced83 last green / ca0a70fd4 main after merge / 42359934241 fix/main-ci-reds):
+#   gate-mutation shards: 13-22 / cancelled at 360 / >170   -> this run: all 4 cancelled at the 360-min cap
+#   tier smokes:          <12   / 54                / 92    -> 93.2
+#   tier extras:          12    / 97                / ~     -> 135.3
+#   ert ubuntu plain:     ~11   / 63                / 46+segv -> 38.3
+# No speed-up was expected from S1-S3 alone on CI: every job still starts from a cold unit cache
+# (fixed by fast-plan slice 2) and chunk-growth still does two cold builds (slice 3).
+# The mutation shards logged nothing per row because `nelisp-ai.sh gate' buffered the whole output
+# (fixed by slice 1); the cancellation at GitHub's default 360-min job cap discarded it. By the
+# harness rule, narrowing is dropped when the Makefile, harness or row table changed, so the sweep
+# would have been full; the cancelled log cannot confirm it.
+# Failure classification (checked against job logs):
+#   Windows jobs: jcs090218/setup-emacs-windows@master returned HTTP 404 (0.2-0.3 min); run
+#     42359934241 failed the same way.
+#   gates: host ERT, 96 FAILED tests (contract-reconstruction, doc200, eln-emitter, ...) then exit
+#     139; run 42359934241's gates log has the same 96 FAILED and exit 139.
+#   Ubuntu smoke, ert x3, tier smokes/extras/perf: exit 1/2/139. No failure line mentions the stamp
+#     tool (grep for standalone-reader:, build-stamp, nelisp-standalone-reader-build); they are the
+#     S3 session's known reds and are not classified further here.
+# First CI evidence of the stamp tool (counts of its lines per job log): smoke ubuntu, ert x3 and
+#   tier perf: 1 rebuild each (cold, as expected); tier extras: 2 rebuilds, 3 "up to date" skips;
+#   tier smokes: 0 lines (its output was buffered by `nelisp-ai.sh gate').

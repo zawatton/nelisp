@@ -129,12 +129,16 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
                   (write-region printed nil path nil 'silent))
               (with-temp-file path (insert printed)))
             (setq encoded-total (+ encoded-total (file-attribute-size (file-attributes path))))
-            (unless (<= encoded-total 33554432) (error "Encoded active unit aggregate bound"))
+            ;; Encoded bounds are twice the raw byte bounds above: each section byte
+            ;; prints as two hex digits.  The old 16/32 MiB encoded limits equalled
+            ;; the raw limits and were exceeded once applyfn-reader.obj grew past
+            ;; ~8 MiB of text (larger AOT code), failing the Windows build.
+            (unless (<= encoded-total 67108864) (error "Encoded active unit aggregate bound"))
             (setq hash (if (and ascii (= (length printed)
                                          (file-attribute-size (file-attributes path)))
-                                (<= (length printed) 16777216))
+                                (<= (length printed) 33554432))
                            (secure-hash 'sha256 printed)
-                         (nelisp-native-rooted-build-evidence-source-hash path 16777216)))
+                         (nelisp-native-rooted-build-evidence-source-hash path 33554432)))
             (push (list :name name :path (file-name-nondirectory path) :unit-sha256 hash) records)
             (when (and (stringp text) (> (length text) 0))
               (let ((relocations (nelisp-native-rooted-build-evidence--relocations

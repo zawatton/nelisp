@@ -19,8 +19,10 @@
                (lambda (symbol)
                  (and (not (eq symbol 'file-truename))
                       (funcall orig-fboundp symbol)))))
+      ;; `expand-file-name' gives "/tmp/demo" on POSIX and adds the current
+      ;; drive on Windows ("d:/tmp/demo", CI run 42793703030).
       (should (equal (nelisp-emacs-org-bridge--repo-root)
-                     "/tmp/demo")))))
+                     (expand-file-name "/tmp/demo"))))))
 
 (ert-deftest nelisp-emacs-org-bridge-test/repo-root-explicit-still-normalizes ()
   "Explicit roots should still normalize through the helper."

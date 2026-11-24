@@ -12,6 +12,9 @@
 (require 'nelisp-artifact)
 (require 'cl-lib)
 
+(declare-function nelisp-repl-code--reload-original "nelisp-repl-code"
+                  (source-path &optional build-id))
+
 (defvar nelisp-repl-code--records (make-hash-table :test #'eq))
 (defvar nelisp-repl-code--reload-hook-installed nil)
 

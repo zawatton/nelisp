@@ -981,6 +981,44 @@ Defined-label BLs keep their fixup and still resolve in place."
     (should-error (nelisp-asm-arm64-resolve-fixups b)
                   :type 'nelisp-asm-arm64-error)))
 
+;; ---- label index (O(1) lookup) / reloc order ----
+
+(ert-deftest nelisp-asm-arm64-label-index-semantics ()
+  "Labels alist order, duplicate error and fixup resolution survive the index."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-nop b)
+    (nelisp-asm-arm64-define-label b 'a)
+    (nelisp-asm-arm64-nop b)
+    (nelisp-asm-arm64-define-label b 'c)
+    (should (equal (nelisp-asm-arm64-buffer-labels b) '((c . 8) (a . 4))))
+    (should-error (nelisp-asm-arm64-define-label b 'a)
+                  :type 'nelisp-asm-arm64-error)
+    (nelisp-asm-arm64-b b 'a)
+    (should (equal (nelisp-asm-arm64-buffer-labels b) '((c . 8) (a . 4))))
+    (nelisp-asm-arm64-resolve-fixups b)
+    (should-error (progn (nelisp-asm-arm64-bl b 'nowhere)
+                         (nelisp-asm-arm64-resolve-fixups b))
+                  :type 'nelisp-asm-arm64-error)))
+
+(ert-deftest nelisp-asm-arm64-reloc-emit-order-and-externalize ()
+  "Relocs read back in emit order; externalized BLs merge sorted by offset."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-bl b 'ext1)
+    (nelisp-asm-arm64-emit-reloc b 'b26-pc 'r1)
+    (nelisp-asm-arm64-bl b 'ext2)
+    (nelisp-asm-arm64-emit-reloc b 'b26-pc 'r2)
+    (should (equal (mapcar (lambda (r) (plist-get r :sym))
+                           (nelisp-asm-arm64-buffer-relocs b))
+                   '(r1 r2)))
+    (should (= 2 (nelisp-asm-arm64-externalize-dangling-bl26 b)))
+    (should (equal (mapcar (lambda (r) (plist-get r :offset))
+                           (nelisp-asm-arm64-buffer-relocs b))
+                   (sort (mapcar (lambda (r) (plist-get r :offset))
+                                 (nelisp-asm-arm64-buffer-relocs b))
+                         #'<)))
+    (should (= 4 (length (nelisp-asm-arm64-buffer-relocs b))))
+    (should (null (nelisp-asm-arm64-buffer-fixups b)))))
+
 (provide 'nelisp-asm-arm64-test)
 
 ;;; nelisp-asm-arm64-test.el ends here

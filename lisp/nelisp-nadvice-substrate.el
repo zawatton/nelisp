@@ -29,6 +29,8 @@
 
 (require 'cl-lib)
 
+(declare-function cl--find-class "cl-preloaded" (type))
+
 (defun nelisp-nadvice-substrate--stage-forms (library predicate expected)
   "Evaluate selected top-level forms of LIBRARY's vendored GNU source.
 The forms are read one after another exactly as written, and those for which

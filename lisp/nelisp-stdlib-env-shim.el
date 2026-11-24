@@ -69,6 +69,9 @@
 ;; way (= elisp owns the table, Rust mirrors); reserving the symbol now
 ;; avoids a churn breaking-change.
 
+(defvar nelisp--global-env)
+(declare-function nelisp--env-globals-op "nelisp-runtime")
+
 (setq nelisp--global-env nil)
 
 ;;;; --- 2a. Doc 102 Phase 2.c — 11 elisp delegates over the generic Rust primitive
@@ -298,7 +301,7 @@ Returns VAL.  The slim primitive bypasses the constant-rejection path;
 constant-flag enforcement happens in the Rust `Env::set_value' which
 this shim's caller does NOT pass through (= shim is the canonical
 user path).  We re-add the check here so user code observing
-`(set 'nil 1)' still gets the right signal."
+`(set \\='nil 1)' still gets the right signal."
   (when (nelisp--env-globals-is-constant sym)
     (signal 'setting-constant (cons sym nil)))
   (nelisp--env-globals-set-value sym val)

@@ -43,7 +43,7 @@
 (declare-function nelisp-eln-callable-import--call-unary
   "nelisp-eln-callable-import"
   (capability implementation argument &optional convention arity constants
-              ports extra-arguments))
+              ports extra-arguments handler-options))
 (declare-function nelisp-eln-callable-import--call-chain
   "nelisp-eln-callable-import"
   (capability implementation arguments &optional convention arity constants
@@ -1057,7 +1057,8 @@ arity (both tables are cross-checked against the freloc slot table
 `set_internal', 1250 `Flength', 1220 `Fnth').  A MANY port's ARITY may
 be a list of argc values when the body calls that one slot with several
 argument counts; only the variadic `Ffuncall' row admits that.  Argument
-kind `raw' is a C int; return kind `bool' a C bool, `void' no value (%rax is left 0).
+kind `raw' is a C int; return kind `bool' a C bool, `void' no value
+(%rax is left 0).
 :MODULE-COUNTER names the module-local `.bss' counter object the body
 reaches by direct RIP-relative access (see
 `nelisp-eln-native-subr--module-counter-valid-p'); a shape without it
@@ -1482,8 +1483,9 @@ explicit, reasoned rejection -- never a quiet nil."
     ("ba35c031" 703 1))
   "Authenticated (ABI SLOT ARITY) MANY slots answered by a runtime service
 implementation rather than a canonical builtin: 1113 is `Fmake_closure' and
-1196 is `Fnconc' \(src/alloc.c, 1 MANY; src/fns.c, 0 MANY), whose NeLisp implementations
-are `nelisp-eln-runtime-services-fmake-closure' and `-fnconc'.  Cross-checked against
+1196 is `Fnconc' \(src/alloc.c, 1 MANY; src/fns.c, 0 MANY), whose NeLisp
+implementations are `nelisp-eln-runtime-services-fmake-closure' and
+`-fnconc'.  Cross-checked against
 freloc-ba35c031.tsv row 1113 and the runtime-services descriptor table.")
 
 (defun nelisp-eln-native-subr--many-service-implementation (abi-hash slot arity)
@@ -2390,7 +2392,8 @@ bridge passes all five Lisp arguments to the native body (%rdi, %rsi, %rdx,
 
 (defun nelisp-eln-native-subr-create-lambda-placeholder
     (handle name &optional function-name arity)
-  "Create a managed arity-0 (or ARITY) subr for the registered anonymous lambda NAME.
+  "Create a managed arity-0 (or ARITY) subr for anonymous lambda NAME.
+NAME is the registered anonymous lambda.
 S6.12: GNU's `comp--register-lambda' stores each native anonymous lambda's
 subr into a `d_reloc' slot that no admitted body reads.  The subr's body is
 admitted (a `jmp' thunk, or an exact arity-0 multi-import template with every
@@ -2462,9 +2465,9 @@ unary Lisp function; only its internal native call is MANY-convention."
                      handle name 0 size)))
          (word (and code (= (length code) size) (= size 6)
                     (+ (aref code 1)
-                       (lsh (aref code 2) 8)
-                       (lsh (aref code 3) 16)
-                       (lsh (aref code 4) 24))))
+                       (ash (aref code 2) 8)
+                       (ash (aref code 3) 16)
+                       (ash (aref code 4) 24))))
          (scalar0 (and code (= (length code) size) (= size 6)
                        (= (aref code 0) #xb8)
                        (= (aref code 5) #xc3) (= (logand word 3) 2)))

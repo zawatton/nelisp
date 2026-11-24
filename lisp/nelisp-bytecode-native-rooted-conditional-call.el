@@ -1,5 +1,7 @@
 ;;; nelisp-bytecode-native-rooted-conditional-call.el --- conditional probe caller -*- lexical-binding: t; -*-
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'cl-lib)
 (require 'nelisp-bytecode-native-rooted-conditional)
 (require 'nelisp-native-load)

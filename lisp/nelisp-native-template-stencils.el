@@ -5,6 +5,8 @@
 (require 'nelisp-native-funcall-v2)
 (require 'nelisp-native-frame-v2)
 (require 'nelisp-native-template-pin)
+(eval-when-compile (require 'nelisp-native-template-win64-pin nil t))
+(declare-function nelisp-native-template--print "nelisp-native-template-stencils" (value))
 (declare-function syscall-direct "nelisp-standalone" (number a b c d e f))
 (defconst nelisp-native-template-stencil-version "template-x86_64-sysv-v4")
 (defconst nelisp-native-template-hole-grammar '(imm32 disp32 rel32 import-rel32))

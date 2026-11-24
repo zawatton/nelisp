@@ -2,6 +2,10 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'cl-lib)
+;; The build script loads the toolchain byte-compiled when no toolchain library
+;; is loaded yet.  The producer test below compiles the whole reader source;
+;; interpreted, that recursion overflows the host C stack on Windows.
+(require 'nelisp-standalone-build)
 (require 'nelisp-aot-compiler)
 (defvar nelisp-aot-compiler--x86-ordered-jump-tables-enabled)
 (defvar nelisp-ordered-test--force-off (getenv "NELISP_ORDERED_DISABLE"))
@@ -144,6 +148,8 @@
 (defun nelisp-ordered-test--signed64 (x)
   (let ((x (logand x #xffffffffffffffff))) (if (>= x (ash 1 63)) (- x (ash 1 64)) x)))
 (ert-deftest nelisp-bytecode-core-ordered/native-signed-tails-and-effects ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-ordered-test--context
    (let ((dir (make-temp-file "nelisp-ordered-native-" t)) definitions checks)
      (unwind-protect
@@ -178,6 +184,8 @@
                (should (= 0 (call-process path nil nil nil))))))
        (delete-directory dir t)))))
 (ert-deftest nelisp-bytecode-core-ordered/native-conditional-trap ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-ordered-test--context
    (let ((dir (make-temp-file "nelisp-ordered-trap-" t)) (ordinal 0))
      (unwind-protect
@@ -201,6 +209,8 @@
                        (should (stringp status)))))))))
        (delete-directory dir t)))))
 (ert-deftest nelisp-bytecode-core-ordered/effect-context-table-and-native ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-ordered-test--context
    (let ((dir (make-temp-file "nelisp-ordered-effect-" t))
          (cuts (number-sequence 0 28 2)) (ordinal 0) body checks)

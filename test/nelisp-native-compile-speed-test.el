@@ -1,10 +1,27 @@
 ;;; nelisp-native-compile-speed-test.el --- Compile work reuse -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
+(require 'nelisp-test-fresh-emacs)
 (require 'cl-lib)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
 (require 'nelisp-bytecode-native-rooted-cfg-contract)
+
+(defun p35--contract-sealed-with-reuse-p ()
+  "Non-nil when the contract library loaded after the compiler input.
+Only then does it seal the checked-input reuse entry; a contract loaded
+first keeps the independent reconstruction (the lean-image path), so
+reuse cannot be observed in that Emacs.  `load-history' is newest first."
+  (let ((position
+         (lambda (name)
+           (cl-position-if (lambda (entry)
+                             (and (stringp (car entry))
+                                  (string-match-p (concat "/" name "\\.elc?\\'")
+                                                  (car entry))))
+                           load-history))))
+    (let ((input (funcall position "nelisp-bytecode-compiler-input"))
+          (contract (funcall position "nelisp-bytecode-native-rooted-cfg-contract")))
+      (and input contract (< contract input)))))
 
 (defun p35--target-functions ()
   "Extract the same first genuine definitions used by the F3/U10 fixtures."
@@ -32,32 +49,33 @@
     functions))
 
 (ert-deftest p35/checked-input-reuse-equals-regeneration-for-three-targets ()
-  (dolist (entry (p35--target-functions))
-    (let ((function (cdr entry)) retained (frame-calls 0)
-          (frame-owner (symbol-function 'nelisp-bytecode-frame-ir-build)))
-      (cl-letf (((symbol-function 'nelisp-bytecode-frame-ir-build)
-                 (lambda (&rest args)
-                   (setq frame-calls (1+ frame-calls)) (apply frame-owner args))))
-      (nelisp-bytecode-compiler-input-call-with-built
-       function
-       (lambda (input)
-         (setq retained input)
-         (let* ((reused (nelisp-bytecode-compiler-input--reuse-checked input))
-                (regenerated (nelisp-bytecode-compiler-input-build function))
-                (pair (nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input
-                       input nelisp-bytecode-native-rooted-cfg-contract-shared-entry nil 'off))
-                (contract (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2
-                           input (plist-get pair :plan) (plist-get pair :emitted)))
-                (_reset (setq frame-calls 0))
-                (reconstruction (nelisp-bytecode-native-rooted-cfg-contract-valid-p
-                                 contract :reconstruction input)))
-           (should (= frame-calls 0))
-           (should (eq reused input))
-           (should (equal reused regenerated))
-           (should reconstruction)
-           (should (equal (plist-get reconstruction :input) regenerated))
-           (should (equal (plist-get reconstruction :expected-contract) contract)))))
-      (should-not (nelisp-bytecode-compiler-input--reuse-checked retained))))))
+  (nelisp-test-fresh-emacs-unless (p35--contract-sealed-with-reuse-p)
+    (dolist (entry (p35--target-functions))
+      (let ((function (cdr entry)) retained (frame-calls 0)
+            (frame-owner (symbol-function 'nelisp-bytecode-frame-ir-build)))
+        (cl-letf (((symbol-function 'nelisp-bytecode-frame-ir-build)
+                   (lambda (&rest args)
+                     (setq frame-calls (1+ frame-calls)) (apply frame-owner args))))
+          (nelisp-bytecode-compiler-input-call-with-built
+           function
+           (lambda (input)
+             (setq retained input)
+             (let* ((reused (nelisp-bytecode-compiler-input--reuse-checked input))
+                    (regenerated (nelisp-bytecode-compiler-input-build function))
+                    (pair (nelisp-bytecode-native-rooted-cfg-shared-emit-build-from-input
+                           input nelisp-bytecode-native-rooted-cfg-contract-shared-entry nil 'off))
+                    (contract (nelisp-bytecode-native-rooted-cfg-contract-create-shared-v2
+                               input (plist-get pair :plan) (plist-get pair :emitted)))
+                    (_reset (setq frame-calls 0))
+                    (reconstruction (nelisp-bytecode-native-rooted-cfg-contract-valid-p
+                                     contract :reconstruction input)))
+               (should (= frame-calls 0))
+               (should (eq reused input))
+               (should (equal reused regenerated))
+               (should reconstruction)
+               (should (equal (plist-get reconstruction :input) regenerated))
+               (should (equal (plist-get reconstruction :expected-contract) contract)))))
+          (should-not (nelisp-bytecode-compiler-input--reuse-checked retained)))))))
 
 (ert-deftest p35/checked-input-reuse-refuses-mutation-and-restores-nested-scope ()
   (let ((function (byte-compile (lambda (x) (+ x 1)))) retained)

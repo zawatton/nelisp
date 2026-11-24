@@ -2,8 +2,10 @@
 ;; This executes the source AST with a host memory/root model, not native code.
 (require 'ert)
 (require 'cl-lib)
-(load (expand-file-name "../lisp/nelisp-native-arithmetic-v2.el"
-                        (file-name-directory load-file-name)) nil t)
+;; require, not load: a second load redefines the provider's functions
+;; after the lowering libraries captured them as owners, so every later
+;; owner check fails ("source owner changed") when files share one Emacs.
+(require 'nelisp-native-arithmetic-v2)
 (defun nelisp-arithmetic-test--lower (form)
   (cond ((atom form) form)
         ((and (getenv "NELISP_ARITHMETIC_LEAK_MUTANT")
@@ -129,5 +131,3 @@
         ;; The direct adapter itself allocates only the two rooted cons cells.
         (should (= allocations 1))
         (should (= ended 7))))))
-
-(ert-run-tests-batch-and-exit)

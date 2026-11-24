@@ -1,0 +1,39 @@
+# Note: the earlier 2026-11-08 record predated the manifest companion in COMPANIONS; this log replaces it (2026-11-09, stamp hashes the manifest without :mtime/:ctime).
+== S6.2 re-record 2026-11-08T22:03:26Z (manifest hashed without :mtime/:ctime)
+-- default build
+  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+-- rc=0 wall=0s
+-- before
+  status: standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+  3741a290a1c1b9a21b135cf72a4d964d42430e868862f2c4b31bec690cc767f9  target/nelisp
+  28649694dfee73b10c98efb43d5d44962bfe94245a23581f7736318b3a97ca08  target/nelisp.build-stamp
+  manifest raw db283f65471e6f90cd6a9763d1452f9989510c453019db65ef32a99fffd18e36
+  manifest normalized 8384150c64a82a2f34c2cf22a8abeafbb56d72e57b1a64d53e60a9e07cb7aeba
+  default-partition listing sha256: 40ceec34b3ce1a13857eeefe0dade3e3e30383b5704f32cb728fa33660f8f265 (119 entries)
+-- chunk-growth
+[chunk-growth] chunk-count=3  reserved-bytes=233897984  let-escape=7
+[chunk-growth] PASS: arena grew to 3 chunks after a retained allocation (no fixed-size dependency)
+[chunk-growth] PASS: value escaping a let body is correct across chunk growth
+[chunk-growth] RESULT: PASS
+-- rc=0 wall=82s
+-- after chunk-growth (binary, stamp, partition must equal before; raw manifest may differ)
+  status: standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+  3741a290a1c1b9a21b135cf72a4d964d42430e868862f2c4b31bec690cc767f9  target/nelisp
+  28649694dfee73b10c98efb43d5d44962bfe94245a23581f7736318b3a97ca08  target/nelisp.build-stamp
+  manifest raw 3412184aac6ad91a0d482753444010188b71f2d37b87f10ae42db05b2e555f97
+  manifest normalized 8384150c64a82a2f34c2cf22a8abeafbb56d72e57b1a64d53e60a9e07cb7aeba
+  default-partition listing sha256: 40ceec34b3ce1a13857eeefe0dade3e3e30383b5704f32cb728fa33660f8f265 (119 entries)
+-- skip run
+standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+-- rc=0 wall=0s
+-- dyn variant build
+standalone-reader: stamp written (key 8b6db07b8d6a, output sha256 4ccd86112e77)
+-- rc=0 wall=90s
+-- after dyn
+  status: standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+  3741a290a1c1b9a21b135cf72a4d964d42430e868862f2c4b31bec690cc767f9  target/nelisp
+  28649694dfee73b10c98efb43d5d44962bfe94245a23581f7736318b3a97ca08  target/nelisp.build-stamp
+  manifest raw 4c00e4c242407110c0e356780031ed75354e3489314495845c9de42a027d7d5b
+  manifest normalized 8384150c64a82a2f34c2cf22a8abeafbb56d72e57b1a64d53e60a9e07cb7aeba
+  default-partition listing sha256: 40ceec34b3ce1a13857eeefe0dade3e3e30383b5704f32cb728fa33660f8f265 (119 entries)

@@ -103,7 +103,7 @@ positional argument.  The return representation is inferred and accepted only
 when every return is proven to carry an integer.  Returns a result plist; all
 unsupported or malformed inputs are rejected before ARTIFACT-PATH is written."
   (let* ((input (nelisp-bytecode-compiler-input-build function))
-         (descriptor (plist-get input :argument-descriptor))
+         (_descriptor (plist-get input :argument-descriptor))
          (arity (plist-get input :argument-count))
          (lowered nil))
     (cond

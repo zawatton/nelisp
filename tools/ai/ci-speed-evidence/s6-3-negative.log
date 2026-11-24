@@ -1,0 +1,31 @@
+== S6.3 negative control. Path that fired: the PROBE (variant build succeeded with the injected defect; both assertions went red: chunk-count empty, let-escape = memory-full). Not 'variant build failed'.
+== Part 1: direct run, injected row sed applied by hand to scripts/nelisp-standalone-build.el (restored with cp, cmp-verified, git diff --stat scripts/ empty), make standalone-chunk-growth-test:
+[chunk-growth] building standalone reader with an 8 MiB first chunk ...
+[chunk-growth] arena-stats: nelisp: memory exhausted (memory-full)
+[chunk-growth] chunk-count=  reserved-bytes=  let-escape=nelisp: memory exhausted (memory-full)
+[chunk-growth] FAIL: chunk-count=? (expected > 1 = growth)
+[chunk-growth] FAIL: let-escape = 'nelisp: memory exhausted (memory-full)' (expected 7)
+GATE-COUNT checked=1 findings=1
+[chunk-growth] RESULT: FAIL
+make: *** [Makefile:4634: standalone-chunk-growth-test] Error 1
+rc=2
+RESTORED
+STATDONE
+
+== Part 2: harness lethality lines (NELISP_GATE_MUTATION_ONLY=standalone-chunk-growth-test, ROW_TIMEOUT=6000), cold variant cache:
+== S6.3 gate-mutation row run, 2026-11-08T04:11:52Z, HEAD 6901edc16(+edits)
+gate-mutation: target linux-x86_64
+gate-mutation: restricted to gate 'standalone-chunk-growth-test'
+gate-mutation: warm-up rebuild took 0s
+  standalone-chunk-growth-test: went red as it should (chunk growth always fails, so a full first chunk aborts instead of adding a chunk)
+gate-mutation: row 1/1 standalone-chunk-growth-test file=scripts/nelisp-standalone-build.el 795s [slow]
+gate-mutation: slowest rows
+     795s  standalone-chunk-growth-test  file=scripts/nelisp-standalone-build.el
+gate-mutation: total wall 795s, warm-up 0s
+GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0
+gate-mutation: PASS (1 passed, 0 skipped)
+rc=0 wall=795s
+
+== Part 3: probe-only control against the default binary (check-probe-default.sh):
+default binary: chunk-count=1 ((35184372088832 268435456 188021104 188020080 162399568 285212672 0 0 0 1 268435456 188020080 1 341 185))
+rc=0

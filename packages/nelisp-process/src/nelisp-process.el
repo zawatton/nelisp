@@ -217,7 +217,9 @@ lands, the same call-sites will transparently dispatch through
   id                ; symbol / string name
   host-proc         ; underlying host process object
   (actor nil)       ; owning actor (optional)
-  (status 'running) ; mirror of host status, updated by sentinel
+  ;; Not `status': its accessor would be `nelisp-process-status', the
+  ;; reader built-in that lisp/nelisp-native-tier.el calls on raw processes.
+  (state 'running)  ; mirror of host status, updated by sentinel
   (exit-code nil)   ; filled in when the process exits
   (buffer nil)      ; optional host buffer for stdout/stderr
   (user-sentinel nil)
@@ -262,7 +264,7 @@ posts a `process-state' event, then dispatches the user sentinel."
   (let ((wrap (nelisp-process--find-by-host host-proc)))
     (when wrap
       (let ((st (process-status host-proc)))
-        (setf (nelisp-process-status wrap) st)
+        (setf (nelisp-process-state wrap) st)
         (when (memq st '(exit signal closed failed))
           (setf (nelisp-process-exit-code wrap)
                 (process-exit-status host-proc))
@@ -453,7 +455,7 @@ bridge lands, the same registration will route through
                 :id name
                 :host-proc host-proc
                 :actor actor
-                :status (process-status host-proc)
+                :state (process-status host-proc)
                 :buffer buffer
                 :user-sentinel sentinel
                 :user-filter filter
@@ -578,7 +580,7 @@ performing the same cleanup the sentinel would do."
     (let ((host (nelisp-process-host-proc wrap)))
       (when (and (processp host)
                  (not (process-live-p host)))
-        (setf (nelisp-process-status wrap) (process-status host)
+        (setf (nelisp-process-state wrap) (process-status host)
               (nelisp-process-exit-code wrap) (process-exit-status host))
         (nelisp-process--unregister-eventloop wrap))))
   wrap)

@@ -44,9 +44,9 @@ esac
 RB="target/nelisp"
 if [ ! -x "$RB" ]; then
   echo "[parallel] building reader binary..."
-  "${NELISP_BUILD_EMACS:-${EMACS:-emacs}}" --batch -Q -L lisp -L src -L scripts \
-        --eval '(setq load-prefer-newer t)' \
-        -l nelisp-standalone-build -f nelisp-standalone-build-reader >/dev/null 2>&1
+  # Default configuration: go through the stamp tool so an unchanged tree skips
+  # the build (stderr stays visible; the build log is not swallowed).
+  ${MAKE:-make} standalone-reader >/dev/null
 fi
 
 driver="$(mktemp /tmp/nelisp-par-XXXXXX.el)"

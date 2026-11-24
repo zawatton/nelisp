@@ -1,0 +1,114 @@
+tagbody/go	33
+block/return-from	77
+true multiple values	(1 2)(1 2)
+mv is list(not distinct)	(1 2)(1 2)
+tail call 1e7 interp	ERR:(excessive-lisp-nesting 16001)(excessive-lisp-nesting 16001)
+deep recursion recoverable	excessive-lisp-nestingexcessive-lisp-nesting
+symbol-macrolet	4343
+macrolet	22
+labels	00
+progv	55
+compiler-macro	tt
+load-time-value	33
+eval-when	11
+destructuring-bind	(1 2 3 (4))(1 2 3 (4))
+defsetf/gv	(3)(3)
+define-modify-macro eq	tt
+deftype/typep	(t nil)(t nil)
+typep compound	(t t)(t t)
+subtypep	(nil nil)(nil nil)
+loop complex	((1 . a) (2 . b) (3 . c))((1 . a) (2 . b) (3 . c))
+format-loop for-hash	((1 2))((1 2))
+handler-bind(cl-)	(t nil)(t nil)
+handler-bind runs before unwind	seenseen
+nl restart-case	1010
+condition hierarchy define-error	okok
+warn	tt
+debugger interactive	(t t t t t)(t t t t t)
+defclass	33
+slot-value/with-slots	(1 1)(1 1)
+multiple inheritance	(t)(t)
+defgeneric multi-dispatch	(is si)(is si)
+around/before/after	(p (2 1 0 3))(p (2 1 0 3))
+eql specializer	fivefive
+change-class	(nil nil)(nil nil)
+redefine class updates instances	(nil)(nil)
+define-method-combination	(nil nil)(nil nil)
+MOP	(nil nil nil nil t t nil)(nil nil nil nil t t nil)
+funcallable-instance	(t nil)(t nil)
+defstruct	(2 t 9)(2 t 9)
+bignum	12676506002282294014967032053761267650600228229401496703205376
+bignum div big	100000000000000000000100000000000000000000
+bignum mod big	4949
+rational native(reader)	1/31/3
+rational native(eval /)	00
+nl rational	"1/2""1/2"
+nl complex	"#C(-5 10)""#C(-5 10)"
+sqrt -1 complex	-0.0e+NaN-0.0e+NaN
+single-float	1.5f01.5f0
+double literal d0	1.5d01.5d0
+float funcs	ERR:(void-function frexp)(void-function frexp)
+hyperbolic	(nil nil)(nil nil)
+isqrt etc	ERR:(void-function logcount)(void-function logcount)
+bit ops ldb/dpb	(nil nil nil nil)(nil nil nil nil)
+truncate 2 values	(3 1)(3 1)
+random-state	(7 t)(7 t)
+make-array multi-dim	ERR:(void-function cl-make-array)(void-function cl-make-array)
+aref 2d	(nil nil nil nil)(nil nil nil nil)
+multidim reader	ERR:(invalid-read-syntax "#")(invalid-read-syntax "#")
+fill pointer/adjustable	(nil nil)(nil nil)
+bool-vector	(#&4"" 1)(#&4"" 1)
+bit vector reader	ERR:(invalid-read-syntax "#")(invalid-read-syntax "#")
+char type distinct	(t t integer)(t t integer)
+specialized typed vec	(nil t)(nil t)
+case fold	nilnil
+read eval #.	ERR:(invalid-read-syntax "#")(invalid-read-syntax "#")
+feature exprs #+	ERR:(invalid-read-syntax "#")(invalid-read-syntax "#")
+#b #o #x	(5 15 255 35)(5 15 255 35)
+circular	tt
+uninterned	"foo""foo"
+readtable obj	(nil nil nil)(nil nil nil)
+pkg sym read	foo:barfoo:bar
+nl-ns-reader	(nil t)(nil t)
+obarray	tt
+shorthand	nilnil
+format ~ 	("a b 1 ff 10 z 1.000000e+00 1.000000 1")("a b 1 ff 10 z 1.000000e+00 1.000000 1")
+format ~R directive	(nil nil)(nil nil)
+print-circle	"#1=(1 . #1#)""#1=(1 . #1#)"
+print-length/level	"(1 ... ...)""(1 ... ...)"
+pretty printer	(t t nil)(t t nil)
+print-object hook	(t nil t)(t nil t)
+print-base	nilnil
+make-package	(nil nil)(nil nil)
+symbol-plist	(k 1)(k 1)
+streams	(nil t t nil nil)(nil t t nil nil)
+with-output-to-string	"x""x"
+byte file io	(t t t)(t t t)
+file ops	(t t t t t t)(t t t t t t)
+gray streams	(nil nil)(nil nil)
+pathname	(nil nil)(nil nil)
+time	(t t t t t nil)(t t t t t nil)
+compile	(t nil t nil)(t nil t nil)
+byte-compile runs	22
+disassemble	(nil)(nil)
+declare types used	(t t t)(t t t)
+trace	(nil nil t)(nil nil t)
+describe/doc	(t nil t t)(t nil t t)
+apropos	(t t t)(t t t)
+profiler	(nil t t nil)(nil t t nil)
+inspect/step	(nil nil nil nil)(nil nil nil nil)
+save image	(nil nil)(nil nil)
+gc	(t nil nil nil)(t nil nil nil)
+finalizer/weak	(key nil nil)(key nil nil)
+hash tests	ht1ht1
+threads names	(nil nil nil nil nil t)(nil nil nil nil nil t)
+atomics	(nil nil nil)(nil nil nil)
+ffi	(t t)(t t)
+ffi callback	(nil nil)(nil nil)
+dlopen	(nil nil)(nil nil)
+process	(t t t)(t t t)
+sockets	(t t)(t t)
+getenv/args	(t t t)(t t t)
+unicode	ERR:(void-function get-char-code-property)(void-function get-char-code-property)
+generic seq	([1 3] 1 (1 2) (2) "bc" 3 0 1)([1 3] 1 (1 2) (2) "bc" 3 0 1)
+list misc	(1 t (1) ((1 . 2)) ((1 . 2)) (2 1) (1) nil)(1 t (1) ((1 . 2)) ((1 . 2)) (2 1) (1) nil)

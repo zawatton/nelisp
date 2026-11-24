@@ -16,7 +16,12 @@
 (defun nelisp-bytecode-source-paths ()
   "Locate the default corpus using the running Emacs installation."
   (let ((root (file-name-directory (locate-library "subr"))))
-    (mapcar (lambda (file) (expand-file-name file root))
+    (mapcar (lambda (file)
+              (let ((gz (expand-file-name file root))
+                    (plain (expand-file-name (if (string-suffix-p ".gz" file) (substring file 0 -3) file) root)))
+                ;; Windows installs have only plain .el sources.
+                (if (and (not (file-readable-p gz)) (file-readable-p plain))
+                    plain gz)))
             nelisp-bytecode-source-files)))
 
 (defun nelisp-bytecode-compile-sources (files)

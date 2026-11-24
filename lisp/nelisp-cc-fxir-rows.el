@@ -12,6 +12,9 @@
 
 (require 'cl-lib)
 
+(declare-function nelisp-cc-fxir-admission-rows "nelisp-cc-fxir-admission"
+                  (snapshot))
+
 (defconst nelisp-cc-fxir-native--data-files
   (mapcar (lambda (f)
             (cons (expand-file-name (concat f ".el")

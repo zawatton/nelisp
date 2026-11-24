@@ -36,6 +36,9 @@
   "When this client library was loaded; sent in the handshake.
 A daemon only lets a client newer than itself replace it.")
 
+(defvar nelisp-service-client-hello-timeout 10
+  "Seconds a client waits for the daemon to answer its hello.")
+
 (defvar nelisp-service-client-spawn-function #'nelisp-service-client-spawn-detached
   "Function of (NAME COMMAND) that starts a daemon process.")
 
@@ -111,7 +114,17 @@ rejection, or nil when nothing answers."
            (lambda () (or (nelisp-service-get client :welcome)
                           (nelisp-service-get client :rejected)
                           (nelisp-service-get client :closed)))
-           10)
+           nelisp-service-client-hello-timeout)
+          ;; The close can be observed before the reply that preceded it
+          ;; has been filtered; drain before giving up.
+          (let ((tries 0))
+            (while (and (nelisp-service-get client :closed)
+                        (not (nelisp-service-get client :welcome))
+                        (not (nelisp-service-get client :rejected))
+                        (< tries 3))
+              (setq tries (1+ tries))
+              (condition-case nil (accept-process-output nil 0.1)
+                (error nil))))
           (cond
            ((nelisp-service-get client :welcome) client)
            (t (condition-case nil (delete-process proc) (error nil))
@@ -147,7 +160,10 @@ Signal an error when no daemon can be reached in time."
          (state
           (let ((result (nelisp-service-client--open name state version)))
             (cond
-             ((and result (not (symbolp result))) (setq client result))
+             ((and result (not (symbolp result)))
+              ;; Remember how to reconnect (see `nelisp-service-client-request').
+              (nelisp-service-put result :connect-args args)
+              (setq client result))
              ((eq result 'version)
               ;; The daemon exits to make room; start ours once it is gone.
               (nelisp-service-wait-until
@@ -155,6 +171,11 @@ Signal an error when no daemon can be reached in time."
                                 (nelisp-service-state-file name "lock"))))
                15)
               (setq spawned-at nil))
+             ((nelisp-service-port-in-use-p (plist-get state :port))
+              ;; Busy, not dead: a daemon in a long handler or a GC pause
+              ;; misses the hello timeout but still accepts connections.
+              ;; Starting another here would orphan it.
+              (accept-process-output nil 0.25))
              ((or (null age) (> age stale-after))
               ;; Nothing answers and no live lock: leftovers of a crash.
               (nelisp-service-delete-file (nelisp-service-state-file name "state"))
@@ -175,8 +196,16 @@ Signal an error when no daemon can be reached in time."
 
 ;;; Requests --------------------------------------------------------------
 
+(defun nelisp-service-client--current (client)
+  "Return the client that replaced CLIENT after a reconnect, else CLIENT."
+  (let ((next nil))
+    (while (and client (setq next (nelisp-service-get client :successor)))
+      (setq client next))
+    client))
+
 (defun nelisp-service-client-live-p (client)
   "Return non-nil while CLIENT's connection is open."
+  (setq client (nelisp-service-client--current client))
   (and client (not (nelisp-service-get client :closed))
        (process-live-p (nelisp-service-get client :process))))
 
@@ -184,20 +213,21 @@ Signal an error when no daemon can be reached in time."
   "Send PAYLOAD through CLIENT; CALLBACK gets (STATUS VALUE) later.
 STATUS is `ok', `error' (the handler signalled) or `disconnected'.
 Return the request id."
+  (setq client (nelisp-service-client--current client))
   (let ((id (nelisp-service-incf client :next-id)))
     (puthash id callback (nelisp-service-get client :pending))
-    (condition-case nil
+    (condition-case err
         (process-send-string (nelisp-service-get client :process)
                              (nelisp-service-encode (list 'req id payload)))
       (error
        (remhash id (nelisp-service-get client :pending))
-       (funcall callback 'disconnected "send failed")))
+       (funcall callback 'disconnected
+                (format "send failed: %s" (error-message-string err)))))
     id))
 
-(defun nelisp-service-client-request (client payload &optional timeout)
-  "Send PAYLOAD through CLIENT and return the reply payload.
-Signal an error on a handler error, a lost connection, or after
-TIMEOUT seconds (default 600)."
+(defun nelisp-service-client--request-once (client payload timeout)
+  "Send PAYLOAD once through CLIENT; return the (STATUS . VALUE) result.
+Signal an error after TIMEOUT seconds (default 600)."
   (let ((result nil))
     (nelisp-service-client-send client payload
                                 (lambda (status value)
@@ -205,6 +235,39 @@ TIMEOUT seconds (default 600)."
     (unless (nelisp-service-wait-until (lambda () result) (or timeout 600) 0.01)
       (error "nelisp-service: request to %s timed out"
              (nelisp-service-get client :name)))
+    result))
+
+(defun nelisp-service-client--reconnect (client)
+  "Open a fresh connection to CLIENT's daemon and return it, or nil.
+The new connection uses the arguments CLIENT was connected with, so
+autostart rules are unchanged.  CLIENT is closed and forwards to the
+new connection from then on."
+  (let ((args (nelisp-service-get client :connect-args)))
+    (when (plist-member (cdr client) :connect-args)
+      (let ((fresh (condition-case nil
+                       (apply #'nelisp-service-client-connect
+                              (nelisp-service-get client :name) args)
+                     (error nil))))
+        (when fresh
+          (nelisp-service-client-close client)
+          (nelisp-service-put client :successor fresh))
+        fresh))))
+
+(defun nelisp-service-client-request (client payload &optional timeout)
+  "Send PAYLOAD through CLIENT and return the reply payload.
+Signal an error on a handler error, a lost connection, or after
+TIMEOUT seconds (default 600).  When the send itself fails, nothing
+reached the daemon, so the request is resent once over a fresh
+connection.  A connection lost after a successful send is not retried:
+the daemon may already have run the request."
+  (let* ((client (nelisp-service-client--current client))
+         (result (nelisp-service-client--request-once client payload timeout)))
+    (when (and (eq (car result) 'disconnected)
+               (string-prefix-p "send failed" (cdr result)))
+      (let ((fresh (nelisp-service-client--reconnect client)))
+        (when fresh
+          (setq result (nelisp-service-client--request-once
+                        fresh payload timeout)))))
     (if (eq (car result) 'ok)
         (cdr result)
       (signal 'error (list (format "nelisp-service: %s: %s"
@@ -213,6 +276,7 @@ TIMEOUT seconds (default 600)."
 
 (defun nelisp-service-client-ping (client &optional timeout)
   "Return the daemon's stats plist through CLIENT, or nil on timeout."
+  (setq client (nelisp-service-client--current client))
   (nelisp-service-put client :pong nil)
   (process-send-string (nelisp-service-get client :process)
                        (nelisp-service-encode '(ping)))
@@ -221,13 +285,15 @@ TIMEOUT seconds (default 600)."
 
 (defun nelisp-service-client-shutdown (client &optional timeout)
   "Ask the daemon behind CLIENT to exit; return non-nil when it agreed."
+  (setq client (nelisp-service-client--current client))
   (process-send-string (nelisp-service-get client :process)
                        (nelisp-service-encode '(shutdown)))
   (nelisp-service-wait-until (lambda () (nelisp-service-get client :bye))
                              (or timeout 10)))
 
 (defun nelisp-service-client-close (client)
-  "Close CLIENT's connection."
+  "Close CLIENT's connection, or that of the client that replaced it."
+  (setq client (nelisp-service-client--current client))
   (condition-case nil (delete-process (nelisp-service-get client :process))
     (error nil))
   (nelisp-service-put client :closed t))

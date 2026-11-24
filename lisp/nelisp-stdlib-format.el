@@ -37,6 +37,9 @@
 
 ;; ---------- nelisp--concat-ints -----------------------------------
 
+(declare-function nl-jit-call-format-float "nelisp-runtime")
+(declare-function nl-jit-call-out-1 "nelisp-runtime")
+
 (fset 'nelisp--concat-ints
       (lambda (lst)
         (cond

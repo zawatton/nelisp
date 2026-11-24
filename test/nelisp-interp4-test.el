@@ -7,7 +7,9 @@
 
 (require 'ert)
 (require 'cl-lib)
-(load (expand-file-name "nelisp-interp3-test.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
+;; require, not load: loading interp3 a second time in one Emacs makes ERT
+;; abort with "redefined (or loaded twice)".
+(require 'nelisp-interp3-test)
 
 (ert-deftest i4-quote-answers-the-car-of-a-one-element-list ()
   (i3--setup) (i3--install 'nl_eic_quote_w)

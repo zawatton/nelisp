@@ -244,6 +244,12 @@ test/nelisp-eln-crash-general-smoke.sh; production code must never rebind
 it, and doing so leaks the partially registered native resources of any
 attempt that fails while it is nil.")
 
+(declare-function nelisp-eln-handler-substrate-bind-chain
+                  "nelisp-eln-handler-substrate" (handle))
+(declare-function nelisp-eln-handler-substrate-bind-setjmp
+                  "nelisp-eln-handler-substrate" (handle))
+(declare-function nelisp-eln-callable-import-port-count
+                  "nelisp-eln-callable-import" ())
 (declare-function nelisp-eln-registration-metadata-create
   "nelisp-eln-registration-metadata" (profile data docs))
 (declare-function nelisp-eln-registration-metadata-data-word
@@ -253,7 +259,7 @@ attempt that fails while it is nil.")
 (declare-function nelisp-eln-registration-metadata-slot-word
   "nelisp-eln-registration-metadata" (token vector index))
 (declare-function nelisp-eln-registration-metadata-type-word
-  "nelisp-eln-registration-metadata" (token))
+  "nelisp-eln-registration-metadata" (token &optional index))
 (declare-function nelisp-eln-registration-metadata-decode
   "nelisp-eln-registration-metadata" (token word))
 (declare-function nelisp-eln-registration-metadata-release
@@ -538,9 +544,9 @@ checked against the artifact's own data relocations by
 whose Feval form is a file-level `(require \\='FEATURE)' (S6.15).
 Byte-for-byte identical to gnu-byte-compile-constant.eln's own 93-byte
 top_level_run (sha256 of that artifact: f837d057..86f5de) and
-gnu-byte-compile-setq.eln's (869a0c42..5b96d8d38) outside its variable fields, see
-`nelisp-eln-registration--gnu-require-subr-holes'.  GNU emits it for a
-file whose only top-level forms are `(require \\='FEATURE)' and one
+gnu-byte-compile-setq.eln's (869a0c42..5b96d8d38) outside its variable
+fields, see `nelisp-eln-registration--gnu-require-subr-holes'.  GNU emits
+it for a file whose only top-level forms are `(require \\='FEATURE)' and one
 fixed-arity `defun': the require is evaluated first, then the subr is
 registered with its `subr-type' read from a d_reloc slot.")
 
@@ -3264,7 +3270,7 @@ and how to decode it."
   t)
 
 (defun nelisp-eln-registration--finish-success
-    (preflight unit activation vector-unit vectors-activation owner
+    (preflight _unit activation _vector-unit vectors-activation owner
                pin-env pin-marker callback-token)
   "Retire temporary registration views while retaining the loaded module."
   (when callback-token
@@ -3337,7 +3343,8 @@ and how to decode it."
 (defun nelisp-eln-registration--containment-boundary
     (success finalizing handle preflight unit activation vector-unit
               vectors-activation owner pin-env pin-marker callback-token name)
-  "Shared crash-containment boundary for one `nelisp-eln-registration-load' call.
+  "Shared crash-containment boundary for one registration load.
+The load is one `nelisp-eln-registration-load' call.
 
 Runs unconditionally from that function's `unwind-protect' cleanup clause,
 so it observes every non-local exit from the protected registration body --
@@ -3348,8 +3355,9 @@ remaining arguments are the same partially built registration state
 `nelisp-eln-registration--cleanup' and `nelisp-eln-registration--finish-success'
 already accept.
 
-When SUCCESS is non-nil this is a no-op: `nelisp-eln-registration--finish-success'
-already ran to completion inside the protected body. Otherwise:
+When SUCCESS is non-nil this is a no-op:
+`nelisp-eln-registration--finish-success' already ran to completion inside
+the protected body.  Otherwise:
 
 - if FINALIZING is non-nil, the native top-level call had already returned
   the registered callable before some later bookkeeping step signalled;
@@ -3694,8 +3702,8 @@ but a handler-bearing proof is left untouched."
                    (eph-address (plist-get preflight :eph-address))
                    (d-reloc-address (plist-get preflight :d-reloc-address))
                    (unit-cell-address (plist-get preflight :unit-cell-address))
-                   (link-address (plist-get preflight :link-address))
-                   (link-table-address (plist-get preflight :link-table-address))
+                   (_link-address (plist-get preflight :link-address))
+                   (_link-table-address (plist-get preflight :link-table-address))
                    (state (progn (unless (fboundp 'nelisp-native-load--symbol-addr)
                                    (require 'nelisp-native-load))
                                  (nelisp-native-load--symbol-addr

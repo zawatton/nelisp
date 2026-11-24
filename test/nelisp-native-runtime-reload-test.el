@@ -273,8 +273,8 @@ live raw loader use this predicate."
                (should (= (length args) 8))
                42)))
     (should (= (nelisp-native-load-raw-call
-                '(:entry-name "nl_gc_collect"
-                  :runtime-abi "nelisp-runtime-raw-v2" :arity 7 :entry 100)
+                `(:entry-name "nl_gc_collect"
+                  :runtime-abi ,(nelisp-native-load--runtime-abi-v2) :arity 7 :entry 100)
                 '(1 2 3 4 5 6 7))
                42))))
 

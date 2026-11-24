@@ -17,22 +17,28 @@
 (defconst nelisp-emacs-library-contract-version 1
   "Version of the external `nelisp-emacs' library consumer contract.")
 
-(defconst nelisp-emacs-library-features
-  '(emacs-foundation
-    emacs-text-core
-    emacs-buffer-core
-    emacs-editing
-    emacs-io
-    emacs-special-buffers
-    emacs-core
-    emacs-textmodes-stub)
-  "Reusable feature groups loaded by the `nelisp-emacs' facade.
+(eval-and-compile
+  (defconst nelisp-emacs-library-features
+    '(emacs-foundation
+      emacs-text-core
+      emacs-buffer-core
+      emacs-editing
+      emacs-io
+      emacs-special-buffers
+      emacs-core
+      emacs-textmodes-stub)
+    "Reusable feature groups loaded by the `nelisp-emacs' facade.
 This manifest is intentionally limited to library-owned surfaces.
 Application bootstrap, concrete TUI/GUI frontends, and editor-heavy lazy
-features remain behind `emacs-init' and its explicit loader functions.")
+features remain behind `emacs-init' and its explicit loader functions."))
 
-(dolist (feature nelisp-emacs-library-features)
-  (require feature))
+;; `eval-and-compile': the manifest below splices `emacs-foundation-features'
+;; and its siblings at load time, so compiling this file needs them too.
+;; Without it the compile gate passed only when an earlier file in the same
+;; batch had already loaded them (file order follows the locale's `ls' sort).
+(eval-and-compile
+  (dolist (feature nelisp-emacs-library-features)
+    (require feature)))
 
 (defconst nelisp-emacs-library-packages
   `((foundation

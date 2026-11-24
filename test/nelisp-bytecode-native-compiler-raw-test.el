@@ -16,6 +16,8 @@
      function artifact export contract)))
 
 (ert-deftest nelisp-bytecode-native-compiler-raw/compiles-explicit-i64-argument ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((artifact (make-temp-name (expand-file-name "nelisp-raw-public-"
                                                       temporary-file-directory)))
          (function (make-byte-code 257 (unibyte-string 135) [] 1))
@@ -28,6 +30,8 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler-raw/compiles-source-free-diamond-join ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((artifact (make-temp-name (expand-file-name "nelisp-raw-diamond-"
                                                       temporary-file-directory)))
          (code (unibyte-string 192 193 194 131 10 0 195 130 11 0 196 135))
@@ -46,6 +50,8 @@
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler-raw/compiles-grounded-backedge-join ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   ;; The nested-loop CFG retains two backedges; 42 grounds the returned slot.
   (let* ((artifact (make-temp-name (expand-file-name "nelisp-raw-loop-"
                                                       temporary-file-directory)))

@@ -127,7 +127,7 @@
     (nelisp-eln-abi-write-word
      address 0
      (if interned
-         (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
+         (ash nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
        0))
     (nelisp-eln-abi-write-word address 8 name-word)
     (nelisp-eln-abi-write-word address 16 48)
@@ -135,8 +135,8 @@
     (nelisp-eln-abi-write-word address 32 0)
     (nelisp-eln-abi-write-word address 40 0)))
 
-(defun nelisp-eln-registration-metadata--fill-plan (token plan arena-token)
-  (let* ((object (aref plan 0))
+(defun nelisp-eln-registration-metadata--fill-plan (token plan _arena-token)
+  (let* ((_object (aref plan 0))
          (kind (aref plan 1))
          (address (aref plan 4))
          (snapshot (aref plan 5)))

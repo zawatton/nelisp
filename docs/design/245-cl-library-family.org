@@ -1,0 +1,206 @@
+#+TITLE: CL library family: extractable packages, reuse or fork by test result
+#+DATE: 2026-11-07
+#+STATUS: PROPOSED — concept and first evaluation; no package has been imported or implemented
+#+SCOPE: How the library-shaped gaps from Doc 244 become extractable packages, and what the cl-format evaluation showed
+#+EVIDENCE: docs/design/evidence/cl-format-eval-20261107/
+
+* Summary
+
+Doc 244's owner decisions 2 and 3 call for building the library-shaped Common Lisp
+gaps as extractable packages, reusing or forking Emacs packages where the test results
+justify it.  This document defines the family and records its first data point.
+
+The =cl-format= evaluation changes the priority of the work.  The package itself is
+close to usable, but the evaluation found NeLisp defects that matter far more than the
+package does:
+
+- *Files load as lexical regardless of their cookie* (D1).  Code that relies on dynamic
+  binding silently gives wrong answers.
+- =sin=, =cos=, =tan=, =asin=, =acos= and =atan= are unsupported primitives in the core
+  binary (D2).
+- The first failing test aborts a whole =ert-run-tests-batch-and-exit= run (D3).
+
+D1 should be fixed before further third-party trials, since it can make any older package
+appear to work while it returns wrong results.
+
+* Scope
+
+In the family: =format= directives, restarts, bit and math functions, arrays, streams,
+pathnames, MOP and method combination, weak references, developer tools.
+
+Out of the family, because they need the runtime: threads (Doc 214 port), heap exhaustion,
+finalizers, reader syntax, FFI callbacks.  Doc 244 owns those.
+
+* Definition of "extractable"
+
+The container is the existing =packages/= convention, whose README names it the extraction
+point for the library breakout.  A package is extractable when all of these hold:
+
+1. It depends only on =nl-prelude=, other family members and stock Emacs features.
+2. It does not reference =lisp/= or =src/= internals.
+3. =manifest.el= matches the code and =make pkg-graph= passes.
+4. ERT passes on host GNU Emacs, and a standalone smoke passes on =target/nelisp=.
+5. It has a README stating its API and known deviations.
+6. A fork records its origin, upstream commit and license.
+7. It has a ledger under =tools/ai/=, created before implementation, ending in an
+   end-to-end criterion.
+
+Moving to a separate repository (=zawatton/nelisp-<name>=) comes later.  The registry and
+publication layer is unfinished (=docs/package-resolution.md=), so packages stay in
+=packages/= until consumption from another repository works.
+
+* Reuse rule
+
+Doc 244 decision 3 sets the rule: run the candidate's own suite on =target/nelisp= and
+decide from the result.  Names follow Doc 244: forks keep upstream public names, and new
+code uses =nl-=.
+
+The evaluation adds one requirement.  Before classifying anything, control the harness:
+
+- Run the same suite and runner on host GNU Emacs.
+- Include a test that must fail, so that the runner is shown to detect failure.
+- Compare against SBCL where a reference exists, and treat a difference as a question
+  rather than as a defect in either side.
+
+* Candidate map
+
+| Feature                     | Route                | Source                                 |
+|-----------------------------+----------------------+----------------------------------------|
+| =format= directives         | Fork (see below)     | MELPA =cl-format=                      |
+| Restarts                    | Extend               | =nl-condition=                         |
+| Bit and math functions      | Extend               | =nl-num=                               |
+| Weak references             | New                  | Technique of =weak-ref=                |
+| =inspect=                   | Trial after D1       | GNU ELPA =inspector=; may need nemacs  |
+| Coverage, =trace=, =step=   | Vendor               | GNU =edebug.el=, =trace.el=; then =undercover= |
+| Arrays, streams, pathnames  | New                  | Design reference only                  |
+| MOP, method combination     | New                  | Design reference only                  |
+
+=larsbrinkhoff/emacs-cl= is reported by GitHub as GPL-2.0.  Whether it permits a later
+version has not been confirmed, so it stays a design reference and no code is copied.
+
+* Evaluation: cl-format
+
+Subject: upstream =gitlab.com/akater/elisp-cl-format= at =42b662d= (2023-08-18), GPL-3.0 or
+later.  Binary: =origin/main= at =6c9051f40=.  A scan found no process, network or
+file-writing calls.
+
+** Results
+
+| Run                                                            | Pass of 202 | Notes                  |
+|----------------------------------------------------------------+-------------+------------------------|
+| GNU Emacs 31.1, ERT                                            |         202 | As expected            |
+| GNU Emacs 31.1, direct runner                                  |         201 | =format-193= only      |
+| NeLisp, no shim                                                |           0 | Load stops at D7       |
+| NeLisp, font-lock shim, direct runner                          |         169 | See below              |
+| NeLisp, all shims and a =defvar= added to a copy, direct runner |         197 | Five failures remain  |
+
+=format-193= is marked =:expected-result :failed= upstream because =~i= is not implemented.
+It fails under the direct runner because that runner ignores expected results, so it is
+not a NeLisp failure.  A deliberately failing test was detected on both runtimes.
+
+The direct runner exists because of D3.  The ordinary ERT run stopped at the first failure,
+on the 40th test.
+
+Remaining failures in the best run:
+
+| Test                 | Finding                                                    | Status       |
+|----------------------+------------------------------------------------------------+--------------|
+| =format-193=         | Expected failure upstream                                  | Not a defect |
+| =format-040=, =-041= | =~g= prints an extra =0= for =1e+23=, =1e+24=              | Unconfirmed  |
+| =format-048=         | =~g= digit check over powers of ten                        | Unconfirmed  |
+| =format-172=         | Text inserted out of order, through a stand-in function    | Unconfirmed  |
+
+D4 is the likely cause of the =~g= failures, but no run has tested that.  =format-172= goes
+through the evaluation's =capitalize-word= stand-in, so it may be the stand-in's fault.
+
+** Comparison with SBCL
+
+With the same shims, 27 of 32 corpus rows matched SBCL 2.5.2.
+
+| Row     | SBCL    | cl-format | Reading                                               |
+|---------+---------+-----------+-------------------------------------------------------|
+| =~x=    | =FF=    | =ff=      | cl-format downcases radix output                      |
+| =~:x=   | =F,FFF= | =f,fff=   | Same                                                  |
+| =~c=    | error   | =A=       | Elisp characters are integers; the corpus passed 65   |
+| =~:p=   | error   | empty     | No previous argument; cl-format is lenient            |
+| =~5%=   | newlines | no row   | Comparison script artifact, not a finding             |
+
+The corpus is small.  It shows the directives are close to SBCL, not that they conform.
+
+** Defects and gaps found in NeLisp
+
+Each was reproduced with a minimal probe against GNU Emacs 31.1 unless stated otherwise.
+
+| ID | Finding                                                                 | Layer            |
+|----+-------------------------------------------------------------------------+------------------|
+| D1 | =lexical-binding= is =t= during =load= with no cookie and with an explicit =nil= cookie; =let= of an undeclared variable is not visible to callees | Core: parity |
+| D2 | =sin=, =cos=, =tan=, =asin=, =acos=, =atan= signal =nelisp-unsupported-primitive= | Core: parity |
+| D3 | =ert-run-tests-batch-and-exit= aborts at the first failing test, even for a two-test file | Core: tooling |
+| D4 | =(expt 10.0 23)= gives =1e+23=; GNU gives =1.0000000000000001e+23=      | Core: parity     |
+| D5 | =skip-chars-forward= does not treat =[:alnum:]= as a character class    | Core: parity     |
+| D6 | =xor=, =pi=, =float-pi=, =capitalize-word=, =upcase-word=, =downcase-word= are void in the core | Core or emacs-lib |
+| D7 | =font-lock-add-keywords= is void, and =calc-eval= rejects the list form | emacs-lib boundary |
+| D8 | =handler-bind-1= runs its handler after unwinding: cleanups have already run and dynamic bindings are gone | Core: parity |
+
+D8 was found while completing =nl-condition=, not by the =cl-format= evaluation.  Its visible
+effect: a handler outside =nl-restart-case= gets =nl-control-error= for a primitive error,
+because the restart frame has already gone.  A restart outside =nl-handler-bind= works.  ERT
+also uses =handler-bind-1=, so D8 may be related to D3, but that has not been tested.
+
+D3's cause is not identified.  The log shows =cl-prin1: (void-function documentation)=, but
+defining =documentation= did not stop the abort, so that is at most a second problem.
+
+D1 contradicts NeLisp's own design: Doc 40 section 2.3 locks the policy that the file
+cookie switches between lexical and dynamic binding.  It also fails silently, which is why
+=~b= printed =123= with no error.  Which of these names belong in the core rather than in
+=emacs-lib-*= is a Doc 141 boundary question.  D2, D6 and D7 were observed on the core binary,
+and nemacs could not be checked here.
+
+** Verdict
+
+Use *fork* for =cl-format=, as =packages/cl-format/=, but only after D1.
+
+The rule's first row does not fully apply, because two problems are in the package rather
+than in NeLisp, and upstream has had no commit since 2023-08, past the 24-month line:
+
+- Load-time =font-lock-add-keywords= runs fontification setup that a formatting library
+  should not require.  Guard it.
+- Radix output calls =calc-eval=, pulling in Calc for an integer conversion.  Replace it
+  with plain integer arithmetic, and declare =clisp-format-print-base= so that it does not
+  depend on the file's binding mode.
+
+Add lexical-binding cookies when forking, and decide =~x= case against SBCL during the fork.
+=~i= stays unimplemented unless a consumer needs it.
+
+Benefit so far: the evaluation has already paid for itself through D1 to D5, none of which
+Doc 244's survey found.
+
+* Order
+
+1. Fix D1, with a gate that loads cookie-less and =nil=-cookie files.  Audit what relies on
+   the current behavior first, because fixing it changes the semantics of every such file
+   in the tree.
+2. Fix D8 and D3, testing whether they share a cause, then D2, D5 and D4.
+3. =nl-condition= completion (Doc 244 WP1).
+4. Fork =cl-format=, with an SBCL differential gate over a larger corpus.
+5. =nl-num= bit and math functions, =nl-weak-ref=.
+6. Vendor GNU tools, then trial =inspector= and =undercover=.
+7. Arrays, streams, pathnames, MOP.  A consumer moves an item forward.
+
+* Open questions
+
+1. *D1 is outside this family, and its fix may affect other sessions' work.*  It needs an
+   owner and an audit before anyone changes the loader.
+2. Does the =format-172= failure survive with a real =capitalize-word=?  Does fixing D4
+   clear the =~g= failures?  Both can only be answered after those fixes.
+3. The =emacs-lib-*= layer could not be run here, so D6 and D7 may be core-only gaps rather
+   than gaps in nemacs.
+
+* Reproducing
+
+=docs/design/evidence/cl-format-eval-20261107/= holds the direct runner (=run.el=), shims
+(=shim3.el=), SBCL comparison (=differential.py=, =corpus.txt=), and logs with temporary
+paths removed.  Run =run.el= after loading the shims and =cl-format.ert= from a copy of
+upstream, with a =target/nelisp= built from a source checkout.  The copy gets a
+=lexical-binding: nil= cookie on each file and a =(defvar clisp-format-print-base)= line
+in =clisp-format.el=.

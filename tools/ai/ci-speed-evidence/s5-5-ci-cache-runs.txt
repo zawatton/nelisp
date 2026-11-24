@@ -1,0 +1,31 @@
+# S5.5 evidence: build job of four workflow_dispatch runs on the lane branch.
+# A = 42534407660 (28228bc9c, no cache: cold), C = 42544352401 (28228bc9c, exact key hit),
+# D = 42569937569 (3bdf30706 = 28228bc9c + one line in lisp/nelisp-stdlib-misc.el, restore-key hit),
+# E = 42578318153 (3bdf30706, every branch units-* cache deleted first: cold).
+# Build time = `rebuilding' to `stamp written'.
+
+## A cold
+2026-11-08T23:17:12.3721405Z Cache not found for input keys: units-Linux-build-922d458805ebeaf29bf826a5df258ad3e410be89ee5fe6f279d1098f47b383c1, units-Linux-build-, units-Linux-
+2026-11-08T23:17:33.3084349Z standalone-reader: rebuilding (no stamp; key 933b190cdb39)
+2026-11-08T23:44:49.9531692Z standalone-reader: stamp written (key 933b190cdb39, output sha256 4d63b44c2bc3)
+
+## C exact hit
+2026-11-09T01:13:06.6939809Z Cache hit for: units-Linux-build-922d458805ebeaf29bf826a5df258ad3e410be89ee5fe6f279d1098f47b383c1
+2026-11-09T01:13:07.7971474Z Cache restored from key: units-Linux-build-922d458805ebeaf29bf826a5df258ad3e410be89ee5fe6f279d1098f47b383c1
+2026-11-09T01:13:26.6505987Z standalone-reader: rebuilding (no stamp; key 933b190cdb39)
+2026-11-09T01:14:32.2003260Z standalone-reader: stamp written (key 933b190cdb39, output sha256 4d63b44c2bc3)
+
+## D partial hit
+2026-11-09T05:54:37.9803620Z Cache hit for restore-key: units-Linux-build-922d458805ebeaf29bf826a5df258ad3e410be89ee5fe6f279d1098f47b383c1
+2026-11-09T05:54:38.9090984Z Cache restored from key: units-Linux-build-922d458805ebeaf29bf826a5df258ad3e410be89ee5fe6f279d1098f47b383c1
+2026-11-09T05:54:58.8138047Z standalone-reader: rebuilding (no stamp; key 3e8e14cb2222)
+2026-11-09T05:56:24.8035705Z standalone-reader: stamp written (key 3e8e14cb2222, output sha256 2512d3039865)
+
+## E cold
+2026-11-09T07:17:07.2152860Z Cache not found for input keys: units-Linux-build-49bc3c54ff2540d47b87fed30283a7d0cbe1975eefa56b9bc6543c2eeb2b661b, units-Linux-build-, units-Linux-
+2026-11-09T07:17:29.8042275Z standalone-reader: rebuilding (no stamp; key 3e8e14cb2222)
+2026-11-09T07:45:36.5916789Z standalone-reader: stamp written (key 3e8e14cb2222, output sha256 2512d3039865)
+
+# Summary: C 65.5 s (< 120 s), sha256 4d63b44c2bc3 = A's cold sha256 at the same commit.
+#          D 86.0 s (< 600 s), sha256 2512d3039865 = E's cold sha256 at the same commit.
+#          Cold builds: A 1636.6 s, E 1686.8 s.

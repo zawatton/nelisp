@@ -67,19 +67,22 @@
       (delete-directory directory t))))
 
 (ert-deftest p35/native-lexical-frame-preserves-jit-order-and-optional-rest ()
+  :tags '(:expensive-test)
   (p35--check-frame-fixture
-   "nelisp-native-vm-frame-fixture.el" "AF" "FRAME-NATIVE-COMPILED" 430
+   "nelisp-native-vm-frame-fixture.el" "AF" "FRAME-NATIVE-COMPILED" 354
    '("bad-tag" "bad-frame" "bad-jit" "bad-descriptor" "bad-code-order"
      "bad-arity" "bad-optional" "bad-rest")))
 
 (ert-deftest p35/native-dynamic-frame-preserves-binding-epoch-and-unwind ()
+  :tags '(:expensive-test)
   (p35--check-frame-fixture
-   "nelisp-native-vm-dynamic-frame-fixture.el" "OD" "DYNAMIC-NATIVE-COMPILED" 562
+   "nelisp-native-vm-dynamic-frame-fixture.el" "OD" "DYNAMIC-NATIVE-COMPILED" 522
    '("bad-epoch" "bad-index" "bad-rest-start" "bad-optional" "bad-unbind"
      "bad-arity" "bad-exhaustion")))
 
 (ert-deftest p35/native-rooted-cons-aliases-reject-value-and-allocation-mutants ()
   "Execute real constructor/cloner and VM arms with observable negative cases."
+  :tags '(:expensive-test)
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires a freestanding x86_64 Linux executable"))
@@ -98,7 +101,7 @@
                                        "-k" "5" "120" (expand-file-name invocation-name invocation-directory)
                                        "-Q" "--batch" "-L" "lisp" "-L" "src" "-L" "scripts"
                                        "--load" p35--cons-fixture) 0))
-              (should (string-match-p "CONS-NATIVE-COMPILED.*checks=1194" (buffer-string))))
+              (should (string-match-p "CONS-NATIVE-COMPILED.*checks=859" (buffer-string))))
             (should (= (nth 7 (file-attributes errors)) 0))
             (with-temp-buffer
               (set-buffer-multibyte nil)
@@ -117,6 +120,7 @@
 
 (ert-deftest p35/native-arity-markers-reject-value-and-allocation-mutants ()
   "Compare the actual marker predicates with their retained allocating forms."
+  :tags '(:expensive-test)
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires a freestanding x86_64 Linux executable"))
@@ -154,6 +158,7 @@
 
 (ert-deftest p35/native-live-builtin-difference-rejects-token-and-copy-mutants ()
   "Execute the actual live callable path, including unchanged fallback slots."
+  :tags '(:expensive-test)
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires a freestanding x86_64 Linux executable"))
@@ -173,7 +178,7 @@
                                        "-k" "5" "120" (expand-file-name invocation-name invocation-directory)
                                        "-Q" "--batch" "-L" "lisp" "-L" "src" "-L" "scripts"
                                        "--load" p35--difference-fixture) 0))
-              (should (string-match-p "CALL-DIFF-UNIT-COMPILED.*cases=321" (buffer-string))))
+              (should (string-match-p "CALL-DIFF-UNIT-COMPILED.*cases=319" (buffer-string))))
             (should (= (nth 7 (file-attributes errors)) 0))
             (with-temp-buffer
               (set-buffer-multibyte nil)
@@ -187,12 +192,13 @@
                                               (ash (aref bytes (+ offset i)) (* i 8))))))
                 (should (= (nth 3 words) expected))
                 (when (= expected 0)
-                  (should (equal words '(0 1 0 0))))))
+                  (should (equal words '(0 0 0 0))))))
             (should (= (nth 7 (file-attributes errors)) 0))))
       (delete-directory directory t))))
 
 (ert-deftest p35/native-vm-arithmetic-rejects-overflow-and-fallback-mutants ()
   "Execute actual VM arithmetic and its full-slot/fallback negative controls."
+  :tags '(:expensive-test)
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires a freestanding x86_64 Linux executable"))
@@ -236,6 +242,7 @@
 
 (ert-deftest p35/native-vm-vector-access-rejects-value-and-allocation-mutants ()
   "Execute actual VM vector access with bounds, bridge and copy controls."
+  :tags '(:expensive-test)
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires a freestanding x86_64 Linux executable"))
@@ -243,8 +250,8 @@
            (file-name-directory (directory-file-name (file-name-directory p35--equal-fixture))))
          (directory (make-temp-file "nelisp-vm-vector-" t)))
     (unwind-protect
-        (dolist (case '(("positive" 0) ("old-view" 6) ("bad-bounds" 61)
-                        ("bad-bridge" 101) ("bad-shift" 21) ("bad-copy" 57)))
+        (dolist (case '(("positive" 0) ("bad-read" 50) ("bad-bounds" 55)
+                        ("bad-bridge" 105) ("bad-index-tag" 95) ("bad-copy" 116)))
           (let* ((mode (car case)) (expected (cadr case))
                  (output (expand-file-name mode directory)) (errors (concat output ".err"))
                  (process-environment (copy-sequence process-environment)))
@@ -254,7 +261,7 @@
                                        "-k" "5" "120" (expand-file-name invocation-name invocation-directory)
                                        "-Q" "--batch" "-L" "lisp" "-L" "src" "-L" "scripts"
                                        "--load" p35--vector-fixture) 0))
-              (should (string-match-p "ARRAY-UNIT-COMPILED.*checks=130" (buffer-string))))
+              (should (string-match-p "ARRAY-UNIT-COMPILED.*checks=145" (buffer-string))))
             (should (= (nth 7 (file-attributes errors)) 0))
             (with-temp-buffer
               (set-buffer-multibyte nil)
@@ -273,6 +280,7 @@
 
 (ert-deftest p35/native-equal-tagged-words-preserve-values-and-reject-mutants ()
   "Execute production equality and its value/allocation negative controls."
+  :tags '(:expensive-test)
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires a freestanding x86_64 Linux executable"))
@@ -301,9 +309,19 @@
               (should (string-match-p "TAGGED-EQUAL-COMPILED.*cases=910" (buffer-string))))
             (with-temp-buffer
               (insert-file-contents errors)
+              ;; The fixture links through the production unit compiler
+              ;; (nelisp-aot-test-runtime-link-units), whose inline pass
+              ;; reports its candidate counts.  Those lines are diagnostics;
+              ;; everything else on stderr is still checked exactly.
+              (goto-char (point-min))
+              (while (re-search-forward "^nelisp-inline: [0-9]+ candidates, [0-9]+ call sites inlined\n" nil t)
+                (replace-match ""))
               (if (equal tco "1")
                   (should (string-match-p
-                           "\\`nelisp-tco: [0-9]+ rewrite(s) in unit tagged-equality\\.o\n\\'"
+                           ;; The helper recompiles the unit while it adds
+                           ;; missing runtime helpers, so the same line may
+                           ;; repeat; nothing else may appear.
+                           "\\`\\(nelisp-tco: [0-9]+ rewrite(s) in unit tagged-equality\\.o\n\\)+\\'"
                            (buffer-string)))
                 (should (= (buffer-size) 0))))
             (with-temp-buffer

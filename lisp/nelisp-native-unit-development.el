@@ -67,11 +67,18 @@ BODY\='s value when no quit arrived."
   `(condition-case nil (progn ,@body)
      (quit (setq quit-flag nil) :quit)))
 
-(defun nelisp-native-unit-development--wait (process seconds)
-  "Call `accept-process-output' on PROCESS for SECONDS.
+(defun nelisp-native-unit-development--windows-p ()
+  "Return non-nil when running on a Windows-like host."
+  (and (memq system-type '(windows-nt ms-dos cygwin)) t))
+
+(defun nelisp-native-unit-development--wait (_process seconds)
+  "Call `accept-process-output\=' for SECONDS, servicing all processes.
+_PROCESS is accepted for caller compatibility and deliberately not passed on:
+waiting on one specific process can starve delivery of the child's output on
+Windows, while waiting on any process delivers it.
 Return `:quit\=' when a C-g arrived during the wait, otherwise nil."
   (nelisp-native-unit-development--quit-as-cancel
-    (accept-process-output process seconds) nil))
+    (accept-process-output nil seconds) nil))
 
 (defun nelisp-native-unit-development--cancelled-p (cancel-predicate)
   "Return non-nil when CANCEL-PREDICATE asks to cancel, or a C-g arrives.
@@ -172,7 +179,8 @@ stdout+stderr byte budget.
 Return a plist:
   (:cancelled BOOL :deadline-expired BOOL :output-limited BOOL
    :exit-code N-or-nil :stdout STR :stderr STR
-   :stdout-bytes N :stderr-bytes N
+   :stdout-bytes N :stderr-bytes N :used-bytes N
+   :process-status-at-exit SYMBOL :stderr-merged BOOL
    :elapsed-seconds F :timeout-seconds N)
 `:stdout'/`:stderr' are each already bounded by OUTPUT-BUDGET. Callers derive
 a final phase by consulting `:cancelled' first, then
@@ -196,8 +204,12 @@ limit, or cancellation through CANCEL-PREDICATE or a `quit'."
           ;; such primitive, and a native-unit rebuild inside the standalone
           ;; REPL failed with `void-function: make-pipe-process' until this
           ;; fallback existed.
+          ;; On Windows the separate stderr pipe is skipped as well: with it,
+          ;; the child's stdout was intermittently never delivered (a 120 s
+          ;; stall reported as :timeout), so stderr is merged into stdout.
           (setq stderr-pipe
-                (when (fboundp 'make-pipe-process)
+                (when (and (fboundp 'make-pipe-process)
+                           (not (nelisp-native-unit-development--windows-p)))
                   (make-pipe-process
                  :name "nelisp-native-unit-development-subprocess-stderr"
                  :noquery t :coding 'utf-8-unix
@@ -244,7 +256,9 @@ limit, or cancellation through CANCEL-PREDICATE or a `quit'."
           ;; not one (or vice versa). See
           ;; `nelisp-native-unit-development--compile-phase'.
           (let* ((elapsed (- (float-time) start))
-                 (deadline-expired (>= elapsed timeout)))
+                 (deadline-expired (>= elapsed timeout))
+                 ;; Diagnostics: the child's state at the moment the loop ended.
+                 (status-at-exit (process-status process)))
             (when (or cancelled limited deadline-expired)
               (nelisp-native-unit-development--kill process))
             (let ((tries 25))
@@ -260,6 +274,9 @@ limit, or cancellation through CANCEL-PREDICATE or a `quit'."
                     :stdout (or stdout "") :stderr (or stderr "")
                     :stdout-bytes (string-bytes (or stdout ""))
                     :stderr-bytes (string-bytes (or stderr ""))
+                    :used-bytes used
+                    :process-status-at-exit status-at-exit
+                    :stderr-merged (null stderr-pipe)
                     :elapsed-seconds elapsed :timeout-seconds timeout))))
       (nelisp-native-unit-development--kill process)
       (nelisp-native-unit-development--kill stderr-pipe))))
@@ -324,6 +341,9 @@ regardless of how the call ended."
           :stdout (plist-get run :stdout) :stderr (plist-get run :stderr)
           :stdout-bytes (plist-get run :stdout-bytes)
           :stderr-bytes (plist-get run :stderr-bytes)
+          :used-bytes (plist-get run :used-bytes)
+          :process-status-at-exit (plist-get run :process-status-at-exit)
+          :stderr-merged (plist-get run :stderr-merged)
           :output-truncated (plist-get run :output-limited)
           :elapsed-seconds (plist-get run :elapsed-seconds)
           :timeout-seconds (plist-get run :timeout-seconds)

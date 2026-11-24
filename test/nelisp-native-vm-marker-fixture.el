@@ -9,7 +9,8 @@
  ;; Authentic pre-change production definitions, embedded for a durable fixture.
  (setq legacy (copy-tree '((defun wf_bytecode_optional_marker_p (sym) (let* ((buf (alloc-bytes 9 1))) (seq (ptr-write-u64 buf 0 7020671367832956710) (ptr-write-u8 buf 8 108) (nl_apply_sym_eq_bytes sym buf 9))))
 (defun wf_bytecode_rest_marker_p (sym) (let* ((buf (alloc-bytes 5 1))) (seq (ptr-write-u64 buf 0 500152234534) (nl_apply_sym_eq_bytes sym buf 5)))))))
- (unless (cl-every (lambda (f) (eq (car (nth 3 f)) 'symbol-name-eq)) original) (error "Expected canonical literal marker predicates"))
+ ;; Since 3edc5b180 the predicates first reject names not starting with `&'.
+ (unless (cl-every (lambda (f) (and (eq (car (nth 3 f)) 'if) (equal (nth 1 (nth 3 f)) '(= (wf_bytecode_amp_name_p sym) 0)) (eq (car (nth 3 (nth 3 f))) 'symbol-name-eq))) original) (error "Expected canonical literal marker predicates"))
  (pcase variant
   ("old-zero" (setq candidate (copy-tree legacy)))
   ("bad-optional" (setq candidate (cl-subst "&optionam" "&optional" candidate :test #'equal)))
@@ -37,6 +38,6 @@
      (ptr-write-u64 ,base 16 ,(+ base 4096)) ,@(nreverse forms)
      (ptr-write-u64 ,base 8 failure) (syscall-direct 1 1 ,base 16 0 0 0) failure)))
     (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "marker-audit.o" (append source nelisp-aot-test-runtime-link-defuns))) "_start")
+   (let ((inhibit-message t)) (nelisp-aot-test-runtime-link-units output "marker-audit.o" source (list (nelisp-standalone--arena-base-slot-unit)) "_start"))
    (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
    (princ (format "MARKER-UNIT-COMPILED variant=%s checks=%d\n" variant count)))))

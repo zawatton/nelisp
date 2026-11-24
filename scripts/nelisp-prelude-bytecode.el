@@ -7,6 +7,10 @@
 (require 'cl-lib)
 (require 'bytecomp)
 
+;; Host byte-opt leaks top-level defvar names into this global; without
+;; rebinding it, each compile scans an ever-growing list.
+(defvar byte-optimize--dynamic-vars)
+
 (defconst nelisp-prelude-bytecode--opcodes
   '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 96 98 100 101 114 123 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 164 166 167 168 175 178 182 183 192)
   "GNU byte-code opcodes admitted by the focused standalone prelude VM.
@@ -937,6 +941,7 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                            (setq-local lexical-binding (or compile-lexical lex-here))
                            (let ((byte-compile-warnings nil)
                                  (byte-compile-verbose nil)
+                                 (byte-optimize--dynamic-vars nil)
                                  (byte-compile-initial-macro-environment
                                   (append (cddr compile-context)
                                           byte-compile-initial-macro-environment)))

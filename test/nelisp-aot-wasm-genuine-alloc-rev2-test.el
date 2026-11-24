@@ -127,7 +127,11 @@ assert.equal(result,size); console.log('argument-recorder=size,align once; i64 u
                                      (seq (ptr-write-u64 1024 0 size)
                                           (ptr-write-u64 1024 8 align) size))
                                    (defun allocate () (alloc-bytes ,size ,align))) t)))
-                 (with-temp-file path (set-buffer-multibyte nil) (insert bytes))
+                 ;; Binary: on Windows the default write coding turns each
+                 ;; 0x0a in the module into CRLF, and node then rejects it
+                 ;; (rc 1 on the ert windows-latest lanes, run 42793703030).
+                 (let ((coding-system-for-write 'binary))
+                   (with-temp-file path (set-buffer-multibyte nil) (insert bytes)))
                  (with-temp-buffer
                    (let ((rc (call-process "node" nil t nil "--disable-wasm-trap-handler"
                                            "--input-type=commonjs" "-e"

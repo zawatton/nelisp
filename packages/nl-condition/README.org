@@ -10,8 +10,10 @@ still standing on the signaling frame, chooses among recovery
 strategies offered by outer frames.  cl-lib has nothing in this area.
 
 Opt-in library on plain Elisp; runs on NeLisp standalone and host
-Emacs.  Non-invasive: only =nl-signal= consults the handler stack — a
-plain =signal= from arbitrary Elisp is untouched (no global advice).
+Emacs.  Non-invasive: no global advice.  =nl-handler-bind= handlers
+see =nl-signal= conditions and, where the runtime has =handler-bind-1=,
+also errors from plain =signal=, =error= and primitives such as
+=(car 1)=, so a restart can recover from them.
 
 * API
 
@@ -27,32 +29,84 @@ plain =signal= from arbitrary Elisp is untouched (no global advice).
 - =(nl-signal SYMBOL DATA)= — signal without unwinding first.
   Matching handlers (by =error-conditions=, like =condition-case=) run
   innermost first with the condition object =(SYMBOL . DATA)=.
+- =(nl-signal-condition SYMBOL DATA)= — CL =signal=: run the handlers,
+  return nil when none escapes.  SYMBOL need not be =define-error=d.
 - =(nl-handler-bind ((CONDITION FN)...) BODY...)= — bind pre-unwind
   handlers.  A handler that *returns* declines and the next (outer)
   matching handler runs; while a handler runs, only handlers outer to
-  it are visible (re-signaling cannot loop).
+  it are visible (re-signaling cannot loop).  Handlers fire for
+  =nl-signal= and, when =(fboundp 'handler-bind-1)=, for any error
+  signalled in BODY (see "Primitive errors" below).
 - =(nl-restart-case FORM (NAME ARGLIST BODY...)...)= — offer restarts.
-- =(nl-invoke-restart NAME ARGS...)= — unwind to the restart's frame
-  (running =unwind-protect= cleanups on the way), pop the frame, run
-  the restart body; its value becomes the =nl-restart-case= value.
+- =(nl-restart-bind ((NAME FN-FORM)...) BODY...)= — offer restarts
+  whose function runs *without unwinding*; =nl-invoke-restart=
+  returns the function's value.
+- =(nl-with-simple-restart (NAME FORMAT ARGS...) BODY...)= — returns a
+  two-element list standing for CL's two values: =(VALUE nil)= when
+  BODY completes, =(nil t)= when restart NAME was invoked.  The format
+  is accepted for compatibility and not evaluated.
+- =(nl-invoke-restart NAME ARGS...)= — for =nl-restart-case=: unwind to
+  the restart's frame (running =unwind-protect= cleanups), pop the
+  frame, run the body; its value becomes the =nl-restart-case= value.
   Signals =nl-control-error= when NAME is not established.
 - =(nl-find-restart NAME)= / =(nl-compute-restarts)= — introspection,
   innermost first.
+- =(nl-cerror CONTINUE-STRING SYMBOL &optional DATA)= — signal with a
+  =continue= restart; invoking it makes =nl-cerror= return nil.
+- Standard restart invokers: =(nl-abort)= signals =nl-control-error=
+  when no =abort= restart exists; =(nl-continue)=, =(nl-muffle-warning)=,
+  =(nl-use-value V)=, =(nl-store-value V)= return nil when the
+  restart is absent.  (To pass values to =continue=, as =nl-assert=
+  accepts, call =(nl-invoke-restart 'continue V...)=.)
+- =(nl-warn FORMAT ARGS...)= — signal an =nl-warning= condition (not
+  an =error=) with =muffle-warning= established; unless muffled, the
+  text goes to =nl-warn-report-function= (default: =message=).
+- =(nl-check-type PLACE TYPE)= — =wrong-type-argument= with a
+  =store-value= restart; the value is stored with =setf= and rechecked.
+- =(nl-assert TEST &optional PLACES)= — =nl-assertion-failed= with a
+  =continue= restart taking one new value per place; TEST is rechecked.
 
 * Semantics and interop
 
-- Execution order on a handled signal:
+- Execution order on a handled =nl-signal=:
   handler (pre-unwind) -> =unwind-protect= cleanups -> restart body.
 - When every handler declines (or none match), =nl-signal= falls back
   to a plain =signal=, so surrounding =condition-case= works as usual.
+  Each handler runs exactly once: the fallback does not fire the
+  handlers again through the =handler-bind-1= bridge.  (=nl-signal=
+  signals a fresh copy of a cons DATA and the bridge matches that
+  object by =eq=, so only that one signal is skipped.  Nil or atom
+  DATA cannot be identified this way: it matches on symbol and
+  =equal= data, one entry per handler, consumed on first match; a
+  stale entry may therefore suppress one later signal with the same
+  symbol and the same nil or atom data.)
+- An inner =condition-case= catches a plain =signal= before an outer
+  =nl-handler-bind= handler sees it, as with GNU =handler-bind=.
 - The restart body runs with the restart frame already popped:
   invoking the same restart from its own body is =nl-control-error=,
   not a loop.
 
+** Primitive errors
+
+=nl-handler-bind= registers its handlers with =handler-bind-1= when that
+function exists.
+
+- GNU Emacs 30+: =handler-bind-1= is a primitive; handlers run
+  pre-unwind for every error.
+- Emacs 29.4 has no =handler-bind-1=: the previous behaviour remains,
+  only =nl-signal= reaches the handlers.
+- NeLisp standalone: =handler-bind-1= is the prelude's =condition-case=
+  approximation.  A handler for a plain =signal= or primitive error
+  runs after the stack has unwound to the =nl-handler-bind= frame, so
+  restarts established *outside* that frame work, while restarts
+  established inside its body are no longer visible.  =nl-signal= and
+  the signalling forms above (=nl-cerror=, =nl-check-type=,
+  =nl-assert=, =nl-warn=) always run handlers pre-unwind.
+
 * Non-goals
 
-- Hooking plain =signal= / =error= (would need global advice; against
-  the Doc 168 non-invasiveness rule).
+- Global advice on =signal= / =error=; primitive errors are reached
+  only through =handler-bind-1= inside =nl-handler-bind=.
 - CL condition *classes*; conditions are Elisp error symbols.
 - Interactive restart selection (a debugger concern).
 

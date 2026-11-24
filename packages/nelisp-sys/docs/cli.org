@@ -47,7 +47,7 @@ analysis-only use needs just =-L packages/nelisp-sys/src=.
 
 Pass any triple from =nelisp-sys-target-list=:
 =x86_64-unknown-linux-gnu=, =aarch64-unknown-linux-gnu=,
-=x86_64-apple-darwin=, =aarch64-apple-darwin=, =x86_64-pc-windows-msvc=.
+=aarch64-apple-darwin=, =x86_64-pc-windows-msvc=.
 
 * Extraction rehearsal
 

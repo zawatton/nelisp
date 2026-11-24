@@ -71,6 +71,23 @@
                   (source position length))
 (declare-function nelisp--read-all-from-string-native "nelisp-standalone"
                   (source))
+(defvar nelisp-aot-compiler--runtime-entry-params)
+(eval-when-compile
+  ;; Compile-time only: make the `nl-condition' macros expandable when this
+  ;; file is byte-compiled.  The guard is nil for every source load, so the
+  ;; lazy `nelisp-native--ensure-condition' contract above is unchanged.
+  (when (and (boundp 'byte-compile-current-file) byte-compile-current-file)
+    (require 'nl-condition)))
+(declare-function nl-signal "nl-condition" (error-symbol data))
+(declare-function nl-invoke-restart "nl-condition" (name &rest args))
+(declare-function nl--with-handlers "nl-condition" (frame thunk))
+(declare-function nelisp-elf-read-symbol-bytes "nelisp-elf-write"
+                  (file-path symbol-name))
+(declare-function nelisp-eln-registration-load "nelisp-eln-registration"
+                  (path))
+(declare-function nelisp-native-load-raw-compile-file "nelisp-native-load"
+                  (source-path artifact-path &optional layout-id build-id
+                               binary-sha256))
 
 (defconst nelisp-artifact--magic ";;; nelisp-private-nelc-v2\n")
 (defconst nelisp-artifact--format 'nelisp-private-nelc-v2)
@@ -3589,11 +3606,11 @@ modified definition in `:attempted', together with the candidate's provenance."
                      :definitions definitions
                      :condition (and (consp err) (car err))
                      :error (nelisp-artifact--reload-error-string err)
-                     :reason 'publish-not-transactional))))
+                     :reason 'publish-not-transactional)))))
             (when (and staging-dir (file-directory-p staging-dir))
               (condition-case nil
                   (delete-directory staging-dir t)
-                (error nil))))))))))
+                (error nil)))))))))
 
 (defun nelisp-artifact-read-manifest (artifact-path)
   "Read the sibling manifest for ARTIFACT-PATH."
@@ -5598,6 +5615,7 @@ no real safety."
 
 (defun nelisp-artifact--standalone-host-helper-unavailable-message (mode kind)
   "Return a one-line diagnostic for an unavailable helper MODE/KIND."
+  (ignore mode)
   (let ((prefix (format "host-helper required for --kind %s on standalone %s"
                         kind
                         (if (nelisp-artifact--standalone-windows-p)

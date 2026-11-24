@@ -2,6 +2,11 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; The standalone's native table owns storage and the standard three tests.
 ;; Custom tests use an ordinary Lisp scan; no handwritten native is added.
+(eval-when-compile
+  ;; Compile-time only: `cl-labels' must be expandable when byte-compiled.
+  ;; The guard is nil for every source load, so loading is unchanged.
+  (when (and (boundp 'byte-compile-current-file) byte-compile-current-file)
+    (require 'cl-lib)))
 (when (and (fboundp 'nelisp--eval-source-string) (not (fboundp 'define-hash-table-test)))
   (let ((tests nil) (installed nil)
         (make (symbol-function 'make-hash-table))

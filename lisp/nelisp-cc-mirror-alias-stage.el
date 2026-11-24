@@ -470,7 +470,8 @@
            (nelisp_mirror_alias_stage_publish mirror-ptr base)))))
     (defun nelisp_mirror_alias_stage_abort (mirror-ptr marker)
       (nl_root_release mirror-ptr marker)))
-  "Private rooted prepare/publish/abort primitives for a missing six-slot alias entry.")
+  "Private rooted prepare/publish/abort primitives.
+They serve a missing six-slot alias entry.")
 
 (defconst nelisp-cc-mirror-alias-stage-source
   nelisp-cc-mirror-alias-stage--source

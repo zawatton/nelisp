@@ -38,7 +38,14 @@ class ProjectDistribution(unittest.TestCase):
             self.assertEqual(live.stdout.read(8), b'nelisp> ')
             result = subprocess.run(
                 ["bash", "tools/build-standalone-tarball.sh", version, "linux-x86_64", "--project-cli"],
-                cwd=ROOT, capture_output=True, text=True, timeout=300)
+                # 600 s: the CI runner needed more than 300 s for this build
+                # on the macroexpand branch (run 44862242742 timed out at 300 s;
+                # the base's whole test took 480 s, run 44838464898).  Locally
+                # the build is 114 s on both the base and the branch with a warm
+                # unit cache, and the cold standalone reader build is 258 s
+                # (base) vs 281 s (branch), about 9% slower.  600 s is 2x the
+                # observed CI limit.
+                cwd=ROOT, capture_output=True, text=True, timeout=600)
             self.assertIsNone(live.poll(), 'release build preserves the live development process')
             self.assertEqual(hashlib.sha256(development_runtime.read_bytes()).hexdigest(), before)
         finally:
@@ -82,10 +89,10 @@ class ProjectDistribution(unittest.TestCase):
             env.pop("PYTHONPATH", None)
             env.pop("NELISP_BUILD_CACHE", None)
 
-            def command(*args, cwd=home, extra=None):
+            def command(*args, cwd=home, extra=None, timeout=300):
                 result = subprocess.run([str(cli), *args], cwd=cwd,
                                         env=dict(env, **(extra or {})),
-                                        capture_output=True, text=True, timeout=300)
+                                        capture_output=True, text=True, timeout=timeout)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return result
 
@@ -295,7 +302,12 @@ class ProjectDistribution(unittest.TestCase):
             self.assertEqual(json.loads(command("check", "--json", cwd=project).stdout)["status"], "ok")
             command("doc", cwd=project)
             started = time.monotonic()
-            command("build", cwd=project)
+            # A fresh installation's first build compiles every runtime unit
+            # into the empty user cache (docs/project-cli.md: "First builds
+            # can take longer"); about 15-18 minutes on a 2026-11 checkout.
+            # The warm rebuild below keeps the 300 s budget and must
+            # recompile no runtime unit.
+            command("build", cwd=project, timeout=1800)
             cold_seconds = time.monotonic() - started
             first = (project / "target/hello").read_bytes()
             self.assertTrue(list((home / "user-cache/nelisp/build-v1").rglob("*.unit")))

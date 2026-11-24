@@ -11,6 +11,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (defconst nelisp-repl-gc--arena-fields
   '(:base :size :bump-offset :used-bytes :live-after-last-gc :next-trigger
     :free-list-head :collect-disabled :reuse-disabled :chunk-count

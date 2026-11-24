@@ -1,4 +1,34 @@
-;;; nelisp-stdlib-misc.el --- Sweep 10 misc builtins  -*- lexical-binding: t; -*-
+;;; nelisp-stdlib-misc.el --- Sweep 10 misc builtins  -*- lexical-binding: t; byte-compile-warnings: (not redefine); -*-
+
+;; Compile-time hints for runtime-provided names (no-ops when evaluated).
+(declare-function \(setf\ nelisp-buffer-before-gap\) "ext:nelisp-runtime")
+(declare-function \(setf\ nelisp-buffer-blen\) "ext:nelisp-runtime")
+(declare-function \(setf\ nelisp-buffer-len\) "ext:nelisp-runtime")
+(declare-function \(setf\ nelisp-buffer-modified\) "ext:nelisp-runtime")
+(declare-function \(setf\ nelisp-marker-position\) "ext:nelisp-runtime")
+(declare-function nelisp--check-string "ext:nelisp-runtime")
+(declare-function nelisp--check-symbol "ext:nelisp-runtime")
+(declare-function nelisp--hash-pairs "ext:nelisp-runtime")
+(declare-function nelisp--hook-list-p "ext:nelisp-runtime")
+(declare-function nelisp--intern-lookup "ext:nelisp-runtime")
+(declare-function nelisp--make-record "ext:nelisp-runtime")
+(declare-function nelisp--plist-p "ext:nelisp-runtime")
+(declare-function nelisp--prn-to-string "ext:nelisp-runtime")
+(declare-function nelisp--record-length "ext:nelisp-runtime")
+(declare-function nelisp--record-ref "ext:nelisp-runtime")
+(declare-function nelisp--record-type "ext:nelisp-runtime")
+(declare-function nelisp--run-hook-call "ext:nelisp-runtime")
+(declare-function nelisp--run-hook-value "ext:nelisp-runtime")
+(declare-function nelisp--syscall-readdir "ext:nelisp-runtime")
+(declare-function nelisp--syscall-stat "ext:nelisp-runtime")
+(declare-function nelisp--write-stderr-line "ext:nelisp-runtime")
+(declare-function nelisp--write-stdout-bytes "ext:nelisp-runtime")
+(declare-function nelisp-buffer--bump-tick "ext:nelisp-runtime")
+(declare-function nelisp-buffer--settle "ext:nelisp-runtime")
+(declare-function nelisp-buffer-blen "ext:nelisp-runtime")
+(declare-function nelisp-buffer-len "ext:nelisp-runtime")
+(declare-function nl-write-file "ext:nelisp-runtime")
+(defvar nelisp--tp-string-properties)
 
 (defun list (&rest args) args)
 

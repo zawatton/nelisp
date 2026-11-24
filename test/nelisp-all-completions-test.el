@@ -85,9 +85,11 @@
            "(fboundp 'all-completions)")))
     (should (equal "((wrong-type-argument stringp 1) (wrong-type-argument obarrayp [nil]) t)"
                    (nelisp-all-completions-test--expressions expressions))))
-  (should (equal "((unsupported-feature global-mapatoms))"
+  ;; The global obarray is iterable since 61ca8c0e4 (Step 4: the initial
+  ;; obarray): `mapatoms' visits nil, t and the interned symbols, returns nil.
+  (should (equal "((nil 3))"
                  (nelisp-all-completions-test--expressions
-                  '("(condition-case err (mapatoms (lambda (_symbol) nil)) (unsupported-feature err))")))))
+                  '("(let (seen) (list (mapatoms (lambda (s) (when (memq s '(nil t car)) (push s seen)))) (length seen)))")))))
 
 (ert-deftest nelisp-all-completions-vendor-require-passes-completion-stage ()
   (let* ((binary (nelisp-all-completions-test--binary))

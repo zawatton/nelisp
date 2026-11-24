@@ -38,6 +38,15 @@
                   nelisp-standalone--no-inline-p
                   nelisp-standalone--builtin-leaf-names
                   nelisp-standalone--hoist-large-str-lits
+                  nelisp-standalone--share-lit-segments-enabled
+                  nelisp-standalone--share-lit-min-bytes
+                  nelisp-standalone--lit-assemble-defun
+                  nelisp-standalone--lit-copy-defun
+                  nelisp-standalone--lit-raw-blob-p
+                  nelisp-standalone--lit-skip
+                  nelisp-standalone--lit-pieces
+                  nelisp-standalone--lit-duplicate-bytes
+                  nelisp-standalone--share-lit-segments
                   nelisp-standalone--census-instrument
                   nelisp-standalone--copy-lit-defun-bytes
                   nelisp-standalone--inline-pure-ops

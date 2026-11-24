@@ -80,6 +80,8 @@
     (nelisp-link-units path (list (nelisp-standalone--compile-to-unit "private-continuations" source)) "_start")))
   (should (equal 0 (call-process path nil nil nil)))))
 (ert-deftest nelisp-private-continuation/native-three-frontends-public-collisions ()
+ (skip-unless (and (eq system-type 'gnu/linux)
+                   (string-match-p "x86_64" system-configuration)))
  (let* ((dir (make-temp-file "private-continuations-" t))
         (nelisp-aot-compiler--x86-private-continuations
          (not (getenv "NELISP_PRIVATE_CONTINUATION_TEST_DISABLE")))
@@ -111,6 +113,8 @@
    (advice-remove 'nelisp-aot-compiler--x86-continuation-label #'nelisp-private-continuation-test--private)
    (unless (getenv "NELISP_PRIVATE_CONTINUATION_TEST_KEEP") (delete-directory dir t)))))
 (ert-deftest nelisp-private-continuation/standalone-existing-E-namespace ()
+ (skip-unless (and (eq system-type 'gnu/linux)
+                   (string-match-p "x86_64" system-configuration)))
  (let* ((dir (make-temp-file "private-E-names-" t))
         (nelisp-aot-compiler--x86-private-continuations
          (not (getenv "NELISP_PRIVATE_CONTINUATION_TEST_DISABLE")))

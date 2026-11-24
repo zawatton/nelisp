@@ -15,7 +15,7 @@ name: CI
 #                 inside `smoke'; splitting them into their own job is
 #                 what keeps per-push wall clock inside the 25-minute
 #                 budget (they were ~6 min each, serial, per lane).
-#   - mutation:   gate-mutation, sharded 4 ways.
+#   - mutation:   gate-mutation, sharded 12 ways.
 #   - subsystems: the extras/smokes/perf AI-toolchain tiers.
 #   - verify:     downloads every job's `gate-reports-*' artifact and
 #                 checks the union against tools/ai/gates.expected.
@@ -29,6 +29,35 @@ on:
   pull_request:
     branches: ['**']
   workflow_dispatch:
+    inputs:
+      gate_mutation:
+        description: 'Run the gate-mutation sweep on this (non-main) branch'
+        type: boolean
+        default: false
+
+# gate-mutation trigger policy (user decision 2026-11-07), computed by the
+# `policy' step of the `mutation' job:
+#   - any run on refs/heads/main (push or dispatch): full sweep;
+#   - pull_request into main/master: narrowed sweep, as before;
+#   - pull_request into any other base: only with the `gate-mutation' label;
+#   - workflow_dispatch on another branch: only with the gate_mutation input.
+# `pull_request' deliberately does not list the `labeled' type: that would
+# rerun the whole CI on every label change.  A label therefore takes effect
+# on the next push to the PR.  The job itself is never skipped (see below).
+
+# Tracked tools/__pycache__/*.pyc files exist in this repository; Python
+# rewrites them when a tool runs, which turns the tree `-dirty' and changes
+# the stamp key (git describe) in the middle of a job.  Never write bytecode.
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+# A newer run of the same workflow, ref and event cancels the older one,
+# main pushes included (user decision 2026-11-11).  The event name and the
+# dispatch input are in the group so a pull_request run and a manual
+# gate-mutation dispatch on one ref do not cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}${{ github.event_name == 'workflow_dispatch' && format('-{0}', inputs.gate_mutation) || '' }}
+  cancel-in-progress: true
 
 jobs:
   # Fast ratchet/inventory pass, Linux only, run BEFORE the full matrix.
@@ -44,10 +73,32 @@ jobs:
   # round reports every broken gate instead of only the earliest one.
   gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # No NELISP_STANDALONE_JOBS here: this job builds no reader, and with
+    # JOBS > 1 the host ERT tests that call nelisp-standalone--compile-to-unit
+    # start N-1 prewarm child Emacs processes that compete with the test on
+    # the 4 vCPU runner (host ERT 632 s -> 1728 s after 9aee4c796 set it).
     steps:
       - uses: actions/checkout@v4
       # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
       # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-
+            units-${{ runner.os }}-
+
       - name: Set up GNU bytecode compiler (Linux / macOS)
         uses: purcell/setup-emacs@v8.0
         with:
@@ -89,7 +140,16 @@ jobs:
         shell: bash
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
-        run: python3 -m pip install --user --break-system-packages capstone pyelftools
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
       # Fast red.  The ERT suite used to run only inside the `smoke'
       # matrix, so an assertion failure surfaced when the longest lane
       # finished (measured 2026-09-19 on run 35414197855: ubuntu/29.4 took
@@ -102,11 +162,164 @@ jobs:
       # an early answer, it does not replace one.  It runs BEFORE preflight
       # so the more common failure is reported first.
       - name: "ERT suite, host only (fast red; standalone-dependent cases skip here and run in the matrix)"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: make clean && bash tools/ai/nelisp-ai.sh test
       - name: "Preflight gates (inventories + parity, all failures collected)"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: bash tools/ai/preflight.sh
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+
+  # Builds target/nelisp ONCE and shares it.  Every Linux consumer below
+  # (`needs: build') downloads it after its own checkout and runs its normal
+  # steps; `make standalone-reader' then finds a fresh stamp and skips.  The
+  # stamp tool recomputes its key on the consumer and never trusts the
+  # downloaded stamp, so a mismatch (other Emacs, python, git state, env)
+  # rebuilds instead of giving a false green.  The `gates' job stays
+  # independent on purpose: it exists to fail within minutes.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NELISP_STANDALONE_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The stamp key embeds `git describe --tags --long --always --dirty'
+          # and the binary embeds it too.  A shallow clone describes
+          # differently from a full one, so the build job and every consumer
+          # use the same full history.
+          fetch-depth: 0
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-
+            units-${{ runner.os }}-
+
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" != Windows ] && command -v nix >/dev/null; then
+            # The recorded store path stays valid; drop the profile entry so
+            # the host Emacs install below does not collide on shared files.
+            nix-store --add-root "$RUNNER_TEMP/nelisp-gnu31-root" --indirect \
+              --realise "$(dirname "$(dirname "$compiler")")" >/dev/null
+            nix profile remove --all 2>/dev/null || nix profile remove --regex '.*' 2>/dev/null \
+              || nix profile remove '.*'
+          fi
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Install rooted-protocol decoder dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        # The linux-x86_64 standalone build disassembles its rooted protocol
+        # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
+        # Exact versions (the ones pip resolved on 2026-11-08): the stamp key
+        # records both, so an unpinned install could differ between this job
+        # and a consumer and force a rebuild.  Keep every pip step identical.
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      - name: Build the standalone reader (shared with the Linux jobs)
+        shell: bash
+        run: make standalone-reader NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
+      - name: Check the artifact file set
+        shell: bash
+        run: |
+          missing=0
+          for f in target/nelisp target/nelisp.cold target/nelisp.build-stamp target/nelisp.build-stamp.inputs target/nelisp.version.json target/nelisp.native-startup.el target/nelisp.buffer-local-bytecode.tsv target/nelisp.variable-alias-bytecode.tsv target/nelisp-artifact-runtime.el target/nelisp-artifact-runtime.el.nelc target/nelisp-artifact-runtime.el.nelc.enable target/nelisp-artifact-runtime.el.nelc.manifest.el target/nelisp-core-bytecode-report.tsv target/nelisp-prelude-bytecode-report.tsv target/nelisp-regexp-bytecode-report.tsv target/nelisp-vendor-bytecode-report.tsv target/nelisp-boot-image/ ; do
+            if [ ! -e "$f" ]; then echo "missing: $f"; missing=1; fi
+          done
+          [ "$missing" = 0 ]
+          make -s standalone-reader-status
+          ls -l target/nelisp target/nelisp.build-stamp
+      # `if-no-files-found: error' only fires when nothing matches, hence the
+      # explicit check above.  All paths share the `target/' prefix, so
+      # upload-artifact v4 strips it and the consumers download into `target'.
+      - name: Upload the standalone reader
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: |
+            target/nelisp
+            target/nelisp.cold
+            target/nelisp.build-stamp
+            target/nelisp.build-stamp.inputs
+            target/nelisp.version.json
+            target/nelisp.native-startup.el
+            target/nelisp.buffer-local-bytecode.tsv
+            target/nelisp.variable-alias-bytecode.tsv
+            target/nelisp-artifact-runtime.el
+            target/nelisp-artifact-runtime.el.nelc
+            target/nelisp-artifact-runtime.el.nelc.enable
+            target/nelisp-artifact-runtime.el.nelc.manifest.el
+            target/nelisp-core-bytecode-report.tsv
+            target/nelisp-prelude-bytecode-report.tsv
+            target/nelisp-regexp-bytecode-report.tsv
+            target/nelisp-vendor-bytecode-report.tsv
+            target/nelisp-boot-image/
+          if-no-files-found: error
+          # 7 days, not 1: "re-run failed jobs" a day later must still find the
+          # artifact (public repo, so storage costs nothing).
+          retention-days: 7
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
 
   smoke:
     # Phase 1 Week 1-2 smoke: byte-compile nelisp.el and the Linux-only
@@ -116,6 +329,13 @@ jobs:
     # parallel variants per OS, rather than as three sequential steps
     # here.  Expands as reader / evaluator modules land in Week 3+.
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    needs: build
+    # Parallel unit prewarm.  Linux runners have 4 vCPU and 16 GB; macOS (3 vCPU,
+    # about 7 GB) and Windows keep the serial default: four Emacs children do
+    # not fit the macOS runner's memory, and Windows is not measured.
+    env:
+      NELISP_STANDALONE_JOBS: ${{ matrix.os == 'ubuntu-latest' && '4' || '1' }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -131,6 +351,24 @@ jobs:
 
       # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
       # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-
+            units-${{ runner.os }}-
+
       - name: Set up GNU bytecode compiler (Linux / macOS)
         if: runner.os != 'Windows'
         uses: purcell/setup-emacs@v8.0
@@ -138,9 +376,17 @@ jobs:
           version: '31.1'
       - name: Set up GNU bytecode compiler (Windows)
         if: runner.os == 'Windows'
-        uses: jcs090218/setup-emacs-windows@master
-        with:
-          version: '31.1'
+        shell: bash
+        # setup-emacs-windows builds `emacs-31.1-x86_64.zip' for any version it
+        # does not list, a name GNU never published (404); fetch the real zip.
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/emacs-31.1.zip" \
+            https://ftp.gnu.org/gnu/emacs/windows/emacs-31/emacs-31.1.zip
+          mkdir -p "$RUNNER_TEMP/emacs-31.1"
+          unzip -q "$RUNNER_TEMP/emacs-31.1.zip" -d "$RUNNER_TEMP/emacs-31.1"
+          exe=$(find "$RUNNER_TEMP/emacs-31.1" -path '*/bin/emacs.exe' | head -n 1)
+          test -n "$exe" || { echo "emacs.exe not found in emacs-31.1.zip"; exit 1; }
+          cygpath -w "$(dirname "$exe")" >> "$GITHUB_PATH"
       - name: Record GNU bytecode compiler executable
         shell: bash
         run: |
@@ -179,7 +425,31 @@ jobs:
         shell: bash
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
-        run: python3 -m pip install --user --break-system-packages capstone pyelftools
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Shared binary from the `build' job.  It must come AFTER checkout:
+      # binary-size-ratchet refuses a binary older than any source file.
+      - name: Download the shared standalone reader
+        if: runner.os == 'Linux'
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: target
+      - name: Mark the shared binary executable
+        if: runner.os == 'Linux'
+        shell: bash
+        run: chmod +x target/nelisp
+      # Informational: `fresh' means the next make skips; `stale: REASON'
+      # means it will rebuild.  Never fails the job.
+      - name: Log the shared binary's stamp status
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
 
       - name: Set up Emacs (Windows)
         if: runner.os == 'Windows'
@@ -202,10 +472,21 @@ jobs:
           $exe.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           & $exe.FullName --version | Select-Object -First 1
 
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
       - name: Byte-compile
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: make compile
       - name: "Unsafe-surface inventory (Doc 170 sec 4.3 baseline gate)"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: make unsafe-inventory
       # Both scan tree text only -- no toolchain, no platform behaviour --
@@ -220,11 +501,11 @@ jobs:
       # files, 0 findings" and "no files matched" can be told apart in
       # the log.
       - name: "Namespace-boundary inventory (nl-ns ratchet); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make ns-inventory
       - name: "Unbalanced-paren check (nl-parens); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make parens-check
       # Catches a builtin that answers fboundp and then aborts the caller
@@ -232,7 +513,7 @@ jobs:
       # arms.  176 names today; the GATE-COUNT line is what stops an
       # empty list from reading as "every builtin has an arm".
       - name: "Reader surface audit (fboundp-liar builtins); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make reader-surface-audit
       # Derives the cross-package graph from provide/require.  Fails only
@@ -240,7 +521,7 @@ jobs:
       # than an absent one, because it is believed).  34 packages, 20
       # edges, acyclic today.
       - name: "Package dependency graph (nelisp-pkg); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make pkg-graph
       # The standalone smokes load dependencies by explicit path.  A
@@ -248,7 +529,7 @@ jobs:
       # instead of signalling -- so the list is checked here instead:
       # 9 files, 33 loads today.
       - name: "Hand-written load lists (nelisp-pkg); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make pkg-load-lists
       # Blocking again since 2026-08-19.  It was advisory because the ratio
@@ -262,12 +543,16 @@ jobs:
       # the current one 0.995/1.004/1.007, so the step can fail for a real
       # regression rather than by default.
       - name: "Doc 171 G4 native TCO benchmark (TCO-rewritten defun vs hand-written nl-loop, floor 0.95x; Linux is the only lane with the cc + objcopy native-exec toolchain)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make bench-aot-tco
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Windows') }}
         shell: bash
+        # Bound the build: on run 42748394272 the build Emacs printed
+        # "Re-entering top level after C stack overflow" in applyfn-reader
+        # and then sat until the 6 h job cap cancelled all four jobs.
+        timeout-minutes: 30
         run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64 NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       # Windows was the only lane that could run this, because arming the
       # redzone verifier needs the boot env probe and `nl_os_environ_init'
@@ -275,7 +560,7 @@ jobs:
       # since 2026-08-19, so the highest-value check in Doc 170 now runs on
       # the platform most of the development happens on.
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-checked NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       # Informational only, never gates (native-comp probe, 2026-09-19):
@@ -286,7 +571,7 @@ jobs:
       # instead of a guess.  `|| true' plus `continue-on-error' so an
       # absent function or a non-native-comp Emacs cannot fail this job.
       - name: "Native compilation probe (informational; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         continue-on-error: true
         run: |
@@ -303,14 +588,14 @@ jobs:
       # round moves live-blocks 382369 386374 390374 394374 398374 over the
       # default 5 rounds and the target fails, which is the point of having it.
       - name: "Standalone NeLisp checked-allocator soak (Doc 170 sec 5.3: redzone + leak blockers; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-checked-soak
       # 70 of the 245 shared-shadowing names are also native builtins, so
       # loading the prelude swaps the implementation underneath them.  This
       # requires both implementations to answer the same.
       - name: "Standalone NeLisp shadow differential (native builtins vs the prelude's redefinitions; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-shadow-smoke
 
@@ -326,14 +611,14 @@ jobs:
       # unscoped `verify' at the end of this lane would have called it
       # MISSING despite this step having just run and passed it.
       - name: "Emacs parity (differential vs stock Emacs; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate emacs-parity -- make emacs-parity
 
       # Checks on the checks: every gate must report how much it looked at,
       # and a name that ignores an argument Emacs defines must say so.
       - name: "Gate self-check and partial-argument inventory (Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           make prelude-toplevel-check
@@ -359,6 +644,7 @@ jobs:
       # rebuilds target/nelisp through the same cc + objcopy native-exec
       # toolchain `bench-aot-tco' above notes is Linux-only.
       - name: "AI toolchain check-tier gates (tools/ai/nelisp-ai.sh check); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux' && matrix.emacs-version == '31.1') }}
         # Emacs-version-independent: this exercises the standalone
         # BINARY; the host Emacs only builds it.  Running it on both
         # 29.4 and 30.1 did the same work twice -- measured, the 29.4
@@ -367,7 +653,6 @@ jobs:
         # Anything that actually differs BY Emacs version -- compile,
         # emacs-parity, the ERT suites, test-jit/test-nojit -- still
         # runs on both lanes.
-        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
         shell: bash
         run: |
           # gate-mutation is not here: it is 1257 of this lane's 2784
@@ -394,13 +679,10 @@ jobs:
       # absence, so it costs nothing extra if an earlier step in this lane
       # already built one).
       - name: "Compat-table shadowing ratchet (tools/ai/nelisp-ai.sh gate emacs-compat); Emacs 31.1"
-        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux' && matrix.emacs-version == '31.1') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate emacs-compat -- make emacs-compat
-      - name: "Differential fuzz vs host Emacs (tools/ai/nelisp-ai.sh gate parity-fuzz); Linux x86_64, Emacs 31.1"
-        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate parity-fuzz -- make parity-fuzz
+      # parity-fuzz runs in its own `parity-fuzz' job (needs: build).
 
       # Placed before the ERT suite so a pre-existing test failure does
       # not skip the Mach-O toolchain-acceptance signal.
@@ -414,7 +696,7 @@ jobs:
       # macOS "Upload gate reports" step further down carries the report
       # this now produces to the `verify' job.
       - name: Mach-O acceptance (NeLisp-emitted arm64 exec + MH_OBJECT vs codesign/clang/ld64; macOS)
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'macOS') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate macho-acceptance-test -- make macho-acceptance-test
 
@@ -430,16 +712,17 @@ jobs:
       # like `emacs-parity' above, had no report producer anywhere in
       # this workflow before this pass.
       - name: Standalone NeLisp reader->eval (text -> AOT reader, zero Rust; x86_64 Linux)
-        if: runner.os == 'Linux'
+        id: reader-test
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate standalone-reader-test -- make standalone-reader-test
       - name: Set up Python for project CLI integration tests
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: "Package resolver and lock contracts (tools/ai/nelisp-ai.sh gate package-resolver); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-resolver -- make package-resolver
       # Each of the three steps below wraps its whole suite through
@@ -449,52 +732,52 @@ jobs:
       # class alone is the separate `project-cli-contract' gate further down,
       # which needs no runtime build and so can run earlier in CI.
       - name: "Project creation, run, and test integration (tools/ai/nelisp-ai.sh gate project-cli-integration); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-cli-integration -- make project-cli-integration
       - name: "Native selected-test execution and machine-readable failure contracts (tools/ai/nelisp-ai.sh gate project-test-runner); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-test-runner -- make project-test-runner
       - name: "Benchmark completion, input identity, and bounded execution contracts (tools/ai/nelisp-ai.sh gate project-bench); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-bench -- make project-bench
       # Contract suites, each wrapped through `nelisp-ai.sh gate' so it writes
       # target/gates/<name>.json from its GATE-COUNT line; the Makefile
       # targets and tools/gate-mutations.txt rows carry the details.
       - name: "Native builtin fixed-arity contract (tools/ai/nelisp-ai.sh gate builtin-arity); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate builtin-arity -- make builtin-arity
       - name: "defvar/defconst/let dynamic-binding contract (tools/ai/nelisp-ai.sh gate special-variables); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate special-variables -- make special-variables
       - name: "Public make-symbol identity contract (tools/ai/nelisp-ai.sh gate symbol-identity); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate symbol-identity -- make symbol-identity
       - name: "tools/nelisp-reference-parity.py false-positive controls (tools/ai/nelisp-ai.sh gate reference-parity); host-only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate reference-parity -- make reference-parity
       - name: "Language server contract (tools/ai/nelisp-ai.sh gate lsp-server); host-only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate lsp-server -- make lsp-server
       # Internal tag-16 symbol representation, checked on a private fixture
       # binary built by test/nelisp-native-symbol-build.el.
       - name: "Internal tag-16 symbol representation (tools/ai/nelisp-ai.sh gate native-symbol-test); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-symbol-test -- make native-symbol-test
       - name: "Project source documentation generation (tools/ai/nelisp-ai.sh gate project-doc); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-doc -- make project-doc
       - name: Set up Node for VS Code extension validation
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -515,88 +798,59 @@ jobs:
       # there.  The "(network)" labels stay because they say what those
       # steps touch, not because they are suspected of anything.
       - name: "VS Code: install xvfb (network)"
-        if: runner.os == 'Linux'
+        id: vscode-xvfb
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
       - name: "VS Code: npm ci (network)"
-        if: runner.os == 'Linux'
+        id: vscode-npm
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm ci --ignore-scripts
       - name: "VS Code: grammar tests"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm run test:grammar
       - name: "VS Code: process tests"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm run test:process
       - name: "VS Code: package the extension"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm run package
       - name: "VS Code: real extension host (xvfb)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && steps.vscode-xvfb.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: xvfb-run -a npm run test:package
       - name: "Package HTTPS acquisition and cache contracts (tools/ai/nelisp-ai.sh gate package-store); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-store -- make package-store
       - name: "Artifact-service receipts, reads and error identities (tools/ai/nelisp-ai.sh gate artifact-service); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate artifact-service -- make artifact-service
       - name: "Project manifest edits and failed publication recovery (tools/ai/nelisp-ai.sh gate project-manifest); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-manifest -- make project-manifest
       - name: "Registry HTTPS snapshots and CLI search integration (tools/ai/nelisp-ai.sh gate package-registry); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-registry -- make package-registry
-      - name: "Locked project dependencies and isolated executable (tools/ai/nelisp-ai.sh gate project-packages); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-packages -- make project-packages
-      - name: Project CLI result contract (no runtime build)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-cli-contract -- make project-cli-contract
-      # Each of the five steps below builds its own project executable
-      # through host Emacs, or exercises the existing standalone binary
-      # directly; none needs a fresh target/nelisp build of its own.
-      - name: "Native packaging acceptance (tools/ai/nelisp-ai.sh gate project-build); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-build -- make project-build
-      - name: "Profiled standalone ELF: recursive counts and failure reports (tools/ai/nelisp-ai.sh gate project-profile-build); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-profile-build -- make project-profile-build
-      - name: "Debug artifacts remain inspectable without source, host Emacs, or execution (tools/ai/nelisp-ai.sh gate project-debug); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-debug -- make project-debug
-      - name: "Run and isolated ELF share lossless application arguments and environment (tools/ai/nelisp-ai.sh gate project-arguments); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-arguments -- make project-arguments
-      - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
       # target/nelisp already exists from the step above (its own
       # Makefile prerequisite is conditional, same as `emacs-parity'
       # further up, so this does not rebuild it).
       - name: "Binary-size ratchet (target/nelisp vs pinned baseline, tools/nelisp-binary-size-baseline.txt; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.reader-test.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate binary-size-ratchet -- make binary-size-ratchet
       # Wrapped through `nelisp-ai.sh gate' (rather than bare `make
@@ -605,7 +859,7 @@ jobs:
       # a required gate with no report producer anywhere in this workflow
       # before this pass.
       - name: Standalone NeLisp SELF-HOST (interpreter compiles recursive fact -> native ELF, zero emacs; x86_64 Linux)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate standalone-selfhost-test -- make standalone-selfhost-test
       # Three of `nelisp-ai.sh''s binary-tier gates were in no CI lane at
@@ -615,7 +869,7 @@ jobs:
       # builds target/nelisp itself if it is not already there, the same
       # way `standalone-selfhost-test' above does.
       - name: "AI toolchain binary-tier gate: native artifact (tools/ai/nelisp-ai.sh native-artifact); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh native-artifact
       # WS-F: `ptr-call'/`syscall-direct' exist only in the standalone
@@ -628,36 +882,14 @@ jobs:
       # step writes target/gates/native-unit-repl-smoke.json, matching the
       # `standalone-selfhost-test'/`standalone-reader-test' steps above.
       - name: "AI toolchain binary-tier gate: native-unit REPL replacement smoke (tools/ai/nelisp-ai.sh gate native-unit-repl-smoke); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-unit-repl-smoke -- make native-unit-repl-smoke
-      # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
-      # `ffi:library'/`ffi:defun' over the existing `nl-ffi-call' reader
-      # builtin exercised above by standalone-reader-ffi-smoke).  Rebuilds
-      # the dynamic reader itself (NELISP_READER_DYNAMIC=1), the same way
-      # that gate does, so it does not depend on run order with it.
-      - name: "AI toolchain binary-tier gate: declarative FFI surface (tools/ai/nelisp-ai.sh gate ffi-dsl); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl
-      # FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a
-      # pure-elisp ELF loader, so unlike `ffi-dsl' above this runs on the
-      # DEFAULT STATIC reader (no NELISP_READER_DYNAMIC) -- that is the
-      # whole point of this gate.  Builds its own small test `.so' with
-      # `cc' at gate time (already relied on by this Linux lane's own
-      # native-exec toolchain, see `bench-aot-tco' above); the Makefile
-      # target itself turns any absence of `cc', or a non-linux-x86_64
-      # gate target, into a GATE-SKIP rather than a failure.
-      - name: "AI toolchain binary-tier gate: pure-elisp ELF loader (tools/ai/nelisp-ai.sh gate ffi-loader); Linux x86_64"
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate ffi-loader -- make ffi-loader
-
       # `make compile' above covers src/ and packages/*/src/ only; lisp/ has
       # never been byte-compiled by CI.  Linux-only because one lane asserting
       # it is enough and the baseline counts are Emacs-version sensitive.
       - name: "Byte-compile lisp/ against its baseline (tools/ai/nelisp-ai.sh gate lisp-byte-compile); Linux"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate lisp-byte-compile -- make lisp-byte-compile
       # These two suites run private copies of
@@ -665,20 +897,85 @@ jobs:
       # in temporary fixture repositories to check the gate tooling's own
       # failure handling, so they stay plain steps; a nonzero exit fails the job.
       - name: Byte-compiler process failure controls
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: python3 test/nelisp-lisp-compile-gate-test.py
       - name: Mutation harness restoration failure controls
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: python3 test/nelisp-mutation-recovery-test.py
+      # Structure tests of this workflow itself; they parse ci.yml with pyyaml,
+      # which is installed explicitly (no silent skip when it is absent).
+      - name: CI workflow structure tests
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: |
+          python3 -m pip install --user --break-system-packages pyyaml==6.0.3
+          python3 test/nelisp-ci-unit-cache-test.py
+          python3 test/nelisp-ci-mutation-trigger-test.py
+          python3 test/nelisp-variant-outputs-test.py
+          python3 test/nelisp-ci-build-job-test.py
+          python3 test/nelisp-ci-gate-isolation-test.py
+      - name: Gate output streaming and reader-smoke timing
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: |
+          python3 test/nelisp-ai-gate-stream-test.py
+          python3 test/nelisp-reader-smokes-timing-test.py
+      - name: Mutation harness row budgets and timing report
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: |
+          python3 test/nelisp-gate-mutation-row-timeout-test.py
+          python3 test/nelisp-gate-mutation-shard-test.py
 
       # Arena boundary-reclaim zeroing.  Linux x86_64 only: it drives the
       # standalone reader binary, which is where the defect lived.
       - name: "Arena reclaim zeroing / sexp-clone bind smoke (tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke -- make nelisp-sexp-clone-bind-smoke
+
+      # Small-string block leak: empty sblocks must be unmapped even while a
+      # stale stack word pins another block.  Linux only (reads /proc).
+      - name: "Small-string block leak smoke (tools/ai/nelisp-ai.sh gate standalone-string-block-leak-smoke); Linux"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate standalone-string-block-leak-smoke -- make standalone-string-block-leak-smoke
+
+      # Host-only hermetic test of the standalone-reader build stamp.  It lives
+      # here, not in the fast `gates' job, because that job uploads no gate
+      # report and `verify' requires one for every gates.expected entry.
+      - name: "Build-stamp skip logic (tools/ai/nelisp-ai.sh gate build-stamp); host only, no runtime build"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate build-stamp -- make build-stamp
+
+      # Informational: shows whether the downloaded binary survived the job
+      # or something rebuilt it.
+      - name: Log the stamp status again (end of job)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
+
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') && runner.os == 'Linux'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
 
       # Every Linux gate report this lane produced.  The `verify' job
       # collects these together with the ert, mutation, and subsystem
@@ -707,6 +1004,223 @@ jobs:
           path: target/gates/*.json
           if-no-files-found: error
 
+  smoke-linux-b:
+    # Second Linux half of the former `smoke' job, split off so the two run in
+    # parallel (the Linux lane of `smoke' alone took 51-64 min).  Same setup as
+    # `smoke' (shared standalone binary from `build'; every gate here either
+    # uses that binary or builds its own project executable through host
+    # Emacs), no matrix: Linux and Emacs 31.1 only.  The project build family
+    # (project-build, -profile-build, -debug, -arguments, -distribution,
+    # -packages, -cli-contract) and the two FFI binary-tier gates moved here;
+    # `smoke' keeps everything else, including the reader-test ->
+    # binary-size-ratchet producer/consumer pair.  Its gate reports upload as
+    # `gate-reports-smoke-b'; `verify' downloads every `gate-reports-*'.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: build
+    env:
+      NELISP_STANDALONE_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gate-mutation's changed-only mode diffs against the merge base,
+          # which a shallow clone does not have.
+          fetch-depth: 0
+
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-
+            units-${{ runner.os }}-
+
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" != Windows ] && command -v nix >/dev/null; then
+            # The recorded store path stays valid; drop the profile entry so
+            # the host Emacs install below does not collide on shared files.
+            nix-store --add-root "$RUNNER_TEMP/nelisp-gnu31-root" --indirect \
+              --realise "$(dirname "$(dirname "$compiler")")" >/dev/null
+            nix profile remove --all 2>/dev/null || nix profile remove --regex '.*' 2>/dev/null \
+              || nix profile remove '.*'
+          fi
+
+      - name: Set up Emacs (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Install rooted-protocol decoder dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        # The linux-x86_64 standalone build disassembles its rooted protocol
+        # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Shared binary from the `build' job.  It must come AFTER checkout:
+      # binary-size-ratchet refuses a binary older than any source file.
+      - name: Download the shared standalone reader
+        if: runner.os == 'Linux'
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: target
+      - name: Mark the shared binary executable
+        if: runner.os == 'Linux'
+        shell: bash
+        run: chmod +x target/nelisp
+      # Informational: `fresh' means the next make skips; `stale: REASON'
+      # means it will rebuild.  Never fails the job.
+      - name: Log the shared binary's stamp status
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
+
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
+      - name: Set up Python for project CLI integration tests
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
+      # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
+      - name: "Locked project dependencies and isolated executable (tools/ai/nelisp-ai.sh gate project-packages); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-packages -- make project-packages
+      - name: Project CLI result contract (no runtime build)
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-cli-contract -- make project-cli-contract
+      # Each of the five steps below builds its own project executable
+      # through host Emacs, or exercises the existing standalone binary
+      # directly; none needs a fresh target/nelisp build of its own.
+      - name: "Native packaging acceptance (tools/ai/nelisp-ai.sh gate project-build); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-build -- make project-build
+      - name: "Profiled standalone ELF: recursive counts and failure reports (tools/ai/nelisp-ai.sh gate project-profile-build); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-profile-build -- make project-profile-build
+      - name: "Debug artifacts remain inspectable without source, host Emacs, or execution (tools/ai/nelisp-ai.sh gate project-debug); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-debug -- make project-debug
+      - name: "Run and isolated ELF share lossless application arguments and environment (tools/ai/nelisp-ai.sh gate project-arguments); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-arguments -- make project-arguments
+      # `ffi:library'/`ffi:defun' over the existing `nl-ffi-call' reader
+      # builtin exercised above by standalone-reader-ffi-smoke).  Rebuilds
+      # the dynamic reader itself (NELISP_READER_DYNAMIC=1), the same way
+      # that gate does, so it does not depend on run order with it.
+      - name: "AI toolchain binary-tier gate: declarative FFI surface (tools/ai/nelisp-ai.sh gate ffi-dsl); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl
+      # FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a
+      # pure-elisp ELF loader, so unlike `ffi-dsl' above this runs on the
+      # DEFAULT STATIC reader (no NELISP_READER_DYNAMIC) -- that is the
+      # whole point of this gate.  Builds its own small test `.so' with
+      # `cc' at gate time (already relied on by this Linux lane's own
+      # native-exec toolchain, see `bench-aot-tco' above); the Makefile
+      # target itself turns any absence of `cc', or a non-linux-x86_64
+      # gate target, into a GATE-SKIP rather than a failure.
+      - name: "AI toolchain binary-tier gate: pure-elisp ELF loader (tools/ai/nelisp-ai.sh gate ffi-loader); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate ffi-loader -- make ffi-loader
+
+      # Informational: shows whether the downloaded binary survived the job
+      # or something rebuilt it.
+      - name: Log the stamp status again (end of job)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
+
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') && runner.os == 'Linux'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+
+      # Every Linux gate report this lane produced.  The `verify' job
+      # collects these together with the ert, mutation, and subsystem
+      # jobs' and checks the union against gates.expected; on its own,
+      # no single job can any longer answer "did every required gate run".
+      - name: Upload gate reports (Linux 31.1 lane, second half)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-smoke-b
+          path: target/gates/*.json
+          if-no-files-found: error
+
   ert:
     # The ERT suite's three variants, split out of `smoke' into their
     # own parallel matrix (2026-09-19): they used to be three sequential
@@ -717,6 +1231,13 @@ jobs:
     # matrix cell runs exactly one of them.
     name: "ert ${{ matrix.os }} / ${{ matrix.variant }}"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    needs: build
+    # Parallel unit prewarm.  Linux runners have 4 vCPU and 16 GB; macOS (3 vCPU,
+    # about 7 GB) and Windows keep the serial default: four Emacs children do
+    # not fit the macOS runner's memory, and Windows is not measured.
+    env:
+      NELISP_STANDALONE_JOBS: ${{ matrix.os == 'ubuntu-latest' && '4' || '1' }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -725,9 +1246,31 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Same full history as the build job: the stamp key embeds
+          # `git describe', which differs between a shallow and a full clone.
+          fetch-depth: 0
 
       # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
       # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.variant }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-${{ matrix.variant }}-
+            units-${{ runner.os }}-
+
       - name: Set up GNU bytecode compiler (Linux / macOS)
         if: runner.os != 'Windows'
         uses: purcell/setup-emacs@v8.0
@@ -735,9 +1278,17 @@ jobs:
           version: '31.1'
       - name: Set up GNU bytecode compiler (Windows)
         if: runner.os == 'Windows'
-        uses: jcs090218/setup-emacs-windows@master
-        with:
-          version: '31.1'
+        shell: bash
+        # setup-emacs-windows builds `emacs-31.1-x86_64.zip' for any version it
+        # does not list, a name GNU never published (404); fetch the real zip.
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/emacs-31.1.zip" \
+            https://ftp.gnu.org/gnu/emacs/windows/emacs-31/emacs-31.1.zip
+          mkdir -p "$RUNNER_TEMP/emacs-31.1"
+          unzip -q "$RUNNER_TEMP/emacs-31.1.zip" -d "$RUNNER_TEMP/emacs-31.1"
+          exe=$(find "$RUNNER_TEMP/emacs-31.1" -path '*/bin/emacs.exe' | head -n 1)
+          test -n "$exe" || { echo "emacs.exe not found in emacs-31.1.zip"; exit 1; }
+          cygpath -w "$(dirname "$exe")" >> "$GITHUB_PATH"
       - name: Record GNU bytecode compiler executable
         shell: bash
         run: |
@@ -776,7 +1327,31 @@ jobs:
         shell: bash
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
-        run: python3 -m pip install --user --break-system-packages capstone pyelftools
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Shared binary from the `build' job.  It must come AFTER checkout:
+      # binary-size-ratchet refuses a binary older than any source file.
+      - name: Download the shared standalone reader
+        if: runner.os == 'Linux'
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: target
+      - name: Mark the shared binary executable
+        if: runner.os == 'Linux'
+        shell: bash
+        run: chmod +x target/nelisp
+      # Informational: `fresh' means the next make skips; `stale: REASON'
+      # means it will rebuild.  Never fails the job.
+      - name: Log the shared binary's stamp status
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
 
       - name: Set up Emacs (Windows)
         if: runner.os == 'Windows'
@@ -799,6 +1374,54 @@ jobs:
           $exe.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           & $exe.FullName --version | Select-Object -First 1
 
+      # The Windows Emacs zip ships byte-compiled lisp only (no .el, no .el.gz).
+      # Three ERT files compare the GNU 31.1 bytecomp.el / comp.el / cl-seq.el
+      # sources with pinned hashes, so install the matching plain .el files
+      # from the GNU source tarball next to the .elc files (existing files are
+      # kept).  The test helpers and nelisp-bytecode-compiler-input-dialect
+      # accept plain .el through the pinned content SHA-256.
+      - name: Provide GNU Emacs 31.1 lisp sources (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          if [ ! -f emacs-31.1-lisp-src/emacs-lisp/bytecomp.el ]; then
+            curl -fsSL --retry 3 -o emacs-31.1.tar.gz \
+              https://ftp.gnu.org/gnu/emacs/emacs-31.1.tar.gz
+            rm -rf emacs-31.1-lisp-src
+            mkdir emacs-31.1-lisp-src
+            # Only the lisp/ tree's .el files; --force-local keeps tar from
+            # reading a drive letter as a remote host.
+            tar --force-local -xzf emacs-31.1.tar.gz --strip-components=2 \
+              -C emacs-31.1-lisp-src --wildcards 'emacs-31.1/lisp/*.el'
+            rm -f emacs-31.1.tar.gz
+          fi
+          cd "$GITHUB_WORKSPACE"
+          lispdir=$(emacs --batch -Q --eval '(princ (file-name-directory (locate-library "subr")))')
+          test -d "$lispdir" || { echo "lisp directory not found: $lispdir"; exit 1; }
+          # Never overwrite what the install already has.
+          cp -rn "$RUNNER_TEMP/emacs-31.1-lisp-src/." "$lispdir"
+          # Fail here, not in a test, if the sources are not the pinned ones.
+          emacs --batch -Q -L lisp -l nelisp-bytecode-compiler-input-dialect \
+            --eval '(let ((dir (file-name-directory (locate-library "bytecomp"))))
+                      (dolist (n (list "bytecomp" "comp" "cl-seq"))
+                        (unless (file-readable-p (expand-file-name (concat n ".el") dir))
+                          (error "missing %s.el in %s" n dir)))
+                      (dolist (n (list "bytecomp" "comp"))
+                        (unless (equal (nelisp-bytecode-compiler-input--gnu-source-content-sha256 dir n)
+                                       (alist-get (intern n) nelisp-bytecode-compiler-input--gnu-source-content-sha256))
+                          (error "%s.el does not match the pinned GNU 31.1 content hash" n))))'
+
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
       # Same build, and the same `if:', `smoke' used to run before its
       # own ERT steps: the suite's standalone-dependent cases `ert-skip'
       # when `target/nelisp' is absent (e.g.
@@ -808,12 +1431,16 @@ jobs:
       # ahead of its ERT steps there either, so those cases keep
       # skipping on macOS here too -- unchanged from today.
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-checked NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Windows') }}
         shell: bash
+        # Bound the build: on run 42748394272 the build Emacs printed
+        # "Re-entering top level after C stack overflow" in applyfn-reader
+        # and then sat until the 6 h job cap cancelled all four jobs.
+        timeout-minutes: 30
         run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64 NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
 
       # `make test' alone (as this ran before) never writes a gate report;
@@ -829,7 +1456,7 @@ jobs:
       # through `test-fast' (see the Makefile), which never does -- so
       # the upload step further down is scoped to this variant.
       - name: Run smoke tests
-        if: matrix.variant == 'plain'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (matrix.variant == 'plain') }}
         shell: bash
         run: make clean && bash tools/ai/nelisp-ai.sh test
       # `nelisp-jit-enabled' is nil by default and the only bindings of
@@ -841,7 +1468,7 @@ jobs:
       # declined, and arity violations surfacing as the host's error
       # instead of nelisp-eval-error.  This keeps that honest.
       - name: Run smoke tests with the JIT enabled
-        if: matrix.variant == 'jit'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (matrix.variant == 'jit') }}
         shell: bash
         run: make test-jit
       # `nelisp-jit-enabled' defaults to t, so the step above and the
@@ -851,9 +1478,35 @@ jobs:
       # three semantic differences from the interpreter in it precisely
       # because nothing ran it.
       - name: Run smoke tests with the JIT disabled
-        if: matrix.variant == 'nojit'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (matrix.variant == 'nojit') }}
         shell: bash
         run: make test-nojit
+
+      # Informational: shows whether the downloaded binary survived the job
+      # or something rebuilt it.
+      - name: Log the stamp status again (end of job)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
+
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') && runner.os == 'Linux'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.variant }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
 
       # Only the `plain' variant writes a gate report (see above), so
       # this is scoped to it; `if-no-files-found: error' would otherwise
@@ -889,11 +1542,23 @@ jobs:
   # ------------------------------------------------------------------
 
   mutation:
-    name: "gate-mutation shard ${{ matrix.shard }}/4"
+    name: "gate-mutation shard ${{ matrix.shard }}/12"
     runs-on: ubuntu-latest
+    needs: build
+    # Hard stop for a stuck shard.  The harness budget below (90 min of rows)
+    # plus checkout, setup, the final report and upload fit inside 120.
+    timeout-minutes: 120
+    # Parallel unit prewarm on the 4 vCPU / 16 GB Linux runner.  Output is
+    # identical for every JOBS value (the stamp key ignores it).
+    env:
+      NELISP_STANDALONE_JOBS: '4'
     strategy:
       matrix:
-        shard: [0, 1, 2, 3]
+        # Six, not four (2026-11-10): with the byte-compiled toolchain every
+        # row runs, and four shards took 2759-4369 s each on run 42806145933
+        # while still leaving rows NOT RUN on the 5400 s budget.  About 120
+        # rows over six shards is about 20 per shard.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -901,13 +1566,91 @@ jobs:
           # changed-only diffs against the merge base, which a shallow
           # clone does not have.
           fetch-depth: 0
+      # Decide whether this run sweeps.  The job is NOT skipped with a
+      # job-level `if:' because `verify' needs it and fails a gate that has
+      # no report; instead the costly steps below are gated on this output
+      # and a skipped run still uploads a reasoned GATE-SKIP report, which
+      # verify (pass|skip) and the shard merge accept.  The github.* values
+      # arrive through env, never interpolated into the script body.
+      - name: gate-mutation trigger policy
+        id: policy
+        shell: bash
+        env:
+          POLICY_EVENT: ${{ github.event_name }}
+          POLICY_REF: ${{ github.ref }}
+          POLICY_BASE_REF: ${{ github.base_ref }}
+          POLICY_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          POLICY_DISPATCH_INPUT: ${{ inputs.gate_mutation }}
+        run: |
+          set -eu
+          decide() {
+            echo "run=$1" >> "$GITHUB_OUTPUT"
+            echo "reason=$2" >> "$GITHUB_OUTPUT"
+            echo "gate-mutation policy: run=$1 ($2)"
+          }
+          case "$POLICY_REF" in
+            refs/heads/main|refs/heads/master)
+              decide true 'integration branch: full sweep'
+              exit 0 ;;
+          esac
+          case "$POLICY_EVENT" in
+            pull_request)
+              case "$POLICY_BASE_REF" in
+                main|master)
+                  decide true "pull request into $POLICY_BASE_REF: narrowed sweep" ;;
+                *)
+                  if printf '%s' "$POLICY_LABELS_JSON" | python3 -c 'import json,sys; sys.exit(0 if "gate-mutation" in (json.load(sys.stdin) or []) else 1)'; then
+                    decide true "pull request into $POLICY_BASE_REF with the gate-mutation label"
+                  else
+                    decide false "pull request into $POLICY_BASE_REF without the gate-mutation label"
+                  fi ;;
+              esac ;;
+            workflow_dispatch)
+              if [ "$POLICY_DISPATCH_INPUT" = true ]; then
+                decide true 'manual dispatch with gate_mutation=true'
+              else
+                decide false 'manual dispatch without gate_mutation'
+              fi ;;
+            *)
+              decide true "unexpected event $POLICY_EVENT: failing open" ;;
+          esac
+      - name: gate-mutation skipped by trigger policy
+        if: steps.policy.outputs.run != 'true'
+        shell: bash
+        env:
+          POLICY_REASON: ${{ steps.policy.outputs.reason }}
+        run: |
+          # Same reporting path as the harness's own GATE-SKIP cases, no
+          # Emacs needed.
+          bash tools/ai/nelisp-ai.sh gate gate-mutation -- \
+            printf 'GATE-SKIP trigger policy: %s\n' "$POLICY_REASON"
       # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
       # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        if: steps.policy.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.shard }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-${{ matrix.shard }}-
+            units-${{ runner.os }}-
+
       - name: Set up GNU bytecode compiler (Linux / macOS)
+        if: steps.policy.outputs.run == 'true'
         uses: purcell/setup-emacs@v8.0
         with:
           version: '31.1'
       - name: Record GNU bytecode compiler executable
+        if: steps.policy.outputs.run == 'true'
         shell: bash
         run: |
           emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
@@ -936,25 +1679,52 @@ jobs:
           fi
 
       - name: Set up Emacs
+        if: steps.policy.outputs.run == 'true'
         uses: purcell/setup-emacs@v8.0
         with:
           version: '31.1'
       - name: Install rooted-protocol decoder dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: steps.policy.outputs.run == 'true' && runner.os == 'Linux'
         shell: bash
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
-        run: python3 -m pip install --user --break-system-packages capstone pyelftools
-      - name: "gate-mutation, shard ${{ matrix.shard }} of 4"
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Shared binary from the `build' job.  It must come AFTER checkout:
+      # binary-size-ratchet refuses a binary older than any source file.
+      - name: Download the shared standalone reader
+        if: steps.policy.outputs.run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: target
+      - name: Mark the shared binary executable
+        if: steps.policy.outputs.run == 'true'
+        shell: bash
+        run: chmod +x target/nelisp
+      # Informational: `fresh' means the next make skips; `stale: REASON'
+      # means it will rebuild.  Never fails the job.
+      - name: Log the shared binary's stamp status
+        if: steps.policy.outputs.run == 'true'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: steps.policy.outputs.run == 'true'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
+      - name: "gate-mutation, shard ${{ matrix.shard }} of 12"
+        if: steps.policy.outputs.run == 'true'
         shell: bash
         run: |
           # The rows are independent -- each injects a defect, runs the
           # gate, and restores the file before the next begins -- so they
-          # split cleanly.  Shards are taken modulo, not as contiguous
-          # blocks: the slow rows (six rebuild the binary, six run a
-          # scoped ERT suite) are clustered in the table and contiguous
-          # blocks would pile them into one shard.  Measured: 3/2/3/4 of
-          # the twelve slow rows per shard.
+          # split cleanly.  Rows are assigned to shards longest-
+          # processing-time first from the committed per-row seconds in
+          # tools/gate-mutation-weights.txt (tools/gate-mutation-shard.awk);
+          # modulo left shard walls at 951-2313 s on run 43141614135.
+          # Refresh the weights with tools/gate-mutation-weights-update.py
+          # from the gate-reports-mutation-* artifacts.
           #
           # On the integration branch the full sweep runs; branches and
           # PRs get it narrowed to the rows their diff can affect, with
@@ -973,30 +1743,103 @@ jobs:
             done
             # No base found: leave it unset so the sweep stays full.
           fi
-          NELISP_GATE_MUTATION_SHARD='${{ matrix.shard }}/4' \
+          # 5400 s = 90 min of rows: a row starts only if its estimate still
+          # worst case fits: an ordinary row is charged its 1200 s row limit,
+          # a rebuild row 3900 s (build 2700 + row 1200), a row of a gate
+          # that builds a variant its build limit(s).  A row that does not
+          # fit prints NOT RUN and fails the shard, while later rows that fit
+          # still run.  Every row is killed by its hard limits within its
+          # charge, so setup and the final report fit in the rest of the
+          # job's 120 minutes.
+          NELISP_GATE_MUTATION_SHARD_BUDGET=5400 \
+          NELISP_GATE_MUTATION_SHARD='${{ matrix.shard }}/12' \
             bash tools/ai/nelisp-ai.sh gate gate-mutation -- make gate-mutation
+      # Informational: shows whether the downloaded binary survived the job
+      # or something rebuilt it.
+      - name: Log the stamp status again (end of job)
+        if: always() && steps.policy.outputs.run == 'true'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && steps.policy.outputs.run == 'true'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
+
+      # No cache/save here: every injected build works on a private copy of
+      # the unit cache, so the restored cache is unchanged and four shards
+      # saving near-identical caches would be waste.
+
       - name: Upload gate report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-reports-mutation-${{ matrix.shard }}
-          path: target/gates/*.json
+          # The row-accounting sidecar lives outside target/gates (local
+          # `verify' reads every *.json there); the merge step finds it by its
+          # `shard' field.
+          path: |
+            target/gates/*.json
+            target/gate-mutation-rows/*.json
           if-no-files-found: error
 
   subsystems:
-    name: "tier ${{ matrix.tier }}"
+    name: "tier ${{ matrix.tier }}${{ matrix.group && format(' ({0})', matrix.group) || '' }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: build
+    # Parallel unit prewarm on the 4 vCPU / 16 GB Linux runner.  Output is
+    # identical for every JOBS value (the stamp key ignores it).
+    env:
+      NELISP_STANDALONE_JOBS: '4'
+      # Process-pool size of the substrate-parity probes (output is identical
+      # for every value; default 1 is fully serial).
+      NELISP_SUBSTRATE_PARITY_JOBS: '4'
     strategy:
       matrix:
-        # Split by cost, measured: extras 519 s, smokes 209 s, perf 113 s.
-        # extras alone is longer than the other two together, so it gets
-        # its own job rather than being paired with one of them.
-        tier: [extras, smokes, perf]
+        # `extras' is split into four legs by cost (see cmd_extras in
+        # tools/ai/nelisp-ai.sh): parity is the long serial-launch gate,
+        # variants holds the two cache-sensitive variant rebuilds, build and
+        # smokes share the rest.  Every gate keeps its own report, so a leg
+        # that does not run shows up as MISSING gates in verify.
+        include:
+          - tier: extras
+            group: parity
+          - tier: extras
+            group: variants
+          - tier: extras
+            group: build
+          - tier: extras
+            group: smokes
+          - tier: smokes
+          - tier: perf
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Same full history as the build job: the stamp key embeds
+          # `git describe', which differs between a shallow and a full clone.
+          fetch-depth: 0
       # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
       # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ matrix.group }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ matrix.group }}-
+            units-${{ runner.os }}-
+
       - name: Set up GNU bytecode compiler (Linux / macOS)
         uses: purcell/setup-emacs@v8.0
         with:
@@ -1038,22 +1881,228 @@ jobs:
         shell: bash
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
-        run: python3 -m pip install --user --break-system-packages capstone pyelftools
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Shared binary from the `build' job.  It must come AFTER checkout:
+      # binary-size-ratchet refuses a binary older than any source file.
+      - name: Download the shared standalone reader
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: target
+      - name: Mark the shared binary executable
+        shell: bash
+        run: chmod +x target/nelisp
+      # Informational: `fresh' means the next make skips; `stale: REASON'
+      # means it will rebuild.  Never fails the job.
+      - name: Log the shared binary's stamp status
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
       - name: "AI toolchain tier: ${{ matrix.tier }}"
         shell: bash
-        run: bash tools/ai/nelisp-ai.sh ${{ matrix.tier }}
+        run: bash tools/ai/nelisp-ai.sh ${{ matrix.tier }} ${{ matrix.group }}
+      # Informational: shows whether the downloaded binary survived the job
+      # or something rebuilt it.
+      - name: Log the stamp status again (end of job)
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
+
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ matrix.group }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+
       - name: Upload gate reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gate-reports-${{ matrix.tier }}
+          name: gate-reports-${{ matrix.tier }}${{ matrix.group && format('-{0}', matrix.group) || '' }}
+          path: target/gates/*.json
+          if-no-files-found: error
+
+  # Moved out of `smoke' (ubuntu leg, about 22 min) so it runs in parallel.
+  # Same command, same setup (host Emacs 31.1, shared standalone reader);
+  # the report goes to the gate-reports-parity-fuzz artifact, which verify
+  # collects through its gate-reports-* pattern.
+  parity-fuzz:
+    name: "parity-fuzz (differential fuzz vs host Emacs)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: build
+    # Parallel unit prewarm on the 4 vCPU / 16 GB Linux runner.  Output is
+    # identical for every JOBS value (the stamp key ignores it).
+    env:
+      NELISP_STANDALONE_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Same full history as the build job: the stamp key embeds
+          # `git describe', which differs between a shallow and a full clone.
+          fetch-depth: 0
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-
+            units-${{ runner.os }}-
+
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" != Windows ] && command -v nix >/dev/null; then
+            # The recorded store path stays valid; drop the profile entry so
+            # the host Emacs install below does not collide on shared files.
+            nix-store --add-root "$RUNNER_TEMP/nelisp-gnu31-root" --indirect \
+              --realise "$(dirname "$(dirname "$compiler")")" >/dev/null
+            nix profile remove --all 2>/dev/null || nix profile remove --regex '.*' 2>/dev/null \
+              || nix profile remove '.*'
+          fi
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Install rooted-protocol decoder dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        # The linux-x86_64 standalone build disassembles its rooted protocol
+        # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Shared binary from the `build' job.  It must come AFTER checkout:
+      # binary-size-ratchet refuses a binary older than any source file.
+      - name: Download the shared standalone reader
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: target
+      - name: Mark the shared binary executable
+        shell: bash
+        run: chmod +x target/nelisp
+      # Informational: `fresh' means the next make skips; `stale: REASON'
+      # means it will rebuild.  Never fails the job.
+      - name: Log the shared binary's stamp status
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
+      - name: "Differential fuzz vs host Emacs (tools/ai/nelisp-ai.sh gate parity-fuzz); Linux x86_64, Emacs 31.1"
+        shell: bash
+        timeout-minutes: 40
+        run: bash tools/ai/nelisp-ai.sh gate parity-fuzz -- make parity-fuzz
+      # On a ratchet failure, regenerate both lists on this very host class
+      # and upload them for review (never committed automatically).  The
+      # run is deterministic per name, so the candidate is the full set.
+      - name: "Baseline candidates (known-divergence and known-hang lists)"
+        if: failure()
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          mkdir -p target/parity-fuzz-candidate
+          NELISP_FUZZ_WRITE_BASELINE=1 \
+            NELISP_FUZZ_KNOWN_FILE="$PWD/target/parity-fuzz-candidate/parity-fuzz-known-divergences.txt" \
+            NELISP_FUZZ_HANG_FILE="$PWD/target/parity-fuzz-candidate/parity-fuzz-known-hangs.txt" \
+            NELISP_FUZZ_SIDE_TIMEOUT=10 NELISP_FUZZ_CONFIRM_TIMEOUT=10 \
+            make parity-fuzz || true
+      - name: Upload baseline candidates
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-fuzz-baseline-candidate
+          path: target/parity-fuzz-candidate/
+          if-no-files-found: ignore
+      # Informational: shows whether the downloaded binary survived the job
+      # or something rebuilt it.
+      - name: Log the stamp status again (end of job)
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
+
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+
+      - name: Upload gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-parity-fuzz
           path: target/gates/*.json
           if-no-files-found: error
 
   verify:
     name: "verify (every required gate produced a report)"
     runs-on: ubuntu-latest
-    needs: [smoke, ert, mutation, subsystems]
+    timeout-minutes: 30
+    needs: [smoke, smoke-linux-b, ert, mutation, subsystems, parity-fuzz]
     # `always()' so a red tier still reaches this job: the point of verify
     # is to say WHICH gates are missing or failing, and a skipped verify
     # after a failure tells nobody that.
@@ -1069,7 +2118,7 @@ jobs:
         shell: bash
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
-        run: python3 -m pip install --user --break-system-packages capstone pyelftools
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
       - name: Collect every job's gate reports
         uses: actions/download-artifact@v4
         with:
@@ -1080,13 +2129,13 @@ jobs:
         run: |
           # gates.expected names `gate-mutation' once and verify fails a
           # gate whose report is absent -- that is what catches a gate
-          # which silently did not run.  Four shards produce four reports
+          # which silently did not run.  Twelve shards produce twelve reports
           # for that one name, so they are summed back into one; a shard
           # that failed, or that never wrote a report, has to survive into
           # the merged verdict rather than be averaged away.
           mkdir -p target/gates
           find collected -name '*.json' -not -path '*mutation*' -exec cp {} target/gates/ \;
-          bash tools/nelisp-merge-gate-reports.sh gate-mutation 4 collected target/gates
+          bash tools/nelisp-merge-gate-reports.sh gate-mutation 12 collected target/gates
           ls -1 target/gates/
       - name: "AI toolchain verify (all tiers, union of every job)"
         shell: bash

@@ -132,6 +132,8 @@
       (advice-remove 'nelisp-aot-compiler--emit-promoted-loop-x86 #'nelisp-aot-private-let-test--record)
       (delete-directory dir t))))
 (ert-deftest nelisp-aot-private-let/frame-observer-and-WORD-control ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-private-let-test--selections nil)
         (out (make-temp-file "private-let-frame-")))
     (unwind-protect

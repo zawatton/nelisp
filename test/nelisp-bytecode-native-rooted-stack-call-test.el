@@ -16,7 +16,7 @@
          (descriptors
           (mapcar (lambda (name)
                     (list :name name :kind 'func
-                          :abi nelisp-native-load-raw-runtime-abi-v2
+                          :abi (nelisp-native-load--runtime-abi-v2)
                           :index 0 :address-mode 'native-bridgeable-v1))
                   names)))
     (should (equal (nelisp-bytecode-native-rooted-stack-call--manifest-import-names
@@ -26,7 +26,7 @@
       (should-error
        (nelisp-bytecode-native-rooted-stack-call--manifest-import-names
         `(:native (:imports ((:name "nl_native_car_v2" :kind func
-                              :abi ,nelisp-native-load-raw-runtime-abi-v2
+                              :abi ,(nelisp-native-load--runtime-abi-v2)
                               :index 0 :address-mode ,mode)))))))))
 
 (ert-deftest nelisp-bytecode-native-rooted-stack-call-public-resolver-is-fixed-and-attested ()
@@ -110,8 +110,8 @@
 (ert-deftest nelisp-bytecode-native-rooted-stack-call-decodes-and-cleans-on-wrong-type ()
   (let* ((result (nelisp-bytecode-native-rooted-stack-call-test--result))
          (mapping (list :kind 'raw-runtime-v2 :entry-name "nl_native_stack_probe_v1"
-                        :arity 4 :runtime-abi nelisp-native-load-raw-runtime-abi-v2
-                        :raw-abi nelisp-native-load-raw-runtime-abi-v2))
+                        :arity 4 :runtime-abi (nelisp-native-load--runtime-abi-v2)
+                        :raw-abi (nelisp-native-load--runtime-abi-v2)))
          (nelisp-native-load-raw-mappings nil)
          (slots 0) (end-count 0) (unload-count 0) (unbox-count 0)
          (gc-count 0) (auth-count 0) (copies nil))
@@ -139,7 +139,7 @@
               ((symbol-function 'nelisp-native-load-manifest)
                (lambda (_) `(:native (:imports
                                       ((:name "nl_native_car_v2" :kind func
-                                        :abi ,nelisp-native-load-raw-runtime-abi-v2
+                                        :abi ,(nelisp-native-load--runtime-abi-v2)
                                         :index 0 :address-mode native-bridgeable-v1))))))
               ((symbol-function 'nelisp-native-load-raw-v2-artifact)
                (lambda (&rest _) (setq nelisp-native-load-raw-mappings

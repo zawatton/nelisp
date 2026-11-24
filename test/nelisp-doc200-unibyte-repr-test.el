@@ -20,6 +20,7 @@
 (setq load-prefer-newer t)
 
 (require 'ert)
+(require 'nelisp-test-fresh-emacs)
 (require 'nelisp-aot-test-runtime)
 (require 'cl-lib)
 
@@ -607,20 +608,21 @@ inside BASE's mapped page."
 
 (ert-deftest nelisp-doc200-unibyte-repr/production-and-consumers-use-unibyte-tags ()
   "Production alloc/finalize and hand-built tags survive every representation path."
-  (skip-unless (equal emacs-version "31.1"))
-  (unless (and (eq system-type 'gnu/linux)
-               (string-match-p "x86_64\\|amd64" system-configuration))
-    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
-  (let ((path (make-temp-file "nelisp-doc200-unibyte-repr-")))
-    (unwind-protect
-        (progn
-          (nelisp-aot-test-runtime-compile-sexp
-           (nelisp-doc200-unibyte-repr-test--probe-source) path)
-          (should (file-executable-p path))
-          (let ((rc (call-process path nil nil nil)))
-            (should (= rc 0))))
-      (when (file-exists-p path)
-        (delete-file path)))))
+  (nelisp-test-fresh-emacs-unless (not (nelisp-test-fresh-emacs-core-records-defined-p))
+    (skip-unless (equal emacs-version "31.1"))
+    (unless (and (eq system-type 'gnu/linux)
+                 (string-match-p "x86_64\\|amd64" system-configuration))
+      (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+    (let ((path (make-temp-file "nelisp-doc200-unibyte-repr-")))
+      (unwind-protect
+          (progn
+            (nelisp-aot-test-runtime-compile-sexp
+             (nelisp-doc200-unibyte-repr-test--probe-source) path)
+            (should (file-executable-p path))
+            (let ((rc (call-process path nil nil nil)))
+              (should (= rc 0))))
+        (when (file-exists-p path)
+          (delete-file path))))))
 
 (ert-deftest nelisp-doc200-unibyte-repr/aot-stringp-expansion-has-all-four-tags ()
   "The direct AOT stringp expansion admits both string representations."
@@ -801,6 +803,17 @@ inside BASE's mapped page."
             (should (equal (output gnu (append '("-Q" "--batch") arguments))
                            expected))
             (should (equal (output binary arguments) expected))))))))
+
+(ert-deftest nelisp-doc200-unibyte-repr-nested-ascii-string-keys-cross-repr ()
+  "Equal-test hash lookup finds a nested ASCII string key across representations.
+`string-to-unibyte' gives the raw-byte string (tag 14) and
+`string-to-multibyte' the multibyte one (tag 5); `wf_key_eq_depth' must treat
+the two as equal when they sit inside a cons or list key, the same way
+`equal' does.  Flat keys never reach that walker (a direct string-pair arm
+decides them first), so the keys here are nested on purpose."
+  (let ((out (nelisp-doc200-unibyte-repr-test--eval-standalone
+              "(let* ((u (string-to-unibyte \"abc\")) (m (string-to-multibyte \"abc\")) (h (make-hash-table :test 'equal))) (puthash (cons u 1) 'c h) (puthash (list 1 (list u)) 'd h) (list (multibyte-string-p u) (multibyte-string-p m) (gethash (cons m 1) h) (gethash (list 1 (list m)) h) (equal (cons u 1) (cons m 1))))")))
+    (should (string-match-p "(nil t c d t)" out))))
 
 (provide 'nelisp-doc200-unibyte-repr-test)
 ;;; nelisp-doc200-unibyte-repr-test.el ends here

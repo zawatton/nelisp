@@ -13,6 +13,7 @@
         nelisp-nelix-operational-gate \
         nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate \
         nl-condition-standalone-smoke nl-safe-standalone-smoke nl-resource-standalone-smoke \
+        nelisp-eval-closure-standalone-smoke nelisp-gcs-done-standalone-smoke \
         nl-ns-reader-standalone-smoke \
         standalone-reader-buffer-smoke \
         nl-actor-standalone-smoke nelisp-actor-cps-baseline nelisp-actor-cps-parity \
@@ -22,7 +23,7 @@
         nelisp-thread-allocating-standalone-smoke \
         nelisp-thread-mirror-guard-standalone-smoke \
         nelisp-thread-percpu-roots-smoke \
-        nelisp-prognleak-standalone-smoke
+        nelisp-prognleak-standalone-smoke nelisp-aot-bytecode-standalone-smoke
 
 EMACS ?= emacs
 # Standalone builds verify the GNU 31.1 dialect; host gates may use 30.2.
@@ -50,6 +51,10 @@ TESTS := $(sort $(filter-out test/nelisp-worker-soak-test.el, \
                   $(wildcard test/nelisp*-test.el) \
                   $(wildcard packages/*/test/nelisp*-test.el) \
                   $(wildcard packages/*/test/nl-*-test.el)))
+# The runner globs this same set itself, so the suite targets pass the list
+# only when TESTS is overridden: all ~714 paths as arguments overran the
+# Windows command-line limit (CI run 42793703030 ran 182 files).
+TESTS_ARGS = $(if $(filter command line environment environment override,$(origin TESTS)),$(TESTS))
 # Load each test file once.  Many test files `load'/`require' other test
 # files, so a plain `-l' list can load a file twice and ERT then aborts with
 # "redefined (or loaded twice)".  Skip any file already in `load-history'
@@ -95,7 +100,7 @@ all: test
 # tools/run-tests-parallel.sh); loading every file into one process made
 # results depend on load order and on earlier files' redefinitions.
 test: clean
-	@JOBS=$(JOBS) EMACS="$(EMACS)" ./tools/run-tests-parallel.sh $(TESTS)
+	@JOBS=$(JOBS) EMACS="$(EMACS)" ./tools/run-tests-parallel.sh $(TESTS_ARGS)
 
 # Fast TDD loop: same test load graph as `test' but skips `clean';
 # use `test' as the clean verification gate before trusting results.
@@ -213,6 +218,12 @@ wasm-smoke:
 	  target/wasm-smoke/symbol-lit-probe.wasm symbol-lit-probe 163230213 0
 	@echo "GATE-COUNT checked=4 findings=0"
 
+# Extra node options for the wasm smokes, empty by default.  Under a
+# `ulimit -v' address-space cap node cannot reserve its Wasm guard regions
+# ("Cannot allocate Wasm memory"); --disable-wasm-trap-handler uses explicit
+# bounds checks instead and needs no reservation.  tools/ai/main-ci-reds/
+# run-heavy.sh sets it; CI runs without a cap and leaves it empty.
+NELISP_NODE_FLAGS ?=
 wasm-runtime-image-smoke:
 	mkdir -p target/wasm-runtime-image
 	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
@@ -231,7 +242,7 @@ wasm-runtime-image-smoke:
 	  echo "  file nobody wrote."; \
 	  echo "GATE-COUNT checked=2 findings=1"; \
 	  exit 1; }
-	@if node tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3; then \
+	@if node $(NELISP_NODE_FLAGS) tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3; then \
 	  echo "GATE-COUNT checked=2 findings=0"; \
 	else \
 	  echo "GATE-COUNT checked=2 findings=1"; exit 1; \
@@ -405,8 +416,8 @@ jit-unverified:
 # through it.  Unlike `jit-unverified' it adds no per-body work -- that
 # one is the measurement, this one is the coverage.
 test-jit:
-	$(MAKE) test-fast \
-	  EMACS_PRELOAD="-l scripts/nelisp-jit-enable.el"
+	@EMACS_PRELOAD="-l scripts/nelisp-jit-enable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
+	  ./tools/run-tests-parallel.sh $(TESTS_ARGS)
 
 # The mirror.  With `nelisp-jit-enabled' defaulting to t, the ordinary
 # suite exercises the JIT and the bcl / interpreter paths stop being
@@ -415,8 +426,8 @@ test-jit:
 # how the JIT reached a default-off state with three semantic
 # differences from the interpreter still in it.
 test-nojit:
-	$(MAKE) test-fast \
-	  EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el"
+	@EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
+	  ./tools/run-tests-parallel.sh $(TESTS_ARGS)
 
 # `compile' is the byte-compile-error-on-warn lint: it removes the .elc
 # files of its targets before and after the run (also when the run fails,
@@ -591,11 +602,33 @@ standalone-eval-clean:
 #   make standalone-reader        # build -> target/nelisp
 #   make standalone-reader-test   # build, run, assert exit == eval(NELISP_SRC)
 # Embedded source via NELISP_SRC (default "(+ 40 2)" -> 42; + - * only for now).
+# The build is skipped only when tools/nelisp-standalone-reader-build.sh proves
+# that no input changed since the binary was stamped (see its header for the
+# key); NELISP_STANDALONE_FORCE_REBUILD=1 always builds.  The target crosses
+# the make boundary as an argument, exactly as the old assignment prefix did.
 standalone-reader:
-	@mkdir -p target
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
+	bash tools/nelisp-standalone-reader-build.sh --target '$(STANDALONE_GATE_TARGET)' -- \
+	  $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+
+# Read-only twin of `standalone-reader': the same stamp tool, target argument
+# and build command (the key covers EMACS, which make exports, and the build
+# command's first word, so a call outside make reads `key changed' for that
+# reason alone), but --status never builds.  It prints `standalone-reader: up to
+# date ...' (exit 0) or `stale: REASON' (the tool exits 1, make reports 2).  CI
+# logs it after downloading the shared binary.
+.PHONY: standalone-reader-status
+standalone-reader-status:
+	bash tools/nelisp-standalone-reader-build.sh --status --target '$(STANDALONE_GATE_TARGET)' -- \
+	  $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+
+# Hermetic test of the stamp tool above (fake tree, fake build command).
+.PHONY: build-stamp
+build-stamp:
+	python3 -I test/nelisp-build-stamp-test.py
 
 # gnu562: the dynamically linked reader as an opt-in fast flavor.  Its native
 # libm arms (`nelisp-standalone--math-dispatch-arms') are live there, so sin,
@@ -901,6 +934,39 @@ nl-safe-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,stan
 	fi; \
 	"$$bin" --load packages/nl-safe/test/nl-safe-standalone-smoke.el
 
+# Requiring src/nelisp-eval.el must not break the native closure kind.
+nelisp-eval-closure-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=$(STANDALONE_BIN); \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load test/nelisp-eval-closure-standalone-smoke.el
+
+nelisp-gcs-done-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=$(STANDALONE_BIN); \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load test/nelisp-gcs-done-standalone-smoke.el
+
 # Doc 189 Phase 0 (reader-time namespace resolution): runs the exact
 # ERT bodies of `packages/nl-ns/test/nl-ns-reader-test.el' on
 # `target/nelisp' itself -- proving the `nelisp-read-namespace-resolve'
@@ -948,6 +1014,19 @@ nelisp-prognleak-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  exit 0; \
 	fi; \
 	NELISP_BIN="$$bin" NELISP_ROOT=$(CURDIR) sh test/nelisp-prognleak-standalone-smoke.sh
+
+# Build-time AOT of GNU bytecode (scripts/nelisp-aot-bytecode.el): install
+# count, digest equality with the VM, redefinition/advice, mutated-copy refusal,
+# dynamic binding across signals, eval depth and GC stress, with negative
+# controls -- see the header of test/nelisp-aot-bytecode-standalone-smoke.sh.
+.PHONY: nelisp-aot-bytecode-standalone-smoke
+nelisp-aot-bytecode-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=$(STANDALONE_BIN); \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	NELISP_BIN="$$bin" NELISP_ROOT=$(CURDIR) sh test/nelisp-aot-bytecode-standalone-smoke.sh
 
 # Runnable-host guard: see `nl-condition-standalone-smoke' above.
 nl-resource-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
@@ -1712,6 +1791,17 @@ standalone-reader-require-provide-smoke: standalone-reader
 nelisp-sexp-clone-bind-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@NELISP_BIN=$(STANDALONE_BIN) sh test/nelisp-sexp-clone-bind-smoke.sh
 
+# Small-string block leak: a conservative word into string storage made
+# `nl_compact_small_strings' skip the pass that unmaps empty 8 KiB sblocks, so
+# RSS grew ~1.3 MiB per batch of dead strings in a REPL.  Drives the reader
+# through 60 batches of 5000 strings, bounds RSS growth after warm-up, bounds
+# live arena bytes over 40 batches (REPL line retention), and checks survivors'
+# contents (test/nelisp-string-block-leak-smoke.py).
+# Linux only: reads /proc/PID/status.
+.PHONY: standalone-string-block-leak-smoke
+standalone-string-block-leak-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@ulimit -v 8388608; python3 test/nelisp-string-block-leak-smoke.py $(STANDALONE_BIN) </dev/null
+
 # Doc 170 Stage 2: checked-allocator smoke (redzone / generation tags /
 # alloc-site / poison / leak scan).  Three runs against the same binary:
 #   1. env OFF — behaviour must match the stock reader (43) and the
@@ -1823,12 +1913,16 @@ standalone-reader-splitstring-perf-smoke: $(if $(wildcard target/nelisp target/n
 	mkdir -p target; \
 	printf '%s\n' \
 	  '(let* ((n 60) (path (format "/fake/nelisp-perf-smoke/dir-0")))' \
-	  '  (let ((i 1)) (while (< i n) (setq path (concat path ";" (format "/fake/nelisp-perf-smoke/dir-%d" i))) (setq i (1+ i))))' \
+	  '  (let ((i 1)) (while (< i n) (setq path (concat path ";;" (format "/fake/nelisp-perf-smoke/dir-%d" i))) (setq i (1+ i))))' \
 	  '  (setq nlre--string-match-calls 0)' \
+	  '  (defvar nelisp-smoke-sm-calls 0)' \
+	  '  (let ((orig (symbol-function (quote nlre-string-match))))' \
+	  '    (fset (quote nlre-string-match)' \
+	  '          (lambda (&rest a) (setq nelisp-smoke-sm-calls (1+ nelisp-smoke-sm-calls)) (apply orig a))))' \
 	  '  (let* ((t0 (float-time))' \
-	  '         (dirs (split-string path ";"))' \
+	  '         (dirs (split-string path ";;"))' \
 	  '         (elapsed (- (float-time) t0))' \
-	  '         (regexp-calls nlre--string-match-calls))' \
+	  '         (regexp-calls (+ nlre--string-match-calls nelisp-smoke-sm-calls)))' \
 	  '    (princ (format "n-dirs=%d elapsed=%.3f regexp-calls=%d pass=%S\n"' \
 	  '                   (length dirs) elapsed regexp-calls' \
 	  '                   (and (= (length dirs) n) (= regexp-calls 0))))))' \
@@ -1943,7 +2037,8 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '       (count-ok (= (length dfa-count) 1))' \
 	  '       (mtime (file-attribute-modification-time attrs))' \
 	  '       (size-ok (equal (file-attribute-size attrs) 10))' \
-	  '       (mtime-ok (and (integerp mtime) (> mtime 1700000000)))' \
+	  '       (mtime-ok (or (and (integerp mtime) (> mtime 1700000000))' \
+	  '                     (and (consp mtime) (> (float-time mtime) 1700000000))))' \
 	  '       (reg-ok (and (file-regular-p f) (not (file-directory-p f))))' \
 	  '       (dir-ok (and (file-directory-p sub) (not (file-regular-p sub))))' \
 	  '       (names (directory-files dir))' \
@@ -1999,6 +2094,11 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  *) echo "[fileattrs-smoke] FAIL: $$out (expected pass=t -- stat, readdir or the file/directory classification regressed)"; exit 1;; \
 	esac
 
+# Since 7476fb81b (v29) `string-match' runs the native matcher (`nlre--nat-have'),
+# which bypasses the Lisp leading-filter counter, so the timed sweeps bind
+# `nlre--nat-have' to nil to keep exercising and counting the Lisp filter.
+# Sweep B ("[0-9]+zzz") is filtered too since 3edc5b180 added the required
+# leading-atom filter and 83626ebeb counted it, so both sweeps' calls count.
 # Doc 201 §5.4: `nlre-string-match' retried at every start position and did
 # full work at each one -- a fresh `make-vector' plus a walk into
 # `nlre--match-list''s dispatch chain -- even where the pattern's first node
@@ -2012,8 +2112,8 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 # a mandatory literal (the shape the filter can skip positions for), sweep B
 # a pattern with no leading literal (the shape it cannot help).  Neither
 # matches, so both are full scans.  The verdict is structural rather than
-# timed: `nlre--leading-filter-calls' must report exactly the 42 sweep-A
-# calls and none of sweep B.  The old ratio < 0.25 verdict was host-sensitive:
+# timed: `nlre--leading-filter-calls' must report exactly the 84 calls of
+# both 42-path sweeps.  The old ratio < 0.25 verdict was host-sensitive:
 # WSL measured 0.272-0.301 injected and 0.065-0.071 clean, while CI's runner
 # stayed green with the same injection.
 #
@@ -2030,7 +2130,7 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	@bin=$(STANDALONE_BIN); \
 	mkdir -p target; \
 	printf '%s\n' \
-	  '(let* ((got (list (string-match "abc" "xxabcyy")' \
+	  '(let* ((fn (lambda () (list (string-match "abc" "xxabcyy")' \
 	  '                  (string-match "abc+" "xxabcc")' \
 	  '                  (string-match "abc" "xxabxx")' \
 	  '                  (let ((case-fold-search t)) (string-match "ABC" "xxabc"))' \
@@ -2039,28 +2139,34 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '                  (string-match "a*" "bbb")' \
 	  '                  (string-match "x" "")' \
 	  '                  (string-match "" "abc")' \
-	  '                  (string-match "b" "abc" 2)))' \
-	  '       (want (list 2 2 nil 2 nil 2 0 nil 0 nil))' \
+	  '                  (string-match "b" "abc" 2)' \
+	  '                  (string-match "b." "abcd")' \
+	  '                  (let ((case-fold-search t)) (string-match "B[a-z]" "xabc")))))' \
+	  '       (got (funcall fn))' \
+	  '       (got-lisp (let ((nlre--nat-have nil)) (funcall fn)))' \
+	  '       (want (list 2 2 nil 2 nil 2 0 nil 0 nil 1 2))' \
 	  '       (r6 (string-match "\\(a+\\)\\(b+\\)" "zzaabbb"))' \
 	  '       (g1 (list (match-beginning 1) (match-end 1)' \
 	  '                 (match-beginning 2) (match-end 2)))' \
 	  '       (r7 (string-match "\\(a\\)c" "abac"))' \
 	  '       (g2 (list (match-beginning 1) (match-end 1)))' \
-	  '       (correct-ok (and (equal got want) (equal r6 2) (equal g1 (list 2 4 4 7))' \
+	  '       (correct-ok (and (equal got want) (equal got-lisp want) (equal r6 2) (equal g1 (list 2 4 4 7))' \
 	  '                        (equal r7 2) (equal g2 (list 2 3))))' \
 	  '       (paths nil) (i 0))' \
 	  '  (while (< i 42)' \
 	  '    (setq paths (cons (format "/home/someone/.emacs.d/elpa/package-%02d/lisp" i) paths))' \
 	  '    (setq i (1+ i)))' \
 	  '  (setq nlre--leading-filter-calls 0)' \
-	  '  (let* ((t0 (float-time))' \
+	  '  (let* ((nlre--nat-have nil)' \
+	  '         (t0 (float-time))' \
 	  '         (_a (dolist (p paths) (string-match "ddskk-[0-9]+\\.[0-9]+" p)))' \
+	  '         (lead-calls nlre--leading-filter-calls)' \
 	  '         (ta (- (float-time) t0))' \
 	  '         (t1 (float-time))' \
 	  '         (_b (dolist (p paths) (string-match "[0-9]+zzz" p)))' \
 	  '         (tb (- (float-time) t1))' \
 	  '         (ratio (/ ta tb))' \
-	  '         (filter-calls nlre--leading-filter-calls)' \
+	  '         (filter-calls lead-calls)' \
 	  '         (filter-ok (= filter-calls (length paths))))' \
 	  '    (princ (format "got=%S r6=%S g1=%S r7=%S g2=%S lead=%.3f nolead=%.3f ratio=%.3f filter-calls=%d pass=%S\n"' \
 	  '                   got r6 g1 r7 g2 ta tb ratio filter-calls' \
@@ -2262,7 +2368,7 @@ standalone-reader-defvar-alloc-smoke: $(if $(wildcard target/nelisp target/nelis
 # which one is right, and that is a reading job.  Run it, read it, and turn
 # what it finds into `emacs-parity' cases -- those are the ones that stay.
 #
-#   NELISP_FUZZ_SEED=7 NELISP_FUZZ_CASES=4000 make parity-fuzz
+#   NELISP_FUZZ_SEED=7 NELISP_FUZZ_PER_NAME=6 make parity-fuzz
 #   NELISP_FUZZ_ONLY='^string-' make parity-fuzz
 # "buffer ops / text properties / overlays / coding systems are not covered"
 # was an impression until this printed the number: 100 of 424 shared names,
@@ -2326,7 +2432,7 @@ gate-mutation:
 .PHONY: gate-mutation-verify
 gate-mutation-verify:
 	@test -n "$(GATE)" || { echo "usage: make gate-mutation-verify GATE=<gate-name>"; exit 2; }
-	@NELISP_GATE_MUTATION_ONLY="$(GATE)" tools/nelisp-gate-mutation.sh
+	@NELISP_GATE_MUTATION_REQUIRE_BASELINE=1 NELISP_GATE_MUTATION_ONLY="$(GATE)" tools/nelisp-gate-mutation.sh
 
 version-consistency:
 	@bash tools/nelisp-version-consistency.sh
@@ -2478,6 +2584,15 @@ emacs-parity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reade
 # now.  `$(NELISP_STANDALONE_TARGET)' alone already carries both an
 # environment-variable invocation and a command-line override (same
 # probe), so the redundant shell-side half is simply dropped here.
+# Two budgets, split 2026-11-13: `code' is the ELF `.text' size (`size -A'),
+# `payload' is everything else in the file (wc -c total minus .text:
+# .rodata/.data, embedded sources and images, symbols, section headers).
+# Total-minus-.text is used rather than .rodata+.data because it is
+# defined for any object format and cannot drop bytes between sections.
+# The baseline is pinned to linux-x86_64 ELF; other targets GATE-SKIP above.
+# Override BINARY_SIZE_BASELINE to point the gate at a temporary copy of
+# the baseline file (negative controls).
+BINARY_SIZE_BASELINE ?= tools/nelisp-binary-size-baseline.txt
 binary-size-ratchet: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@target="$(NELISP_STANDALONE_TARGET)"; \
 	if [ -n "$$target" ] && [ "$$target" != "linux-x86_64" ]; then \
@@ -2497,22 +2612,44 @@ binary-size-ratchet: $(if $(wildcard target/nelisp target/nelisp.exe),,standalon
 	  echo "[binary-size-ratchet] SKIP: $$bin is stale ($$stale changed after it was linked)"; \
 	  exit 0; \
 	fi; \
-	baseline=$$(awk '$$1=="size"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
-	slack=$$(awk '$$1=="slack-pct"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
-	if [ -z "$$baseline" ] || [ -z "$$slack" ]; then \
+	baseline_file="$(BINARY_SIZE_BASELINE)"; \
+	code_base=$$(awk '$$1=="code-size"{print $$2}' "$$baseline_file"); \
+	payload_base=$$(awk '$$1=="payload-size"{print $$2}' "$$baseline_file"); \
+	slack=$$(awk '$$1=="slack-pct"{print $$2}' "$$baseline_file"); \
+	if [ -z "$$code_base" ] || [ -z "$$payload_base" ] || [ -z "$$slack" ]; then \
 	  echo "GATE-COUNT checked=0 findings=1"; \
-	  echo "[binary-size-ratchet] FAIL: tools/nelisp-binary-size-baseline.txt missing 'size' or 'slack-pct'"; \
+	  echo "[binary-size-ratchet] FAIL: $$baseline_file missing 'code-size', 'payload-size' or 'slack-pct'"; \
 	  exit 1; \
 	fi; \
-	actual=$$(wc -c < "$$bin" | tr -d ' '); \
-	ceiling=$$(( baseline + baseline * slack / 100 )); \
-	if [ "$$actual" -le "$$ceiling" ]; then findings=0; else findings=1; fi; \
-	echo "GATE-COUNT checked=1 findings=$$findings"; \
+	total=$$(wc -c < "$$bin" | tr -d ' '); \
+	code=$$(size -A "$$bin" 2>/dev/null | awk '$$1==".text"{print $$2}'); \
+	if [ -z "$$code" ]; then \
+	  echo "GATE-COUNT checked=0 findings=1"; \
+	  echo "[binary-size-ratchet] FAIL: cannot read the .text size of $$bin (needs binutils 'size -A')"; \
+	  exit 1; \
+	fi; \
+	payload=$$(( total - code )); \
+	code_ceiling=$$(( code_base + code_base * slack / 100 )); \
+	payload_ceiling=$$(( payload_base + payload_base * slack / 100 )); \
+	findings=0; \
+	if [ "$$code" -gt "$$code_ceiling" ]; then findings=$$(( findings + 1 )); fi; \
+	if [ "$$payload" -gt "$$payload_ceiling" ]; then findings=$$(( findings + 1 )); fi; \
+	echo "GATE-COUNT checked=2 findings=$$findings"; \
+	echo "[binary-size-ratchet] code=$$code ceiling=$$code_ceiling (baseline $$code_base, slack $$slack%)"; \
+	echo "[binary-size-ratchet] payload=$$payload ceiling=$$payload_ceiling (baseline $$payload_base, slack $$slack%; total $$total)"; \
+	if [ "$$code" -gt "$$code_ceiling" ]; then \
+	  echo "[binary-size-ratchet] FAIL: code (.text) is $$code bytes, $$(( code - code_base )) over baseline $$code_base -- exceeds ceiling $$code_ceiling ($$slack% slack).  If this growth is real and explained, raise 'code-size' in $$baseline_file in the same commit."; \
+	elif [ "$$code" -lt "$$code_base" ]; then \
+	  echo "[binary-size-ratchet] code is $$(( code_base - code )) bytes below its baseline: safe to lower 'code-size' to $$code in $$baseline_file"; \
+	fi; \
+	if [ "$$payload" -gt "$$payload_ceiling" ]; then \
+	  echo "[binary-size-ratchet] FAIL: payload (total minus .text) is $$payload bytes, $$(( payload - payload_base )) over baseline $$payload_base -- exceeds ceiling $$payload_ceiling ($$slack% slack).  If this growth is real and explained, raise 'payload-size' in $$baseline_file in the same commit."; \
+	elif [ "$$payload" -lt "$$payload_base" ]; then \
+	  echo "[binary-size-ratchet] payload is $$(( payload_base - payload )) bytes below its baseline: safe to lower 'payload-size' to $$payload in $$baseline_file"; \
+	fi; \
 	if [ "$$findings" = 0 ]; then \
-	  echo "[binary-size-ratchet] PASS: $$bin is $$actual bytes (baseline $$baseline, ceiling $$ceiling, slack $$slack%)"; \
+	  echo "[binary-size-ratchet] PASS: $$bin is $$total bytes (code $$code, payload $$payload)"; \
 	else \
-	  over=$$(( actual - baseline )); \
-	  echo "[binary-size-ratchet] FAIL: $$bin is $$actual bytes, $$over over baseline $$baseline -- exceeds ceiling $$ceiling ($$slack% slack).  If this growth is real and explained, raise 'size' in tools/nelisp-binary-size-baseline.txt in the same commit."; \
 	  exit 1; \
 	fi
 
@@ -2566,6 +2703,13 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 #             finished with; a rise confined to one round is not, see
 #             below.
 #
+#   cons leak the live-blocks census walks only the headered chunks; cons
+#             cells moved to typed 32 KiB blocks (nl_cons_alloc), so a
+#             retained cons is invisible to it.  Each round therefore also
+#             records the used-cons count of `garbage-collect' (measured
+#             flat at 285512 across rounds, +8000 per round when 8000 conses
+#             stay reachable), compared with the same rounds as live-blocks.
+#
 # ROUNDS defaults to 5, the minimum the comparison below needs.
 # Deliberately NOT the 1h wall-clock of `soak-1h': an hour of the same loop
 # adds confidence about time, and rounds add confidence about repetition,
@@ -2613,6 +2757,7 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 .PHONY: standalone-reader-checked-soak
 STANDALONE_CHECKED_SOAK_ROUNDS ?= 5
 STANDALONE_CHECKED_SOAK_SLACK ?= 8
+STANDALONE_CHECKED_SOAK_CONS_SLACK ?= 64
 standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@mkdir -p target
 	@printf '%s\n' \
@@ -2625,7 +2770,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	  '  (let* ((i 0) (acc nil))' \
 	  '    (while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))' \
 	  '  (garbage-collect)' \
-	  '  (princ (format "ROUND %S\n" (nelisp--alloc-check-report))))' \
+	  '  (princ (format "ROUND %S %S\n" (nelisp--alloc-check-report) (nth 2 (assq (quote conses) (garbage-collect))))))' \
 	  '(let ((r 0))' \
 	  '  (while (< r $(STANDALONE_CHECKED_SOAK_ROUNDS))' \
 	  '    (checked-soak-round)' \
@@ -2641,6 +2786,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	  exit 1; \
 	fi; \
 	i=0; r2=""; r3=""; prevlast=""; last=""; lives=""; \
+	c2=""; c3=""; cprev=""; clast=""; conses=""; \
 	while read -r _tag rest; do \
 	  i=$$(( i + 1 )); \
 	  set -- $$(echo "$$rest" | tr -d "()"); \
@@ -2658,6 +2804,10 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	    exit 1; \
 	  fi; \
 	  lives="$$lives $$9"; \
+	  conses="$$conses $${12:-0}"; \
+	  if [ "$$i" -eq 2 ]; then c2=$${12:-0}; fi; \
+	  if [ "$$i" -eq 3 ]; then c3=$${12:-0}; fi; \
+	  cprev=$$clast; clast=$${12:-0}; \
 	  if [ "$$i" -eq 2 ]; then r2=$$9; fi; \
 	  if [ "$$i" -eq 3 ]; then r3=$$9; fi; \
 	  prevlast=$$last; \
@@ -2665,6 +2815,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	done < $$rounds_file; \
 	rm -f $$rounds_file; \
 	echo "[checked-soak] live-blocks per round:$$lives"; \
+	echo "[checked-soak] live conses (garbage-collect) per round:$$conses"; \
 	if [ -z "$$r2" ]; then \
 	  echo "[checked-soak] PASS (fewer than 2 rounds: no leak comparison possible)"; \
 	  exit 0; \
@@ -2682,6 +2833,19 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	fi; \
 	if [ "$$(( final - baseline ))" -gt $(STANDALONE_CHECKED_SOAK_SLACK) ]; then \
 	  echo "[checked-soak] FAIL: live blocks grew $$baseline ($$blabel) -> $$final ($$flabel), past the $(STANDALONE_CHECKED_SOAK_SLACK)-block slack (each round ends with garbage-collect, so this is retention rather than garbage)"; \
+	  exit 1; \
+	fi; \
+	cbase=$$c2; cfinal=$$clast; \
+	if [ "$$n" -ge 5 ]; then \
+	  if [ -n "$$c3" ] && [ "$$c3" -lt "$$cbase" ]; then cbase=$$c3; fi; \
+	  cfinal=$$cprev; if [ -n "$$clast" ] && [ "$$clast" -lt "$$cfinal" ]; then cfinal=$$clast; fi; \
+	fi; \
+	if [ "$$cbase" -le 0 ]; then \
+	  echo "[checked-soak] FAIL: (garbage-collect) reported no live cons count -- the cons leak check saw nothing"; \
+	  exit 1; \
+	fi; \
+	if [ "$$(( cfinal - cbase ))" -gt $(STANDALONE_CHECKED_SOAK_CONS_SLACK) ]; then \
+	  echo "[checked-soak] FAIL: live conses grew $$cbase -> $$cfinal, past the $(STANDALONE_CHECKED_SOAK_CONS_SLACK)-cons slack (cons cells live in typed blocks that the live-blocks census does not walk, so retained conses are counted from garbage-collect)"; \
 	  exit 1; \
 	fi; \
 	echo "$$pass_msg"
@@ -3114,7 +3278,7 @@ standalone-reader-declare-strip-smoke: standalone-reader
 	  '(defmacro ds-m3 (x) (declare (debug (form))) "doc" (list (quote quote) x))' \
 	  '(defun ds-f1 () "doc" (declare (indent 0)) (interactive) (+ 41 1))' \
 	  '(defun ds-f2 () (declare (indent 0)))' \
-	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (equal (car (cdr (cdr (cdr fn)))) (quote (interactive))) (ds-f2)))' \
+	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (eq (car (interactive-form (quote ds-f1))) (quote interactive)) (ds-f2)))' \
 	  > target/standalone-reader-declare-strip-smoke.el
 	@out="$$($(STANDALONE_BIN) --repl --no-prompt < target/standalone-reader-declare-strip-smoke.el | tail -1)"; \
 	if [ "$$out" = "(foo bar baz 42 t nil)" ]; then \
@@ -3240,16 +3404,19 @@ standalone-reader-pcase-quote-literal-smoke: standalone-reader
 # t tag, nil tag, an ordinary symbol tag (pre-existing-working baseline),
 # throw-less catch, a same-tag nested catch, and a mismatched-tag nested
 # catch (inner `t' catch must NOT swallow an outer-bound `nil' throw).
+# GNU Emacs (31.1 verified) forbids throwing to a nil tag: Fthrow signals
+# `(no-catch nil VALUE)' even inside `(catch nil ...)', so the nil rows
+# expect that error rather than the thrown value.
 standalone-reader-catch-throw-tag-smoke: standalone-reader
 	@mkdir -p target
 	@printf '%s\n' \
-	  '(list (catch t (throw t (quote a))) (catch nil (throw nil (quote b))) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (catch nil (catch t (throw nil (quote outer)))))' \
+	  '(list (catch t (throw t (quote a))) (condition-case e (catch nil (throw nil (quote b))) (no-catch e)) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (condition-case e (catch nil (catch t (throw nil (quote outer)))) (no-catch e)))' \
 	  > target/standalone-reader-catch-throw-tag-smoke.el
 	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-catch-throw-tag-smoke.el)"; \
-	if [ "$$out" = "(a b c 42 inner outer)" ]; then \
+	if [ "$$out" = "(a (no-catch nil b) c 42 inner (no-catch nil outer))" ]; then \
 	  echo "[standalone-reader-catch-throw-tag-smoke] PASS: -> $$out"; \
 	else \
-	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a b c 42 inner outer))"; \
+	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a (no-catch nil b) c 42 inner (no-catch nil outer)))"; \
 	  exit 1; \
 	fi
 
@@ -3385,10 +3552,10 @@ standalone-reader-match-data-smoke: standalone-reader
 standalone-reader-current-time-smoke: standalone-reader
 	@mkdir -p target
 	@printf '%s\n' \
-	  '(let* ((before (float-time)) (tm (current-time)) (after (float-time)) (hi (nth 0 tm)) (lo (nth 1 tm)) (us (nth 2 tm)) (ps (nth 3 tm)) (secs (+ (* hi 65536) lo))) (list (= (length tm) 4) (and (>= secs (floor before)) (<= secs (floor after))) (and (>= us 0) (< us 1000000)) (= ps 0)))' \
+	  '(let* ((before (float-time)) (tm (current-time)) (after (float-time)) (hi (nth 0 tm)) (lo (nth 1 tm)) (us (nth 2 tm)) (ps (nth 3 tm)) (secs (+ (* hi 65536) lo))) (list (= (length tm) 4) (and (>= secs (floor before)) (<= secs (floor after))) (and (>= us 0) (< us 1000000)) (= ps 0) (< (abs (- (/ (nl-unix-time-usec) 1000000.0) after)) 2.0) (< (abs (- (nl-current-unix-time) after)) 2.0)))' \
 	  > target/standalone-reader-current-time-smoke.el
 	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-current-time-smoke.el)"; \
-	if [ "$$out" = "(t t t t)" ]; then \
+	if [ "$$out" = "(t t t t t t)" ]; then \
 	  echo "[standalone-reader-current-time-smoke] PASS: -> $$out"; \
 	else \
 	  echo "[standalone-reader-current-time-smoke] FAIL: -> $$out"; \
@@ -3404,6 +3571,15 @@ standalone-reader-current-time-smoke: standalone-reader
 # FT_Init_FreeType + FT_Library_Version).  Self-contained (does NOT depend on the default static
 # `standalone-reader').  GnuTLS/FreeType assertions are version-prefix checks so
 # they survive minor library bumps.
+# The Linux dynamic-reader smokes (standalone-reader-ffi-smoke, ffi-dsl and
+# standalone-reader-tls-smoke-linux) share ONE stamped build at
+# target/nelisp-dyn (own .cold and companions, own -dyn unit-cache partition);
+# they never touch target/nelisp.  Because they share that output they must
+# not run concurrently.  Windows keeps its direct default build in ffi-smoke.
+STANDALONE_DYN_OUT = target/nelisp-dyn
+STANDALONE_DYN_BIN = ./$(STANDALONE_DYN_OUT)
+STANDALONE_FFI_BIN = $(if $(filter windows%,$(STANDALONE_GATE_TARGET)),$(STANDALONE_BIN),$(STANDALONE_DYN_BIN))
+
 standalone-reader-ffi-smoke:
 	@mkdir -p target
 ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
@@ -3411,13 +3587,12 @@ ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 else
-	@NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@# Linux-only branch: the env-passed mode variable never crosses an MSYS boundary.
+	@NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$(STANDALONE_DYN_OUT) $(MAKE) standalone-reader
 endif
-	@chmod +x target/nelisp
+	@chmod +x $(STANDALONE_FFI_BIN)
 	@printf '%s\n' '(nl-ffi-call "toupper" 97)' > target/standalone-reader-ffi-smoke.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-smoke.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-smoke.el)"; \
 	if [ "$$out" = "65" ]; then \
 	  echo "[ffi-smoke libc] PASS: (nl-ffi-call \"toupper\" 97) -> $$out"; \
 	else \
@@ -3425,7 +3600,7 @@ endif
 	fi
 	@if [ "$(STANDALONE_GATE_TARGET)" = "windows-x86_64" ]; then \
 	  printf '%s\n' '(nl-ffi-call "toupper" -1)' > target/standalone-reader-ffi-s32.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-s32.el)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-s32.el)"; \
 	  if [ "$$out" = "-1" ]; then \
 	    echo "[ffi-smoke Win64 s32] PASS: toupper(EOF) -> $$out"; \
 	  else \
@@ -3436,21 +3611,21 @@ endif
 	@: 'renders any float (even a literal) as #<object>, so assert on numeric'
 	@: 'equality (= -> t) rather than the printed form.'
 	@printf '%s\n' '(= (nl-ffi-call "sqrt" 4.0) 2.0)' > target/standalone-reader-ffi-f64.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f64.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f64.el)"; \
 	if [ "$$out" = "t" ]; then \
 	  echo "[ffi-smoke f64 libm] PASS: (= (nl-ffi-call \"sqrt\" 4.0) 2.0) -> $$out"; \
 	else \
 	  echo "[ffi-smoke f64 libm] FAIL: -> $$out (expected t)"; exit 1; \
 	fi
 	@printf '%s\n' '(list (= (nl-ffi-call "pow" 2.0 10.0) 1024.0) (= (nl-ffi-call "ldexp" 1.5 3) 12.0) (= (nl-ffi-call "hypot" 3.0 4.0) 5.0))' > target/standalone-reader-ffi-f64b.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f64b.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f64b.el)"; \
 	if [ "$$out" = "(t t t)" ]; then \
 	  echo "[ffi-smoke f64 mixed] PASS: pow(2,10)=1024 / ldexp(1.5,3 :: f64+i64)=12 / hypot(3,4)=5 -> $$out"; \
 	else \
 	  echo "[ffi-smoke f64 mixed] FAIL: -> $$out (expected (t t t))"; exit 1; \
 	fi
 	@printf '%s\n' '(let* ((cs (lambda (s) (let ((p (alloc-bytes (1+ (length s)) 1)) (i 0)) (while (< i (length s)) (ptr-write-u8 p i (aref s i)) (setq i (1+ i))) (ptr-write-u8 p (length s) 0) p))) (dbp (alloc-bytes 8 8)) (rc (nl-ffi-call "sqlite3_open_v2" (funcall cs ":memory:") dbp 6 0)) (db (ptr-read-u64 dbp 0)) (stp (alloc-bytes 8 8)) (rp (nl-ffi-call "sqlite3_prepare_v2" db (funcall cs "select 6*7, 2.5, '"'"'ok'"'"'") -1 stp 0)) (st (ptr-read-u64 stp 0)) (step (nl-ffi-call "sqlite3_step" st)) (v (nl-ffi-call "sqlite3_column_int64" st 0)) (d (nl-ffi-call "sqlite3_column_double" st 1)) (tp (nl-ffi-call "sqlite3_column_text" st 2)) (txt (unibyte-string (ptr-read-u8 tp 0) (ptr-read-u8 tp 1)))) (nl-ffi-call "sqlite3_finalize" st) (nl-ffi-call "sqlite3_close_v2" db) (list rc rp step v (= d 2.5) txt))' > target/standalone-reader-ffi-sqlite.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-sqlite.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-sqlite.el)"; \
 	if [ "$$out" = '(0 0 100 42 t "ok")' ]; then \
 	  echo "[ffi-smoke S1 sqlite] PASS: open(:memory:)+prepare+step+column_{int64,double,text} -> $$out"; \
 	else \
@@ -3461,13 +3636,13 @@ ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
 	@echo "[ffi-smoke FreeType] SKIP: no Windows DLL mapping in Stage D1"
 else
 	@printf '%s\n' '(let ((p (nl-ffi-call "gnutls_check_version" 0))) (if (= p 0) "NULL" (unibyte-string (ptr-read-u8 p 0) (ptr-read-u8 p 1))))' > target/standalone-reader-ffi-d1.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-d1.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-d1.el)"; \
 	case "$$out" in \
 	  '"'[0-9].'"') echo "[ffi-smoke D1 gnutls] PASS: gnutls_check_version -> $$out (X.)";; \
 	  *) echo "[ffi-smoke D1 gnutls] FAIL: -> $$out (expected \"<digit>.\")"; exit 1;; \
 	esac
 	@printf '%s\n' '(let* ((s (alloc-bytes 8 8)) (rc (nl-ffi-call "FT_Init_FreeType" s)) (lib (ptr-read-u64 s 0)) (mj (alloc-bytes 4 4)) (mn (alloc-bytes 4 4)) (pt (alloc-bytes 4 4))) (nl-ffi-call "FT_Library_Version" lib mj mn pt) (let ((r (list rc (ptr-read-u32 mj 0)))) (nl-ffi-call "FT_Done_FreeType" lib) r))' > target/standalone-reader-ffi-f1.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f1.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f1.el)"; \
 	case "$$out" in \
 	  '(0 '[0-9]*')') echo "[ffi-smoke F1 freetype] PASS: FT_Init+Version -> $$out (rc=0, major)";; \
 	  *) echo "[ffi-smoke F1 freetype] FAIL: -> $$out (expected (0 <major>))"; exit 1;; \
@@ -3477,19 +3652,19 @@ else
 	  echo "[ffi-smoke F2 glyph] SKIP: $$font not installed"; \
 	else \
 	  printf '%s\n' '(let* ((libp (alloc-bytes 8 8))) (nl-ffi-call "FT_Init_FreeType" libp) (let* ((lib (ptr-read-u64 libp 0)) (path "'"$$font"'") (pl (length path)) (pb (alloc-bytes 256 1)) (i 0)) (while (< i pl) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i))) (ptr-write-u8 pb pl 0) (let* ((fp (alloc-bytes 8 8)) (nf (nl-ffi-call "FT_New_Face" lib pb 0 fp)) (face (ptr-read-u64 fp 0))) (nl-ffi-call "FT_Set_Pixel_Sizes" face 0 48) (let* ((gi (nl-ffi-call "FT_Get_Char_Index" face 65)) (ap (alloc-bytes 8 8)) (gr (nl-ffi-call "FT_Get_Advance" face gi 0 ap)) (adv (ptr-read-u64 ap 0))) (nl-ffi-call "FT_Done_Face" face) (nl-ffi-call "FT_Done_FreeType" lib) (list nf gi gr adv)))))' > target/standalone-reader-ffi-f2.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f2.el 2>/dev/null)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f2.el 2>/dev/null)"; \
 	  case "$$out" in \
 	    '(0 '[1-9]*' 0 '[1-9]*')') echo "[ffi-smoke F2 glyph] PASS: FT_New_Face+Get_Advance('A') -> $$out (newface rc, gindex, adv rc, 16.16 advance)";; \
 	    *) echo "[ffi-smoke F2 glyph] FAIL: -> $$out (expected (0 <gindex> 0 <advance>))"; exit 1;; \
 	  esac; \
 	  printf '%s\n' '(let* ((libp (alloc-bytes 8 8))) (nl-ffi-call "FT_Init_FreeType" libp) (let* ((lib (ptr-read-u64 libp 0)) (path "'"$$font"'") (pl (length path)) (pb (alloc-bytes 256 1)) (i 0)) (while (< i pl) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i))) (ptr-write-u8 pb pl 0) (let* ((fp (alloc-bytes 8 8)) (nf (nl-ffi-call "FT_New_Face" lib pb 0 fp)) (face (ptr-read-u64 fp 0))) (nl-ffi-call "FT_Set_Pixel_Sizes" face 0 48) (let* ((gi (nl-ffi-call "FT_Get_Char_Index" face 65)) (lg (nl-ffi-call "FT_Load_Glyph" face gi 0)) (slot (ptr-read-u64 face 152)) (rg (nl-ffi-call "FT_Render_Glyph" slot 0)) (rows (ptr-read-u32 slot 152)) (width (ptr-read-u32 slot 156))) (nl-ffi-call "FT_Done_Face" face) (nl-ffi-call "FT_Done_FreeType" lib) (list lg rg rows width)))))' > target/standalone-reader-ffi-f3.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f3.el 2>/dev/null)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f3.el 2>/dev/null)"; \
 	  case "$$out" in \
 	    '(0 0 '[1-9]*' '[1-9]*')') echo "[ffi-smoke F3 bitmap] PASS: FT_Load_Glyph+FT_Render_Glyph('A') -> $$out (load rc, render rc, bitmap rows, width)";; \
 	    *) echo "[ffi-smoke F3 bitmap] FAIL: -> $$out (expected (0 0 <rows> <width>))"; exit 1;; \
 	  esac; \
 	  printf '%s\n' '(let* ((libp (alloc-bytes 8 8))) (nl-ffi-call "FT_Init_FreeType" libp) (let* ((lib (ptr-read-u64 libp 0)) (path "'"$$font"'") (pl (length path)) (pb (alloc-bytes 256 1)) (i 0)) (while (< i pl) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i))) (ptr-write-u8 pb pl 0) (let* ((fp (alloc-bytes 8 8)) (nf (nl-ffi-call "FT_New_Face" lib pb 0 fp)) (face (ptr-read-u64 fp 0)) (mat (alloc-bytes 32 8)) (vec (alloc-bytes 16 8))) (nl-ffi-call "FT_Set_Pixel_Sizes" face 0 48) (ptr-write-u64 mat 0 131072) (ptr-write-u64 mat 8 0) (ptr-write-u64 mat 16 0) (ptr-write-u64 mat 24 131072) (ptr-write-u64 vec 0 0) (ptr-write-u64 vec 8 0) (nl-ffi-call "FT_Set_Transform" face mat vec) (let* ((gi (nl-ffi-call "FT_Get_Char_Index" face 65)) (lg (nl-ffi-call "FT_Load_Glyph" face gi 0)) (slot (ptr-read-u64 face 152)) (rg (nl-ffi-call "FT_Render_Glyph" slot 0)) (w (ptr-read-u32 slot 156))) (nl-ffi-call "FT_Done_Face" face) (nl-ffi-call "FT_Done_FreeType" lib) w))))' > target/standalone-reader-ffi-f4.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f4.el 2>/dev/null)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f4.el 2>/dev/null)"; \
 	  if [ "$$out" -ge 55 ] 2>/dev/null; then \
 	    echo "[ffi-smoke F4 transform] PASS: FT_Set_Transform(2x via FT_Matrix/FT_Vector) -> 2x-glyph width $$out px (vs ~33 untransformed)"; \
 	  else \
@@ -3537,9 +3712,7 @@ ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
 	@echo "[standalone-reader-ffi-unsupported-smoke] PASS: not applicable; windows-x86_64 has an unconditional PE-import-backed FFI subset (covered by ffi-smoke)"
 else
 	@mkdir -p target
-	@env -u NELISP_READER_DYNAMIC NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@env -u NELISP_READER_DYNAMIC $(MAKE) standalone-reader NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET)
 	@chmod +x $(STANDALONE_BIN)
 	@case "$$(file -b $(STANDALONE_BIN) 2>/dev/null)" in \
 	  *"dynamically linked"*) echo "[ffi-unsupported-smoke] FAIL: target/nelisp is dynamically linked -- not the static default this smoke must test"; exit 1;; \
@@ -3600,8 +3773,9 @@ endif
 # Declarative FFI surface (packages/nl-ffi): `ffi:library'/`ffi:defun' over
 # `nl-ffi-call'.  Needs the dynamic reader for the same reason
 # `standalone-reader-ffi-smoke' above does, so this rebuilds it the same
-# way -- unconditionally, with NELISP_READER_DYNAMIC=1, never relying on
-# whatever flavor of target/nelisp a previous target left behind.  See
+# way, through the stamp tool at target/nelisp-dyn (Linux-only, so the mode
+# variable need not cross the MSYS make boundary), never relying on or
+# overwriting whatever flavor of target/nelisp a previous target left behind.  See
 # packages/nl-ffi/README.org for the surface and packages/nl-ffi/test/
 # nl-ffi-dsl-standalone-smoke.el for what this gate actually checks
 # (toupper/sqrt/sqlite3_libversion through ffi:defun, the ffi-call
@@ -3609,11 +3783,9 @@ endif
 .PHONY: ffi-dsl
 ffi-dsl:
 	@mkdir -p target
-	@NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
-	@chmod +x target/nelisp
-	@$(STANDALONE_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
+	@NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$(STANDALONE_DYN_OUT) $(MAKE) standalone-reader
+	@chmod +x $(STANDALONE_DYN_BIN)
+	@$(STANDALONE_DYN_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
 
 # FFI step 3 increments 2-3 (packages/nl-ffi/src/nl-ffi-loader.el): a
 # pure-elisp ELF loader, so the whole point is that this gate runs on the
@@ -3686,9 +3858,7 @@ ifneq ($(NL_FFI_LOADER_CC),)
 	  -Wl,-rpath,$(NL_FFI_LOADER_TARGET_ABS)
 	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-ifunc.so \
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-ifunc.c
-	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@$(MAKE) standalone-reader NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET)
 	@chmod +x $(STANDALONE_BIN)
 	@case "$$(file -b $(STANDALONE_BIN) 2>/dev/null)" in \
 	  *"dynamically linked"*) echo "[ffi-loader] FAIL: target/nelisp is dynamically linked -- not the static default this gate must test"; exit 1;; \
@@ -3719,16 +3889,16 @@ standalone-reader-tls-smoke: $(if $(filter windows%,$(STANDALONE_GATE_TARGET)),s
 	@:
 
 standalone-reader-tls-smoke-linux:
+	@# Linux-only (the dispatcher above picks it for non-windows targets), so the
+	@# env-passed NELISP_READER_DYNAMIC below never crosses an MSYS make boundary.
 	@mkdir -p target
 	@if ! timeout 6 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then \
 	  echo "[tls-smoke D2] SKIP: no egress to 1.1.1.1:443"; exit 0; \
 	fi; \
-	NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader; \
-	chmod +x target/nelisp; \
+	NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$(STANDALONE_DYN_OUT) $(MAKE) standalone-reader || exit 1; \
+	chmod +x $(STANDALONE_DYN_BIN); \
 	printf '%s\n' '(let* ((fd (syscall-direct 41 2 1 0 0 0 0)) (sa (alloc-bytes 16 8)) (i 0) (host "one.one.one.one") (hl (length host)) (hbuf (alloc-bytes 32 1)) (j 0) (req "GET / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n") (rl (length req)) (rbuf (alloc-bytes 256 1)) (k 0)) (while (< j hl) (ptr-write-u8 hbuf j (aref host j)) (setq j (1+ j))) (while (< k rl) (ptr-write-u8 rbuf k (aref req k)) (setq k (1+ k))) (while (< i 16) (ptr-write-u8 sa i 0) (setq i (1+ i))) (ptr-write-u8 sa 0 2) (ptr-write-u8 sa 2 1) (ptr-write-u8 sa 3 187) (ptr-write-u8 sa 4 1) (ptr-write-u8 sa 5 1) (ptr-write-u8 sa 6 1) (ptr-write-u8 sa 7 1) (let ((crc (syscall-direct 42 fd sa 16 0 0 0)) (credp (alloc-bytes 8 8)) (sessp (alloc-bytes 8 8))) (nl-ffi-call "gnutls_global_init") (nl-ffi-call "gnutls_certificate_allocate_credentials" credp) (nl-ffi-call "gnutls_init" sessp 2) (let* ((cred (ptr-read-u64 credp 0)) (sess (ptr-read-u64 sessp 0))) (nl-ffi-call "gnutls_server_name_set" sess 1 hbuf hl) (nl-ffi-call "gnutls_set_default_priority" sess) (nl-ffi-call "gnutls_credentials_set" sess 1 cred) (nl-ffi-call "gnutls_transport_set_int2" sess fd fd) (let* ((hs (nl-ffi-call "gnutls_handshake" sess)) (ver (nl-ffi-call "gnutls_protocol_get_version" sess)) (np (nl-ffi-call "gnutls_protocol_get_name" ver)) (nm (if (= np 0) "?" (unibyte-string (ptr-read-u8 np 0) (ptr-read-u8 np 1) (ptr-read-u8 np 2) (ptr-read-u8 np 3)))) (sent (nl-ffi-call "gnutls_record_send" sess rbuf rl)) (resp (alloc-bytes 512 1)) (g1 (nl-ffi-call "gnutls_record_recv" sess resp 511)) (got (nl-ffi-call "gnutls_record_recv" sess resp 511)) (st (if (> got 0) (unibyte-string (ptr-read-u8 resp 0) (ptr-read-u8 resp 1) (ptr-read-u8 resp 2) (ptr-read-u8 resp 3)) "?"))) (nl-ffi-call "gnutls_bye" sess 0) (nl-ffi-call "gnutls_deinit" sess) (nl-ffi-call "gnutls_certificate_free_credentials" cred) (nl-ffi-call "gnutls_global_deinit") (syscall-direct 3 fd 0 0 0 0 0) (list hs nm sent st)))))' > target/standalone-reader-tls-smoke.el; \
-	out="$$(timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_BIN) --load target/standalone-reader-tls-smoke.el 2>/dev/null)"; \
+	out="$$(timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_DYN_BIN) --load target/standalone-reader-tls-smoke.el 2>/dev/null)"; \
 	case "$$out" in \
 	  '(0 "TLS'*'"HTTP")') echo "[tls-smoke D2+D3] PASS: real handshake + HTTPS GET -> $$out (handshake, proto, bytes-sent, response)";; \
 	  *) echo "[tls-smoke D2+D3] FAIL: -> $$out (expected (0 \"TLS..\" <sent> \"HTTP\"))"; exit 1;; \
@@ -4156,7 +4326,7 @@ standalone-reader-dns-smoke: standalone-reader
 	@printf '%s\n' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
-	  '(defun nelisp-dns-smoke--slurp (f) (with-temp-buffer (insert-file-contents-literally f) (buffer-string)))' \
+	  '(defun nelisp-dns-smoke--slurp (f) (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally f) (buffer-string)))' \
 	  '(let* ((full (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-full.bin")) (truncated (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-truncated.bin")) (bad-rdlength (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-badrdlen.bin"))) (list (nelisp--dns-parse-response full) (condition-case e (nelisp--dns-parse-response truncated) (nelisp-dns-error (quote dns-error-caught))) (condition-case e (progn (string-byte truncated 999) (quote raw-unguarded-no-error)) (error (quote raw-unexpectedly-errored))) (condition-case e (nelisp--dns-byte truncated 999) (nelisp-dns-error (quote guarded-dns-error-caught))) (condition-case e (nelisp--dns-parse-response bad-rdlength) (nelisp-dns-error (quote dns-error-caught))) (nelisp--dns-skip-name full 12) (string-bytes (nelisp--dns-encode-query "example.com"))))' \
 	  > target/standalone-reader-dns-smoke-parse.el
 	@parse_out="$$($(STANDALONE_BIN) --load target/standalone-reader-dns-smoke-parse.el)"; \

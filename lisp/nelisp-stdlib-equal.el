@@ -91,6 +91,10 @@ walked recursively."
                   (setq i (1+ i)))
                 ok)))))
 
+(defun nelisp--equal-function-object-p (x)
+  "Return non-nil when X is a byte-code object or an interpreted closure."
+  (or (byte-code-function-p x) (interpreted-function-p x)))
+
 (defun nelisp--equal-rec (a b visited)
   "Cycle-safe structural compare worker — VISITED is an eq hash-table.
 On entry, A and B are arbitrary Sexp values.  Heap-shared variants
@@ -134,12 +138,22 @@ symbol / nil / t) bypass VISITED — `nelisp--ref-eq' handles them."
      (t
       (puthash a t visited)
       (nelisp--equal-record-rec a b visited))))
+   ;; Byte-code objects and interpreted closures compare slot by slot like
+   ;; vectors (GNU internal_equal, PVEC_CLOSURE), but only with their own kind.
+   ((and (nelisp--equal-function-object-p a) (nelisp--equal-function-object-p b))
+    (cond
+     ((not (eq (byte-code-function-p a) (byte-code-function-p b))) nil)
+     ((gethash a visited) t)
+     (t
+      (puthash a t visited)
+      (and (= (length a) (length b))
+           (nelisp--equal-vector-rec a b visited)))))
    ;; Numbers / symbols / nil / t etc — fall through to value compare.
    (t (eq a b))))
 
 (defun nelisp--equal-heapish-p (x)
   "Return non-nil when X may need cycle-safe visited tracking."
-  (or (consp x) (vectorp x) (recordp x)))
+  (or (consp x) (vectorp x) (recordp x) (nelisp--equal-function-object-p x)))
 
 (defun equal (a b)
   "Return t if A and B are structurally equal, walking shared

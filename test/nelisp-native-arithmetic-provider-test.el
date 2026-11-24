@@ -1,8 +1,10 @@
 ;;; arithmetic-provider-test.el --- Source ownership controls -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(load (expand-file-name "../lisp/nelisp-native-arithmetic-v2.el"
-                        (file-name-directory load-file-name)) nil t)
+;; require, not load: a second load redefines the provider's functions
+;; after the lowering libraries captured them as owners, so every later
+;; owner check fails ("source owner changed") when files share one Emacs.
+(require 'nelisp-native-arithmetic-v2)
 
 (ert-deftest nelisp-arithmetic-provider-independent-source ()
   (let* ((first (nelisp-native-arithmetic-v2-source))
@@ -38,5 +40,3 @@
     (cl-letf (((symbol-function 'nelisp-native-arithmetic-v2--copy-node)
                (lambda (&rest _) '(mutated))))
       (should-error (nelisp-native-arithmetic-v2-dependency-context)))))
-
-(ert-run-tests-batch-and-exit (or (getenv "NELISP_ARITHMETIC_TEST_SELECTOR") t))

@@ -97,6 +97,34 @@
 # name, and are offset by the three that left (`eql', `sxhash-eq',
 # `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
 # 276 -> 268, shared-deferring 256 -> 264, PASS.
+# 854 -> 931 on 2026-11-07: register the 76 core-lane names the 2026-11-06
+# note left red, plus `signal'.  Measured emacs 31.1, 26405 names: 931.
+#   scripts/nemacs-runtime-frame-tab-preload.el  47  (selected-frame,
+#     frame-list, make-frame, frame-parameter, set-frame-size, ...)
+#   scripts/nemacs-runtime-process-preload.el    28  (make-process,
+#     process-status, call-process, shell-command, kill-process, ...)
+#   scripts/nemacs-runtime-image-preload.el       1  (`fboundp', rebound only
+#     inside nemacs-runtime-image-preload--force-install-frame-tab-core, for
+#     the duration of a standalone bake)
+#   scripts/nelisp-stdlib-prelude.el              1  (`signal', 270 note below)
+# These are standalone-only runtime-image providers of C primitives
+# (frame/process/image).  They are unconditional on purpose: an earlier layer
+# already defines the same names under (unless (fboundp ...)), so guarding the
+# preload would keep that stub and never install the real cell.  Verified for
+# three names (guarded earlier definition / unconditional preload fset):
+#   frame-list     scripts/nelisp-stdlib-prelude.el:4822 and
+#                  packages/emacs-lib-core/src/emacs-stub.el:151, both
+#                  (unless (fboundp 'frame-list) ...) / frame-tab-preload:282
+#   selected-frame scripts/nelisp-stdlib-prelude.el:4860 and emacs-stub.el
+#                  :154 guarded / frame-tab-preload:278
+#   make-process   scripts/nelisp-stdlib-prelude.el:18962 guarded /
+#                  process-preload:890
+# The image-preload comment says the same: the installers are forced "past
+# earlier stub `fboundp' results" so the API cells land in the base image.
+# Host Emacs never loads the frame-tab or process preload: they are loaded
+# only by `bake-runtime-image' (via NELISP_BIN dump-runtime-image), by
+# nemacs-runtime-image-preload--install-* inside that bake, and by the
+# standalone process smoke; so the shadowing exists only in the standalone.
 # 872 + 253 -> 854 on 2026-11-06, merging the core lane (cd93bb7a0) into the
 # Doc 211 import.  The core lane's own allowance is 253 (270 -> 253 by the
 # cl-gnu notes above); the emacs-lib allowance is the 602 below minus the
@@ -146,7 +174,7 @@
 #       are never run on load; opt-in by design
 #     emacs-cc-fns-1 make-hash-table 1, nelisp-emacs-org-bridge org-agenda-list 1
 #       deliberate wrappers around the existing native/definition
-shared-shadowing 854
+shared-shadowing 931
 # 270 -> 269 on 2026-11-05 (cl-gnu P3): the native prelude `pcase' is deleted.
 
 # 269 -> 270 on 2026-11-02: `signal' in scripts/nelisp-stdlib-prelude.el.

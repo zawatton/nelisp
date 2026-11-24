@@ -4136,11 +4136,47 @@ arguments require 32 + 40 + 8 = 80 bytes before CALL."
                         bytes ".text")))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; and rsp,-16; sub rsp,80.  The crashing form emitted
-                     ;; sub rsp,72, entering SspiCli with rsp misaligned.
-                     (unibyte-string #x48 #x83 #xe4 #xf0
-                                     #x48 #x81 #xec #x50 #x00 #x00 #x00)))))
+                     ;; mov r11,rsp; and rsp,-16; sub rsp,96 (= the 80-byte
+                     ;; outgoing area + the 16-byte frame-local rsp-save
+                     ;; area, S3a-2); mov [rsp+80],r11.  The crashing form
+                     ;; emitted a 72-byte area, entering SspiCli misaligned.
+                     (unibyte-string #x49 #x89 #xe3
+                                     #x48 #x83 #xe4 #xf0
+                                     #x48 #x81 #xec #x60 #x00 #x00 #x00
+                                     #x4c #x89 #x5c #x24 #x50)))
+            ;; Restore: mov rsp,[rsp+80], no add of the outgoing area.
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     text (unibyte-string #x48 #x8b #x64 #x24 #x50)))))
       (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/win64-dynalign-save-is-frame-local ()
+  "S3a-2: the dynamic-align rsp save is thread-safe by default.
+The default emission keeps the pre-align rsp in the realigned frame and has
+no reference to the global `nl_dynalign_rsp_save' slot; the legacy global
+slot stays available as a test-only switch (negative control)."
+  (let ((new (make-temp-file "nelisp-win64-dynalign-new-" nil ".obj"))
+        (old (make-temp-file "nelisp-win64-dynalign-old-" nil ".obj"))
+        (form '(defun probe (h b n w)
+                 (extern-call WriteFile h b n w 0))))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object form new :arch 'x86_64 :format 'coff)
+          (let ((nelisp-aot-compiler--dynalign-global-slot t))
+            (nelisp-aot-compile-to-object form old :arch 'x86_64 :format 'coff))
+          (let ((nb (nelisp-aot-compiler-test--read-bytes new))
+                (ob (nelisp-aot-compiler-test--read-bytes old)))
+            (should-not (string-match-p "nl_dynalign_rsp_save" nb))
+            (should (string-match-p "nl_dynalign_rsp_save" ob))
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     (nelisp-aot-compiler-test--coff-section-bytes nb ".text")
+                     ;; mov r11,rsp; and rsp,-16; sub rsp,64 (32 shadow + 8
+                     ;; stack arg + 8 pad + 16 save); mov [rsp+48],r11.
+                     (unibyte-string #x49 #x89 #xe3
+                                     #x48 #x83 #xe4 #xf0
+                                     #x48 #x81 #xec #x40 #x00 #x00 #x00
+                                     #x4c #x89 #x5c #x24 #x30)))))
+      (ignore-errors (delete-file new))
+      (ignore-errors (delete-file old)))))
 
 (ert-deftest nelisp-aot-compiler/win64-internal-call-stack-gp-arg ()
   "Win64 internal calls place arg5 above shadow space instead of rejecting it."
@@ -4324,6 +4360,254 @@ areas.  SP stays 16-byte aligned across the BL, which Darwin requires."
                                   (lambda (l) (string-match-p "R_X86_64_PC32" l))
                                   (split-string rels "\n")))))))
       (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-global-symbol-validation ()
+  "Global data-blob options reject malformed values and unsupported formats."
+  (dolist (form '((seq (data-blob item (1 2 3) rodata :global)
+                       (defun probe () 0))
+                  (seq (data-blob item (1 2 3) rodata :global yes)
+                       (defun probe () 0))
+                  (seq (data-blob item (1 2 3) rodata :other t)
+                       (defun probe () 0))))
+    (let ((err (should-error (nelisp-aot-compile-to-link-unit form)
+                             :type 'nelisp-aot-compiler-error)))
+      (should (eq (cadr err) :data-blob-malformed))))
+  (dolist (args '((:arch x86_64 :format mach-o)
+                  (:arch wasm32 :format wasm)))
+    (let ((err (should-error
+                (apply #'nelisp-aot-compile-to-link-unit
+                       '(seq (data-blob item (1 2 3) rodata :global t)
+                             (defun probe () 0))
+                       args)
+                :type 'nelisp-aot-compiler-error)))
+      (should (eq (cadr err) :data-blob-global-unsupported)))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-global-layouts ()
+  "ELF x86_64 and aarch64 write GLOBAL OBJECTs with correct sections."
+  (dolist (arch '(x86_64 aarch64))
+    (dolist (section '(rodata data bss))
+      (let* ((source `(seq (data-blob public_blob (1 2 3 4 5) ,section :global t)
+                           (defun get_blob () (data-addr public_blob))))
+             (unit (nelisp-aot-compile-to-link-unit source :arch arch :format 'elf))
+             (symbols (plist-get unit :symbols))
+             (public (seq-find (lambda (sym)
+                                 (equal (plist-get sym :name) "public_blob"))
+                               symbols))
+             (local (seq-find (lambda (sym)
+                                (and (eq (plist-get sym :bind) 'local)
+                                     (eq (plist-get sym :type) 'object)
+                                     (= (plist-get sym :value)
+                                        (plist-get public :value))))
+                              symbols))
+             (path (make-temp-file "nelisp-global-layout-" nil ".o")))
+        (unwind-protect
+            (progn
+              (should public)
+              (should (eq (plist-get public :bind) 'global))
+              (should (eq (plist-get public :type) 'object))
+              (should (eq (plist-get public :section) section))
+              (should (= (plist-get public :size) 5))
+              (should local)
+              (should-not (equal (plist-get local :name) "public_blob"))
+              (should (equal (plist-get (car (plist-get unit :relocs)) :symbol)
+                             (plist-get local :name)))
+              (nelisp-aot-compile-to-object source path :arch arch :format 'elf)
+              (let ((actual (nelisp-elf-read-symbol path "public_blob")))
+                (should (= (plist-get actual :bind) 1))
+                (should (= (plist-get actual :type) 1))
+                (should (= (plist-get actual :size) 5))
+                (should (= (plist-get actual :section-index)
+                           (plist-get (nelisp-elf--section-by-name
+                                       (nelisp-elf--section-headers
+                                        (nelisp-elf-read-file-bytes path))
+                                       (pcase section
+                                         ('rodata ".rodata")
+                                         ('data ".data")
+                                         ('bss ".bss")))
+                                      :index)))
+                (should (equal (plist-get actual :section-name)
+                               (pcase section
+                                 ('rodata ".rodata")
+                                 ('data ".data")
+                                 ('bss ".bss"))))
+                ;; st_other is byte 5 of Elf64_Sym; DEFAULT is zero.
+                (let* ((bytes (nelisp-elf-read-file-bytes path))
+                       (headers (nelisp-elf--section-headers bytes))
+                       (symtab (nelisp-elf--section-by-name headers ".symtab"))
+                       (strtab (nelisp-elf--section-by-index
+                                headers (plist-get symtab :link)))
+                       (symoff (plist-get symtab :offset))
+                       (str-base (plist-get strtab :offset))
+                       (str-limit (+ str-base (plist-get strtab :size)))
+                       (other-offset nil))
+                  (dotimes (index (/ (plist-get symtab :size)
+                                     (plist-get symtab :entsize)))
+                    (let* ((entry (+ symoff (* index (plist-get symtab :entsize))))
+                           (name-off (nelisp-elf--read-le32 bytes entry))
+                           (name (nelisp-elf--cstring-at bytes (+ str-base name-off)
+                                                         str-limit)))
+                      (when (equal name "public_blob")
+                        (setq other-offset (+ entry 5)))))
+                  (should other-offset)
+                  (should (= (aref bytes other-offset) 0)))
+                (let* ((headers (nelisp-elf--section-headers
+                                 (nelisp-elf-read-file-bytes path)))
+                       (symtab (nelisp-elf--section-by-name headers ".symtab"))
+                       (local-count (cl-count-if
+                                     (lambda (sym)
+                                       (eq (plist-get sym :bind) 'local)) symbols)))
+                  (should (= (plist-get symtab :info) (1+ local-count)))))
+          (ignore-errors (delete-file path))))))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-global-with-relocs ()
+  "Global data blobs retain embedded RELOCS and their external targets."
+  (let* ((unit (nelisp-aot-compile-to-link-unit
+                '(seq (data-blob global_table (0 0 0 0 0 0 0 0) data
+                                 ((0 external_fn 0)) :global t)
+                      (defun get_table () (data-addr global_table)))))
+         (public (seq-find (lambda (sym)
+                             (equal (plist-get sym :name) "global_table"))
+                           (plist-get unit :symbols)))
+         (data-reloc (seq-find (lambda (reloc)
+                                 (eq (plist-get reloc :section) 'data))
+                               (plist-get unit :relocs))))
+    (should (eq (plist-get public :bind) 'global))
+    (should (eq (plist-get public :type) 'object))
+    (should (= (plist-get public :size) 8))
+    (should (= (length (plist-get unit :data)) 8))
+    (should (equal (plist-get data-reloc :symbol) "external_fn"))
+    (should (eq (plist-get data-reloc :type) 'abs64))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-global-elf-sh-info ()
+  "ELF symtab keeps locals before the exported blob and sets sh_info."
+  (skip-unless (executable-find "readelf"))
+  (let* ((source '(seq
+                   (data-blob local_blob (1 2) rodata)
+                   (data-blob public_blob (3 4) rodata :global t)
+                   (defun read_public () (data-addr public_blob))))
+         (unit (nelisp-aot-compile-to-link-unit source :format 'elf))
+         (path (make-temp-file "nelisp-global-sh-info-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object source path)
+          (let* ((headers (nelisp-elf--section-headers
+                           (nelisp-elf-read-file-bytes path)))
+                 (symtab (nelisp-elf--section-by-name headers ".symtab"))
+                 (local-count
+                  (cl-count-if (lambda (sym)
+                                 (eq (plist-get sym :bind) 'local))
+                               (plist-get unit :symbols))))
+            ;; ELF index zero is the implicit local STN_UNDEF symbol.
+            (should (= (plist-get symtab :info) (1+ local-count))))
+          (let ((syms (with-output-to-string
+                        (with-current-buffer standard-output
+                          (call-process "readelf" nil t nil "-sW" path))))
+                (local-line nil) (global-line nil))
+            (dolist (line (split-string syms "\n" t))
+              (when (string-match-p "\\$nelisp\\$local\\$public_blob\\$0" line)
+                (setq local-line (string-to-number line)))
+              (when (string-match-p "public_blob" line)
+                (setq global-line (string-to-number line))))
+            (should local-line)
+            (should global-line)
+            (should (< local-line global-line))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-global-coff-external-symbol ()
+  "COFF emits a global data-blob symbol with external storage class."
+  (skip-unless (executable-find "objdump"))
+  (let ((path (make-temp-file "nelisp-coff-global-blob-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(seq (data-blob exported_blob (1 2 3 4) rodata :global t)
+                 (defun probe () 0))
+           path :arch 'x86_64 :format 'coff)
+          (let ((table (with-output-to-string
+                         (with-current-buffer standard-output
+                           (call-process "objdump" nil t nil "-t" path)))))
+            (should (string-match-p
+                     "scl[ \t]+2.*exported_blob" table))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-global-shared-export ()
+  "Global blob exports link from a shared object without text relocations."
+  (let ((cc (executable-find "cc"))
+        (nm (executable-find "nm"))
+        (readelf (executable-find "readelf")))
+    (skip-unless (and cc nm readelf (nelisp-aot-compiler-test--linux-p)))
+    (let* ((dir (make-temp-file "nelisp-global-blob-" t))
+           (obj (expand-file-name "blob.o" dir))
+           (so (expand-file-name "libblob.so" dir)))
+      (unwind-protect
+          (progn
+            (nelisp-aot-compile-to-object
+             '(seq
+               (data-blob exported_blob (10 20 30 40) rodata :global t)
+               (defun read_blob () (ptr-read-u8 (data-addr exported_blob) 0)))
+             obj :arch 'x86_64 :format 'elf)
+            (with-output-to-string
+              (with-current-buffer standard-output
+                (should (zerop (call-process cc nil t nil "-shared" "-Wl,-z,text"
+                                             obj "-o" so)))))
+            (let ((exports (with-output-to-string
+                            (with-current-buffer standard-output
+                              (call-process nm nil t nil "-D" "--defined-only" so))))
+                  (dynsyms (with-output-to-string
+                             (with-current-buffer standard-output
+                               (call-process readelf nil t nil "--dyn-syms" "-W" so)))))
+              (should (string-match-p "[ \t][BDR][ \t]+exported_blob" exports))
+              (should (string-match-p
+                       "OBJECT[ \t]+GLOBAL[ \t]+DEFAULT[ \t]+[0-9]+ exported_blob"
+                       dynsyms))))
+        (ignore-errors (delete-directory dir t))))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-local-object-byte-compatibility ()
+  "A data blob without `:global t' keeps the legacy object layout.
+`:global nil' must not change a single byte, and a legacy 4- or 5-field
+blob must get neither a GLOBAL symbol nor a local alias.  Comparing
+with the compiler from before `:global' existed is a one-off review
+step, not a golden hash here, so unrelated codegen changes do not
+break this test."
+  (let* ((dir (make-temp-file "nelisp-blob-byte-compat-" t))
+         (bytes-of (lambda (form name)
+                     (let ((path (expand-file-name name dir)))
+                       (nelisp-aot-compile-to-object form path)
+                       (with-temp-buffer
+                         (set-buffer-multibyte nil)
+                         (insert-file-contents-literally path)
+                         (buffer-string)))))
+         (four '(seq (data-blob baseline_ro (1 2 3 254) rodata)
+                     (defun baseline_read ()
+                       (ptr-read-u8 (data-addr baseline_ro) 0))))
+         (four-nil '(seq (data-blob baseline_ro (1 2 3 254) rodata :global nil)
+                         (defun baseline_read ()
+                           (ptr-read-u8 (data-addr baseline_ro) 0))))
+         (five '(seq (data-blob baseline_msg (65 66 0) rodata)
+                     (data-blob baseline_ptr (0 0 0 0 0 0 0 0) data
+                                ((0 baseline_msg 0)))
+                     (defun baseline_read_ptr ()
+                       (ptr-read-u64 (data-addr baseline_ptr) 0))))
+         (five-nil '(seq (data-blob baseline_msg (65 66 0) rodata :global nil)
+                         (data-blob baseline_ptr (0 0 0 0 0 0 0 0) data
+                                    ((0 baseline_msg 0)) :global nil)
+                         (defun baseline_read_ptr ()
+                           (ptr-read-u64 (data-addr baseline_ptr) 0)))))
+    (unwind-protect
+        (progn
+          (should (equal (funcall bytes-of four "four.o")
+                         (funcall bytes-of four-nil "four-nil.o")))
+          (should (equal (funcall bytes-of five "five.o")
+                         (funcall bytes-of five-nil "five-nil.o")))
+          (dolist (form (list four five))
+            (dolist (sym (plist-get (nelisp-aot-compile-to-link-unit
+                                     form :format 'elf)
+                                    :symbols))
+              (when (eq (plist-get sym :type) 'object)
+                (should (eq (plist-get sym :bind) 'local))
+                (should-not (string-prefix-p "$nelisp$local$"
+                                             (plist-get sym :name)))))))
+      (ignore-errors (delete-directory dir t)))))
 
 (ert-deftest nelisp-aot-compiler/data-blob-readback-e2e ()
   "Linked C driver reads back exact `data-blob' bytes via `data-addr'."
@@ -5007,6 +5291,44 @@ While `nelisp-aot-compiler-lisp-open-defects' lists a wrong answer native
 artifacts still give, the runtime sources must not name either one."
   (should-not (and nelisp-aot-compiler-lisp-open-defects
                    (nelisp-aot-compiler-test--replay-primitive-hits))))
+
+(ert-deftest nelisp-aot-compiler/aarch64-symbol-eq-calls-object-word-helper ()
+  "Doc 226 D9 stage 3: arm64 `symbol-eq' hands symbol object WORDs to the helper.
+Without the object-word branch every symbol WORD compared false on aarch64,
+so no condition-case clause matched.  The emission must test the low three
+bits against #b110 and BL to `nl_symbol_word_eq' from the objects label."
+  (let* ((nelisp-aot-compiler--arch 'aarch64)
+         (buf (nelisp-asm-arm64-make-buffer))
+         (node (nelisp-aot-compiler--make-ir
+                'symbol-eq :id 'symeq-t1
+                :a (nelisp-aot-compiler--make-ir 'imm :value 8)
+                :b (nelisp-aot-compiler--make-ir 'imm :value 16)))
+         (fixups nil))
+    (nelisp-aot-compiler--emit-symbol-eq-arm64 node buf)
+    (setq fixups (nelisp-asm-arm64-buffer-fixups buf))
+    (let ((bl (seq-find (lambda (f) (and (eq (nth 1 f) 'nl_symbol_word_eq)
+                                         (eq (nth 2 f) 'bl26)))
+                        fixups)))
+      (should bl)
+      (should (= 1 (length (seq-filter
+                            (lambda (f) (eq (nth 1 f) 'nl_symbol_word_eq))
+                            fixups))))
+      ;; Two `b.eq symeq-t1-objects' guards (one per operand; `b-cond' lowers
+      ;; to an inverted skip plus a `b26' branch).
+      (should (= 2 (length (seq-filter
+                            (lambda (f) (and (eq (nth 1 f) 'symeq-t1-objects)
+                                             (eq (nth 2 f) 'b26)))
+                            fixups))))
+      ;; Argument shuffle precedes the BL: mov x0,x1 ; mov x1,x2.
+      (let* ((bytes (nelisp-asm-arm64-buffer-bytes buf))
+             (slot (nth 0 bl))
+             (w (lambda (off) (logior (aref bytes off)
+                                      (ash (aref bytes (+ off 1)) 8)
+                                      (ash (aref bytes (+ off 2)) 16)
+                                      (ash (aref bytes (+ off 3)) 24)))))
+        (should (= (funcall w (- slot 8)) #xAA0103E0)) ; mov x0, x1
+        (should (= (funcall w (- slot 4)) #xAA0203E1)) ; mov x1, x2
+        (should (= (funcall w slot) #x94000000))))))        ; bl placeholder
 
 (provide 'nelisp-aot-compiler-test)
 

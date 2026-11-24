@@ -1,0 +1,20 @@
+# S3.4 evidence: CI run 42534407660 (workflow_dispatch, 28228bc9c, gate_mutation not set).
+# Excerpts from the four gate-mutation shard logs and the verify job log.
+
+## gate-mutation shard 0/4
+GATE-SKIP trigger policy: manual dispatch without gate_mutation
+## gate-mutation shard 1/4
+GATE-SKIP trigger policy: manual dispatch without gate_mutation
+## gate-mutation shard 2/4
+GATE-SKIP trigger policy: manual dispatch without gate_mutation
+## gate-mutation shard 3/4
+GATE-SKIP trigger policy: manual dispatch without gate_mutation
+
+## verify (every required gate produced a report)
+merge-gate-reports: gate-mutation <- 4 shards: status=skip ran=0 failed=0
+GATE                                   STATUS        RAN  FAILED  SKIPPED  AGE(h)
+gate-mutation                          skip            0       0        0     1.2
+VERDICT: FAIL (61 problem(s))
+
+# gate-mutation merges as status=skip; VERDICT FAIL comes from other gates (emacs-parity etc., the main CI reds tracked by S3), none of them gate-mutation:
+  (no verify problem names gate-mutation)

@@ -78,6 +78,35 @@ case "${1:-}" in
               -l packages/emacs-lib-facade/test/nelisp-emacs-artifact-gate6-test.el \
               --eval '(ert-run-tests-batch-and-exit (quote (member nelisp-pcase-or-branch-local-bindings nelisp-private-continuation/native-three-frontends-public-collisions nemacs-artifact-gate5-format-spec-source-equals-artifact nemacs-artifact-gate6-format-spec-source-equals-artifact)))'
         ;;
+    ert-local-run)
+        # Producer for S4.3 (not a ledger check: the suite takes about 40
+        # minutes, past the meter's 600 s cap).  Runs the full host ERT
+        # suite the way CI's plain variant did (`make test' cleans first)
+        # and records the result with the commit it ran on.
+        log=target/doc211-ert-local.log
+        mkdir -p target
+        { echo "HEAD=$(git rev-parse HEAD)"
+          echo "DIRTY=$(git status --porcelain --untracked-files=no | wc -l)"
+          make -s test </dev/null 2>&1
+          echo "MAKE-RC=$?"; } > "$log.tmp"
+        mv "$log.tmp" "$log"
+        grep -E '^(MAKE-RC|.*TOTALS)' "$log"
+        ;;
+    ert-local)
+        # S4.3.  The recorded `ert-local-run' result is for the current
+        # clean HEAD, HEAD contains the landing (6f4861213), and the suite
+        # passed with no unexpected result.
+        log=target/doc211-ert-local.log
+        [ -r "$log" ] || { echo "no $log: run ert-local-run"; exit 1; }
+        git merge-base --is-ancestor 6f4861213 HEAD ||
+            { echo "HEAD does not contain the landing"; exit 1; }
+        grep -qx "HEAD=$(git rev-parse HEAD)" "$log" ||
+            { echo "recorded run is for another commit"; exit 1; }
+        grep -qx 'DIRTY=0' "$log" || { echo "recorded run had local edits"; exit 1; }
+        grep -qx 'MAKE-RC=0' "$log" || { echo "make test failed"; exit 1; }
+        grep -q 'TOTALS .*unexpected=0 .*failed-files=0' "$log" ||
+            { echo "unexpected results recorded"; exit 1; }
+        ;;
     ci-main)
         # S4.3.  The pre-landing main run (41612351997, 1404ced83) had
         # zero host ERT failures, so "no failure absent from it" means
@@ -103,7 +132,7 @@ print("no completed main CI run contains the landing yet")
 sys.exit(1)'
         ;;
     *)
-        echo "usage: $0 retired|one-owner|regex-ert|bundle-once|boot|url|magit|core-lane|ci-main" >&2
+        echo "usage: $0 retired|one-owner|regex-ert|bundle-once|boot|url|magit|core-lane|ert-local-run|ert-local|ci-main" >&2
         exit 2
         ;;
 esac

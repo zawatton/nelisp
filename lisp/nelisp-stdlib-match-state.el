@@ -1,6 +1,7 @@
 ;;; nelisp-stdlib-match-state.el --- Public view of actual standalone match state -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-bytecode-compiler-input)
+(defvar nlre--last-caps)
 (defvar nelisp-stdlib-match-state--dialect-owner
   (symbol-function 'nelisp-bytecode-compiler-input-dialect))
 (defvar nelisp-stdlib-match-state--owners nil)

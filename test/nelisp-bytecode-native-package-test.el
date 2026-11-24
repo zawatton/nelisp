@@ -151,6 +151,33 @@
            "\\`[A-Za-z_][A-Za-z0-9_]*\\'"
            (nelisp-bytecode-native-package--native-entry-name 'a-b))))
 
+(defun nelisp-bytecode-native-package-test--private-function ()
+  "Return a compiled (lambda () \\='sealed-value) that owns its code and constants.
+GNU Emacs 31.1 gives separately byte-compiled functions with the same
+bytecode one shared code string: two `byte-compile' calls on
+\(lambda () \\='x) return the same \"\\300\\207\" object.  A test that
+mutates that string in place changes every function sharing it, and in a
+single-Emacs ERT run a later caller read a constant past the end of its
+vector and crashed the host Emacs (SIGSEGV, exit 139).  Tests that mutate
+the function's code or constants use this copy instead."
+  (let ((shared (byte-compile '(lambda () 'sealed-value))))
+    (make-byte-code (aref shared 0)
+                    (copy-sequence (aref shared 1))
+                    (copy-sequence (aref shared 2))
+                    (aref shared 3))))
+
+(ert-deftest nelisp-bytecode-native-package-private-function-owns-its-code ()
+  "Mutating the private copy leaves other compiled functions unchanged."
+  (let* ((private (nelisp-bytecode-native-package-test--private-function))
+         (other (byte-compile '(lambda () 'other-value)))
+         (before (copy-sequence (aref other 1))))
+    (should (equal (funcall private) 'sealed-value))
+    (should-not (eq (aref private 1) (aref other 1)))
+    (should-not (eq (aref private 2) (aref other 2)))
+    (aset (aref private 1) 0 (logxor 1 (aref (aref private 1) 0)))
+    (should (equal (aref other 1) before))
+    (should (equal (funcall other) 'other-value))))
+
 (ert-deftest nelisp-bytecode-native-package-sealed-preflight-refuses-mutation ()
   "Package tokens reject function and compiler-result mutation before backend work."
   (skip-unless (equal emacs-version "31.1"))
@@ -158,7 +185,7 @@
     (dolist (mutation '(code constants descriptor input-code input-constants
                         ir cyclic-ir frame dialect helper helper-input-accessor
                         helper-ir-accessor helper-frame-accessor))
-      (let* ((function (byte-compile '(lambda () 'sealed-value)))
+      (let* ((function (nelisp-bytecode-native-package-test--private-function))
              (sealed (funcall (plist-get api :preflight) function))
              (input (plist-get sealed :input))
              (token (plist-get sealed :token))
@@ -256,7 +283,7 @@
   "Oversized genuine analysis uses the ordinary compiler path instead of refusing."
   (skip-unless (equal emacs-version "31.1"))
   (let* ((api nelisp-bytecode-native-compiler-package-preflight-api)
-         (function (byte-compile '(lambda () 'sealed-value)))
+         (function (nelisp-bytecode-native-package-test--private-function))
          (input-builder (symbol-function 'nelisp-bytecode-compiler-input-build))
          (sealed nil)
          (deep nil)

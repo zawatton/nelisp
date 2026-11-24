@@ -1,0 +1,74 @@
+# S7.6 evidence. Part A: host-parity row (scripts/nelisp-stdlib-prelude.el), pass 2 of evid-b.sh on the final harness; part B: chunk-growth row from the first harness version (behaviour for variant gates is unchanged by the review fixes). Part A2 (appended): rerun on the final harness with the version pin.
+## A (evid-b.log)
+=== pass 1 (warms the default cache; not the evidence)
+  standalone-reader-host-parity-smoke: went red as it should (`decode-coding-string' is the identity again, as in v1.2.0 -- decoded text stays unibyte and `length' counts bytes)
+gate-mutation: row 1/1 standalone-reader-host-parity-smoke file=scripts/nelisp-stdlib-prelude.el 152s [slow]
+gate-mutation: slowest rows
+     152s  standalone-reader-host-parity-smoke  file=scripts/nelisp-stdlib-prelude.el
+gate-mutation: total wall 152s, warm-up 0s, not run 0
+GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0 not_run=0 selected_total=1 assigned=1
+gate-mutation: PASS (1 passed, 0 skipped)
+exit=0
+=== pass 2 (evidence)
+unit cache listing sha before: e3e41eba238584bc10e4ba6c95fb9da8fb4e0bc35b5049a976c55b24f677d0e0 files=119
+vendor-bytecode listing sha before: f5b9c2f9371ea838f16ad51e77d46b1303e846166a13d085f78a0bf6882c8ba3
+gate-mutation: target linux-x86_64
+gate-mutation: restricted to gate 'standalone-reader-host-parity-smoke'
+gate-mutation: restricted to rows matching 'decode-coding-string'
+gate-mutation: warm-up rebuild took 1s
+gate-mutation: baseline copy saved (16 present, 0 absent)
+  standalone-reader-host-parity-smoke: went red as it should (`decode-coding-string' is the identity again, as in v1.2.0 -- decoded text stays unibyte and `length' counts bytes)
+gate-mutation: row 1/1 standalone-reader-host-parity-smoke file=scripts/nelisp-stdlib-prelude.el 152s [slow]
+gate-mutation: slowest rows
+     152s  standalone-reader-host-parity-smoke  file=scripts/nelisp-stdlib-prelude.el
+gate-mutation: total wall 153s, warm-up 1s, not run 0
+GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0 not_run=0 selected_total=1 assigned=1
+gate-mutation: PASS (1 passed, 0 skipped)
+exit=0
+unit cache listing sha after:  e3e41eba238584bc10e4ba6c95fb9da8fb4e0bc35b5049a976c55b24f677d0e0 files=119
+vendor-bytecode listing sha after: f5b9c2f9371ea838f16ad51e77d46b1303e846166a13d085f78a0bf6882c8ba3
+restored binary sha: a14c14321effd8217f9dd217748ecfa623b5782f575329c8f7b82ec48b1239f5
+baseline binary sha: a14c14321effd8217f9dd217748ecfa623b5782f575329c8f7b82ec48b1239f5
+leftover scratch: ls: cannot access 'target/gate-mutation-units': No such file or directory
+standalone-reader: up to date (key bf54faeb3397, output sha256 a14c14321eff)
+## B (evid-run1.log, chunk-growth part)
+=== (b) chunk-growth
+gate-mutation: target linux-x86_64
+gate-mutation: restricted to gate 'standalone-chunk-growth-test'
+gate-mutation: warm-up rebuild took 0s
+gate-mutation: baseline copy saved (16 present, 0 absent)
+  standalone-chunk-growth-test: went red as it should (chunk growth always fails, so a full first chunk aborts instead of adding a chunk)
+gate-mutation: row 1/1 standalone-chunk-growth-test file=scripts/nelisp-standalone-build.el 697s [slow]
+gate-mutation: slowest rows
+     697s  standalone-chunk-growth-test  file=scripts/nelisp-standalone-build.el
+gate-mutation: total wall 697s, warm-up 0s, not run 0
+GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0 not_run=0 selected_total=1 assigned=1
+gate-mutation: PASS (1 passed, 0 skipped)
+exit=0
+cache listing sha after b: e3e41eba238584bc10e4ba6c95fb9da8fb4e0bc35b5049a976c55b24f677d0e0
+finished
+
+## A2 (evid-b2.log): part A rerun on the final integrated harness (NELISP_VERSION pinned to the baseline's), 2026-11-09
+# The injected binary differs from the baseline (the row went red, not HARNESS ERROR), so the pin does not hide the injection.
+=== pass 2 (evidence)
+unit cache listing sha before: 9a09ef1208adc9c607581de3b3004120e33560f4d3568eed05f080d37c88deba files=119
+vendor-bytecode listing sha before: f5b9c2f9371ea838f16ad51e77d46b1303e846166a13d085f78a0bf6882c8ba3
+gate-mutation: target linux-x86_64
+gate-mutation: restricted to gate 'standalone-reader-host-parity-smoke'
+gate-mutation: restricted to rows matching 'decode-coding-string'
+gate-mutation: warm-up rebuild took 1s
+gate-mutation: baseline copy saved (16 present, 0 absent)
+  standalone-reader-host-parity-smoke: went red as it should (`decode-coding-string' is the identity again, as in v1.2.0 -- decoded text stays unibyte and `length' counts bytes)
+gate-mutation: row 1/1 standalone-reader-host-parity-smoke file=scripts/nelisp-stdlib-prelude.el 143s [slow]
+gate-mutation: slowest rows
+     143s  standalone-reader-host-parity-smoke  file=scripts/nelisp-stdlib-prelude.el
+gate-mutation: total wall 144s, warm-up 1s, not run 0
+GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0 not_run=0 selected_total=1 assigned=1
+gate-mutation: PASS (1 passed, 0 skipped)
+exit=0
+unit cache listing sha after:  9a09ef1208adc9c607581de3b3004120e33560f4d3568eed05f080d37c88deba files=119
+vendor-bytecode listing sha after: f5b9c2f9371ea838f16ad51e77d46b1303e846166a13d085f78a0bf6882c8ba3
+restored binary sha: 2d41eb8023eadbb264e65a0ace41136d89fc2584a13ad6aa55b5f55aab5fdf41
+baseline binary sha: 2d41eb8023eadbb264e65a0ace41136d89fc2584a13ad6aa55b5f55aab5fdf41
+leftover scratch: ls: cannot access 'target/gate-mutation-units': No such file or directory
+standalone-reader: up to date (key 444cf33f9a12, output sha256 2d41eb8023ea)

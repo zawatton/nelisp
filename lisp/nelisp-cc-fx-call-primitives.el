@@ -2008,14 +2008,13 @@
     ;; every call.  CACHE 0: no site cache (a worker, or a
     ;; call with no cache vector).
     (defun m5_fx_funcall_site (cache fn stk sp argc resw env ws)
-      ;; A fresh cache holds nil in slots 3 and 4, so `(funcall nil)' matched
-      ;; slot 3 and read the record of slot 4 as a vector: a null dereference.
-      ;; A hit needs a record (the nil word is 3).
-      (if (if (= cache 0) 0
-            (if (= (nl_vector_slot_word cache 4) 3) 0
-              (= (nl_vector_slot_word cache 3) fn)))
+      ;; A nil FN (word 3) is never a cached closure: an unfilled cache holds
+      ;; nil in slot 3 and no record in slot 4, so matching it would read a
+      ;; record that is not there and crash instead of signalling
+      ;; void-function.
+      (if (if (= cache 0) 0 (if (= fn 3) 0 (= (nl_vector_slot_word cache 3) fn)))
           (let* ((rec (nl_vector_slot_word cache 4)))
-            (if (if (if (>= (nl_vector_length rec) 8)
+            (if (if (if (if (= rec 3) 0 (>= (nl_vector_length rec) 8))
                         (= (nl_vector_slot_word rec 7) 3) 0)
                     (>= (m5_fx_arity_code rec argc) 0) 0)
                 (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc

@@ -1,0 +1,6 @@
+corpus=32 sbcl-rows=32 nelisp-rows=31 same=27 diff=5
+DIFF ~x                     arg=255    sbcl="FF"                       nelisp="ff"
+DIFF ~:x                    arg=65535  sbcl="F,FFF"                    nelisp="f,fff"
+DIFF ~:p                    arg=1      sbcl="ERR"                      nelisp=""
+DIFF ~5%                    arg=N      sbcl="|||||"                    nelisp=<none>
+DIFF ~c                     arg=65     sbcl="ERR"                      nelisp="A"

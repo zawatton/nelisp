@@ -146,8 +146,14 @@ $Hash = (Get-FileHash -Algorithm SHA256 -Path $TarFile).Hash.ToLowerInvariant()
 Set-Content -Path $ShaFile -Encoding ascii -Value ($Hash + "  " + (Split-Path -Leaf $TarFile))
 
 $SizeBytes = (Get-Item $TarFile).Length
-if ($SizeBytes -ge 15 * 1024 * 1024) {
-    throw ("tarball exceeds 15 MB cap: " + $SizeBytes + " bytes")
+# 22 MB, the same cap as tools/build-standalone-tarball.sh (raised there
+# from 15 MB, then 17 MB, as the bundle came to carry the vendored and
+# emacs-lib sources -- user decision, 2026-11-09).  This copy was still at
+# 15 MB because the Windows leg never got this far; aligned by user
+# decision on 2026-11-11, after nelisp.exe itself was brought to the Linux
+# binary's size (gz 23.8 -> 13.2 MB, big literals in .rdata).
+if ($SizeBytes -ge 22 * 1024 * 1024) {
+    throw ("tarball exceeds 22 MB cap: " + $SizeBytes + " bytes")
 }
 
 Remove-Item -Recurse -Force $StageDir

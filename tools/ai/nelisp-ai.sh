@@ -98,7 +98,10 @@ usage: tools/ai/nelisp-ai.sh <command> [args]
   selfhost            build the binary and run gate "standalone-selfhost-test"
   perf                build the binary and run gate "nelisp-performance-gate"
   smokes              run the 28 individual reader smokes as one gate
-  extras              run the remaining binary-building gates, one report each
+  extras [GROUP]      run the remaining binary-building gates, one report each;
+                      GROUP is parity|variants|build|smokes (default: all, in
+                      the historical order); "extras --list-all" prints
+                      "group gate" lines
   presence            build the binary and run gate "substrate-presence-sweep"
                       (~354-name fboundp sweep, own tier: too slow for extras)
   test-one FILE...    run selected test files as gate "ert-focus"
@@ -250,24 +253,55 @@ run_ert_gate() {
             --command "nelisp-ai.sh $gate_name"
         exit 1
     fi
-    # Loaded through nelisp-ert-collection-load-env: each file once, and a
-    # file that fails to load becomes a failing test instead of an abort.
+    # Each file runs in its own `emacs --batch' (tools/run-tests-parallel.sh).
+    # One Emacs loading every file never completed: files that called
+    # `ert-run-tests-batch-and-exit' at load time ended the run early, and
+    # without them the run reached tests whose files redefine each other's
+    # functions ("source owner changed") and an ELF registration test that
+    # crashes the host Emacs after the raw-call tests.  A file that fails to
+    # load is an ERROR file, counted as one failure.
     started=$(date +%s)
+    out_dir="target/test-parallel/$gate_name"
+    summary="target/test-parallel/$gate_name.summary"
+    mkdir -p target/test-parallel
     set +e
-    # shellcheck disable=SC2046,SC2086
-    # Keep GNU's host tooling API before standalone packages shadow json.el.
-    NELISP_GATE_NAME="$gate_name" \
-    NELISP_GATE_COMMAND="tools/ai/nelisp-ai.sh $gate_name" \
-    NELISP_ERT_FILES="$files" \
-        "$EMACS" --batch -Q -l json $(load_path_args) \
-            --eval '(setq load-prefer-newer t)' \
-            -l ert -l "$here/nelisp-ert-collection.el" \
-            -f nelisp-ert-collection-load-env \
-            --eval '(nelisp-ert-collection-finish)' \
-            -l "$here/nelisp-ert-gate.el" -f nelisp-ert-gate-run
+    # shellcheck disable=SC2086
+    # The runner's default selector leaves out `:expensive-test', as
+    # `make test' does; NELISP_GATE_SELECTOR overrides it.
+    # The list goes through a file, not argv: the full suite overran the
+    # Windows command-line limit (see TEST_FILES_FROM in the runner).
+    list="target/test-parallel/$gate_name.files"
+    printf '%s\n' $files > "$list"
+    OUT_DIR="$out_dir" EMACS="$EMACS" TEST_FILES_FROM="$list" \
+    SELECTOR="${NELISP_GATE_SELECTOR:-(not (tag :expensive-test))}" \
+        "$here/../run-tests-parallel.sh" > "$summary" 2>&1
     code=$?
     set -e
-    printf 'elapsed: %ss\n' "$(( $(date +%s) - started ))"
+    cat "$summary"
+    totals=$(sed -n 's/^\[parallel-test\] TOTALS //p' "$summary" | tail -1)
+    ran=$(printf '%s' "$totals" | sed -nE 's/.*ran=([0-9]+).*/\1/p')
+    unexpected=$(printf '%s' "$totals" | sed -nE 's/.*unexpected=([0-9]+).*/\1/p')
+    skipped=$(printf '%s' "$totals" | sed -nE 's/.*skipped=([0-9]+).*/\1/p')
+    error_files=$(printf '%s' "$totals" | sed -nE 's/.*error-files=([0-9]+).*/\1/p')
+    elapsed=$(( $(date +%s) - started ))
+    if [ -z "$ran" ]; then
+        "$here/gate-report.sh" --name "$gate_name" --kind ert --ran 0 \
+            --failed 1 --reason "the parallel runner printed no totals (exit $code)" \
+            --command "nelisp-ai.sh $gate_name" || true
+        code=1
+    else
+        failed=$(( unexpected + error_files ))
+        # A nonzero runner exit with no counted failure (a file timed out
+        # after printing its summary) still fails the gate.
+        [ "$code" -ne 0 ] && [ "$failed" -eq 0 ] && failed=1
+        "$here/gate-report.sh" --name "$gate_name" --kind ert \
+            --ran "$(( ran - skipped ))" --passed "$(( ran - skipped - unexpected ))" \
+            --failed "$failed" --skipped "$skipped" \
+            --command "nelisp-ai.sh $gate_name" \
+            --duration-ms "$(( elapsed * 1000 ))" || code=1
+    fi
+    printf 'GATE-COUNT checked=%s findings=%s\n' "${ran:-0}" "${failed:-1}"
+    printf 'elapsed: %ss\n' "$elapsed"
     return $code
 }
 
@@ -327,36 +361,77 @@ cmd_presence() {
     cmd_gate substrate-presence-sweep -- make substrate-presence-sweep
 }
 
+# "GROUP GATE" table for `extras', in the order the single-job tier ran them
+# before it was split.  Each gate is in exactly one group
+# (tools/check-extras-partition.sh enforces this against the original list).
+# Groups are balanced by measured per-gate seconds:
+#   parity   substrate-parity-smoke: ~510 process launches, 1261-2298 s
+#            serial; runs through the NELISP_SUBSTRATE_PARITY_JOBS pool.
+#   variants standalone-chunk-growth-test and standalone-eval-test rebuild
+#            unit variants: ~1100-1650 s cold cache, 20-60 s warm.  Alone so
+#            a cold unit cache costs only this leg.
+#   build    the remaining binary-heavy gates (~2-3 min).
+#   smokes   the small smokes (~1-2 min).
+extras_table() {
+    cat <<'TABLE_END'
+build nelisp-runtime-image-cache-gate
+build nelisp-source-command-substrate-gate
+variants standalone-chunk-growth-test
+build standalone-midform-gc-bounded
+build standalone-parallel-compile-test
+build standalone-selfhost-mt-test
+variants standalone-eval-test
+smokes wasm-runtime-image-smoke
+smokes nelisp-nelix-native-hot-gate
+parity substrate-parity-smoke
+smokes nl-condition-standalone-smoke
+smokes nl-safe-standalone-smoke
+smokes nelisp-eval-closure-standalone-smoke
+smokes nelisp-gcs-done-standalone-smoke
+smokes nl-resource-standalone-smoke
+smokes nl-num-standalone-smoke
+smokes nelisp-toml-standalone-smoke
+smokes nelisp-thread-standalone-smoke
+smokes nelisp-thread-allocating-standalone-smoke
+smokes nelisp-thread-mirror-guard-standalone-smoke
+smokes nelisp-thread-percpu-roots-smoke
+smokes standalone-reader-buffer-smoke
+build precise-root-coverage
+smokes nl-actor-standalone-smoke
+TABLE_END
+}
+
 cmd_extras() {
     # The green gates that build a binary and were not wired.  One report each,
     # because unlike the reader smokes these are independent gates over
     # different subsystems: collapsing them would hide which one went red.
+    #
+    #   extras              every gate, in the historical order
+    #   extras GROUP        only the gates of GROUP (parity|variants|build|smokes)
+    #   extras --list-all   print "GROUP GATE" lines and exit
+    group=${1:-}
+    case "$group" in
+      --list-all) extras_table; return 0 ;;
+      ""|parity|variants|build|smokes) ;;
+      *) echo "extras: unknown group '$group' (parity|variants|build|smokes|--list-all)" >&2
+         return 2 ;;
+    esac
     failures=0
-    for g in nelisp-runtime-image-cache-gate \
-             nelisp-source-command-substrate-gate \
-             standalone-chunk-growth-test \
-             standalone-midform-gc-bounded \
-             standalone-parallel-compile-test \
-             standalone-selfhost-mt-test \
-             standalone-eval-test \
-             wasm-runtime-image-smoke \
-             nelisp-nelix-native-hot-gate \
-             substrate-parity-smoke \
-             nl-condition-standalone-smoke \
-             nl-safe-standalone-smoke \
-             nl-resource-standalone-smoke \
-             nl-num-standalone-smoke \
-             nelisp-toml-standalone-smoke \
-             nelisp-thread-standalone-smoke \
-             nelisp-thread-allocating-standalone-smoke \
-             nelisp-thread-mirror-guard-standalone-smoke \
-             nelisp-thread-percpu-roots-smoke \
-             standalone-reader-buffer-smoke \
-             precise-root-coverage \
-             nl-actor-standalone-smoke; do
+    # The table is read on fd 3 so a gate's stdin is never the table.  A
+    # here-document, not `< <(...)': this runs under /bin/sh (dash).
+    while read -r grp g <&3; do
+        [ -z "$group" ] || [ "$grp" = "$group" ] || continue
         printf '\n=== %s ===\n' "$g"
+        # NELISP_AI_EXTRAS_EXCLUDE: space-separated gates a caller has moved
+        # to another ledger (tools/ai/main-ci-reds/run-heavy.sh extras-s3).
+        # Empty by default, so CI runs every gate.
+        case " ${NELISP_AI_EXTRAS_EXCLUDE:-} " in
+          *" $g "*) echo "excluded by NELISP_AI_EXTRAS_EXCLUDE"; continue ;;
+        esac
         ( cmd_gate "$g" -- make "$g" ) || failures=$((failures + 1))
-    done
+    done 3<<EXTRAS_TABLE_EOF
+$(extras_table)
+EXTRAS_TABLE_EOF
     [ "$failures" -eq 0 ]
 }
 
@@ -491,8 +566,8 @@ cmd_runtime_probe() {
     # measurements it starts.  A line that travels with the output guards
     # every reader of it.
     printf 'PROBE-BINARY %s\n' "$(binary_identity "$bin")"
-    grep -E '^PROBE ' "$log" || true
-    checked=$(grep -cE '^PROBE ' "$log" || true)
+    grep -aE '^PROBE ' "$log" || true
+    checked=$(grep -acE '^PROBE ' "$log" || true)
     rm -f "$log"
     if [ "$code" -ne 0 ] || [ "${checked:-0}" -eq 0 ]; then
         "$here/gate-report.sh" --name "$gate_name" --kind probe             --ran "${checked:-0}" --failed 1             --reason "the probe did not finish (exit $code)"             --command "nelisp-ai.sh runtime-probe"
@@ -525,12 +600,29 @@ cmd_gate() {
     shift
     log=$(mktemp)
     started=$(date +%s)
+    # Stream the output while the command runs and keep the full log for
+    # the parsing below.  The command writes to the log file, never into a
+    # pipe: a pipe would also wait for any child the gate leaves behind
+    # holding stdout, so a finished gate could hang the job.  `tail --pid'
+    # follows the file until the command exits.  Where tail has no --pid
+    # (BSD tail on macOS) the log is printed once the command finishes, as
+    # before.  `<&0' keeps the caller's stdin, which an asynchronous list
+    # would otherwise replace with /dev/null.
     set +e
-    "$@" > "$log" 2>&1
+    "$@" <&0 > "$log" 2>&1 &
+    gate_pid=$!
+    if tail --pid="$$" -n 0 /dev/null >/dev/null 2>&1; then
+        tail --pid="$gate_pid" -n +1 -f "$log"
+    else
+        streamed=no
+    fi
+    wait "$gate_pid"
     code=$?
     set -e
-    cat "$log"
-    skip=$(grep -E '^GATE-SKIP ' "$log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+    if [ "${streamed:-yes}" = no ]; then
+        cat "$log"
+    fi
+    skip=$(grep -aE '^GATE-SKIP ' "$log" | tail -1 | sed 's/^GATE-SKIP //' || true)
     if [ -n "$skip" ]; then
         duration=$(( ($(date +%s) - started) * 1000 ))
         rm -f "$log"
@@ -538,13 +630,13 @@ cmd_gate() {
             --duration-ms "$duration" --reason "$skip" --command "$*"
         return 0
     fi
-    line=$(grep -E '^GATE-COUNT ' "$log" | tail -1 || true)
+    line=$(grep -aE '^GATE-COUNT ' "$log" | tail -1 || true)
     checked=$(printf '%s' "$line" | sed -n 's/.*checked=\([0-9][0-9]*\).*/\1/p')
     findings=$(printf '%s' "$line" | sed -n 's/.*findings=\([0-9][0-9]*\).*/\1/p')
     # The command's own verdict line, when it has one.  A wrapped gate
     # that reports only a count says "1704 findings" where the tool
     # itself said which kind went over its baseline -- keep that half.
-    detail=$(grep -E 'FAIL' "$log" | tail -1 | cut -c1-200 || true)
+    detail=$(grep -aE 'FAIL' "$log" | tail -1 | cut -c1-200 || true)
     duration=$(( ($(date +%s) - started) * 1000 ))
     rm -f "$log"
     if [ -z "$checked" ]; then
@@ -765,7 +857,11 @@ EOF
     # Generate through the same source producer used by the standalone
     # artifact command.  Passing the output path through an environment
     # variable keeps shell quoting out of the Elisp form, including when
-    # TMPDIR contains spaces or quote characters.
+    # TMPDIR contains spaces or quote characters.  The generator's progress
+    # lines go to a log shown only on failure, and the runtime is loaded with
+    # `inhibit-message' bound: vendored GNU sources print obsolete-macro
+    # warnings while loading (as GNU does), which are not the session's
+    # output.
     set +e
     NELISP_AI_REPL_RUNTIME="$repl_runtime" NELISP_AI_REPL_MODE="$repl_mode" \
         "$EMACS" --batch -Q -L lisp -L src -L scripts \
@@ -778,13 +874,15 @@ EOF
                       (insert "\n"))
                   (require (quote nelisp-standalone-build))
                   (with-temp-file (getenv "NELISP_AI_REPL_RUNTIME")
-                    (insert (nelisp-standalone--artifact-command-runtime-src t))))' &
+                    (insert (nelisp-standalone--artifact-command-runtime-src t))))' \
+        2> "$repl_tmp_dir/generate.log" &
     repl_generator_pid=$!
     wait "$repl_generator_pid"
     repl_generation_status=$?
     repl_generator_pid=
     set -e
     if [ "$repl_generation_status" -ne 0 ]; then
+        cat "$repl_tmp_dir/generate.log" >&2
         echo "nelisp-ai.sh repl: failed to generate $repl_runtime" >&2
         return 1
     fi
@@ -794,7 +892,7 @@ EOF
     # bootstrap form and then copies the caller's input into a named pipe.
     # Keeping its PID lets normal exit and signal paths reap it along with the
     # native child, including when stdin remains open after `(exit)'.
-    printf '%s\n' '(condition-case err (progn (load (getenv "NELISP_AI_REPL_RUNTIME")) (unless (fboundp (intern (getenv "NELISP_AI_REPL_REQUIRED"))) (error "selected runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
+    printf '%s\n' '(condition-case err (progn (let ((inhibit-message t)) (load (getenv "NELISP_AI_REPL_RUNTIME"))) (unless (fboundp (intern (getenv "NELISP_AI_REPL_REQUIRED"))) (error "selected runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
     repl_input_fifo="$repl_tmp_dir/input.fifo"
     if ! mkfifo "$repl_input_fifo"; then
         echo "nelisp-ai.sh repl: cannot create $repl_input_fifo" >&2
@@ -934,7 +1032,7 @@ case "$command" in
     selfhost)       cmd_selfhost ;;
     perf)           cmd_perf ;;
     smokes)         cmd_smokes ;;
-    extras)         cmd_extras ;;
+    extras)         cmd_extras "$@" ;;
     presence)       cmd_presence ;;
     test-one)       cmd_test_one "$@" ;;
     compile)        cmd_compile ;;
