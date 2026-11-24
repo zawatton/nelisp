@@ -1,4 +1,5 @@
 # Max word-VM rows allowed in the booted image (tools/dev/native-row-census-image.sh).
 # Seeded 2026-11-24 from the old binary + rt11 dump (before F420 reconvert).
 # Re-seeded 2026-11-24 from build 2 (target/nelisp c159bc32ff89036a + rt13): vm=43. Lower it whenever vm drops.
-43
+# Re-seeded 2026-11-24 from build 3 (target/nelisp a86a730171b398b6 + rt14): vm=16.
+16
