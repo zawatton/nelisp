@@ -107,6 +107,13 @@ opt into loading init even in batch.  The frontend owns action options."
           user-init-file nil
           early-init-file nil
           init-file-had-error nil)
+    ;; The reader has populated the default load path.  Apply the caller's
+    ;; environment before GNU startup looks for site-start.el and default.el.
+    (when-let* ((search-path (getenv "EMACSLOADPATH")))
+      (setq load-path
+            (apply #'append
+                   (mapcar (lambda (entry) (if entry (list entry) load-path))
+                           (parse-colon-path search-path)))))
     (add-hook 'before-init-hook #'nemacs-gnu-startup--before-init)
     (unwind-protect
         (progn
