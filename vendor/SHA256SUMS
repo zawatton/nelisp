@@ -1148,3 +1148,6 @@ c79ee9fc0d7c08bd8bcebc6207e6771228e2c16a47076debc1683203ab48dce7  vendor/emacs-l
 b6888b7d214c287c67a03d24f3d361b5f8e876d359f1cd6d4d97487e6bb4ad22  vendor/emacs-lisp/jka-cmpr-hook.el
 3b0f8f8845c8856294c3aae9a074ec08d7afc8932384cc963e82001af3bff177  vendor/emacs-lisp/jka-compr.el
 ac5f4987cca50bbdbc70f8abeeec426ed54e8694728eaff3efee790b75e33e2d  vendor/staged-emacs-lisp/mule.el
+aa5bbc34cf01d1fb659429ffad73041902c35a6dca69d3f19257f0fcd20fb156  vendor/emacs-lisp/ibuf-macs.el
+071ecb706c543d98b528f89f7020a6d9cb88697930d529ea0a88be2e9df2f234  vendor/emacs-lisp/progmodes/cc-bytecomp.el
+38d72016099eb0488d59afbae8f9b333300fb9bc02af6a08c10dcbbc4887d56d  vendor/emacs-lisp/eshell/esh-module-loaddefs.el
