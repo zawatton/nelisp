@@ -585,9 +585,40 @@ These are existing vendor implementations, not local reimplementations.")
     ;; GNU preloads mule.el and mule-conf.el (loadup.el); whole files, on the
     ;; charset.c / coding.c registry ports in src/emacs-cc-charset-*.el and
     ;; src/emacs-cc-coding-1.el.  Replaces the extracted emacs-mule-gnu.el.
-    "staged-emacs-lisp/mule.el"
+    "emacs-lisp/international/mule.el"
     "emacs-lisp/international/mule-conf.el"
-    "staged-emacs-lisp/mule-cmds.el"
+    "emacs-lisp/international/mule-cmds.el"
+    ;; loadup.el's language environments after mule-cmds (cp51932 and
+    ;; eucjp-ms just before japanese).
+    "emacs-lisp/language/chinese.el"
+    "emacs-lisp/language/cyrillic.el"
+    "emacs-lisp/language/indian.el"
+    "emacs-lisp/language/sinhala.el"
+    "emacs-lisp/language/english.el"
+    "emacs-lisp/language/ethiopic.el"
+    "emacs-lisp/language/european.el"
+    "emacs-lisp/language/czech.el"
+    "emacs-lisp/language/slovak.el"
+    "emacs-lisp/language/romanian.el"
+    "emacs-lisp/language/greek.el"
+    "emacs-lisp/language/hebrew.el"
+    "emacs-lisp/international/cp51932.el"
+    "emacs-lisp/international/eucjp-ms.el"
+    "emacs-lisp/language/japanese.el"
+    "emacs-lisp/language/korean.el"
+    "emacs-lisp/language/lao.el"
+    "emacs-lisp/language/tai-viet.el"
+    "emacs-lisp/language/thai.el"
+    "emacs-lisp/language/tibetan.el"
+    "emacs-lisp/language/vietnamese.el"
+    "emacs-lisp/language/misc-lang.el"
+    "emacs-lisp/language/utf-8-lang.el"
+    "emacs-lisp/language/georgian.el"
+    "emacs-lisp/language/khmer.el"
+    "emacs-lisp/language/burmese.el"
+    "emacs-lisp/language/cham.el"
+    "emacs-lisp/language/philippine.el"
+    "emacs-lisp/language/indonesian.el"
     ;; Genuine GNU minibuffer.el (the pinned unmodified copy): the Lisp-level
     ;; completion API (styles, completion-in-region, completion tables).  It
     ;; needs the real `defcustom' (:set/:initialize) from custom.el above and must
