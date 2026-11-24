@@ -22,10 +22,6 @@
 (setq emacs-translation-table--max-vector-key #x10ffff)
 (setq emacs-translation-table--vector-density-factor 8)
 
-(unless (fboundp 'decode-char)
-  (defun decode-char (_charset code-point &optional _restriction)
-    code-point))
-
 (defun emacs-translation-table--integer-alist-max-key (alist)
   (let ((max-key -1)
         (ok t))

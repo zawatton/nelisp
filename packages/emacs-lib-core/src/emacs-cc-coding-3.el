@@ -82,35 +82,64 @@ to the string and treated as in `substring'."
 
 (defvar emacs-cc-coding-3--spec-cache (make-hash-table :test 'eq)
   "Results of `emacs-cc-coding-3--japanese-spec' by coding-system symbol.")
+;; Base coding systems GNU's japanese.el defines, mapped to their codec family.
+;; Dispatch goes through the registry (`coding-system-base' /
+;; `coding-system-eol-type'), so every alias and -unix/-dos/-mac subsidiary
+;; that GNU registers routes to the right engine.
+(defconst emacs-cc-coding-3--japanese-bases
+  '((japanese-shift-jis . sjis) (japanese-cp932 . cp932)
+    (japanese-iso-8bit . euc) (iso-2022-jp . jis7))
+  "Registered base coding system -> codec family.")
+
 (defvar emacs-cc-coding-3--spec-cache-aliases nil
   "The `emacs-cc-coding-3--japanese-aliases' value the cache was filled from.")
+(defvar emacs-cc-coding-3--spec-cache-tick nil
+  "The registry tick (`emacs-cc-coding--tick') the cache was filled at.")
+
+(defun emacs-cc-coding-3--registry-spec (coding)
+  "Return (FAMILY . EOL) from the registered base of CODING, or nil."
+  (when (and (boundp 'emacs-cc-coding--hash)
+             (gethash coding emacs-cc-coding--hash))
+    (let ((family (cdr (assq (coding-system-base coding)
+                             emacs-cc-coding-3--japanese-bases)))
+          (eol (coding-system-eol-type coding)))
+      (and family
+           (cons family (cond ((eq eol 0) 'unix) ((eq eol 1) 'dos)
+                              ((eq eol 2) 'mac) (t nil)))))))
+
+(defun emacs-cc-coding-3--name-spec (coding)
+  "Fallback for names the registry does not know: parse CODING's name."
+  (save-match-data
+    (let* ((name (symbol-name coding)) (eol nil))
+      (when (string-match "-\\(unix\\|dos\\|mac\\)\\'" name)
+        (setq eol (intern (match-string 1 name))
+              name (substring name 0 (match-beginning 0))))
+      (let ((family (cdr (assq (intern name)
+                               emacs-cc-coding-3--japanese-aliases))))
+        (and family (cons family eol))))))
 
 (defun emacs-cc-coding-3--japanese-spec (coding)
   "Return (FAMILY . EOL) when CODING names a Japanese coding system, else nil.
 EOL is `unix', `dos', `mac' or nil when the name has no EOL suffix."
-  ;; gnu562: answered from a per-symbol cache (the parse is a string-match,
-  ;; about 8 us on every encode/decode); the parse runs inside
-  ;; `save-match-data', since GNU's coding functions leave the match data
-  ;; alone.  The cache follows `emacs-cc-coding-3--japanese-aliases'.
+  ;; Answered from a per-symbol cache; the cache follows the alias list and
+  ;; the registry tick, since defining a coding system changes the answer.
   (when (and coding (symbolp coding))
-    (unless (eq emacs-cc-coding-3--spec-cache-aliases
-                emacs-cc-coding-3--japanese-aliases)
+    (unless (and (eq emacs-cc-coding-3--spec-cache-aliases
+                     emacs-cc-coding-3--japanese-aliases)
+                 (eql emacs-cc-coding-3--spec-cache-tick
+                      (and (boundp 'emacs-cc-coding--tick) emacs-cc-coding--tick)))
       (clrhash emacs-cc-coding-3--spec-cache)
       (setq emacs-cc-coding-3--spec-cache-aliases
-            emacs-cc-coding-3--japanese-aliases))
+            emacs-cc-coding-3--japanese-aliases
+            emacs-cc-coding-3--spec-cache-tick
+            (and (boundp 'emacs-cc-coding--tick) emacs-cc-coding--tick)))
     (let ((hit (gethash coding emacs-cc-coding-3--spec-cache 'miss)))
       (if (not (eq hit 'miss))
           hit
         (puthash
          coding
-         (save-match-data
-           (let* ((name (symbol-name coding)) (eol nil))
-             (when (string-match "-\\(unix\\|dos\\|mac\\)\\'" name)
-               (setq eol (intern (match-string 1 name))
-                     name (substring name 0 (match-beginning 0))))
-             (let ((family (cdr (assq (intern name)
-                                      emacs-cc-coding-3--japanese-aliases))))
-               (and family (cons family eol)))))
+         (or (emacs-cc-coding-3--registry-spec coding)
+             (emacs-cc-coding-3--name-spec coding))
          emacs-cc-coding-3--spec-cache)))))
 
 (defun emacs-cc-coding-3--bytes (string)

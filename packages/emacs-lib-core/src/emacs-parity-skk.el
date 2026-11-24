@@ -93,19 +93,6 @@ Guards activation so host Emacs is left untouched (it already provides
 `documentation-stringp', `charsetp', `window-system', and the rest as C
 subrs / real defvars).")
 
-;; --- ROOT 3 helper: faithful `charsetp' predicate ------------------------
-;; Defined unconditionally (inert on host, where the real subr shadows it via
-;; the `unless' guard below) so the symbol is always resolvable in the image.
-(defun emacs-parity-skk--charsetp (object)
-  "Return non-nil if OBJECT names a charset the runtime can represent.
-Faithful to the runtime's actual capability: consults `charset-list'
-\(the representable set), so charsets with no runtime backing -- e.g. the
-JIS X 0213 charsets ddskk probes optionally -- correctly report absent."
-  (and (symbolp object)
-       (boundp 'charset-list)
-       (memq object charset-list)
-       t))
-
 ;; --- ROOT 1 helper: faithful `documentation-stringp' ---------------------
 (defun emacs-parity-skk--documentation-stringp (object)
   "Return non-nil if OBJECT is a well-formed docstring object.
@@ -294,8 +281,6 @@ alias target), otherwise to `customize-customized'."
   '(;; ROOT 2 -- the two roots of the skk-* variable cascade.
     ("window-system" . "nil")
     ("frame-background-mode" . "nil")
-    ;; ROOT 3 -- representable charset set consulted by `charsetp'.
-    ("charset-list" . "'(ascii eight-bit unicode)")
     ;; ROOT 6 -- vendor `make-face-x-resource-internal' skips X-resource
     ;; application when this is non-nil.  Faithful batch default is t (no X
     ;; display), which turns the per-`defface' X-resource pass into a no-op.
@@ -334,9 +319,8 @@ one of these, so this file leaves the host untouched.")
   (unless (fboundp 'documentation-stringp)
     (defalias 'documentation-stringp #'emacs-parity-skk--documentation-stringp))
 
-  ;; ROOT 3 -- faithful charsetp (charset-list is the top-level defvar above).
-  (unless (fboundp 'charsetp)
-    (defalias 'charsetp #'emacs-parity-skk--charsetp))
+  ;; ROOT 3 -- `charsetp'/`charset-list' now come from the GNU charset.c
+  ;; port in emacs-cc-charset-*.el (no stand-in here).
 
   ;; ROOT 4
   (unless (fboundp 'internal-lisp-face-attribute-values)

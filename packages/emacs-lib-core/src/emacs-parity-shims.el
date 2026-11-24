@@ -432,56 +432,6 @@ BODY."
            (list (list 'when (list 'fboundp ''skeleton-proxy-new)
                        (list 'skeleton-proxy-new (list 'quote skeleton) 'str 'arg)))))))
 
-;;;; --- make-char (ascii/unicode/8-bit/latin-1/JIS Roman subset) -----
-
-(unless (fboundp 'make-char)
-  (defun make-char (charset &optional c1 c2 c3 _c4)
-    "Return a character of CHARSET at position codes C1 through C4.
-Omitted codes use the minimum position.  This shim supports ASCII,
-Unicode, raw bytes, Latin-1 and the JIS Roman subset."
-    (unless (memq charset '(ascii unicode ucs eight-bit eight-bit-graphic
-                           eight-bit-control latin-jisx0201
-                           latin-iso8859-1 iso-8859-1))
-      (signal 'wrong-type-argument (list 'charsetp charset)))
-    ;; GNU ignores every trailing coordinate when C1 is nil, and ignores
-    ;; coordinates beyond the charset's dimension even when non-nil.
-    ;; Kept inline: the parity test extracts this defun on its own.
-    (when c1
-      (dolist (code (if (memq charset '(unicode ucs)) (list c1 c2 c3) (list c1)))
-        (when code
-          (unless (and (integerp code) (>= code 0))
-            (signal 'wrong-type-argument (list 'wholenump code)))
-          (when (> code #xff)
-            (signal 'args-out-of-range (list #xff code))))))
-    (cond
-     ((memq charset '(unicode ucs))
-      (if (null c1) 0
-        (when (> c1 #x10) (error "Invalid code(s)"))
-        (+ (lsh c1 16) (lsh (or c2 0) 8) (or c3 0))))
-     ((eq charset 'ascii) (logand (or c1 0) #x7f))
-     ((eq charset 'iso-8859-1) (or c1 0))
-     ((memq charset '(eight-bit eight-bit-graphic eight-bit-control))
-      (let ((minimum (if (eq charset 'eight-bit-graphic) #xa0 #x80))
-            (maximum (if (eq charset 'eight-bit-control) #x9f #xff)))
-        (setq c1 (or c1 minimum))
-        (when (or (< c1 minimum) (> c1 maximum))
-          (error "Invalid code(s)"))
-        (+ #x3fff00 c1)))
-     ;; Seven-bit charsets accept either half of the position byte.
-     ;; The JIS Roman yen sign and overline differ from ASCII.
-     (t
-      (let* ((roman (eq charset 'latin-jisx0201))
-             (minimum (if roman #x21 #x20))
-             (maximum (if roman #x7e #x7f))
-             (code (logand (or c1 minimum) #x7f)))
-        (when (or (< code minimum) (> code maximum))
-          (error "Invalid code(s)"))
-        (cond
-         ((not roman) (+ #x80 code))
-         ((= code #x5c) #xa5)
-         ((= code #x7e) #x203e)
-         (t code)))))))
-
 ;;;; --- org-release ---------------------------------------------------
 
 (unless (fboundp 'org-release)

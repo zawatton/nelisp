@@ -71,14 +71,6 @@
     "Read a coding system from the minibuffer, prompting with string PROMPT."
     (or (read-coding-system prompt) (signal 'user-error '("A coding system must be specified")))))
 
-(unless (fboundp 'set-coding-system-priority)
-  (defun set-coding-system-priority (&rest coding-systems)
-    "Assign higher priority to the coding systems given as arguments."
-    (dolist (coding coding-systems) (check-coding-system coding))
-    (setq coding-system-priority-list
-          (append coding-systems (delq nil (if (boundp 'coding-system-priority-list) coding-system-priority-list))))
-    nil))
-
 (unless (fboundp 'set-keyboard-coding-system-internal)
   (defun set-keyboard-coding-system-internal (coding-system &optional terminal)
     "Internal use only."

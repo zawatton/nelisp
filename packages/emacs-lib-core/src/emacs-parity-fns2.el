@@ -82,37 +82,6 @@ It actually just sets the variable `file-name-coding-system'."
       (error "%s is not suitable for file names" coding-system))
     (setq file-name-coding-system coding-system)))
 
-;;;; --- mule.el: coding-system-list -----------------------------------
-;; Real algorithm when the coding-system registry variable is populated;
-;; otherwise fall back to the genuine set of coding systems this runtime
-;; knows (`nemacs-parity--known-coding-systems', from emacs-parity-shims.el).
-
-(unless (fboundp 'coding-system-list)
-  (defun coding-system-list (&optional base-only)
-    "Return a list of all existing non-subsidiary coding systems.
-If optional BASE-ONLY is non-nil, only base coding systems are listed."
-    (let ((registry (and (boundp 'coding-system-list)
-                         ;; the C registry var shadows this defun's name;
-                         ;; only trust it when it is a non-empty real list.
-                         (listp (symbol-value 'coding-system-list))
-                         (symbol-value 'coding-system-list))))
-      (if (and registry
-               (fboundp 'coding-system-base)
-               (fboundp 'coding-system-aliases))
-          (let ((codings nil))
-            (dolist (coding registry)
-              (when (eq (coding-system-base coding) coding)
-                (if base-only
-                    (setq codings (cons coding codings))
-                  (dolist (alias (coding-system-aliases coding))
-                    (setq codings (cons alias codings))))))
-            codings)
-        ;; headless fallback: the real coding-system symbols the runtime knows.
-        (if (boundp 'nemacs-parity--known-coding-systems)
-            (copy-sequence nemacs-parity--known-coding-systems)
-          '(no-conversion undecided prefer-utf-8 raw-text utf-8 utf-8-unix
-            utf-8-dos utf-8-mac ascii latin-1 iso-8859-1 binary emacs-mule))))))
-
 ;;;; --- mule.el: coding-system-get --------------------------------------
 ;; T52: moved here from `src/nelisp-emacs-magit-bridge.el' (originally
 ;; the magit bridge vendor-preload-globals helper, a
