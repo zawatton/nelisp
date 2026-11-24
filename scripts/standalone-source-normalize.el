@@ -152,6 +152,10 @@ envelope.")
     query-replace-regexp
     occur-engine
     perform-replace
+    ;; GNU info.el: the dir-file merger behind (info) and the node
+    ;; fontifier run by every Info node display.
+    Info-insert-dir
+    Info-fontify-node
     ;; GNU mule.el (emacs-mule-gnu.el): the coding detector behind
     ;; `set-auto-coding'.
     find-auto-coding

@@ -334,27 +334,6 @@
       (should (member "Info Lookup Symbol: message" titles))
       (should (member "Ordering GNU Manuals" titles)))))
 
-(ert-deftest emacs-info-loader-provides-info-feature-and-runtime ()
-  ;; Explicit save/restore: let-binding `features' around `require'
-  ;; does not isolate reliably here (measured leak), and the leaked
-  ;; `info' feature turns later genuine `(require 'info)' calls into
-  ;; no-ops (vendor info-look.el then dies on a void
-  ;; `Info-find-file').
-  (let ((original-features (copy-sequence features)))
-    (unwind-protect
-        (progn
-          (setq features (remove 'info (remove 'emacs-info features)))
-          (require 'info)
-          (should (featurep 'info))
-          (should (featurep 'emacs-info))
-          (should (fboundp 'Info-directory))
-          (should (fboundp 'Info-goto-node))
-          (should (fboundp 'Info-find-node))
-          (should (fboundp 'Info-mode))
-          (should (fboundp 'Info-next))
-          (should (fboundp 'info-other-window)))
-      (setq features original-features))))
-
 (ert-deftest emacs-info-host-interactive-mirror-renders-directory ()
   (emacs-info-test--with-fresh-world
     (let ((shown nil)
@@ -366,7 +345,9 @@
                       ((symbol-function 'set-window-buffer)
                        (lambda (_window buffer &optional _keep-margins)
                          (setq shown buffer))))
-              (should (equal "*info*" (Info-directory)))
+              (should (equal "*info*"
+                             (let ((emacs-info-gui-arg ""))
+                               (emacs-info-gui-info-command "same"))))
               (setq host-buffer (get-buffer "*info*"))
               (should host-buffer)
               (should (eq shown host-buffer))

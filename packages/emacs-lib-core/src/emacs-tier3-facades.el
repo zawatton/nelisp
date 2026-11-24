@@ -135,42 +135,6 @@
 
 (provide 'gnus)
 
-;;;; info
-
-(unless (fboundp 'info)
-  (defun info (&optional _file-or-node _buffer)
-    "Tier 3 facade: signal unsupported Info browsing."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'info 'info)))
-
-(unless (fboundp 'Info-goto-node)
-  (defun Info-goto-node (&rest _args)
-    "Tier 3 facade: signal unsupported Info node navigation."
-    (emacs-tier3-facades--unsupported 'info 'Info-goto-node)))
-
-(unless (fboundp 'Info-find-node)
-  (defun Info-find-node (&rest _args)
-    "Tier 3 facade: signal unsupported Info node lookup."
-    (emacs-tier3-facades--unsupported 'info 'Info-find-node)))
-
-(unless (fboundp 'Info-directory)
-  (defun Info-directory (&rest _args)
-    "Tier 3 facade: signal unsupported Info directory browsing."
-    (emacs-tier3-facades--unsupported 'info 'Info-directory)))
-
-(unless (fboundp 'Info-mode)
-  (defun Info-mode ()
-    "Tier 3 facade: no-op Info mode."
-    (interactive)
-    nil))
-
-(unless (fboundp 'info-lookup-symbol)
-  (defun info-lookup-symbol (&rest _args)
-    "Tier 3 facade: signal unsupported Info symbol lookup."
-    (emacs-tier3-facades--unsupported 'info 'info-lookup-symbol)))
-
-(provide 'info)
-
 ;;;; treesit
 
 ;; GNU treesit.el defines this macro for byte-compiling against an Emacs

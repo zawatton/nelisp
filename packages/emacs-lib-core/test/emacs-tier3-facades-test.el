@@ -16,13 +16,12 @@
   (file-name-directory emacs-tier3-facades-test--source))
 
 (defconst emacs-tier3-facades-test--features
-  '(emacs-tier3-facades calc gnus info treesit nxml nxml-mode vc)
+  '(emacs-tier3-facades calc gnus treesit nxml nxml-mode vc)
   "Features provided by the Tier 3 facade file.")
 
 (defconst emacs-tier3-facades-test--loaders
   '((calc . "calc")
     (gnus . "gnus")
-    (info . "info")
     (treesit . "treesit")
     (nxml . "nxml")
     (nxml-mode . "nxml-mode")
@@ -35,8 +34,6 @@
     calc full-calc quick-calc calc-do-quick-calc calc-eval calc-dispatch
     gnus gnus-no-server gnus-group-read-group gnus-summary-read-group
     gnus-summary-show-thread
-    info Info-goto-node Info-find-node Info-directory Info-mode
-    info-lookup-symbol
     treesit-available-p treesit-ready-p treesit-language-available-p
     treesit-parser-list treesit-parser-create treesit-node-at
     treesit-buffer-root-node treesit-query-compile treesit-query-capture
@@ -128,7 +125,6 @@ several temp parents and keep only one that the facade reports as no VC."
         (should (fboundp 'widget-create))
         (should (fboundp 'calc))
         (should (fboundp 'gnus))
-        (should (fboundp 'info))
         (should (fboundp 'treesit-available-p))
         (should (fboundp 'nxml-mode))
         (should (fboundp 'url-retrieve))
@@ -156,7 +152,6 @@ several temp parents and keep only one that the facade reports as no VC."
   (emacs-tier3-facades-test--with-clean-facade
     (should-not (widgetp '(widget)))
     (should-not (widget-setup))
-    (should-not (Info-mode))
     (should-not (treesit-available-p))
     (should-not (treesit-ready-p 'python))
     (should-not (treesit-language-available-p 'python))
@@ -205,7 +200,6 @@ several temp parents and keep only one that the facade reports as no VC."
                     (calc)
                     (calc-do-quick-calc "1+1")
                     (gnus)
-                    (info)
                     (treesit-parser-create 'python)
                     (treesit-query-compile 'python "(_) @node")
                     (nxml-validate)
