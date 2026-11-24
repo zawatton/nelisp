@@ -44,6 +44,12 @@ NEMACS_MAGIT_BRIDGE_BUNDLE ?= $(BUILD_DIR)/nelisp-emacs-magit-bridge-bundle.el
 NEMACS_MAGIT_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-magit-runtime.nlri
 NEMACS_MAGIT_FIXTURE_DIR ?= $(BUILD_DIR)/nemacs-magit-fixture
 NEMACS_ORG_BRIDGE_BUNDLE ?= $(BUILD_DIR)/nelisp-emacs-org-bridge-bundle.el
+NEMACS_ORG_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-org-runtime.nlri
+NEMACS_ORG_RUNTIME_DUMP ?= $(BUILD_DIR)/nemacs-org-runtime.dump
+NEMACS_ORG_RUNTIME_BAKE_TIMEOUT ?= 1800s
+NEMACS_ORG_PRELOAD ?= scripts/nemacs-org-image-preload.el
+NEMACS_ORG_SMOKE_PROBE ?= scripts/nemacs-org-image-smoke-probe.el
+NEMACS_ORG_SMOKE_FIXTURE ?= test/emacs-lib/fixtures/org-image-smoke.org
 NEMACS_MAGIT_FIXTURE_COMMITS ?= 15
 NEMACS_MAGIT_DIAG_LOG ?= $(BUILD_DIR)/nemacs-magit-status-diagnose.log
 NEMACS_MAGIT_LIVE_DIAG_LOG ?= $(BUILD_DIR)/nemacs-magit-status-live-diagnose.log
@@ -2262,6 +2268,35 @@ magit-load-smoke: bake-magit-runtime-image
 		'(nelisp--write-stdout-bytes (if (nelisp-emacs-magit-bridge-loaded-p) "MAGIT-LOAD PASS\n" "MAGIT-LOAD FAIL\n"))' 2>&1)"; \
 	printf '%s\n' "$$out"; \
 	printf '%s\n' "$$out" | grep -q '^MAGIT-LOAD PASS$$'
+
+# Baked real GNU Org (vendor/emacs-lisp/org, unpatched source).  Distinct from the
+# org-mode-smoke bridge bundle above: this loads the full vendor tree with plain
+# `require' at bake time.  The .nlri extends the base source-v1 image (so it
+# still replays the Org load at start); the .dump is a saved heap started with
+# `--cold-load-from', which is the fast path (see bake-runtime-dump).  Neither
+# changes the base image or any default target.
+.PHONY: bake-org-runtime-image bake-org-runtime-dump org-image-smoke org-image-smoke-gnu
+bake-org-runtime-image:
+	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
+	test -x "$(NELISP_BIN)"
+	mkdir -p "$(dir $(NEMACS_ORG_RUNTIME_IMAGE))"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NEMACS_ORG_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" extend-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$(abspath $(NEMACS_ORG_RUNTIME_IMAGE)).tmp" \
+		'(progn (load "$(abspath $(NEMACS_ORG_PRELOAD))" nil (quote no-message) t t) (nemacs-runtime-image-preload-org-extension "$(abspath .)"))'
+	mv "$(NEMACS_ORG_RUNTIME_IMAGE).tmp" "$(NEMACS_ORG_RUNTIME_IMAGE)"
+
+bake-org-runtime-dump:
+	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
+	test -x "$(NELISP_BIN)"
+	mkdir -p "$(dir $(NEMACS_ORG_RUNTIME_DUMP))"
+	rm -f "$(abspath $(NEMACS_ORG_RUNTIME_DUMP)).tmp"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NEMACS_ORG_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" --eval '(progn (load "$(abspath $(NEMACS_RUNTIME_PROCESS_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_PRELOAD))" nil (quote no-message) t t) (nemacs-runtime-image-preload-batch "$(abspath .)" "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))") (load "$(abspath $(NEMACS_ORG_PRELOAD))" nil (quote no-message) t t) (nemacs-runtime-image-preload-org-extension "$(abspath .)") (load "$(abspath $(NEMACS_RUNTIME_DUMP_REINIT))" nil (quote no-message) t t) (nelisp--arena-dump-image-stream "$(abspath $(NEMACS_ORG_RUNTIME_DUMP)).tmp") (kill-emacs 0))'
+	test -s "$(abspath $(NEMACS_ORG_RUNTIME_DUMP)).tmp"
+	mv "$(NEMACS_ORG_RUNTIME_DUMP).tmp" "$(NEMACS_ORG_RUNTIME_DUMP)"
 
 # Task #17 (M2).  Scratch git repo fixture shared by magit-status-smoke and
 # magit-tui-smoke: NUM_COMMITS commits on `main', one unstaged edit, two
