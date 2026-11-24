@@ -57,6 +57,8 @@
           ((string-match-p "coding\\|charset\\|-map\\'\\|-table\\'\\|-alist\\'\\|preloaded\\|build-files\\|translation\\|font-\\|script\\|-chars\\'\\|byte-boolean-vars\\|mode-line-format"
                            (symbol-name s))
            (push (cons s "computed at startup (registry/table/alist/map)") skipped))
+          ((or (char-table-p v) (bool-vector-p v) (and (vectorp v) (> (length v) 8)))
+           (push (cons s "char-table / large vector, computed at startup") skipped))
           ((not (or (atom v)
                     (and (proper-list-p v) (<= (length v) 6) (cl-every #'atom v))))
            (push (cons s "structured value, likely computed at startup") skipped))
