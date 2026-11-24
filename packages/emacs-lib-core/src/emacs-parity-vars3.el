@@ -94,13 +94,6 @@ being applied, but still respect file-local ones."))
     (propertize "(P)" 'face 'treemacs-header-button-face)
     "Header button to manage treemacs projects (parity fallback)."))
 
-;;;; --- frame.el: after-focus-change-function ------------------------
-;; GNU preloads frame.el, whose `defvar' makes this `ignore'.  The user's
-;; init reads it (add-function :after) before any focus event occurs.
-(unless (boundp 'after-focus-change-function)
-  (defvar after-focus-change-function #'ignore
-    "Function called after frame focus may have changed (parity fallback)."))
-
 ;;;; --- buffer.c: fringe-indicator-alist ------------------------------
 ;; A C per-buffer variable; the default value is machine-copied from GNU
 ;; Emacs 31.1 with `prin1' (not hand-transcribed).

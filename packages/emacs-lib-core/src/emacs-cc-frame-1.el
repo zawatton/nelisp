@@ -2,6 +2,9 @@
 
 ;;; Code:
 
+(defvar default-frame-scroll-bars nil
+  "Default position of vertical scroll bars on this window system.")
+
 (defun emacs-cc-frame-1--selected ()
   (selected-frame))
 

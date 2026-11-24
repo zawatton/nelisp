@@ -25,13 +25,13 @@
     (ignore root)
     (unless (window-live-p (or window (selected-window)))
       (signal 'wrong-type-argument (list 'window-live-p window)))
-    (delete-other-windows (or window (selected-window)))))
+    (emacs-window-delete-other-windows (or window (selected-window)))))
 (unless (fboundp 'delete-window-internal)
   (defun delete-window-internal (window)
     "Remove WINDOW from its frame."
     (if (or (not (window-live-p window)) (one-window-p t))
         (error "Attempt to delete minibuffer or sole ordinary window")
-      (delete-window window))))
+      (emacs-window-delete-window window))))
 (unless (fboundp 'frame-old-selected-window)
   (defun frame-old-selected-window (&optional frame)
     "Return old selected window of FRAME."

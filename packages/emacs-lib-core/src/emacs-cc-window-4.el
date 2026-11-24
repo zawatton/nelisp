@@ -25,9 +25,11 @@
 (unless (fboundp 'window-next-sibling)
   (defun window-next-sibling (&optional window)
     "Return the next sibling window of window WINDOW."
-    (emacs-cc-window-4--valid-window (or window (selected-window))
-                                     'window-valid-p)
-    nil))
+    (let* ((win (emacs-cc-window-4--valid-window (or window (selected-window))
+                                                'window-valid-p))
+           (parent (emacs-window-parent win)))
+      (when parent
+        (cadr (memq win (emacs-window-children parent)))))))
 
 (unless (fboundp 'window-normal-size)
   (defun window-normal-size (&optional window horizontal)

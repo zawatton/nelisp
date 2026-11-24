@@ -1,5 +1,10 @@
 ;;; emacs-cc-reader-substitute-1.el --- Resolve circular reader placeholders -*- lexical-binding: t; -*-
 
+(defvar read-symbol-shorthands nil
+  "Alist of known symbol-name shorthands.
+This variable's value can only be set via file-local variables.
+See Info node `(elisp)Shorthands' for more details.")
+
 (unless (fboundp 'lread--substitute-object-in-subtree)
   (defun lread--substitute-object-in-subtree (object placeholder completed)
     "Replace PLACEHOLDER references inside OBJECT with OBJECT."

@@ -250,10 +250,6 @@ sort CODINGS instead."
                         (> (funcall func x) (funcall func y)))))))))
 
 ;; international/mule.el
-(unless (boundp 'selection-coding-system)
-  (defvar selection-coding-system nil
-    "Coding system to encode/decode communication with other X clients."))
-
 (unless (fboundp 'set-selection-coding-system)
   (defun set-selection-coding-system (coding-system)
     "Make CODING-SYSTEM used for communicating with other X clients."
@@ -597,32 +593,6 @@ Return a reordered plist."
         (setq connection-local-criteria-alist
               (cons (cons criteria (delete-dups profiles))
                     connection-local-criteria-alist))))))
-
-;;;; --- frame.el: headless blink-cursor-mode ---------------------------
-
-;; A standalone NeLisp process has no cursor renderer or timer to manage, but
-;; packages legitimately disable this global mode during init.  Preserve the
-;; GNU global-minor-mode calling convention and state variable while making
-;; the display side effect explicitly empty.  The standalone marker is
-;; required in addition to fboundp gating so host Emacs is never replaced.
-(when (and (fboundp 'nelisp--write-stdout-bytes)
-           (not (fboundp 'blink-cursor-mode)))
-  (defvar blink-cursor-mode nil
-    "Non-nil when cursor blinking is enabled.")
-  (defun blink-cursor-mode (&optional arg)
-    "Toggle cursor blinking state in the headless standalone runtime.
-With optional ARG, enable the mode if ARG is nil or positive, and disable it
-if ARG is zero or negative.  The interactive no-prefix sentinel `toggle'
-toggles the current state."
-    (interactive
-     (list (if current-prefix-arg
-               (prefix-numeric-value current-prefix-arg)
-             'toggle)))
-    (setq blink-cursor-mode
-          (cond
-           ((eq arg 'toggle) (not blink-cursor-mode))
-           ((and (numberp arg) (< arg 1)) nil)
-           (t t)))))
 
 ;; `emacs-parity-macros2.el' is hoisted before `generator.el' for bootstrap
 ;; parsing, while this miscellaneous parity layer naturally follows it.  Put

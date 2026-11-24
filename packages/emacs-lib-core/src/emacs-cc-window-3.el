@@ -72,8 +72,9 @@
 (unless (fboundp 'window-left-child)
   (defun window-left-child (&optional window)
     "Return the leftmost child window of WINDOW."
-    (emacs-cc-window-3--check-window (or window (selected-window)) nil)
-    nil))
+    (let ((win (emacs-cc-window-3--check-window (or window (selected-window)) nil)))
+      (when (eq (emacs-window-direction win) 'horizontal)
+        (car (emacs-window-children win))))))
 
 (unless (fboundp 'window-left-column)
   (defun window-left-column (&optional window)

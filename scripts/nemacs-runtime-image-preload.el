@@ -93,6 +93,75 @@ batch entry is still unavailable."
   (nemacs-runtime-image--ensure-core-after-bootstrap repo-root)
   t)
 
+(defun nemacs-runtime-image-preload--load-gnu-libraries (repo-root)
+  "Load GNU 31.1 libraries after the NeLisp image substrate is ready.
+The list follows loadup.el order.  Obarray and abbrev are already in the
+bootstrap, ahead of the bundled mode definitions that create abbrev tables."
+  (dolist (library '("emacs-lisp/emacs-lisp/debug-early.el"
+                     "emacs-lisp/version.el"
+                     "emacs-lisp/env.el"
+                     "emacs-lisp/format.el"
+                     "staged-emacs-lisp/window.el"
+                     "staged-emacs-lisp/faces.el"
+                     "emacs-lisp/emacs-lisp/seq.el"
+                     "staged-emacs-lisp/frame.el"
+                     "emacs-lisp/term/tty-colors.el"
+                     "emacs-lisp/send-to.el"
+                     "emacs-lisp/mouse.el"
+                     "emacs-lisp/scroll-bar.el"
+                     "emacs-lisp/select.el"
+                     "emacs-lisp/emacs-lisp/easymenu.el"
+                     "emacs-lisp/rfn-eshadow.el"
+                     "emacs-lisp/frameset.el"
+                     "emacs-lisp/tab-bar.el"
+                     "emacs-lisp/textmodes/page.el"
+                     "emacs-lisp/register.el"
+                     ;; The GNU mode calls header-line-indent-mode, normally
+                     ;; an autoload from display-line-numbers.el.
+                     "emacs-lisp/display-line-numbers.el"
+                     "emacs-lisp/emacs-lisp/tabulated-list.el"
+                     "emacs-lisp/buff-menu.el"
+                     "emacs-lisp/fringe.el"
+                     "emacs-lisp/image.el"
+                     "emacs-lisp/international/fontset.el"
+                     "emacs-lisp/dynamic-setting.el"
+                     "emacs-lisp/touch-screen.el"
+                     "emacs-lisp/term/common-win.el"
+                     "emacs-lisp/disp-table.el"
+                     "emacs-lisp/mwheel.el"
+                     "emacs-lisp/emacs-lisp/float-sup.el"
+                     "emacs-lisp/paren.el"
+                     "emacs-lisp/emacs-lisp/shorthands.el"
+                     "emacs-lisp/emacs-lisp/eldoc.el"
+                     "emacs-lisp/tooltip.el"
+                     "emacs-lisp/emacs-lisp/rmc.el"))
+    ;; Preserve the reader's native-row functions and the setenv that
+    ;; shares the reader's environment store with getenv.
+    (let ((pins (cond
+                 ((equal library "emacs-lisp/env.el") '(getenv setenv))
+                 ((equal library "emacs-lisp/emacs-lisp/seq.el")
+                  '(seq-elt seq-group-by seq-map seq-reduce seq-uniq))))
+          saved)
+      (dolist (name pins)
+        (push (cons name (symbol-function name)) saved))
+      (unwind-protect
+          (condition-case err
+              (nemacs-runtime-image-preload--load-source-file
+               (concat repo-root "/vendor/" library))
+            (error
+             (message "Error preloading GNU library %s" library)
+             (signal (car err) (cdr err))))
+        (dolist (entry saved)
+          (fset (car entry) (cdr entry)))))))
+
+(defun tab-bar-current-tab (&optional frame)
+  "Return the selected tab's parameters on FRAME."
+  (cdr (tab-bar--current-tab-find nil frame)))
+
+(defun tab-bar-current-tab-index (&optional frame)
+  "Return the zero-based index of the selected tab on FRAME."
+  (tab-bar--current-tab-index nil frame))
+
 (defun nemacs-runtime-image-preload-batch (repo-root bootstrap-file)
   "Preload the batch nemacs entry into the current NeLisp image."
   (nemacs-runtime-image-setup-paths repo-root)
@@ -102,6 +171,7 @@ batch entry is still unavailable."
   (load (concat repo-root "/scripts/nemacs-runtime-frame-tab-preload.el")
         nil 'no-message t t)
   (nemacs-runtime-image-preload--install-daily-driver-core)
+  (nemacs-runtime-image-preload--load-gnu-libraries repo-root)
   (nemacs-runtime-image-preload--reassert-process-bridge)
   (nemacs-runtime-image-preload--retry-stale-fx)
   ;; The reconvert compiles can record a fresh `none' behind them; one more
@@ -1292,158 +1362,17 @@ image startup."
   t)
 
 (defun nemacs-runtime-image-preload--install-tab-core ()
-  "Install the minimal tab-bar/tab-line daily-driver surface."
-  (unless (boundp 'tab-bar-mode)
-    (defvar tab-bar-mode nil))
-  (unless (boundp 'tab-bar--tabs)
-    (defvar tab-bar--tabs nil))
-  (unless (boundp 'tab-bar--selected-index)
-    (defvar tab-bar--selected-index 0))
-  ;; GNU preloads tab-bar.el, so bookmark.el's top-level
-  ;; `(custom-add-choice 'tab-bar-new-tab-choice ...)' finds the option's
-  ;; `custom-type' (a `choice').  Without it, loading bookmark (consult) signals
-  ;; "Not a choice type: nil".  The type is copied from GNU tab-bar.el.
-  (unless (boundp 'tab-bar-new-tab-choice)
-    (defvar tab-bar-new-tab-choice t))
-  (unless (get 'tab-bar-new-tab-choice 'custom-type)
-    (put 'tab-bar-new-tab-choice 'custom-type
-         '(choice (const :tag "Current buffer" t)
-                  (const :tag "Current window" window)
-                  (string :tag "Buffer" "*scratch*")
-                  (directory :tag "Directory" :value "~/")
-                  (file :tag "File" :value "~/.emacs")
-                  (function :tag "Function")
-                  (const :tag "Duplicate tab" clone))))
+  "Install the daily-driver tab-line surface and tab-bar height primitive."
   (unless (boundp 'tab-line-mode)
     (defvar tab-line-mode nil))
   (unless (boundp 'global-tab-line-mode)
     (defvar global-tab-line-mode nil))
   (unless (boundp 'tab-line-format)
     (defvar tab-line-format nil))
-  (unless (fboundp 'tab-bar--ensure-tabs)
-    (fset 'tab-bar--ensure-tabs
-          '(lambda ()
-             (unless tab-bar--tabs
-               (setq tab-bar--tabs
-                     (list (list (cons 'name "1")
-                                 (cons 'explicit-name nil))))
-               (setq tab-bar--selected-index 0))
-             tab-bar--tabs)))
-  (unless (fboundp 'tab-bar-tabs)
-    (fset 'tab-bar-tabs
-          '(lambda (&optional frame)
-             (tab-bar--ensure-tabs))))
-  (unless (fboundp 'tab-bar-current-tab)
-    (fset 'tab-bar-current-tab
-          '(lambda (&optional frame)
-             (nth tab-bar--selected-index (tab-bar--ensure-tabs)))))
-  (unless (fboundp 'tab-bar-current-tab-index)
-    (fset 'tab-bar-current-tab-index
-          '(lambda (&optional frame)
-             (tab-bar--ensure-tabs)
-             tab-bar--selected-index)))
-  (unless (fboundp 'tab-bar-new-tab)
-    (fset 'tab-bar-new-tab
-          '(lambda (&optional arg)
-             (tab-bar--ensure-tabs)
-             (let ((tab (list (cons 'name
-                                    (number-to-string
-                                     (+ (length tab-bar--tabs) 1)))
-                              (cons 'explicit-name nil))))
-               (setq tab-bar--tabs (append tab-bar--tabs (list tab)))
-               (setq tab-bar--selected-index
-                     (- (length tab-bar--tabs) 1))
-               tab))))
-  (unless (fboundp 'tab-bar-select-tab)
-    (fset 'tab-bar-select-tab
-          '(lambda (tab-number)
-             (tab-bar--ensure-tabs)
-             (let ((index (- tab-number 1)))
-               (when (and (>= index 0) (< index (length tab-bar--tabs)))
-                 (setq tab-bar--selected-index index))
-               (tab-bar-current-tab)))))
-  (unless (fboundp 'tab-bar-switch-to-next-tab)
-    (fset 'tab-bar-switch-to-next-tab
-          '(lambda (&optional arg)
-             (tab-bar--ensure-tabs)
-             (let ((count (length tab-bar--tabs))
-                   (index (+ tab-bar--selected-index (or arg 1))))
-               (while (< index 0)
-                 (setq index (+ index count)))
-               (while (>= index count)
-                 (setq index (- index count)))
-               (setq tab-bar--selected-index index)
-               (tab-bar-current-tab)))))
-  (unless (fboundp 'tab-bar-switch-to-prev-tab)
-    (fset 'tab-bar-switch-to-prev-tab
-          '(lambda (&optional arg)
-             (tab-bar-switch-to-next-tab (- 0 (or arg 1))))))
-  (unless (fboundp 'tab-bar-close-tab)
-    (fset 'tab-bar-close-tab
-          '(lambda (&optional tab-number)
-             (tab-bar--ensure-tabs)
-             (if (<= (length tab-bar--tabs) 1)
-                 (tab-bar-current-tab)
-               (let ((index (if tab-number
-                                (- tab-number 1)
-                              tab-bar--selected-index))
-                     (i 0)
-                     (new-tabs nil))
-                 (dolist (tab tab-bar--tabs)
-                   (unless (= i index)
-                     (setq new-tabs (append new-tabs (list tab))))
-                   (setq i (+ i 1)))
-                 (setq tab-bar--tabs new-tabs)
-                 (when (>= tab-bar--selected-index
-                           (length tab-bar--tabs))
-                   (setq tab-bar--selected-index
-                         (- (length tab-bar--tabs) 1)))
-                 (tab-bar-current-tab))))))
-  (unless (fboundp 'tab-bar-rename-tab)
-    (fset 'tab-bar-rename-tab
-          '(lambda (name &optional tab-number)
-             (tab-bar--ensure-tabs)
-             (let* ((index (if tab-number
-                               (- tab-number 1)
-                             tab-bar--selected-index))
-                    (tab (nth index tab-bar--tabs))
-                    (name-cell (assq 'name tab))
-                    (explicit-cell (assq 'explicit-name tab)))
-               (when name-cell
-                 (setcdr name-cell name))
-               (when explicit-cell
-                 (setcdr explicit-cell t))
-               tab))))
-  (unless (fboundp 'tab-bar-mode)
-    (fset 'tab-bar-mode
-          '(lambda (&optional arg)
-             (setq tab-bar-mode
-                   (if arg
-                       (> arg 0)
-                     (not tab-bar-mode)))
-             (tab-bar--ensure-tabs)
-             tab-bar-mode)))
   (unless (fboundp 'tab-bar-height)
     (fset 'tab-bar-height
           '(lambda (&optional frame)
-             (if tab-bar-mode 1 0))))
-  (unless (fboundp 'tab-new)
-    (fset 'tab-new '(lambda (&optional arg) (tab-bar-new-tab arg))))
-  (unless (fboundp 'tab-close)
-    (fset 'tab-close '(lambda (&optional tab-number)
-                        (tab-bar-close-tab tab-number))))
-  (unless (fboundp 'tab-next)
-    (fset 'tab-next '(lambda (&optional arg)
-                       (tab-bar-switch-to-next-tab arg))))
-  (unless (fboundp 'tab-previous)
-    (fset 'tab-previous '(lambda (&optional arg)
-                           (tab-bar-switch-to-prev-tab arg))))
-  (unless (fboundp 'tab-select)
-    (fset 'tab-select '(lambda (tab-number)
-                         (tab-bar-select-tab tab-number))))
-  (unless (fboundp 'tab-rename)
-    (fset 'tab-rename '(lambda (name &optional tab-number)
-                         (tab-bar-rename-tab name tab-number))))
+             (if (bound-and-true-p tab-bar-mode) 1 0))))
   (unless (fboundp 'tab-line-mode)
     (fset 'tab-line-mode
           '(lambda (&optional arg)
@@ -1486,7 +1415,6 @@ image startup."
              (if (fboundp 'buffer-name)
                  (buffer-name buffer)
                ""))))
-  (provide 'tab-bar)
   (provide 'tab-line)
   t)
 
@@ -2679,48 +2607,6 @@ image startup."
     (provide feature))
   t)
 
-(defun nemacs-runtime-image-preload--install-fontset-core ()
-  "Install the lightweight `fontset' helper surface without source `load'."
-  (unless (featurep 'fontset)
-    (unless (boundp 'font-encoding-alist)
-      (defvar font-encoding-alist '(("ascii-0$" . ascii))))
-    (unless (boundp 'script-representative-chars)
-      (defvar script-representative-chars
-        '((latin ?A ?Z ?a ?z) (emoji #x1f600))))
-    (unless (boundp 'fontset-alias-alist)
-      (defvar fontset-alias-alist nil))
-    (unless (boundp 'standard-fontset-spec)
-      (defvar standard-fontset-spec
-        "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-standard"))
-    (unless (fboundp 'x-decompose-font-name)
-      (fset 'x-decompose-font-name
-            (lambda (_pattern) (make-vector 12 nil))))
-    (unless (fboundp 'x-compose-font-name)
-      (fset 'x-compose-font-name
-            (lambda (fields &optional _reduce)
-              (concat "-" (mapconcat (lambda (field) (or field "*"))
-                                     (append fields nil) "-")))))
-    (unless (fboundp 'set-font-encoding)
-      (fset 'set-font-encoding
-            (lambda (pattern charset)
-              (push (cons pattern charset) font-encoding-alist)
-              charset)))
-    (unless (fboundp 'fontset-name-p)
-      (fset 'fontset-name-p
-            (lambda (fontset)
-              (and (stringp fontset)
-                   (string-match-p "fontset-" fontset)))))
-    (unless (fboundp 'fontset-plain-name)
-      (fset 'fontset-plain-name (lambda (fontset) fontset)))
-    (unless (fboundp 'generate-fontset-menu)
-      (fset 'generate-fontset-menu (lambda () (list "Fontset"))))
-    (unless (fboundp 'setup-default-fontset)
-      (fset 'setup-default-fontset (lambda () standard-fontset-spec)))
-    (unless (fboundp 'create-default-fontset)
-      (fset 'create-default-fontset (lambda () standard-fontset-spec)))
-    (provide 'fontset))
-  t)
-
 (defun nemacs-runtime-image-preload--install-idna-mapping-core ()
   "Install the lightweight `idna-mapping' vector without source `load'."
   (unless (featurep 'idna-mapping)
@@ -2773,7 +2659,6 @@ image startup."
    'cp51932 'cp51932-decode 'cp51932-encode)
   (nemacs-runtime-image-preload--install-translation-table-core
    'eucjp-ms 'eucjp-ms-decode 'eucjp-ms-encode)
-  (nemacs-runtime-image-preload--install-fontset-core)
   (nemacs-runtime-image-preload--install-idna-mapping-core)
   (nemacs-runtime-image-preload--install-ja-dic-utl-core)
   t)

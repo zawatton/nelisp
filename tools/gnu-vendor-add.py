@@ -1,6 +1,6 @@
 """Vendor genuine GNU Emacs 31.1 libraries into vendor/emacs-lisp.
 
-Usage: tools/gnu-vendor-add.py LIB...   (library names, e.g. reveal tramp)
+Usage: tools/gnu-vendor-add.py LIB...   (library names or Lisp-tree paths)
 GNU_LISP_DIR selects the installed GNU lisp tree (default 31.1 under /usr/local).
 Decompresses the installed .el.gz verbatim, records ORIGIN and SHA256SUMS.
 """
@@ -11,7 +11,15 @@ ROOT = Path(__file__).resolve().parents[1] / 'vendor'
 origin = ROOT / 'ORIGIN'; sums = ROOT / 'SHA256SUMS'
 added, skipped = [], []
 for lib in sys.argv[1:]:
-    hits = sorted(GNU.rglob(lib.split('/')[-1] + '.el.gz')) + sorted(GNU.rglob(lib.split('/')[-1] + '.el'))
+    if lib.endswith('.el'):
+        relative = Path(lib)
+        if relative.is_absolute() or '..' in relative.parts:
+            skipped.append((lib, 'expected a path relative to the GNU Lisp tree'))
+            continue
+        hits = [path for path in (GNU / (lib + '.gz'), GNU / lib) if path.is_file()]
+    else:
+        name = lib.rsplit('/', 1)[-1]
+        hits = sorted(GNU.rglob(name + '.el.gz')) + sorted(GNU.rglob(name + '.el'))
     hits = [h for h in hits if '/obsolete/' not in str(h) or 'obsolete' in lib]
     if not hits:
         skipped.append((lib, 'not in GNU')); continue

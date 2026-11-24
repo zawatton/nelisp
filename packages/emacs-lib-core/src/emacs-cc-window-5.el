@@ -8,7 +8,7 @@
     (let ((win (or window (selected-window))))
       (unless (window-valid-p win)
         (signal 'wrong-type-argument (list 'window-valid-p win)))
-      (* (window-height win) (frame-char-height (window-frame win))))))
+      (* (emacs-window-total-lines win) (frame-char-height (window-frame win))))))
 (unless (fboundp 'window-pixel-left)
   (defun window-pixel-left (&optional window)
     "Return left pixel edge of window WINDOW."
@@ -30,7 +30,7 @@
     (let ((win (or window (selected-window))))
       (unless (window-valid-p win)
         (signal 'wrong-type-argument (list 'window-valid-p win)))
-      (window-width win))))
+      (* (emacs-window-total-cols win) (frame-char-width (window-frame win))))))
 (unless (fboundp 'window-prev-sibling)
   (defun window-prev-sibling (&optional window)
     "Return the previous sibling window of window WINDOW."

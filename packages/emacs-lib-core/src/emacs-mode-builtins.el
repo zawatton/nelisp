@@ -373,10 +373,6 @@ Reset the local keymap, syntax and case tables, and mode-line display.
  global-so-long-mode
  "Headless no-op compatibility stub for `global-so-long-mode'.")
 
-(emacs-mode-builtins--define-noop-mode
- show-paren-mode
- "Headless no-op compatibility stub for `show-paren-mode'.")
-
 ;;;; --- macro bridge --------------------------------------------------
 
 (when (emacs-mode-builtins--install-function-p 'define-derived-mode)

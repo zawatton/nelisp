@@ -427,12 +427,6 @@ Forwarder to `forward-char' with negated count."
   (defvar max-lisp-eval-depth 1600))
 (defvar max-specpdl-size 2500)
 
-(unless (fboundp 'define-abbrev-table)
-  (defun define-abbrev-table (symbol definitions &optional _docstring &rest _props)
-    "Standalone load-time stub for Emacs abbrev tables."
-    (set symbol definitions)
-    symbol))
-
 (unless (fboundp 'make-syntax-table)
   (defun make-syntax-table (&optional _table)
     "Standalone load-time stub for syntax tables."

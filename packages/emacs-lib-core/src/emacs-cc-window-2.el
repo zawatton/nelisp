@@ -83,8 +83,14 @@
     (emacs-cc-window-2--check old 'window-valid-p)
     (unless (and (integerp pixel-size) (> pixel-size 0))
       (signal 'wrong-type-argument (list 'integerp pixel-size)))
-    (ignore side normal-size refer)
-    (error "Sum of sizes of old and new window don’t fit")))
+    (ignore normal-size)
+    (let* ((horizontal (memq side '(left right)))
+           (frame (window-frame old))
+           (cell-size (if horizontal (frame-char-width frame) (frame-char-height frame)))
+           (new-size (round pixel-size cell-size))
+           (reference (or refer (if (window-live-p old) old (frame-selected-window frame)))))
+      (emacs-window-split-window old new-size side
+                                (eq window-combination-limit t) reference))))
 
 (unless (fboundp 'uncombine-window)
   (defun uncombine-window (window)
