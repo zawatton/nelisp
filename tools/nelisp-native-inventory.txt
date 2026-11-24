@@ -64,6 +64,9 @@ nelisp--lisp-primitive-p	native-must-stay	Clause 1: tagged-object wrapper that m
 nelisp--lisp-primitive-name	native-must-stay	Clause 1: tagged-object wrapper that makes a Lisp-defined function report as a subr (48342b978 S3); no Lisp form can build or inspect the tag. No dedicated Lisp reference recorded yet
 nelisp--cell-value	native-review	No classification row; review against Doc 211 §6.
 nelisp--assoc-raw	native-review	No classification row; review against Doc 211 §6.
+nelisp--make-native-sub-char-table	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-sub-char-table-p	native-review	No classification row; review against Doc 211 §6.
+nelisp--native-sub-char-table-slot	native-review	No classification row; review against Doc 211 §6.
 nelisp--byte-code-wrap-test	native-review	No classification row; review against Doc 211 §6.
 nelisp--plist-get-eq	native-review	No classification row; review against Doc 211 §6.
 nelisp--plist-member-eq	native-review	No classification row; review against Doc 211 §6.
@@ -91,6 +94,7 @@ delete-region	native-review	Minimal native surface clause 1 (tagged-object acces
 buffer-substring	native-review	Minimal native surface clause 1 (tagged-object access: the gap buffer store and slots of the current buffer's nelisp-buffer record, GNU buffer.h/insdel.c/editfns.c/search.c); Lisp reference nelisp--buffer-substring-reference in scripts/nelisp-stdlib-prelude.el; host test test/nelisp-gap-buffer-leaf-test.el; measurements in tools/ai/bufedit-progress.org S4.
 buffer-substring-no-properties	native-review	Minimal native surface clause 1 (tagged-object access: the gap buffer store and slots of the current buffer's nelisp-buffer record, GNU buffer.h/insdel.c/editfns.c/search.c); Lisp reference nelisp--buffer-substring-no-properties-reference in scripts/nelisp-stdlib-prelude.el; host test test/nelisp-gap-buffer-leaf-test.el; measurements in tools/ai/bufedit-progress.org S4.
 forward-line	native-review	Minimal native surface clause 1 (tagged-object access: the gap buffer store and slots of the current buffer's nelisp-buffer record, GNU cmds.c/search.c scan_newline_from_point, indent.c current_column); Lisp reference nelisp--forward-line-reference in scripts/nelisp-stdlib-prelude.el; host test test/nelisp-gap-buffer-leaf-test.el; measurements in tools/ai/bufedit-progress.org S4.
+forward-word	native-review	No classification row; review against Doc 211 §6.
 nelisp--gb-count-lines	native-review	Minimal native surface clause 1 (tagged-object access: the gap buffer store and slots of the current buffer's nelisp-buffer record, GNU cmds.c/search.c scan_newline_from_point, indent.c current_column); Lisp reference nelisp--gb-count-lines-reference in scripts/nelisp-stdlib-prelude.el; host test test/nelisp-gap-buffer-leaf-test.el; measurements in tools/ai/bufedit-progress.org S4.
 nelisp--gb-column	native-review	Minimal native surface clause 1 (tagged-object access: the gap buffer store and slots of the current buffer's nelisp-buffer record, GNU cmds.c/search.c scan_newline_from_point, indent.c current_column); Lisp reference nelisp--gb-column-reference in scripts/nelisp-stdlib-prelude.el; host test test/nelisp-gap-buffer-leaf-test.el; measurements in tools/ai/bufedit-progress.org S4.
 insert-char	native-review	Minimal native surface clause 1 (tagged-object access: the gap buffer store and slots of the current buffer's nelisp-buffer record, GNU insdel.c insert/del_range, cmds.c Finsert_char/Fdelete_char); Lisp reference nelisp--insert-char-reference in scripts/nelisp-stdlib-prelude.el; host test test/nelisp-gap-buffer-leaf-test.el; measurements in tools/ai/bufedit-progress.org S4.
@@ -312,6 +316,7 @@ set-char-table-range	native-demotable	Doc 225 S3: only its default-slot store is
 map-char-table	native-demotable	Doc 225 S3: unused; map_char_table is prelude Lisp (nelisp--chartab-map-char-table)
 nelisp--char-table-slots	native-must-stay	Doc 225 S3, clause 1: char-table slot access (cell 0, GNU's ascii and contents vector); no Lisp form exists
 nelisp--char-table-set-slots	native-must-stay	Doc 225 S3, clause 1: char-table slot store (cell 0); no Lisp form exists
+nelisp--char-table-epoch	native-review	No classification row; review against Doc 211 §6.
 symbol-plist	native-must-stay	reprs, clause 1 (symbol cell access): GNU data.c Fsymbol_plist reads the plist slot of struct Lisp_Symbol (entry slot 2, Doc 226 D1); Lisp reference nelisp--symbol-plist-slow covers nil, t and the error
 setplist	native-must-stay	reprs, clause 1 (symbol cell access): GNU data.c Fsetplist stores the plist slot (entry slot 2); Lisp reference nelisp--setplist-slow covers nil, t and the error
 get	native-must-stay	reprs, clause 1 (symbol cell access): GNU fns.c Fget walks the symbol's plist slot (plist_get); Lisp reference nelisp--get-slow covers nil, t and the error. Replaces the global nelisp-stdlib--symbol-plists hash table (about 5k Ir per plist element under fx, GNU about 24)
