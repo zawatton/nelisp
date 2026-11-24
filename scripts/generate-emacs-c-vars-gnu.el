@@ -6,7 +6,9 @@
 ;; value GNU -Q --batch starts with.  DEFVAR_PER_BUFFER variables (automatically
 ;; buffer-local in GNU) are made buffer-local.  Skipped, and listed at the end of the
 ;; output: values that do not read back `equal' (markers, buffers, frames, ...) and
-;; values that depend on the build host (paths, environment, host name, times).
+;; values that depend on the build host (paths, environment, host name, times), and
+;; values GNU's Lisp computes during startup (registries, tables, maps, alists, and any
+;; value that is not an atom or a short list of atoms): only C initial values belong here.
 ;; The guard keeps any definition the NeLisp substrate already has.
 (require 'cl-lib)
 (let* ((out (expand-file-name "packages/emacs-lib-core/src/emacs-c-vars-gnu.el"))
@@ -49,6 +51,15 @@
            (push (list s nil (local-variable-if-set-p s)) ok))
           ((string-match-p "#\\[\\|#s(\\|#f(\\|(closure " (prin1-to-string v))
            (push (cons s "function or record value") skipped))
+          ;; Only C initial values are wanted, not state GNU's Lisp built
+          ;; during startup: skip registries and tables, and any value that
+          ;; is not an atom or a short list of atoms.
+          ((string-match-p "coding\\|charset\\|-map\\'\\|-table\\'\\|-alist\\'\\|preloaded\\|build-files\\|translation\\|font-\\|script\\|-chars\\'\\|byte-boolean-vars\\|mode-line-format"
+                           (symbol-name s))
+           (push (cons s "computed at startup (registry/table/alist/map)") skipped))
+          ((not (or (atom v)
+                    (and (proper-list-p v) (<= (length v) 6) (cl-every #'atom v))))
+           (push (cons s "structured value, likely computed at startup") skipped))
           (t (push (list s v (local-variable-if-set-p s)) ok)))))))
   (setq ok (sort ok (lambda (a b) (string< (car a) (car b)))))
   (setq skipped (sort skipped (lambda (a b) (string< (car a) (car b)))))
