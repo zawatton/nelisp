@@ -37,7 +37,7 @@
                (nelisp--fx-expand (and macros t))
                (nelisp--fx-outer-env (nth 1 fn))
                (nelisp--fx-want-ir t)
-               (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
+               (c (condition-case nil (nelisp--fx-compile (cons 'progn (if (and (stringp (car body)) (cdr body)) (cdr body) body)) (car shape))
                     (error nil))))
           (when c (list (car c) (cdr c) (gethash (car c) nelisp--fx-ir-table))))))))
 

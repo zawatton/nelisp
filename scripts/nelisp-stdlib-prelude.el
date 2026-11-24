@@ -32143,7 +32143,7 @@ meanwhile would otherwise record `none' again behind the compilation)."
                    ;; A lambda inside a captured-variable body stays interpreted.
                    (nelisp--fx-outer-env (and (null capnames) (nth 1 fn)))
                    (nelisp--fx-cap-names capnames)
-                   (c (condition-case nil (nelisp--fx-compile (cons 'progn body)
+                   (c (condition-case nil (nelisp--fx-compile (cons 'progn (if (and (stringp (car body)) (cdr body)) (cdr body) body))
                                                               (append capnames (car shape)))
                         (error (setq failed t) nil))))
               (setq nelisp--fx-last-transient
@@ -32217,7 +32217,7 @@ marker-only environment."
                  (nelisp--fx-expand (and macros t))
                  (nelisp--fx-outer-env captured)
                  (nelisp--fx-cap-names nil)
-                 (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
+                 (c (condition-case nil (nelisp--fx-compile (cons 'progn (if (and (stringp (car body)) (cdr body)) (cdr body) body)) (car shape))
                       (error nil))))
             (when c
               (nelisp--fx-make-record c shape nil (aref head 4) captured formals))))))))
