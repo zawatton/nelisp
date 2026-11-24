@@ -46,7 +46,9 @@
     inhibit-local-variables-ignore-case inhibit-local-variables-p
     file-auto-mode-skip set-auto-mode-1
     ;; GNU info.el builds its default directory list with it.
-    prune-directory-list)
+    prune-directory-list
+    ;; GNU insert-directory quotes wildcard patterns and switches with it.
+    shell-quote-wildcard-pattern)
   "GNU files.el names this file copies: the directory-local-variables
 subsystem, which the standalone lacks (project.el calls
 `hack-dir-local-variables').")
