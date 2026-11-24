@@ -46,6 +46,12 @@ def conv(e, kind):
     if re.fullmatch(r'Q\w+', e) and e in qsym: return "'" + qsym[e]
     m = re.fullmatch(r'intern(?:_c_string)?\s*\(\s*"([^"]*)"\s*\)', e)
     if m: return "'" + m.group(1)
+    m = re.fullmatch(r'Fmake_char_table\s*\(\s*(Q\w+)\s*,\s*(.+)\)', e, re.S)
+    if m:
+        sub = 'nil' if m.group(1) == 'Qnil' else ("'" + qsym[m.group(1)] if m.group(1) in qsym else None)
+        init = conv(m.group(2), 'LISP')
+        if sub is not None and init is not None:
+            return '(make-char-table ' + sub + ' ' + init + ')'
     m = re.fullmatch(r'list(\d)\s*\((.*)\)', e, re.S)
     if m:
         items = [conv(a, 'LISP') for a in split_args(m.group(2))]
@@ -95,7 +101,7 @@ with open(OUT, 'w') as o:
             ";; buffer.c's buffer_defaults).  Do not edit by hand.  Each variable gets GNU's C initial\n"
             ";; value unless the NeLisp substrate already binds it; Lisp files set the rest as in GNU.\n\n")
     for n, v, bl in res:
-        en = re.sub(r'([^A-Za-z0-9+*/_<>=:!?.%&~^@-])', r'\\\1', n); o.write(f"(unless (boundp '{en}) (condition-case nil (defvar {en} {v}) (setting-constant nil)))\n")
+        en = re.sub(r'([^A-Za-z0-9+*/_<>=:!?.%&~^@-])', r'\\\1', n); o.write(f"(unless (boundp '{en}) (condition-case nil (defvar {en} {v}) (error nil)))\n")
         if bl: o.write(f"(make-variable-buffer-local '{en})\n")
     o.write("\n;; Skipped (value computed at run time in C, or kboard-local):\n")
     for n, why in sorted(set(skipped)):
