@@ -702,7 +702,7 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp-31.1/dired.el"
     "emacs-lisp-31.1/obsolete/cl.el"
     "emacs-lisp-31.1/button.el"
-    ;; `cl-macs.el' MUST be last in this list, after every struct-defining
+    ;; `cl-macs.el' MUST be after every struct-defining
     ;; file above.  It loads clean on its own (50/129 -> 125/129) but
     ;; installs the real, complete `cl-defstruct'/`cl-defmethod' machinery;
     ;; placed earlier, it made `xref.el's `(cl-defmethod xref-location-group
@@ -720,7 +720,8 @@ These are existing vendor implementations, not local reimplementations.")
     ;; this file does not.  Keeping `cl-macs.el' after every file that
     ;; defines or specializes on a struct sidesteps the gap for this
     ;; bundle; it is not a fix for the underlying `cl-generic' limitation.
-    "emacs-lisp/emacs-lisp/cl-macs.el")
+    "emacs-lisp/emacs-lisp/cl-macs.el"
+    "emacs-lisp/startup.el")
   "Vendor files appended as the absolute tail of bootstrap replay.
 Use this for vendor sources whose dependencies are only guaranteed after the
 self-healing replay phase has completed.")
@@ -777,7 +778,8 @@ bundled source that may evaluate a declaration."
   '(;; GNU simple.el in the vendor tail redefines `newline' after the
     ;; ec-buffer editing shim.  Restore the shared editing owner last;
     ;; its install gates still preserve all unselected native commands.
-    "emacs-edit-builtins.el")
+    "emacs-edit-builtins.el"
+    "nemacs-gnu-startup.el")
   "Local src files moved behind `nelisp-bootstrap-vendor-tail-extra-files'.")
 
 (defvar nelisp-bootstrap-tail-extra-files
@@ -1608,11 +1610,32 @@ strings or comments, and calls with any non-literal argument, are kept."
 (defun nelisp-bootstrap--insert-bundle-file-body (file rel)
   "Insert FILE's bundle body text for relative name REL at point."
   (let ((start (point)))
-    (if (nelisp-bootstrap--normalized-bundle-file-p file rel)
-        (insert (standalone-source-normalize-file-to-string file))
+    (cond
+     ((equal rel "vendor/emacs-lisp/startup.el")
+      (dolist (form (nelisp-bootstrap--startup-forms file))
+        (insert (nelisp-bootstrap--repl-form-string form) "\n")))
+     ((nelisp-bootstrap--normalized-bundle-file-p file rel)
+      (insert (standalone-source-normalize-file-to-string file)))
+     (t
       (insert-file-contents file)
-      (goto-char (point-max)))
-    (nelisp-bootstrap--fold-constant-regexp-opt start)))
+      (goto-char (point-max))))
+    (unless (equal rel "vendor/emacs-lisp/startup.el")
+      (nelisp-bootstrap--fold-constant-regexp-opt start))))
+
+(defun nelisp-bootstrap--startup-forms (file)
+  "Read GNU startup FILE for the standalone bundle.
+NeLisp frontends own display argument handling.  Omit the GNU tty
+context method because the runtime lacks window-system specialization."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let (forms)
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (unless (and (eq (car-safe form) 'cl-defmethod)
+                           (eq (cadr form) 'handle-args-function))
+                (push form forms))))
+        (end-of-file (nreverse forms))))))
 
 (defun nelisp-bootstrap--write-bundle (files output)
   "Write FILES into OUTPUT as one lexical-binding Elisp bundle."
@@ -1810,8 +1833,12 @@ Nested source-string evaluation is reserved for explicit diagnostics."
     (dolist (file files)
       (let ((rel (nelisp-bootstrap--logical-name file)))
         (insert "\n;;; >>> " rel "\n")
-        (dolist (source-form (nelisp-bootstrap--read-forms-from-file file))
-          (let* ((form (nelisp-bootstrap--standalone-repl-form source-form))
+        (dolist (source-form (if (equal rel "vendor/emacs-lisp/startup.el")
+                                 (nelisp-bootstrap--startup-forms file)
+                               (nelisp-bootstrap--read-forms-from-file file)))
+          (let* ((form (if (equal rel "vendor/emacs-lisp/startup.el")
+                           source-form
+                         (nelisp-bootstrap--standalone-repl-form source-form)))
                  (form-string (nelisp-bootstrap--repl-form-string form)))
             (if (nelisp-bootstrap--direct-repl-form-p rel form form-string)
                 (nelisp-bootstrap--insert-direct-repl-form form)

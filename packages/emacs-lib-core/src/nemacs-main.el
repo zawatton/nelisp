@@ -2005,6 +2005,7 @@ Recognised keys:
                             `nemacs-load-user-init-files' skip early-init.el,
                             package activation, and init.el
                             (src/nemacs-loadup.el).
+  :startup-arguments      Initial GNU command-line options, before actions.
   :inhibit-startup-screen  Consulted by the splash-screen owner
                             (`emacs-startup-screen-use-p'); nil is the
                             default (show splash), non-nil suppresses it.
@@ -2021,11 +2022,15 @@ globals from more than one call site across `bin/nemacs' and
 `nemacs-loadup' — is what avoids a double-injection ordering bug."
   (let ((init-file-user-cell
          (nemacs-main--startup-gate-option :init-file-user))
+        (startup-arguments-cell
+         (nemacs-main--startup-gate-option :startup-arguments))
         (inhibit-startup-screen-cell
          (nemacs-main--startup-gate-option :inhibit-startup-screen))
         (args-cell (nemacs-main--startup-gate-option :args)))
     (when init-file-user-cell
       (setq init-file-user (car init-file-user-cell)))
+    (when startup-arguments-cell
+      (setq nemacs-startup-arguments (car startup-arguments-cell)))
     (when (and inhibit-startup-screen-cell (boundp 'inhibit-startup-screen))
       (setq inhibit-startup-screen (car inhibit-startup-screen-cell)))
     (when (and args-cell (boundp 'emacs-startup-screen-file-arguments))

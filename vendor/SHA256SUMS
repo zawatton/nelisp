@@ -1148,3 +1148,4 @@ c79ee9fc0d7c08bd8bcebc6207e6771228e2c16a47076debc1683203ab48dce7  vendor/emacs-l
 b6888b7d214c287c67a03d24f3d361b5f8e876d359f1cd6d4d97487e6bb4ad22  vendor/emacs-lisp/jka-cmpr-hook.el
 3b0f8f8845c8856294c3aae9a074ec08d7afc8932384cc963e82001af3bff177  vendor/emacs-lisp/jka-compr.el
 ac5f4987cca50bbdbc70f8abeeec426ed54e8694728eaff3efee790b75e33e2d  vendor/staged-emacs-lisp/mule.el
+856927b8ef69c4028a5aea917fad5ddcce5d4eff1c677ea85ed8db47f7dba0ce  vendor/emacs-lisp/startup.el

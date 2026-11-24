@@ -29,6 +29,22 @@
 Tramp's persistent-cache setting reads `(or init-file-user site-run-file)'
 at load time, so the variable must exist before net/tramp-cache.el loads."))
 
+(defvar before-init-time nil "Time at which startup initialization began.")
+(defvar after-init-time nil "Time at which startup initialization finished.")
+(defvar initial-environment nil "Environment inherited at process startup.")
+(defvar command-line-args nil "Arguments passed to the process at startup.")
+(defvar noninteractive nil "Non-nil in a batch session.")
+(defvar top-level nil "Lisp form to evaluate when entering the top level.")
+(defvar internal--top-level-message "Back to top level")
+(defvar eol-mnemonic-undecided ":")
+(defvar eol-mnemonic-unix ":")
+(defvar eol-mnemonic-dos "(DOS)")
+(defvar eol-mnemonic-mac "(Mac)")
+(defvar charset-map-path nil "Directories containing charset maps.")
+(defvar shared-game-score-directory nil)
+(defvar auto-save-list-file-name nil)
+(defvar memory-signal-data nil)
+
 (unless (boundp 'temporary-file-directory)
   (defvar temporary-file-directory "/tmp/"
     "Polyfill: NeLisp standalone fallback for Emacs' temporary-file-directory."))

@@ -24,7 +24,8 @@
 #   nemacs -Q                       -q + suppress the startup splash (like Emacs -Q)
 #   nemacs --quick                  same as -Q
 #   nemacs --no-splash              suppress the startup splash screen only
-#   nemacs --no-site-file           accepted for Emacs CLI compatibility (no-op)
+#   nemacs --no-site-file           skip site-start.el
+#   nemacs --init-directory DIR    set user-emacs-directory for startup
 #   nemacs --driver=nelisp ...      use NeLisp as driver
 #   nemacs --driver=host ...        force host emacs driver (= default)
 #   nemacs --print-paths            dump the resolved load-path / vendor root
@@ -663,7 +664,6 @@ run_doctor() {
 BATCH=0
 NO_BANNER=0
 NO_INIT=0
-QUICK=0
 NO_SPLASH=0
 DOCTOR=0
 LOAD_FILES=()
@@ -673,6 +673,8 @@ EVAL_FORMS=()
 FUNCALLS=()
 EXTRA_ARGS=()
 HOST_EARLY_ARGS=()
+STARTUP_ARGS=()
+STARTUP_USER_ARGS=()
 
 while (( $# > 0 )); do
   case "$1" in
@@ -682,10 +684,18 @@ while (( $# > 0 )); do
       exit 0 ;;
     --print-paths) print_paths; exit 0 ;;
     --doctor) DOCTOR=1; shift ;;
-    -q|--no-init-file) NO_INIT=1; shift ;;
-    -Q|--quick) NO_INIT=1; QUICK=1; NO_SPLASH=1; shift ;;
+    -q|--no-init-file) NO_INIT=1; STARTUP_ARGS+=("$1"); shift ;;
+    -Q|--quick) NO_INIT=1; NO_SPLASH=1; STARTUP_ARGS+=("$1"); shift ;;
     --no-splash) NO_SPLASH=1; shift ;;
-    --no-site-file) shift ;;
+    --no-site-file) STARTUP_ARGS+=("$1"); shift ;;
+    --init-directory)
+      [[ $# -ge 2 ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
+      STARTUP_ARGS+=("$1" "$2"); shift 2 ;;
+    --init-directory=*) STARTUP_ARGS+=("$1"); shift ;;
+    --user|-u)
+      [[ $# -ge 2 ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
+      STARTUP_USER_ARGS+=("$1" "$2"); shift 2 ;;
+    --user=*) STARTUP_USER_ARGS+=("$1"); shift ;;
     -nw|--no-window-system)
       HOST_EARLY_ARGS+=("$1"); shift ;;
     --batch) BATCH=1; shift ;;
@@ -736,38 +746,6 @@ done
 if (( DOCTOR )); then
   run_doctor
   exit $?
-fi
-
-# --- macro-less driver pre-pass: wrap user init ahead of time (Phase 3) --
-#
-# Loader reconcile Phase 3.  The nelisp/standalone driver's reader cannot
-# reliably macro-expand every user init construct (Doc reconcile plan
-# §1), so ahead of dispatch we run the same host-side `nemacs-wrap-init'
-# generator the GUI launcher uses (scripts/nemacs-wrap-init.el), writing
-# its output under `nemacs-resolve-user-emacs-directory' (src/nemacs-
-# loadup.el) -- the single source every driver now defers to -- so
-# `nemacs-loadup''s Phase 2 consumer (`nemacs--load-user-init-via-
-# transport') picks it up automatically once `nemacs-init' runs below.
-#
-# Skipped entirely for the host driver (host Emacs macro-expands every
-# construct itself, Phase 1's raw `load' is always sufficient there) and
-# under -q/-Q (`NO_INIT'; the loadup init gate skips loading either way --
-# double closure, nothing to wrap).  Host Emacs unavailable, or the
-# generator failing, is a silent degrade to the Phase 1 raw-load lane
-# (unchanged pre-Phase-3 behavior).
-if [[ "$NEMACS_DRIVER" == "nelisp" && "$NO_INIT" != 1 ]] \
-   && command -v "$NEMACS_EMACS" >/dev/null 2>&1; then
-  loadup_L=()
-  while IFS= read -r d; do loadup_L+=(-L "$d"); done < <(nemacs_all_dirs)
-  "$NEMACS_EMACS" -Q --batch "${loadup_L[@]}" \
-    -l nemacs-loadup -l "$NEMACS_HOME/scripts/nemacs-wrap-init.el" \
-    --eval "(let ((dir (nemacs-resolve-user-emacs-directory)))
-              (when (or (file-readable-p (concat dir \"early-init.el\"))
-                        (file-readable-p (concat dir \"init.el\")))
-                (nemacs-wrap-init (concat dir \"nemacs-init-wrapped\")
-                                   (concat dir \"early-init.el\")
-                                   (concat dir \"init.el\"))))" \
-    >/dev/null 2>&1 || true
 fi
 
 # --- bootstrap form ------------------------------------------------
@@ -859,6 +837,12 @@ done
 ARG_LIST=""
 for f in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
   ARG_LIST+=" \"$(shell_quote "$f")\""
+done
+STARTUP_ARG_LIST=""
+# GNU emacs.c processes user selection after the no-init/site options.
+for f in "${STARTUP_ARGS[@]+"${STARTUP_ARGS[@]}"}" \
+         "${STARTUP_USER_ARGS[@]+"${STARTUP_USER_ARGS[@]}"}"; do
+  STARTUP_ARG_LIST+=" \"$(shell_quote "$f")\""
 done
 
 if (( BATCH )); then
@@ -958,11 +942,13 @@ if (( BATCH || NO_INIT )); then
 else
   NEMACS_INIT_GATE_FORM="(setq init-file-user \"\")"
 fi
-
-if (( BATCH || NO_INIT || QUICK )); then
-  NEMACS_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup nil)"
-else
-  NEMACS_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup t)"
+HOST_PACKAGE_STARTUP_FORM=""
+if [[ "$NEMACS_DRIVER" == "host" ]]; then
+  if (( BATCH || NO_INIT )); then
+    HOST_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup nil)"
+  else
+    HOST_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup t)"
+  fi
 fi
 
 BOOT_FORM="$(cat <<EOF
@@ -978,7 +964,7 @@ BOOT_FORM="$(cat <<EOF
   (setq nemacs-nelisp-executable "$(shell_quote "$NEMACS_NELISP")")
   (unless (boundp 'load-path) (defvar load-path nil))
   $NEMACS_INIT_GATE_FORM
-  $NEMACS_PACKAGE_STARTUP_FORM
+  $HOST_PACKAGE_STARTUP_FORM
   (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
 $BOOT_HOST_PRELOAD_FORM
 $BOOT_LOAD_PATH_FORM
@@ -992,6 +978,7 @@ $BOOT_NELISP_SOURCE_REFRESH
               :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
               :driver '$NEMACS_DRIVER
               :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
+              :startup-arguments (list$STARTUP_ARG_LIST)
               :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
               :images (list$IMAGE_LIST)
               :load-path (list$LOAD_PATH_LIST)
@@ -1020,7 +1007,6 @@ COLD_BOOT_FORM="$(cat <<EOF
   (setq nemacs-nelisp-executable "$(shell_quote "$NEMACS_NELISP")")
   (unless (boundp 'load-path) (defvar load-path nil))
   $NEMACS_INIT_GATE_FORM
-  $NEMACS_PACKAGE_STARTUP_FORM
   (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
 $BOOT_LOAD_PATH_FORM
   (setq emacs-load-auto-native-compile t)
@@ -1028,6 +1014,9 @@ $BOOT_LOAD_PATH_FORM
         (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
               :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
               :driver '$NEMACS_DRIVER
+              :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
+              :startup-arguments (list$STARTUP_ARG_LIST)
+              :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
               :images (list$IMAGE_LIST)
               :load-path (list$LOAD_PATH_LIST)
               :load (list$LOAD_LIST)
@@ -1222,9 +1211,6 @@ case "$NEMACS_DRIVER" in
         printf '%s\n' "(setq native-comp-enable-subr-trampolines nil comp-enable-subr-trampolines nil)" >> "$tmp"
         printf '%s\n' "(unless (boundp 'load-path) (defvar load-path nil))" >> "$tmp"
         printf '%s\n' "$NEMACS_INIT_GATE_FORM" >> "$tmp"
-        if [[ -n "$NEMACS_PACKAGE_STARTUP_FORM" ]]; then
-          printf '%s\n' "$NEMACS_PACKAGE_STARTUP_FORM" >> "$tmp"
-        fi
         printf '%s\n' "(setq emacs-load-auto-native-compile nil)" >> "$tmp"
         cat "$NEMACS_BOOTSTRAP_REPL" >> "$tmp"
         printf '%s\n' "(setq nelisp-emacs-vendor-root \"$(shell_quote "$NEMACS_HOME/vendor")\")" >> "$tmp"
@@ -1237,6 +1223,7 @@ case "$NEMACS_DRIVER" in
             :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
             :driver '$NEMACS_DRIVER
             :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
+            :startup-arguments (list$STARTUP_ARG_LIST)
             :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
             :images (list$IMAGE_LIST)
             :load-path (list$LOAD_PATH_LIST)

@@ -80,7 +80,7 @@ libffi primitive is available).")
 
 ;; Init-time bookkeeping — server.el sometimes references these in
 ;; debug / startup-time messages.
-(defvar before-init-time '(0 0 0 0))
+(defvar before-init-time nil)
 (when (fboundp 'nl-ffi-call)
   (defvar after-init-time '(0 0 0 0)))
 (when (fboundp 'nl-ffi-call)
