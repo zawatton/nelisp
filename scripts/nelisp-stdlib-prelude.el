@@ -8742,11 +8742,128 @@ in case you use it as a menu with `x-popup-menu'."
 ;; explicit reduced flattened model, see above) never produces.
 (defun nelisp--get-keymap (object)
   (cond
-   ((keymapp object) object)
-   ((and (symbolp object) (fboundp 'indirect-function)
-         (keymapp (indirect-function object)))
+   ((and (consp object) (eq (car object) 'keymap)) object)
+   ((and (symbolp object) object (fboundp 'indirect-function)
+         (let ((tem (indirect-function object)))
+           (and (consp tem) (eq (car tem) 'keymap))))
     (indirect-function object))
    (t (signal 'wrong-type-argument (list 'keymapp object)))))
+
+;; GNU Emacs 31.1 src/keymap.c:Fkeymapp via get_keymap (OBJECT, 0, 0): a
+;; keymap, a non-nil symbol whose function definition (after alias
+;; indirection) is a keymap, or such a symbol autoloaded as a keymap
+;; (fifth `autoload' element `keymap').  The native subr accepts only the
+;; first form, so prefix commands such as `Control-X-prefix' read as
+;; non-keymaps there.
+(defun nelisp--keymapp (object)
+  "Return t if OBJECT is a keymap (GNU keymap.c `keymapp')."
+  (let ((tem object))
+    (when (and tem (symbolp tem) (fboundp 'indirect-function))
+      (setq tem (indirect-function tem)))
+    (if (and (consp tem)
+             (or (eq (car tem) 'keymap)
+                 (and (eq (car tem) 'autoload) (eq (nth 4 tem) 'keymap))))
+        t
+      nil)))
+(fset 'keymapp #'nelisp--keymapp)
+
+;; GNU Emacs 31.1 src/keyboard.c: modifier bits, parse_solitary_modifier,
+;; apply_modifiers (name order A- C- H- M- S- s- double- triple- down-
+;; drag-), make_ctrl_char and Fevent_convert_list.
+(defconst nelisp--event-modifier-bits
+  '((up . 1) (down . 2) (drag . 4) (click . 8) (double . 16) (triple . 32)
+    (alt . #x400000) (super . #x800000) (hyper . #x1000000)
+    (shift . #x2000000) (ctrl . #x4000000) (meta . #x8000000))
+  "keyboard.c / lisp.h modifier bits.")
+(defun nelisp--event-solitary-modifier (symbol)
+  "keyboard.c parse_solitary_modifier: SYMBOL's modifier bit, or 0."
+  (let ((name (symbol-name symbol)))
+    (cdr (or (assoc name '(("A" . #x400000) ("alt" . #x400000)
+                           ("C" . #x4000000) ("ctrl" . #x4000000)
+                           ("control" . #x4000000) ("click" . 8)
+                           ("down" . 2) ("double" . 16) ("drag" . 4)
+                           ("H" . #x1000000) ("hyper" . #x1000000)
+                           ("M" . #x8000000) ("meta" . #x8000000)
+                           ("S" . #x2000000) ("shift" . #x2000000)
+                           ("s" . #x800000) ("super" . #x800000)
+                           ("triple" . 32) ("up" . 1)))
+             '(nil . 0)))))
+(defun nelisp--event-apply-modifiers (modifiers base)
+  "keyboard.c apply_modifiers: BASE symbol with MODIFIERS added."
+  (let ((name (symbol-name base)) (more t))
+    ;; Fold modifiers already spelled on BASE into MODIFIERS.
+    (while more
+      (setq more nil)
+      (dolist (cell '(("A-" . #x400000) ("C-" . #x4000000) ("H-" . #x1000000)
+                      ("M-" . #x8000000) ("S-" . #x2000000) ("s-" . #x800000)
+                      ("double-" . 16) ("triple-" . 32) ("down-" . 2)
+                      ("drag-" . 4)))
+        (when (and (not more) (> (length name) (length (car cell)))
+                   (string-prefix-p (car cell) name))
+          (setq modifiers (logior modifiers (cdr cell))
+                name (substring name (length (car cell)))
+                more t))))
+    (let ((prefix ""))
+      (dolist (cell '((#x400000 . "A-") (#x4000000 . "C-") (#x1000000 . "H-")
+                      (#x8000000 . "M-") (#x2000000 . "S-") (#x800000 . "s-")
+                      (16 . "double-") (32 . "triple-") (2 . "down-")
+                      (4 . "drag-")))
+        (when (/= 0 (logand modifiers (car cell)))
+          (setq prefix (concat prefix (cdr cell)))))
+      (intern (concat prefix name)))))
+(defun nelisp--event-make-ctrl-char (c)
+  "keyboard.c make_ctrl_char."
+  (let ((upper (logand c (lognot 127))))
+    (if (not (and (>= c 0) (< c 128)))
+        (logior c #x4000000)
+      (setq c (logand c 127))
+      (cond
+       ((and (>= c 64) (< c 96))
+        (let ((oc c))
+          (setq c (logand c (lognot 96)))
+          (when (and (>= oc ?A) (<= oc ?Z))
+            (setq c (logior c #x2000000)))))
+       ((and (>= c ?a) (<= c ?z)) (setq c (logand c (lognot 96))))
+       ((>= c ?\s) (setq c (logior c #x4000000))))
+      (logior c (logand upper (lognot #x4000000))))))
+(defun nelisp--event-convert-list (event-desc)
+  "keyboard.c Fevent_convert_list."
+  (let ((base nil) (rest event-desc) (modifiers 0))
+    (while (consp rest)
+      (let* ((elt (car rest))
+             (this (if (and (symbolp elt) (consp (cdr rest)))
+                       (nelisp--event-solitary-modifier elt)
+                     0)))
+        (setq rest (cdr rest))
+        (cond ((/= this 0) (setq modifiers (logior modifiers this)))
+              (base (error "Two bases given in one event"))
+              (t (setq base elt)))))
+    (when (and (symbolp base) base (= (length (symbol-name base)) 1))
+      (setq base (aref (symbol-name base) 0)))
+    (cond
+     ((integerp base)
+      (when (and (/= 0 (logand modifiers #x2000000)) (>= base ?a) (<= base ?z))
+        (setq base (- base (- ?a ?A))
+              modifiers (logand modifiers (lognot #x2000000))))
+      (if (/= 0 (logand modifiers #x4000000))
+          (logior (logand modifiers (lognot #x4000000))
+                  (nelisp--event-make-ctrl-char base))
+        (logior modifiers base)))
+     ((symbolp base) (nelisp--event-apply-modifiers modifiers base))
+     (t (error "Invalid base event")))))
+(unless (fboundp 'event-convert-list)
+  (defalias 'event-convert-list #'nelisp--event-convert-list))
+(defun nelisp--event-lucid-list-p (object)
+  "keyboard.c lucid_event_type_list_p."
+  (and (consp object)
+       (not (memq (car object) '(help-echo vertical-line mode-line
+                                 header-line tab-line)))
+       (let ((tail object) (ok t))
+         (while (and ok (consp tail))
+           (unless (or (integerp (car tail)) (symbolp (car tail)))
+             (setq ok nil))
+           (setq tail (cdr tail)))
+         (and ok (null tail)))))
 ;; Mirrors GNU Emacs 31.1 src/keymap.c:copy_keymap_item.  Copies just the
 ;; spine cells of a single binding cell so mutating the copy never touches
 ;; KEYMAP's original alist cons, matching the C code's cell-by-cell
@@ -8837,6 +8954,10 @@ is not copied."
   "Return KEY's events as a list, with meta expanded to an ESC prefix."
   (let ((events nil))
     (dolist (event (append key nil))
+      ;; keymap.c Fdefine_key / lookup_key_1: a (MODIFIERS... BASE) list
+      ;; event is converted with `event-convert-list'.
+      (when (nelisp--event-lucid-list-p event)
+        (setq event (nelisp--event-convert-list event)))
       (when (and (stringp key) (integerp event) (>= event 128) (< event 256)
                  (not (multibyte-string-p key)))
         (setq event (logior (- event 128) #x8000000)))
