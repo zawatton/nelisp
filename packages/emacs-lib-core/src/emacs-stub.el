@@ -378,6 +378,10 @@ conservatively reports nil, matching stock Emacs's own tty default."
 (when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
 
+;; GNU frame.el:2756; GNU info.el's node fontifier calls it.
+(when (emacs-stub--install-function-p 'display-multi-font-p)
+  (defalias 'display-multi-font-p #'display-graphic-p))
+
 (when (emacs-stub--install-function-p 'display-mouse-p)
   (defalias 'display-mouse-p #'emacs-display-mouse-p))
 

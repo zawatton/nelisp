@@ -83,7 +83,52 @@ and, if so, which suffixes they should try to append to the file name
 in order to do so.  However, if you want to customize which suffixes
 the loading functions recognize as compression suffixes, you should
 customize `jka-compr-load-suffixes' rather than the present variable."))
+;; xdisp.c DEFVAR_INT (default 0, xdisp.c:38556); GNU info.el binds it
+;; around node display.
+(unless (boundp 'scroll-conservatively)
+  (defvar scroll-conservatively 0
+    "Scroll up to this many lines, to bring point back on screen.
+If point moves off-screen, redisplay will scroll by up to
+`scroll-conservatively' lines in order to bring point just barely
+onto the screen again.  If that cannot be done, then redisplay
+recenters point as usual.
 
+If the value is greater than 100, redisplay will never recenter point,
+but will always scroll just enough text to bring point into view, even
+if you move far away.
+
+A value of zero means always recenter point if it moves off screen."))
+;; callproc.c DEFVAR (callproc.c:2127; PATH_INFO, epaths.in default
+;; "/usr/local/share/info"); GNU info.el builds the Info directory list
+;; from it.
+(unless (boundp 'configure-info-directory)
+  (defvar configure-info-directory "/usr/local/share/info"
+    "For internal use by the build procedure only.
+This is the name of the directory in which the build procedure installed
+Emacs's info files; the default value for `Info-default-directory-list'
+includes this."))
+;; emacs.c DEFVAR (emacs.c:3565); nil in an installed Emacs.  GNU info.el
+;; reads it while building the Info directory list.
+(unless (boundp 'installation-directory)
+  (defvar installation-directory nil
+    "A directory within which to look for the `lib-src' and `etc' directories.
+In an installed Emacs, this is normally nil.  It is non-nil if
+both `lib-src' (on MS-DOS, `info') and `etc' directories are found
+within the variable `invocation-directory' or its parent.  For example,
+this is the case when running an uninstalled Emacs executable from its
+build directory."))
+;; callproc.c DEFVARs (non-Android defaults, callproc.c:2167 and 2173); GNU
+;; speedbar.el's `speedbar-fetch-etags-command' defcustom reads the latter.
+(unless (boundp 'ctags-program-name)
+  (defvar ctags-program-name "ctags"
+    "Name of the `ctags' program.
+Use this instead of calling `ctags' directly, as `ctags' may have been
+renamed to comply with executable naming restrictions on the system."))
+(unless (boundp 'etags-program-name)
+  (defvar etags-program-name "etags"
+    "Name of the `etags' program distributed with Emacs.
+Use this instead of calling `etags' directly, as `etags' may have been
+renamed to comply with executable naming restrictions on the system."))
 ;; doc.c DEFVARs: the DOC file's name within `doc-directory', and the object
 ;; files GNU 31.1's build put into its DOC (help-fns' `help-C-file-name'
 ;; keeps a DOC source entry only when its file is listed).  The list is the

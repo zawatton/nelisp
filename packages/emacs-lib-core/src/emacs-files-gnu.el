@@ -1867,6 +1867,21 @@ This is a separate function so you can redefine it for customization.
 You may need to redefine `file-name-sans-versions' as well."
     (string-match "~\\'" file))
 
+(defun prune-directory-list (dirs &optional keep reject)
+  "Return a copy of DIRS with all non-existent directories removed.
+The optional argument KEEP is a list of directories to retain even if
+they don't exist, and REJECT is a list of directories to remove from
+DIRS, even if they exist; REJECT takes precedence over KEEP.
+
+Note that membership in REJECT and KEEP is checked using simple string
+comparison."
+  (apply #'nconc
+	 (mapcar (lambda (dir)
+		   (and (not (member dir reject))
+			(or (member dir keep) (file-directory-p dir))
+			(list dir)))
+		 dirs)))
+
 (defvar revert-buffer-function #'revert-buffer--default
   "Function to use to revert this buffer.
 The function receives two arguments IGNORE-AUTO and NOCONFIRM,
