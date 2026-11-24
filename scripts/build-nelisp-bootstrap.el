@@ -586,8 +586,10 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/international/mule.el"
     "emacs-lisp/international/mule-conf.el"
     "emacs-lisp/international/mule-cmds.el"
-    ;; loadup.el's language environments after mule-cmds (cp51932 and
-    ;; eucjp-ms just before japanese).
+    ;; loadup.el's order after mule-cmds: characters, composite, then the
+    ;; language environments (cp51932 and eucjp-ms just before japanese).
+    "emacs-lisp/international/characters.el"
+    "emacs-lisp/composite.el"
     "emacs-lisp/language/chinese.el"
     "emacs-lisp/language/cyrillic.el"
     "emacs-lisp/language/indian.el"

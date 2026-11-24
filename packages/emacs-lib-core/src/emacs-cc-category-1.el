@@ -111,18 +111,11 @@ those categories."
 ;; same objects `category-table' and `standard-category-table' return.
 (when (and (fboundp 'nelisp--category-standard)
            (fboundp 'emacs-char-table-standard-category-table))
-  (defvar emacs-cc-category-1--standard-docs-p nil)
   (defun nelisp--category-standard ()
-    "Return the emacs-lib standard category table with GNU's docstrings."
-    (let ((table (emacs-char-table-standard-category-table)))
-      (unless emacs-cc-category-1--standard-docs-p
-        (setq emacs-cc-category-1--standard-docs-p t)
-        (when (boundp 'nelisp--unicode-category-docstrings)
-          (let ((docs (emacs-char-table-extra-slot table 0)) (i 0))
-            (while (< i (length nelisp--unicode-category-docstrings))
-              (aset docs i (aref nelisp--unicode-category-docstrings i))
-              (setq i (1+ i))))))
-      table))
+    "Return the emacs-lib standard category table.
+As in GNU's init_category_once, its docstrings start empty; GNU's
+international/characters.el defines the standard categories."
+    (emacs-char-table-standard-category-table))
   (defun nelisp--category-current ()
     "Return the emacs-lib current category table."
     (nelisp--category-standard)
