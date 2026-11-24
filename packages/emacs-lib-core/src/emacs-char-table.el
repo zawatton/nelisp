@@ -971,6 +971,34 @@ declines to `emacs-char-table-aref' and then `emacs-char-table-ref-slow'
           v
         (emacs-char-table--fallback ct char))))))
 
+(defun emacs-char-table-ascii-values (ct)
+  "Return a 128-element vector equal to (aref CT C) for C in 0..127, or nil.
+Exact for an owned vector table, including its default and the parent chain
+\(a parent that is not owned is read per char with `emacs-char-table-ref').
+Answers nil for every other representation, so the caller keeps its per-char
+`aref' there.  One pass replaces 128 bridged reads."
+  (when (and (vectorp ct) (emacs-char-table--owned-p ct))
+    (let ((out (make-vector 128 nil))
+          (cache (emacs-char-table--owner-cache ct))
+          (default (emacs-char-table--raw-ref ct emacs-char-table--i-default))
+          (parent (emacs-char-table--raw-ref ct emacs-char-table--i-parent))
+          (pvals nil)
+          (c 0))
+      (when (and (not default) parent)
+        (setq pvals (emacs-char-table-ascii-values parent)))
+      (while (< c 128)
+        (let ((v (if (emacs-char-table--topology-node-p cache)
+                     (aref (aref cache 1) c)
+                   cache)))
+          (aset out c
+                (cond (v v)
+                      (default default)
+                      (parent (if pvals (aref pvals c)
+                                (emacs-char-table-ref parent c)))
+                      (t nil))))
+        (setq c (1+ c)))
+      out)))
+
 (defun emacs-char-table-set (ct char value)
   "Set CT's value for a single character CHAR to VALUE."
   (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))

@@ -1,0 +1,23 @@
+standard                     t
+make-syntax-table            t
+child modify                 t
+child of child               t
+set-char-table-range         t
+parent swap                  t
+parent removed               t
+default value                t
+child of default table       t
+emacs-lisp-mode              t
+text-mode                    t
+case table                   t
+plain char-table foo 3       t
+plain char-table foo         t
+syn map standard             t
+syn map child                t
+syn map gchild               t
+syn map range                t
+syn map swap                 t
+syn map default              t
+syn map el-mode              t
+syn map text-mode            t
+bulk answers (std,child)     (t t t t)
