@@ -593,6 +593,7 @@ These are existing vendor implementations, not local reimplementations.")
     ;; src/emacs-cc-coding-1.el.  Replaces the extracted emacs-mule-gnu.el.
     "staged-emacs-lisp/mule.el"
     "emacs-lisp/international/mule-conf.el"
+    "staged-emacs-lisp/mule-cmds.el"
     ;; Genuine GNU minibuffer.el (the pinned unmodified copy): the Lisp-level
     ;; completion API (styles, completion-in-region, completion tables).  It
     ;; needs the real `defcustom' (:set/:initialize) from custom.el above and must
