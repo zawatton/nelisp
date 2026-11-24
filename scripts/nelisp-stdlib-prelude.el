@@ -34560,7 +34560,10 @@ local values but still allow the table's default or parent fallback."
   (let* ((default (emacs-char-table-range table nil))
          (parent (emacs-char-table-parent table))
          (inherited (and parent (not default) (nelisp-casetab--sparse-mappings parent)))
-         (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
+         ;; An owned table derives its ranges view from its topology.
+         (ranges (if (fboundp 'emacs-char-table--ranges)
+                     (emacs-char-table--ranges table)
+                   (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
          (capacity
           (+ 256 (length inherited)
              (if default 4194304
