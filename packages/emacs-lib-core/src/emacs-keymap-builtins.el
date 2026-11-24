@@ -351,8 +351,23 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
 (when (emacs-keymap-builtins--install-function-p 'lookup-key)
   (defalias 'lookup-key #'emacs-keymap-builtins--lookup-key))
 
+(defun emacs-keymap-builtins--key-binding
+    (key &optional accept-default _no-remap position)
+  "Return KEY's binding in the active keymaps (GNU keymap.c Fkey_binding).
+Each active map is searched with the same lookup as `lookup-key', so a
+prefix bound to a symbol (`Control-X-prefix') and char-table slots are
+followed as in GNU."
+  (let ((result nil))
+    (catch 'found
+      (dolist (km (emacs-keymap-chain-at position))
+        (let ((b (emacs-keymap-builtins--lookup-key km key accept-default)))
+          (when (and b (not (numberp b)))
+            (setq result b)
+            (throw 'found t)))))
+    result))
+
 (when (emacs-keymap-builtins--install-function-p 'key-binding)
-  (defalias 'key-binding #'emacs-keymap-key-binding))
+  (defalias 'key-binding #'emacs-keymap-builtins--key-binding))
 
 (when (emacs-keymap-builtins--install-function-p 'key-description)
   (defun key-description (keys &optional prefix)
@@ -372,49 +387,11 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
         (setq events (cdr events)))
       (mapconcat #'identity (nreverse parts) " "))))
 
-(when (emacs-keymap-builtins--install-function-p 'kbd)
-  (defalias 'kbd #'emacs-keymap-key-parse))
-
-(when (emacs-keymap-builtins--install-function-p 'key-parse)
-  (defalias 'key-parse #'emacs-keymap-key-parse))
-
-(when (emacs-keymap-builtins--install-function-p 'key-valid-p)
-  (defalias 'key-valid-p #'emacs-keymap-key-valid-p))
-
-(when (emacs-keymap-builtins--install-function-p 'keymap-set)
-  (defun keymap-set (keymap key definition)
-    "Bind KEY's description to DEFINITION using GNU prefix validation."
-    (unless (key-valid-p key)
-      (signal 'emacs-keymap-bad-key (list key)))
-    (when (stringp definition)
-      (unless (key-valid-p definition)
-        (signal 'emacs-keymap-bad-key (list definition)))
-      (setq definition (key-parse definition)))
-    (emacs-keymap-builtins--define-key keymap (key-parse key) definition)))
-
-(when (emacs-keymap-builtins--install-function-p 'keymap-lookup)
-  (defalias 'keymap-lookup #'emacs-keymap-keymap-lookup))
-
-(when (emacs-keymap-builtins--install-function-p 'keymap-unset)
-  (defalias 'keymap-unset #'emacs-keymap-keymap-unset))
-
-(when (emacs-keymap-builtins--install-function-p 'keymap-global-set)
-  (defalias 'keymap-global-set #'emacs-keymap-keymap-global-set))
-
-(when (emacs-keymap-builtins--install-function-p 'keymap-local-set)
-  (defalias 'keymap-local-set #'emacs-keymap-keymap-local-set))
-
-(when (emacs-keymap-builtins--install-function-p 'keymap-global-unset)
-  (defalias 'keymap-global-unset #'emacs-keymap-keymap-global-unset))
-
-(when (emacs-keymap-builtins--install-function-p 'keymap-local-unset)
-  (defalias 'keymap-local-unset #'emacs-keymap-keymap-local-unset))
+;; GNU keymap.el's `kbd', `key-parse', `key-valid-p', `keymap-set',
+;; `keymap-lookup', `keymap-unset' and the global/local set/unset commands
+;; are staged verbatim in the native image; they are not replaced here.
 
 ;;;; --- global / local map ----------------------------------------------
-
-(unless (boundp 'global-map)
-  (defvar global-map emacs-keymap-global-map
-    "Default global keymap for standalone NeLisp."))
 
 (unless (boundp 'menu-bar-separator)
   (defvar menu-bar-separator '(menu-item "--")
@@ -427,27 +404,6 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
                                (emacs-keymap-make-sparse-keymap "Line Wrapping"))
       map)
     "Standalone `Options' menu keymap used by batch menu mutators."))
-
-(unless (boundp 'ctl-x-map)
-  (defvar ctl-x-map (emacs-keymap-make-sparse-keymap)
-    "Standard C-x prefix keymap for standalone NeLisp."))
-
-;; GNU bindings.el: `Control-X-prefix' is the command whose function cell is
-;; the C-x keymap; keymap parents may name it (term.el does).
-(unless (fboundp 'Control-X-prefix)
-  (fset 'Control-X-prefix ctl-x-map))
-
-(unless (boundp 'ctl-x-4-map)
-  (defvar ctl-x-4-map (emacs-keymap-make-sparse-keymap)
-    "Standard C-x 4 prefix keymap for standalone NeLisp."))
-
-(unless (boundp 'ctl-x-5-map)
-  (defvar ctl-x-5-map (emacs-keymap-make-sparse-keymap)
-    "Standard C-x 5 prefix keymap for standalone NeLisp."))
-
-(unless (boundp 'esc-map)
-  (defvar esc-map (emacs-keymap-make-sparse-keymap)
-    "Standard ESC prefix keymap for standalone NeLisp."))
 
 (unless (boundp 'help-map)
   (defvar help-map (emacs-keymap-make-sparse-keymap)
@@ -501,18 +457,6 @@ to its legacy spelling.  This handoff is idempotent."
            keymap event binding nil)))))
   keymap)
 
-(when (and (or (fboundp 'nl-write-file)
-               (fboundp 'nelisp--write-stdout-bytes)
-               (not (boundp 'emacs-version)))
-           (emacs-keymap-keymapp global-map))
-  (setq emacs-keymap-global-map global-map)
-  (emacs-keymap-builtins--migrate-bootstrap-events global-map)
-  (emacs-keymap-define-key global-map "\C-x" ctl-x-map)
-  (emacs-keymap-define-key global-map "\e" esc-map)
-  (emacs-keymap-define-key global-map "\C-h" help-map)
-  (emacs-keymap-define-key ctl-x-map "4" ctl-x-4-map)
-  (emacs-keymap-define-key ctl-x-map "5" ctl-x-5-map)
-  (emacs-keymap-define-key esc-map "s" search-map))
 
 (when (emacs-keymap-builtins--install-function-p 'current-global-map)
   (defalias 'current-global-map #'emacs-keymap-current-global-map))
@@ -977,6 +921,10 @@ interactive command because no GUI menu adapter is active here."
 ;; on host Emacs, where all three are always real).
 (when (fboundp 'emacs-command-loop--ensure-translation-maps)
   (emacs-command-loop--ensure-translation-maps))
+
+;; GNU Emacs 31.1's global keymap tree (subr.el) is in the native image;
+;; GNU bindings.el's key bindings are the generated emacs-bindings-gnu.el,
+;; which the bootstrap loads after this file.
 
 (provide 'emacs-keymap-builtins)
 

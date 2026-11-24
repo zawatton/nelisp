@@ -1164,3 +1164,5 @@ emacs-lisp/pulse.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/pulse.el	sha
 emacs-lisp/jka-cmpr-hook.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/jka-cmpr-hook.el	sha256=b6888b7d214c287c67a03d24f3d361b5f8e876d359f1cd6d4d97487e6bb4ad22
 emacs-lisp/jka-compr.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/jka-compr.el	sha256=3b0f8f8845c8856294c3aae9a074ec08d7afc8932384cc963e82001af3bff177
 staged-emacs-lisp/mule.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/international/mule.el.gz	sha256=ac5f4987cca50bbdbc70f8abeeec426ed54e8694728eaff3efee790b75e33e2d
+staged-emacs-lisp/frame.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/frame.el.gz	sha256=a424b330983676eea5dec092c62d50257a9aa5871c13cacd5833d8f9b604e62d
+staged-emacs-lisp/mule-cmds.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/international/mule-cmds.el.gz	sha256=04fe2ad62ca70565f6c59ad6ca02e200869942dc8c7df03fbec74244ddc98e51

@@ -688,44 +688,6 @@ integer), confirmed against host Emacs 31.1."
     (should (emacs-keymap-keymapp
              (emacs-keymap-keymap-lookup m "C-x")))))
 
-(ert-deftest emacs-keymap-define-keymap-prefix-source-shape ()
-  "define-keymap :prefix is implemented (no longer a not-implemented stub).
-The standalone `define-keymap' fallback is gated on the reader (`nl-write-file'),
-so host ERT pins the source shape; the live behaviour (the symbol's function and
-value cells become the keymap) is exercised by the standalone boot."
-  (let* ((lib (locate-library "emacs-keymap"))
-         (src (and lib (concat (file-name-sans-extension lib) ".el")))
-         (source (and src (file-readable-p src)
-                      (with-temp-buffer (insert-file-contents src)
-                                        (buffer-string)))))
-    (should source)
-    (should-not (string-match-p
-                 (regexp-quote "define-keymap :prefix is not implemented")
-                 source))
-    (dolist (needle '("(setq prefix value)"
-                      "(fset prefix m)"
-                      "(set prefix m)"))
-      (should (string-match-p (regexp-quote needle) source)))))
-
-(ert-deftest emacs-keymap-defvar-keymap-source-materializes-keymaps ()
-  "Pin the standalone `defvar-keymap' fallback used by vendored mode maps."
-  (let* ((lib (locate-library "emacs-keymap"))
-         (src (and lib (concat (file-name-sans-extension lib) ".el")))
-         (source (and src (file-readable-p src)
-                      (with-temp-buffer (insert-file-contents src)
-                                        (buffer-string)))))
-    (should source)
-    (dolist (needle '("(defun emacs-keymap--defvar-keymap-build"
-                      "(defmacro defvar-keymap"
-                      "((eq keyword :doc) (setq doc (pop defs)))"
-                      "((eq keyword :parent) (setq parent (pop defs)))"
-                      "((eq keyword :suppress) (setq suppress (pop defs)))"
-                      "(let ((map (or base (emacs-keymap-make-sparse-keymap))))"
-                      "(keymap-set map key def)"
-                      "(list 'emacs-keymap--defvar-keymap-build"
-                      "(cons 'list defs)"))
-      (should (string-match-p (regexp-quote needle) source)))))
-
 (ert-deftest emacs-keymap-keymap-set-invalid-syntax-signals ()
   (let ((m (emacs-keymap-make-sparse-keymap)))
     (should-error (emacs-keymap-keymap-set m "not a kbd" 'foo)
@@ -835,36 +797,6 @@ value cells become the keymap) is exercised by the standalone boot."
   (should-error (emacs-keymap--standalone-key-parse "C-]]")
                 :type 'emacs-keymap-bad-key)
   (should-not (emacs-keymap--standalone-key-valid-p "C-]]")))
-
-(ert-deftest emacs-keymap-read-kbd-macro-source-reclaimed-from-stub ()
-  "Regression pin for Doc 49 T49 (real-init audit round 6, form 206,
-symptom: `(require 'evil)' signalled `emacs-keymap-bad-key: (nil)').
-
-Root cause: `read-kbd-macro' is in `emacs-stub-bulk.el's bulk stub list,
-which installs a permanently nil-returning function for any symbol not
-already `fboundp' when the bulk stubs load.  `kbd' and `key-parse' are
-reclaimed from that same stub set a few lines below in this file, but
-`read-kbd-macro' previously was not, so callers going through the older
-`read-kbd-macro' name directly (e.g. evil-maps.el's three
-`(read-kbd-macro evil-toggle-key)' bindings) got nil back instead of a
-parsed key, and `(define-key MAP nil DEF)' signalled
-`emacs-keymap-bad-key' with data `(nil)' -- indistinguishable at the
-call site from a genuinely nil KEY argument.
-
-The live standalone behaviour (evil now loads past this point) is
-exercised by the require-evil boot smoke, not host ERT: the `defalias'
-below is gated behind `(fboundp 'nl-write-file)' and so never fires
-under host Emacs.  This test pins the source shape instead."
-  (let* ((lib (locate-library "emacs-keymap"))
-         (src (and lib (concat (file-name-sans-extension lib) ".el")))
-         (source (and src (file-readable-p src)
-                      (with-temp-buffer (insert-file-contents src)
-                                        (buffer-string)))))
-    (should source)
-    (should (string-match-p
-             (regexp-quote
-              "(defalias 'read-kbd-macro #'emacs-keymap--standalone-key-parse)")
-             source))))
 
 (ert-deftest emacs-keymap-standalone-key-parser-matches-host-key-parse ()
   "Parity sweep (Doc 49 T49): the standalone kbd-style fallback parser

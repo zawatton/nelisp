@@ -51,6 +51,11 @@
   (defvar mark-active nil
     "Non-nil means the mark and region are currently active in this buffer."))
 (make-variable-buffer-local 'mark-active)
+;; keyboard.c DEFVAR (keyboard.c:14134, initial value (keymap)); GNU
+;; bindings.el binds into it.
+(unless (boundp 'special-event-map)
+  (defvar special-event-map (list 'keymap)
+    "Keymap defining bindings for special events to execute at low level."))
 ;; buffer.c DEFVAR_PER_BUFFERs used by GNU files.el's visiting and
 ;; saving code: one value per buffer, nil by default.
 (unless (boundp 'buffer-file-format)

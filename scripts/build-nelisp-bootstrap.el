@@ -435,7 +435,13 @@ is relative to `nelisp-bootstrap-repo-root'."
     (sort names #'string<)))
 
 (defvar nelisp-bootstrap-late-extra-files
-  `("emacs-fileio.el"
+  `(;; GNU bindings.el's key bindings (generated, verbatim); GNU subr.el's
+    ;; global keymap tree is in the native image.
+    "emacs-bindings-gnu.el"
+    ;; GNU window.el / frame.el / mule-cmds.el / loaddefs.el global key
+    ;; bindings (generated, verbatim); those files themselves are not loaded.
+    "emacs-keys-gnu.el"
+    "emacs-fileio.el"
     "case-table.el"
     "emacs-process-events.el"
     "regi.el"
