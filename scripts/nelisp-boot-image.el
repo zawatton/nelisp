@@ -460,6 +460,9 @@ name that is already defined is not replaced."
                   (and (string-prefix-p vendor (file-name-as-directory dir))
                        (not (string-prefix-p staged dir))))
                 (nelisp-standalone--reader-tree-load-path)))
+         (vendored (mapcar #'file-name-nondirectory
+                           (directory-files-recursively
+                            (expand-file-name "vendor/emacs-lisp" root) "\\.el\\'")))
          (forms nil) (pending-defvar nil) (pending-sym nil))
     (with-temp-buffer
       (let ((coding-system-for-read 'utf-8-unix))
@@ -476,7 +479,11 @@ name that is already defined is not replaced."
                                      (cl-some (lambda (dir)
                                                 (file-exists-p
                                                  (expand-file-name (concat lib ".el") dir)))
-                                              dirs)))))
+                                              dirs)
+                                     ;; A library vendored in a subdirectory
+                                     ;; the runtime load-path does not list
+                                     ;; (e.g. vendor/emacs-lisp/org/org.el).
+                                     (member (concat lib ".el") vendored)))))
               ;; A loaddefs.el option or minor mode is `(defvar SYM VALUE DOC)'
               ;; (or a `defcustom' with :initialize) followed by `custom-autoload' and `autoload'.  GNU binds SYM at
               ;; startup whether or not the library has loaded, so keep the
@@ -486,19 +493,30 @@ name that is already defined is not replaced."
               ;; computed value is wrapped in `ignore-errors': one that needs a
               ;; function the image lacks stays unbound, as before.
               (cond
-               ((and (memq (car-safe form) '(defvar defcustom)) (cddr form))
+               ((and (memq (car-safe form) '(defvar defcustom defconst)) (cddr form))
+                (when pending-defvar (push pending-defvar forms))
                 (setq pending-defvar
                       (let ((text (buffer-substring-no-properties start (point))))
-                        (if (and (eq (car form) 'defvar)
-                                 (or (atom (nth 2 form)) (eq (car-safe (nth 2 form)) 'quote)))
+                        ;; A literal value is copied as is; anything that
+                        ;; is evaluated, a variable reference included,
+                        ;; is wrapped.
+                        (if (and (memq (car form) '(defvar defconst))
+                                 (let ((v (nth 2 form)))
+                                   (or (and (atom v)
+                                            (or (not (symbolp v)) (memq v '(nil t))
+                                                (keywordp v)))
+                                       (eq (car-safe v) 'quote))))
                             text
                           (concat "(ignore-errors " text ")")))
                       pending-sym (nth 1 form)))
                ((eq (car-safe form) 'custom-autoload)
-                (when (and pending-defvar (eq (nth 1 (cadr form)) pending-sym))
-                  (push pending-defvar forms))
+                (when pending-defvar (push pending-defvar forms))
                 (setq pending-defvar nil))
                (t
+                ;; GNU evaluates every top-level loaddefs.el defvar, not
+                ;; only those of options (e.g. `tramp-mode', which
+                ;; files.el's `directory-files-recursively' binds).
+                (when pending-defvar (push pending-defvar forms))
                 (setq pending-defvar nil)
                 (when (and present (eq (car-safe form) 'autoload))
                   (push (buffer-substring-no-properties start (point)) forms))))))
