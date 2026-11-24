@@ -49,9 +49,9 @@ final `.el' suffix with `.repl'.")
     "seq.el"
     "map.el"
     "json.el"
-    "range.el"
+    "emacs-lisp/emacs-lisp/range.el"
     "let-alist.el"
-    "thunk.el"
+    "emacs-lisp/emacs-lisp/thunk.el"
     "nl-ffi-memory.el"
     "nl-ffi-loader.el"
     "nl-ffi.el"
@@ -446,7 +446,7 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-fileio.el"
     "case-table.el"
     "emacs-process-events.el"
-    "regi.el"
+    "emacs-lisp/emacs-lisp/regi.el"
     "files-standalone-buffer.el"
     "emacs-syntax-table.el"
     "emacs-font-lock.el"
@@ -495,10 +495,8 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; purely additive -- every top-level form is
     ;; `(unless (boundp 'X) (defvar X ...))' -- so a real preload still wins.
     ;; They were written for the `nemacs-next-session.el' loader, which no
-    ;; longer exists, so the runtime-image path never got them.  That left
-    ;; `lisp-imenu-generic-expression' void, which aborts the Magit bundle at
-    ;; transient.el's top-level `cl-pushnew' onto it.  Keep vars2 ahead of
-    ;; vars3: vars3 fills only what shims/vars2/core-vars did not.
+    ;; longer exists, so the runtime-image path never got them.  Keep vars2
+    ;; ahead of vars3: vars3 fills only what shims/vars2/core-vars did not.
     "emacs-parity-vars2.el"
     "emacs-parity-vars3.el"
     ;; `char-script-table' for GNU fill.el, which reads it at load time.
@@ -623,7 +621,7 @@ These are existing vendor implementations, not local reimplementations.")
     ;; live `require' resolution.
     "emacs-lisp-31.1/vc/vc-hooks.el"
     "emacs-lisp-31.1/vc/vc-dispatcher.el"
-    "emacs-lisp-31.1/vc/vc.el"
+    "emacs-lisp/vc/vc.el"
     "emacs-lisp/man.el"
     "emacs-lisp-31.1/progmodes/xref.el"
     "emacs-lisp/replace.el"
@@ -666,8 +664,7 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/progmodes/elisp-mode.el"
     ;; S2 coverage batch 6 (2026-09-29): compile, pcomplete (shell.el's
     ;; live-`require' target), shell, ehelp (term.el's), term, woman,
-    ;; project.  All are also listed in `nelisp-bootstrap-normalized-bundle-
-    ;; files' so the `.el' bundle carries normalized text (S1.4 cold load).
+    ;; project.  Compile is carried verbatim in the .el bundle.
     ;; pcomplete.el/ehelp.el are bundled here rather than left to live
     ;; `require' because a live `require' of the raw file costs ~1.7s/~5.6s
     ;; on the standalone, several times the cost of replaying the same forms.
@@ -701,7 +698,7 @@ These are existing vendor implementations, not local reimplementations.")
     ;; loaded on top of the bundle and exercised against host Emacs before
     ;; being listed; url-vars.el was removed from the normalizer's dropped-file
     ;; list so its defvars/defcustoms survive into the REPL bundle.
-    "emacs-lisp-31.1/imenu.el"
+    "emacs-lisp/imenu.el"
     "emacs-lisp-31.1/json.el"
     "emacs-lisp-31.1/ielm.el"
     "emacs-lisp-31.1/url/url-vars.el"
@@ -1521,20 +1518,17 @@ overrides them for workflow tests."
 (defvar nelisp-bootstrap-normalized-bundle-files
   '("vendor/emacs-lisp/vc/vc-hooks.el"
     "vendor/emacs-lisp/vc/vc-dispatcher.el"
-    "vendor/emacs-lisp/vc/vc.el"
     "vendor/emacs-lisp/man.el"
     "vendor/emacs-lisp/progmodes/xref.el"
     "vendor/emacs-lisp/replace.el"
     "vendor/emacs-lisp/comint.el"
     "vendor/emacs-lisp/simple.el"
-    "vendor/emacs-lisp/progmodes/compile.el"
     "vendor/emacs-lisp/pcomplete.el"
     "vendor/emacs-lisp/shell.el"
     "vendor/emacs-lisp/ehelp.el"
     "vendor/emacs-lisp/term.el"
     "vendor/emacs-lisp/woman.el"
     "vendor/emacs-lisp/progmodes/project.el"
-    "vendor/emacs-lisp/imenu.el"
     "vendor/emacs-lisp/json.el"
     "vendor/emacs-lisp/ielm.el"
     "vendor/emacs-lisp/url/url-vars.el"
@@ -1543,7 +1537,6 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/uniquify.el"
     "vendor/emacs-lisp/dired.el"
     "vendor/emacs-lisp-31.1/button.el"
-    "vendor/emacs-lisp/imenu.el"
     "vendor/emacs-lisp/obsolete/cl.el"
     "vendor/emacs-lisp/emacs-lisp/cl-macs.el")
   "Bundle members inserted as normalized source rather than verbatim text.

@@ -2071,3 +2071,4 @@ emacs-lisp/window-x.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/window-x.
 emacs-lisp/winner.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/winner.el	sha256=5b732365868bef65e0301dec07d0826fa23c34ce84808a3dba9cdc768e8406e1
 emacs-lisp/x-dnd.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/x-dnd.el	sha256=d6879bda61910ce33c0bd2e5d35896b4f04de5cab3b2c366ff2fce5bd4009adf
 emacs-lisp/xt-mouse.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/xt-mouse.el	sha256=f34814415e6f802f3b1bed537243d3b65d4a7ec2b7d111f01f7814fb59211bec
+emacs-lisp/obsolete/cdl.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/obsolete/cdl.el	sha256=51601fbcd1e27a8ff716eebb55c9ec719cca12762797a16e5fdea8f7edf3573a
