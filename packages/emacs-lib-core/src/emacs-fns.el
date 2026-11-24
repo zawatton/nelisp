@@ -349,21 +349,21 @@ batch tests and local runtime modules."
         (nelisp--lh-req feature))
     (if (featurep feature)
         feature
-      (let* ((base (or filename (symbol-name feature)))
-             (path (if (fboundp 'emacs-load--resolve-file)
-                       (emacs-load--resolve-file base nil (not filename))
-                     (locate-file
-                      base
-                      (and (boundp 'load-path) load-path)
-                      (emacs-fns--load-candidate-suffixes
-                       base nil (not filename))
-                      #'emacs-fns--regular-file-p))))
-        (cond
-         (path
-          (emacs-fns--load-and-check-required-feature
-           feature path noerror))
-         (noerror nil)
-         (t (error "Cannot open load file: %S" feature))))))
+      (let ((base (or filename (symbol-name feature))))
+        (if (fboundp 'emacs-load--resolve-file)
+            (when (load base noerror t nil (not filename))
+              (if (featurep feature)
+                  feature
+                (error "Required feature was not provided: %S" feature)))
+          (let ((path (locate-file
+                       base (and (boundp 'load-path) load-path)
+                       (emacs-fns--load-candidate-suffixes base nil (not filename))
+                       #'emacs-fns--regular-file-p)))
+            (cond
+             (path
+              (emacs-fns--load-and-check-required-feature feature path noerror))
+             (noerror nil)
+             (t (error "Cannot open load file: %S" feature))))))))
 
   ;; Self-check (nemacs init loader reconcile, Phase 1): prove the
   ;; `require' just defined above actually shadows reader-native
