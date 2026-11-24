@@ -1160,3 +1160,6 @@ emacs-lisp/vc/ediff-vers.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/e
 emacs-lisp/wid-browse.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/wid-browse.el	sha256=9e1c1d871ace91598eb56d732a8d2460d290339a3dd2b17d9503838cc5afac41
 emacs-lisp/wid-edit.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/wid-edit.el	sha256=afa07a42aa34251f906b2e4c7b0037398a5a4fcf2355b15f26e9a60d7663584b
 emacs-lisp/xwidget.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/xwidget.el	sha256=f7e83e2d15bbf4ae08f15b1a554d4313fe5dadbb670168bf199eb8b8f3be6324
+emacs-lisp/epa-hook.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/epa-hook.el	sha256=509a79d5a5b729f6af5b7d2a38e52e1aff5bd585acba4bc75ea34e76ba879e76
+emacs-lisp/textmodes/bibtex.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/bibtex.el	sha256=3ddc94fa89f9c757347f1ed88b58635f79c4b2d2c5e99e2a6857532e69d5d777
+emacs-lisp/textmodes/table.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/table.el	sha256=5a53bdb5a5caa1c8696e4a5553cc7eaa575a15543fa609a0ae4a76e8e4b503e6
