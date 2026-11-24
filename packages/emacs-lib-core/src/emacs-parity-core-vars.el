@@ -56,6 +56,16 @@
 (unless (boundp 'special-event-map)
   (defvar special-event-map (list 'keymap)
     "Keymap defining bindings for special events to execute at low level."))
+;; lread.c DEFVAR (initial value `read'); GNU's M-x completion path
+;; (read--expression, load) binds it.
+(unless (boundp 'load-read-function)
+  (defvar load-read-function 'read
+    "Function used for reading expressions."))
+;; xdisp.c DEFVAR (global, initial value nil); GNU simple.el and
+;; find-file read it.
+(unless (boundp 'show-trailing-whitespace)
+  (defvar show-trailing-whitespace nil
+    "Non-nil means highlight trailing whitespace."))
 ;; buffer.c DEFVAR_PER_BUFFERs used by GNU files.el's visiting and
 ;; saving code: one value per buffer, nil by default.
 (unless (boundp 'buffer-file-format)

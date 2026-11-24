@@ -194,8 +194,12 @@ subsystem, which the standalone lacks (project.el calls
       (let ((re (format "^(\\(?:defmacro\\|defvar-local\\|defvar\\|defcustom\\|defconst\\|defsubst\\|defun\\) %s\\(?:[ \n]\\|$\\)\\|^(autoload '%s "
                         (regexp-quote (symbol-name name))
                         (regexp-quote (symbol-name name)))))
-        (if (not (re-search-forward re nil t))
-            (message "skip %s" name)
+        ;; Copy every top-level definition of NAME: files.el defines
+        ;; some names twice, e.g. `confirm-nonexistent-file-or-buffer' is
+        ;; both a defcustom and a defun.
+        (let ((found nil))
+         (while (re-search-forward re nil t)
+          (setq found t)
           (goto-char (match-beginning 0))
           (let ((beg (point)))
             (forward-sexp 1)
@@ -209,7 +213,8 @@ subsystem, which the standalone lacks (project.el calls
             (while (looking-at "\n+(put '[^ ]+ '[^ ]+ [^\n]*)")
               (let ((pb (progn (skip-chars-forward "\n") (point))))
                 (forward-sexp 1)
-                (push (cons (+ pb (cadr spec)) (buffer-substring pb (point))) chunks)))))))))
+                (push (cons (+ pb (cadr spec)) (buffer-substring pb (point))) chunks)))))
+         (unless found (message "skip %s" name)))))))
   ;; GNU files.el's own key bindings for its commands (top-level
   ;; define-key forms on the C-x maps and esc-map) and its
   ;; (provide 'files '(remote-wildcards)), copied verbatim.

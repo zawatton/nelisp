@@ -1205,6 +1205,17 @@ This affects commands like `switch-to-buffer' and `find-file'."
 		 (const :tag "Never" nil)
 		 (other :tag "Always" t)))
 
+(defun confirm-nonexistent-file-or-buffer ()
+  "Whether to request confirmation before visiting a new file or buffer.
+The variable `confirm-nonexistent-file-or-buffer' determines the
+return value, which may be passed as the REQUIRE-MATCH arg to
+`read-buffer' or `find-file-read-args'."
+  (cond ((eq confirm-nonexistent-file-or-buffer 'after-completion)
+	 'confirm-after-completion)
+	(confirm-nonexistent-file-or-buffer
+	 'confirm)
+	(t nil)))
+
 (defmacro minibuffer-with-setup-hook (fun &rest body)
   "Temporarily add FUN to `minibuffer-setup-hook' while executing BODY.
 
@@ -2032,6 +2043,34 @@ This has the `permanent-local' property, which takes effect if you
 make the variable buffer-local.")
 
 (put 'find-file-literally 'permanent-local t)
+
+(defun find-file-literally (filename)
+  "Visit file FILENAME with no conversion of any kind.
+Format conversion and character code conversion are both disabled,
+and multibyte characters are disabled in the resulting buffer.
+The major mode used is Fundamental mode regardless of the file name,
+and local variable specifications in the file are ignored.
+Automatic uncompression and adding a newline at the end of the
+file due to `require-final-newline' is also disabled.
+
+If Emacs already has a buffer that is visiting the file,
+this command asks you whether to visit it literally instead.
+
+In non-interactive use, the value is the buffer where the file is
+visited literally.  If the file was visited in a buffer before
+this command was invoked, it will reuse the existing buffer,
+regardless of whether it was created literally or not; however,
+the contents of that buffer will be the literal text of the file
+without any conversions.
+
+In a Lisp program, if you want to be sure of accessing a file's
+contents literally, you should create a temporary buffer and then read
+the file contents into it using `insert-file-contents-literally'."
+  (interactive
+   (list (read-file-name
+  	  "Find file literally: " nil default-directory
+  	  (confirm-nonexistent-file-or-buffer))))
+  (switch-to-buffer (find-file-noselect filename nil t)))
 
 (defun after-find-file (&optional error warn noauto
 				  _after-find-file-from-revert-buffer
