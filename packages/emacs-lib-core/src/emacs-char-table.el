@@ -865,8 +865,15 @@ identity.  This query does not modify either table."
   (eq (emacs-char-table--storage first) (emacs-char-table--storage second)))
 
 (defun emacs-char-table-ascii-vector (ct)
-  "Return CT's raw 256-slot ASCII vector (characters 0..255)."
-  (emacs-char-table--raw-ref ct emacs-char-table--i-ascii))
+  "Return CT's raw 256-slot ASCII vector (characters 0..255).
+For a retained native char-table (one the native image built, such as
+GNU `global-map's) return a fresh vector of its values for 0..255; it is
+a copy, so writes to it do not reach CT."
+  (if (emacs-char-table--native-p ct)
+      (let ((vec (make-vector 256 nil)))
+        (dotimes (i 256) (aset vec i (aref ct i)))
+        vec)
+    (emacs-char-table--raw-ref ct emacs-char-table--i-ascii)))
 
 ;;;; --- single-character access ----------------------------------------
 
@@ -1244,7 +1251,9 @@ rather than materialised."
   "Return CT's default or its value at RANGE's first character."
   (emacs-char-table--check-table ct)
   (cond
-   ((and (emacs-char-table--native-p ct) (null range)) nil)
+   ((and (emacs-char-table--native-p ct) (null range))
+    (and (fboundp 'nelisp--chartab-char-table-range)
+         (nelisp--chartab-char-table-range ct nil)))
    ((null range) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
    ((and (integerp range) (<= 0 range)
          (<= range emacs-char-table--max-char))
@@ -1399,8 +1408,13 @@ Reuse KEY for ranges, as GNU Emacs does; callers must copy retained keys."
 (defun emacs-char-table-map (function ct)
   "Call FUNCTION with (KEY VALUE) for each non-nil effective run of CT.
 Adjacent characters with `eq' values form a range, including values
-inherited from defaults and parents.  Return nil."
+inherited from defaults and parents.  Return nil.
+A retained native char-table (one the native image built, such as GNU
+`global-map's) is mapped by the core's chartab.c port."
   (emacs-char-table--check-table ct)
+  (if (and (emacs-char-table--native-p ct)
+           (fboundp 'nelisp--chartab-map-char-table))
+      (nelisp--chartab-map-char-table function ct)
   (let ((boundaries (emacs-char-table--map-boundaries ct))
         (key (cons nil nil))
         (from 0)
@@ -1424,7 +1438,7 @@ inherited from defaults and parents.  Return nil."
               (emacs-char-table--map-run function key from (1- next) value)
               (setq from next value next-value)))))
       (setq boundaries (cdr boundaries)))
-    (emacs-char-table--map-run function key from emacs-char-table--max-char value))
+    (emacs-char-table--map-run function key from emacs-char-table--max-char value)))
   nil)
 
 (defun emacs-char-table-copy (ct &optional valfn)

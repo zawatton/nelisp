@@ -562,11 +562,8 @@ old load-only stubs because Org mutates menu keymaps during mode setup."
 (when (emacs-keymap-builtins--install-function-p 'keymap-prompt)
   (defalias 'keymap-prompt #'emacs-keymap-keymap-prompt))
 
-(when (emacs-keymap-builtins--install-function-p 'map-keymap)
-  (defun map-keymap (function keymap)
-    "Call FUNCTION with each event and binding in KEYMAP and its parents."
-    (emacs-keymap-map-keymap
-     function (emacs-keymap-builtins--require-keymap keymap))))
+;; `map-keymap' is the prelude's GNU keymap.c port (char-table slots
+;; and keymap parents included); it is not replaced here.
 
 (when (emacs-keymap-builtins--install-function-p 'current-active-maps)
   (defun current-active-maps (&optional _olp position)

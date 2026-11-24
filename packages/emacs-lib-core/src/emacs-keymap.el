@@ -396,6 +396,8 @@ It accepts both the current char-table slot representation and the older
 legacy =(t . VECTOR)= shape."
   (let ((slot (emacs-keymap-full-slot keymap)))
     (cond
+     ;; A native char-table has no shared slot vector to write through.
+     ((emacs-char-table--native-p slot) nil)
      ((emacs-char-table-p slot)
       (emacs-char-table-ascii-vector slot))
      ((and (consp slot) (vectorp (cdr slot)))
