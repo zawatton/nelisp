@@ -10,8 +10,7 @@
 ;; /home/madblack-21/Cowork/Notes/dev/nelisp/lisp/nelisp-stdlib-misc.el
 ;; lines 495-580.  Keep this file in sync with that donor block.
 ;;
-;; Local delta: keep the override standalone-only in this repository, and
-;; preserve absolute-path `load' when `locate-library' does not resolve it.
+;; Local delta: keep the override standalone-only in this repository.
 
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- load/load-file implement the library artifact-cache load layer.
 ;;; Code:
@@ -4339,7 +4338,7 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
       (let ((suffixes nil)
             (qualified (file-name-directory file))
             ;; GNU's value always contains ""; a bound-but-nil value
-            ;; (the standalone runtime) would otherwise yield no suffix.
+            ;; (early bootstrap) would otherwise yield no suffix.
             (representations (or (and (boundp 'load-file-rep-suffixes)
                                       load-file-rep-suffixes)
                                  '(""))))
@@ -4375,82 +4374,277 @@ necessarily provide `file-newer-than-file-p'."
                  (time-less-p (nth 5 previous-attributes)
                               (nth 5 candidate-attributes)))))))
 
-  (defun emacs-load--find-file (file suffixes path newer)
-    "Find FILE using ordered SUFFIXES in PATH.
-NEWER chooses the newest suffix within the first matching directory;
-equal timestamps preserve suffix order, as GNU openp does."
+  (defvar emacs-load--directory-prefixes (make-hash-table :test 'equal)
+    "Absolute local directory spellings normalized for load search.
+Only the spelling is cached.  Every lookup checks the live filesystem.")
+
+  (defun emacs-load--directory-prefix (directory)
+    "Cache the local absolute DIRECTORY with exactly one trailing slash."
+    ;; The fast caller has already excluded leading // and /:.  Expand
+    ;; only when a component can change.  Hidden directories are ordinary
+    ;; path components, including the .emacs.d tree in typical load paths.
+    (let* ((expanded
+            (if (or (nelisp--string-search "//" directory 0)
+                    (nelisp--string-search "/./" directory 0)
+                    (nelisp--string-search "/../" directory 0)
+                    (eq (aref directory (1- (length directory))) ?.))
+                (expand-file-name directory "/")
+              directory))
+           (prefix (if (eq (aref expanded (1- (length expanded))) ?/)
+                       (copy-sequence expanded)
+                     (concat expanded "/"))))
+      (when (>= (hash-table-count emacs-load--directory-prefixes) 8192)
+        (clrhash emacs-load--directory-prefixes))
+      (puthash (copy-sequence directory) prefix emacs-load--directory-prefixes)
+      prefix))
+
+  (defun emacs-load--lookup-handlers-p ()
+    "Return non-nil if a filename handler can expand or find a candidate."
+    (let ((handlers file-name-handler-alist) enabled)
+      (while (and handlers (not enabled))
+        (let* ((handler (cdar handlers))
+               (operations (and (symbolp handler) (get handler 'operations))))
+          (setq enabled (or (null operations)
+                            (memq 'file-exists-p operations)
+                            (memq 'expand-file-name operations))))
+        (setq handlers (cdr handlers)))
+      enabled))
+
+  (defun emacs-load--expand-named-home (name)
+    "Expand a leading ~USER in NAME using the local account database."
+    (if (and (eq system-type 'gnu/linux)
+             (fboundp 'emacs-subr-extras--passwd)
+             (stringp name)
+             (string-prefix-p "~" name))
+        (let* ((end (or (string-search "/" name) (length name)))
+               (home (and (> end 1)
+                          (nth 5 (emacs-subr-extras--passwd
+                                  (substring name 1 end))))))
+          (if home (concat home (substring name end)) name))
+      name))
+
+  (defun emacs-load--expand-lookup-name (file directory handlers)
+    "Expand FILE in DIRECTORY, consulting HANDLERS when non-nil."
+    (let* ((directory (if (or (null directory) (equal directory ""))
+                          default-directory
+                        directory))
+           (handler (and handlers
+                         (or (find-file-name-handler file 'expand-file-name)
+                             (and (stringp directory)
+                                  (find-file-name-handler directory 'expand-file-name))))))
+      (if handler
+          (funcall handler 'expand-file-name file directory)
+        (expand-file-name (emacs-load--expand-named-home file)
+                          (emacs-load--expand-named-home directory)))))
+
+  (defun emacs-load--find-local (file suffixes directories newer mode)
+    "Search local DIRECTORIES for FILE and SUFFIXES with access MODE."
+    (let ((names (mapcar (lambda (suffix) (concat file suffix)) suffixes))
+          (prefixes emacs-load--directory-prefixes)
+          (access-mode (or mode 0))
+          found)
+      (while (and (consp directories) (not found))
+        (let* ((directory (car directories))
+               (prefix (or (gethash directory prefixes)
+                           (and (stringp directory)
+                                (string-prefix-p "/" directory)
+                                (not (string-prefix-p "//" directory))
+                                (not (string-prefix-p "/:" directory))
+                                (emacs-load--directory-prefix directory))))
+               (names-left names))
+          (if prefix
+              (while (and (consp names-left) (or newer (not found)))
+                (let* ((candidate (concat prefix (car names-left)))
+                       (access (nelisp--syscall-path-int 21 candidate access-mode)))
+                  (when (and (/= access -2) (/= access -20)
+                             (emacs-load--local-file-p candidate mode access)
+                             (or (not found)
+                                 (emacs-load--newer-file-p candidate found)))
+                    (setq found candidate)))
+                (setq names-left (cdr names-left)))
+            ;; Relative, default-directory and quoted entries still use
+            ;; the same expansion as the general search.
+            (setq found (emacs-load--search-file
+                         file suffixes (list directory) newer mode))))
+        (setq directories (cdr directories)))
+      found))
+
+  (defun emacs-load--local-file-p (file access-mode &optional access-result)
+    "Test local FILE, optionally using an ACCESS-RESULT already obtained.
+ACCESS-MODE, when non-nil, is the caller's explicit access mask."
+    (cond
+     (access-mode
+      (and (if (fboundp 'nelisp--syscall-path-int)
+               (= 0 (or access-result
+                        (nelisp--syscall-path-int 21 file access-mode)))
+             (and (file-exists-p file)
+                  (or (= 0 (logand access-mode 1)) (file-executable-p file))
+                  (or (= 0 (logand access-mode 2)) (file-writable-p file))
+                  (or (= 0 (logand access-mode 4)) (file-readable-p file))))
+           (if (fboundp 'nelisp--syscall-stat)
+               (eq (nelisp--syscall-stat file) 'file)
+             (not (file-directory-p file)))))
+     ((and (eq system-type 'gnu/linux)
+           (fboundp 'nelisp--target-arch-code)
+           (= (nelisp--target-arch-code) 0)
+           (fboundp 'nelisp--syscall-path-int))
+      ;; GNU's ordinary lookup opens the file.  F_OK cheaply eliminates
+      ;; ENOENT and ENOTDIR on the hot path, but cannot establish readability
+      ;; or rule out sockets.  Check the type on the open descriptor.
+      (let* ((stat (alloc-bytes 144 8))
+             (fd (nelisp--syscall-path-int 2 file #o2000000))) ; O_RDONLY | O_CLOEXEC
+        (when (>= fd 0)
+          (unwind-protect
+              (and (= 0 (syscall-direct 5 fd stat 0 0 0 0)) ; fstat
+                   (/= (logand (ptr-read-u64 stat 24) #o170000) #o40000))
+            (syscall-direct 3 fd 0 0 0 0 0))))) ; close
+     (t (and (file-readable-p file) (not (file-directory-p file))))))
+
+  (defun emacs-load--find-file (file suffixes path newer &optional predicate)
+    "Find FILE using ordered SUFFIXES in PATH, as GNU openp does.
+NEWER selects by mtime within the first matching directory.  PREDICATE
+can be an access mask or a function that may return `dir-ok'."
     (unless (stringp file)
       (signal 'wrong-type-argument (list 'stringp file)))
-    (let ((directories (if (file-name-absolute-p file) '(nil)
-                         (or path '(nil))))
-          (plain-name (and (fboundp 'emacs-fns--plain-relative-name-p)
-                           (emacs-fns--plain-relative-name-p file)))
-          found)
-      (while (and directories (not found))
-        (let ((remaining (or suffixes '("")))
-              (prefix (and plain-name
-                           (emacs-fns--canonical-directory (car directories)))))
-          (while (and remaining (or newer (not found)))
-            (let ((candidate
-                   (if prefix
-                       (concat prefix file (car remaining))
-                     (expand-file-name (concat file (car remaining))
-                                       (car directories)))))
-              (when (if (and prefix (fboundp 'nelisp--syscall-stat))
-                        (eq (nelisp--syscall-stat candidate) 'file)
-                      (emacs-load--regular-file-p candidate))
-                (when (or (not found)
-                          (and newer (emacs-load--newer-file-p candidate found)))
-                  (setq found candidate))))
+    (let ((tail suffixes))
+      (while (consp tail)
+        (unless (stringp (car tail))
+          (signal 'wrong-type-argument (list 'stringp (car tail))))
+        (setq tail (cdr tail))))
+    (let* ((absolute (and (file-name-absolute-p file)
+                          (not (string-prefix-p "~" file))
+                          (if path t 'literal)))
+           (directories (or path '(nil)))
+           (mask (and (integerp predicate) (>= predicate 0) predicate))
+           (filter (and predicate (not (eq predicate t)) (not mask) predicate))
+           (handlers (or filter (emacs-load--lookup-handlers-p)))
+           (suffixes (or suffixes '(""))))
+      (cond
+       ((> (or mask 0) 7) nil)
+       ((and (not handlers)
+             (eq system-type 'gnu/linux)
+             (fboundp 'nelisp--syscall-path-int)
+             (fboundp 'nelisp--string-search)
+             (listp suffixes)
+             (fboundp 'emacs-fns--plain-relative-name-p)
+             (emacs-fns--plain-relative-name-p file))
+        (emacs-load--find-local file suffixes directories newer mask))
+       (t (emacs-load--search-file
+           file suffixes directories newer mask handlers filter absolute)))))
+
+  (defun emacs-load--search-file
+      (file suffixes directories newer mode &optional handlers filter absolute)
+    "Search DIRECTORIES with full expansion and predicate handling."
+    (let (found)
+      (while (and (consp directories) (not found))
+        (let* ((directory (car directories))
+               (base (cond
+                      ((eq absolute 'literal) file)
+                      ((or (null directory) (stringp directory))
+                       (emacs-load--expand-lookup-name file directory handlers))
+                      ((file-name-absolute-p file)
+                       (emacs-load--expand-lookup-name file nil handlers))))
+               (remaining suffixes))
+          (when (and base (> (length base) 2) (string-prefix-p "/:" base))
+            (setq base (substring base 2)))
+          (while (and base (consp remaining) (or newer (not found)))
+            (let* ((candidate (concat base (car remaining)))
+                   (handler (and handlers (not mode)
+                                 (find-file-name-handler candidate 'file-exists-p))))
+              (cond
+               (filter
+                (let ((answer (funcall filter candidate)))
+                  (when (and answer
+                             (or (eq answer 'dir-ok)
+                                 (not
+                                  (let ((dir-handler
+                                         (find-file-name-handler candidate 'file-directory-p)))
+                                    (if dir-handler
+                                        (funcall dir-handler 'file-directory-p candidate)
+                                      (file-directory-p candidate))))))
+                    (setq found candidate remaining nil))))
+               (handler
+                (let ((read-handler
+                       (find-file-name-handler candidate 'file-readable-p)))
+                  (when (if read-handler
+                            (funcall read-handler 'file-readable-p candidate)
+                          (file-readable-p candidate))
+                    ;; GNU returns a handler result immediately even with NEWER.
+                    (setq found candidate remaining nil))))
+               ((and (emacs-load--local-file-p candidate mode)
+                     (or (not found)
+                         (emacs-load--newer-file-p candidate found)))
+                (setq found candidate))))
             (setq remaining (cdr remaining))))
-        (setq directories (cdr directories)))
+        (setq directories (and (not absolute) (cdr directories))))
       found))
 
   (defun emacs-load--resolve-file (file nosuffix must-suffix)
     "Resolve FILE using GNU load suffix and search-path semantics."
     (unless (string= file "")
-      (emacs-load--find-file
-       file (emacs-load--candidate-suffixes file nosuffix must-suffix)
-       (and (boundp 'load-path) load-path) load-prefer-newer)))
+      (let* ((suffixes (emacs-load--candidate-suffixes file nosuffix must-suffix))
+             (path (and (boundp 'load-path) load-path)))
+        (when (and (boundp 'load-path-filter-function)
+                   (functionp load-path-filter-function))
+          (setq path (funcall load-path-filter-function path file
+                              (unless nosuffix suffixes))))
+        (emacs-load--find-file file suffixes path load-prefer-newer))))
+
+  (defun locate-file-internal (filename path &optional suffixes predicate)
+    "Search PATH for FILENAME with ordered SUFFIXES and optional PREDICATE."
+    (emacs-load--find-file filename suffixes path nil predicate))
+
+  (defun locate-file (filename path &optional suffixes predicate)
+    "Search PATH for a readable FILENAME with optional SUFFIXES.
+A function PREDICATE replaces the readability check and may return
+`dir-ok' to accept a directory.  An integer is an access mask; the
+symbols `exists', `executable', `writable' and `readable' also specify
+access modes."
+    (when (and predicate (symbolp predicate) (not (functionp predicate)))
+      (setq predicate (list predicate)))
+    (when (and (consp predicate) (not (functionp predicate)))
+      (setq predicate (logior (if (memq 'executable predicate) 1 0)
+                              (if (memq 'writable predicate) 2 0)
+                              (if (memq 'readable predicate) 4 0))))
+    (locate-file-internal filename path suffixes predicate))
 
   (defun emacs-load--locate-library
       (library &optional nosuffix path interactive-call)
-    "Locate LIBRARY with GNU `locate-library' suffix and PATH semantics.
-Like GNU subr.el, this preserves suffix order even if `load-prefer-newer'
-is non-nil; that option controls `load' and `require'."
-    (let ((file (emacs-load--find-file
-                 library (if nosuffix
-                             (or (and (boundp 'load-file-rep-suffixes)
-                                      load-file-rep-suffixes)
-                                 '(""))
-                           (emacs-load--candidate-suffixes library nil nil))
-                 (or path (and (boundp 'load-path) load-path)) nil)))
+    "Locate LIBRARY with GNU `locate-library' suffix and PATH semantics."
+    (let ((file (locate-file
+                 library (or path (and (boundp 'load-path) load-path))
+                 (if nosuffix load-file-rep-suffixes
+                   (emacs-load--candidate-suffixes library nil nil)))))
       (when interactive-call
-        (if file (message "Library is file %s" file)
+        (if file (message "Library is file %s" (abbreviate-file-name file))
           (message "No library %s in search path" library)))
       file))
 
   (defalias 'locate-library #'emacs-load--locate-library)
 
-  (defun load (file &optional noerror _nomessage nosuffix must-suffix)
+  (defun load (file &optional noerror nomessage nosuffix must-suffix)
     "Resolve FILE through `load-path' and execute it."
     (unless (stringp file)
       (signal 'wrong-type-argument (list 'stringp file)))
-    (let* ((absolute-p
-            (and (stringp file)
-                 (> (length file) 0)
-                 (or (and (fboundp 'file-name-absolute-p)
-                          (file-name-absolute-p file))
-                     (= (aref file 0) ?/))))
-           (resolved (emacs-load--resolve-file file nosuffix must-suffix)))
-      (cond
-       (resolved
-        (nelisp--load-resolved-file resolved noerror))
-       (absolute-p
-        (nelisp--load-resolved-file (expand-file-name file) noerror))
-       (noerror nil)
-       (t
-        (signal 'file-error (list "Cannot open load file" file))))))
+    (let ((handler (find-file-name-handler file 'load)))
+      (if handler
+          (funcall handler 'load file noerror nomessage nosuffix must-suffix)
+        (let* ((file (if noerror
+                         (condition-case nil (substitute-in-file-name file)
+                           (error nil))
+                       (substitute-in-file-name file)))
+               (resolved (and file
+                              (emacs-load--resolve-file file nosuffix must-suffix))))
+          (cond
+           (resolved
+            (let ((handler (and (find-file-name-handler resolved 'file-exists-p)
+                                (find-file-name-handler resolved
+                                                        (if (equal file resolved) 'load t)))))
+              (if handler
+                  (funcall handler 'load resolved noerror nomessage t)
+                (nelisp--load-resolved-file resolved noerror))))
+           (noerror nil)
+           (t (signal 'file-error (list "Cannot open load file" file))))))))
 
 (defun load-file (file)
   "Execute exactly FILE after absolute-name expansion.
