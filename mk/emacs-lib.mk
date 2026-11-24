@@ -2301,7 +2301,11 @@ bake-org-runtime-dump:
 # Org image smoke: runs the same probe on the baked flat dump (the fast path)
 # and, as a control, on GNU Emacs.  Each prints ORG-LOAD / ORG-OUTLINE /
 # ORG-EXPORT / ORG-AGENDA PASS lines.
-org-image-smoke: bake-org-runtime-dump
+# Bakes the dump only when it is missing (bake-org-runtime-dump itself always rebakes).
+$(NEMACS_ORG_RUNTIME_DUMP):
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) bake-org-runtime-dump
+
+org-image-smoke: $(NEMACS_ORG_RUNTIME_DUMP)
 	test -x "$(NELISP_BIN)"
 	@out="$$(./tools/run-with-deadline.sh $(NEMACS_ORG_RUNTIME_BAKE_TIMEOUT) --label org-image -- env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 		"$(NELISP_BIN)" --cold-load-from "$(abspath $(NEMACS_ORG_RUNTIME_DUMP))" --eval \
