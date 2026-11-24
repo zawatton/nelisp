@@ -2474,61 +2474,6 @@ image startup."
     (provide 'map-ynp))
   t)
 
-(defun nemacs-runtime-image-preload--install-charprop-core ()
-  "Install the lightweight `charprop' property surface without source `load'."
-  (unless (featurep 'charprop)
-    (unless (boundp 'charprop--registry)
-      (defvar charprop--registry nil))
-    (unless (fboundp 'define-char-code-property)
-      (fset 'define-char-code-property
-            (lambda (property table &optional docstring)
-              (let ((entry (assq property charprop--registry)))
-                (if entry
-                    (setcdr entry (list table docstring nil))
-                  (push (list property table docstring nil)
-                        charprop--registry)))
-              property)))
-    (unless (fboundp 'get-char-code-property)
-      (fset 'get-char-code-property
-            (lambda (char property)
-              (let ((entry (assq property charprop--registry)))
-                (when entry
-                  (let ((table (cadr entry)))
-                    (cond
-                     ((hash-table-p table) (gethash char table))
-                     ((and (vectorp table) (< char (length table)))
-                      (aref table char))
-                     ((consp table) (cdr (assq char table)))
-                     (t nil))))))))
-    (unless (fboundp 'put-char-code-property)
-      (fset 'put-char-code-property
-            (lambda (char property value)
-              (let ((entry (assq property charprop--registry)))
-                (unless entry
-                  (define-char-code-property property nil nil)
-                  (setq entry (assq property charprop--registry)))
-                (let ((cell (assq char (nth 3 entry))))
-                  (if cell
-                      (setcdr cell value)
-                    (setcar (nthcdr 3 entry)
-                            (cons (cons char value) (nth 3 entry))))))
-              value)))
-    (unless (fboundp 'unicode-property-table-internal)
-      (fset 'unicode-property-table-internal
-            (lambda (property)
-              (let ((entry (assq property charprop--registry)))
-                (and entry (not (stringp (cadr entry))) (cadr entry))))))
-    (unless (fboundp 'char-code-property-description)
-      (fset 'char-code-property-description
-            (lambda (_property value)
-              (cond
-               ((null value) nil)
-               ((symbolp value) (symbol-name value))
-               ((stringp value) value)
-               (t (format "%S" value))))))
-    (provide 'charprop))
-  t)
-
 (defun nemacs-runtime-image-preload--install-charscript-core ()
   "Install the lightweight `charscript' table surface without source `load'."
   (unless (featurep 'charscript)
@@ -2648,10 +2593,10 @@ image startup."
   t)
 
 (defun nemacs-runtime-image-preload--install-utility-i18n-core ()
-  "Install lightweight utility/i18n vendor-core surfaces without source load."
+  "Install utility/i18n surfaces and load the generated Unicode registry."
   (nemacs-runtime-image-preload--install-hex-util-core)
   (nemacs-runtime-image-preload--install-map-ynp-core)
-  (nemacs-runtime-image-preload--install-charprop-core)
+  (require 'charprop)
   (nemacs-runtime-image-preload--install-charscript-core)
   (nemacs-runtime-image-preload--install-emoji-labels-core)
   (nemacs-runtime-image-preload--install-iso-transl-core)

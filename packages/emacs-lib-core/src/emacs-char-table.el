@@ -448,46 +448,74 @@ The private caller supplies valid ordered character bounds."
         (aref (aref cache 1) char)
       cache)))
 
-(defun emacs-char-table--owner-overlay-range (table from to value)
-  "Replace the sparse view of TABLE's FROM..TO span with VALUE."
-  (let ((ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
-        (result nil)
-        (inserted nil)
-        (replacement (cons (cons from to) value)))
-    (if (or (null ranges)
-            (> from (cdr (car (car ranges)))))
-        ;; Owned views are descending and nonoverlapping.  A new high span
-        ;; can be prepended without scanning the existing ranges.
-        (when value
-          (emacs-char-table--raw-set
-           table emacs-char-table--i-ranges (cons replacement ranges)))
-      ;; Preserve untouched entries exactly.  Split only entries intersecting
-      ;; the replacement and build the result in descending coordinate order.
-      (dolist (entry ranges)
-        (let* ((bounds (car entry))
-               (lo (car bounds))
-               (hi (cdr bounds))
-               (old (cdr entry)))
-          (cond
-           ((> lo to)
-            (push entry result))
-           ((< hi from)
-            (unless inserted
-              (when value (push replacement result))
-              (setq inserted t))
-            (push entry result))
-           (t
-            (when (> hi to)
-              (push (cons (cons (1+ to) hi) old) result))
-            (unless inserted
-              (when value (push replacement result))
-              (setq inserted t))
-            (when (< lo from)
-                   (push (cons (cons lo (1- from)) old) result))))))
-      (unless inserted
-        (when value (push replacement result)))
-      (emacs-char-table--raw-set table emacs-char-table--i-ranges
-                                 (nreverse result)))))
+;; An owned table's topology root is its only storage above the ASCII
+;; slots.  Its `emacs-char-table--i-ranges' slot is a derived view, built on
+;; demand by `emacs-char-table--ranges'; a write only marks it stale.  Keeping
+;; the view current on every write rescanned the whole list and made
+;; scattered writes quadratic.  The marker is an interned private symbol (it
+;; survives a dump); a reader that bypasses the accessor fails on it loudly.
+(defconst emacs-char-table--stale-ranges 'emacs-char-table--stale-ranges
+  "Marker in an owned table's ranges slot: rebuild it from the topology.")
+
+(defun emacs-char-table--topology-runs (root)
+  "Return ROOT's non-nil runs above the ASCII slots as a ranges view.
+The list holds ((FROM . TO) . VALUE) entries, descending and
+nonoverlapping, adjacent `eq' values merged; one walk over ROOT's nodes."
+  (let* ((lo emacs-char-table--ascii-size)
+         (span-3 emacs-char-table--topology-level-3-size)
+         (span-2 (* emacs-char-table--topology-level-2-size span-3))
+         (span-1 (* emacs-char-table--topology-level-1-size span-2))
+         ;; Pending run: (FROM . VALUE); RESULT collects closed runs.
+         (state (vector nil nil nil))
+         (emit (lambda (from value)
+                 (unless (and (aref state 0) (eq value (aref state 1)))
+                   (when (and (aref state 0) (aref state 1))
+                     (aset state 2 (cons (cons (cons (aref state 0) (1- from))
+                                               (aref state 1))
+                                         (aref state 2))))
+                   (aset state 0 from)
+                   (aset state 1 value))))
+         (i1 0))
+    (while (< i1 (length root))
+      (let ((l1 (aref root i1)) (s1 (* i1 span-1)))
+        (if (not (emacs-char-table--topology-node-p l1))
+            (funcall emit (max s1 lo) l1)
+          (let ((c1 (aref l1 1)) (i2 0))
+            (while (< i2 (length c1))
+              (let ((l2 (aref c1 i2)) (s2 (+ s1 (* i2 span-2))))
+                (if (not (emacs-char-table--topology-node-p l2))
+                    (funcall emit (max s2 lo) l2)
+                  (let ((c2 (aref l2 1)) (i3 0))
+                    (while (< i3 (length c2))
+                      (let ((l3 (aref c2 i3)) (s3 (+ s2 (* i3 span-3))))
+                        (cond
+                         ((not (emacs-char-table--topology-node-p l3))
+                          (when (> (+ s3 span-3) lo)
+                            (funcall emit (max s3 lo) l3)))
+                         ((> (+ s3 span-3) lo)
+                          (let ((c3 (aref l3 1))
+                                (i4 (max 0 (- lo s3))))
+                            (while (< i4 (length c3))
+                              (funcall emit (+ s3 i4) (aref c3 i4))
+                              (setq i4 (1+ i4)))))))
+                      (setq i3 (1+ i3))))))
+              (setq i2 (1+ i2))))))
+      (setq i1 (1+ i1)))
+    (when (and (aref state 0) (aref state 1))
+      (aset state 2 (cons (cons (cons (aref state 0) emacs-char-table--max-char)
+                                (aref state 1))
+                          (aref state 2))))
+    (aref state 2)))
+
+(defun emacs-char-table--ranges (table)
+  "Return TABLE's ranges view, rebuilding an owned table's stale view."
+  (let ((ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
+    (if (eq ranges emacs-char-table--stale-ranges)
+        (let ((fresh (emacs-char-table--topology-runs
+                      (emacs-char-table--owner-root table))))
+          (emacs-char-table--raw-set table emacs-char-table--i-ranges fresh)
+          fresh)
+      ranges)))
 
 (defun emacs-char-table--owner-publish-span (table from to)
   "Publish the already-written raw span FROM..TO into compatibility views."
@@ -502,10 +530,8 @@ The private caller supplies valid ordered character bounds."
                                          lo)))
       (setq lo (1+ lo)))
     (when (> to 255)
-      (emacs-char-table--owner-overlay-range table (max 256 from) to
-                                             (emacs-char-table--topology-ref
-                                              (emacs-char-table--owner-root table)
-                                              (max 256 from))))))
+      (emacs-char-table--raw-set table emacs-char-table--i-ranges
+                                 emacs-char-table--stale-ranges))))
 
 (defun emacs-char-table--owner-refresh-ascii-cache (table)
   "Refresh TABLE's raw ASCII cache alias and publish its complete view."
@@ -588,9 +614,20 @@ Mutations and compatibility views follow GNU's recursive slot order."
     (emacs-char-table--owner-refresh-ascii-cache table)
     nil))
 
+(defun emacs-char-table--unicode-property-p (table)
+  "Return non-nil for an owned table with the GNU Unicode layout."
+  (and (vectorp table)
+       (eq (emacs-char-table--raw-ref table emacs-char-table--i-subtype)
+           'char-code-property-table)
+       (emacs-char-table--owned-p table)
+       (eq (emacs-char-table-extra-slot-count table) 5)
+       (fboundp 'emacs-cc-chartab-1--uncompress)))
+
 (defun emacs-char-table--owner-set-char (table char value)
   "Apply GNU's single-character write path to owned TABLE."
   (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
+  (when (and (>= char 128) (emacs-char-table--unicode-property-p table))
+    (emacs-cc-chartab-1--uncompress-at table char))
   (let ((cache (emacs-char-table--owner-cache table)))
     (if (and (< char 128) (emacs-char-table--topology-node-p cache))
         (aset (emacs-char-table--topology-node-contents cache) char value)
@@ -612,6 +649,11 @@ Mutations and compatibility views follow GNU's recursive slot order."
       (emacs-char-table--owner-refresh-ascii-cache table))
     value)
    (t
+    (when (emacs-char-table--unicode-property-p table)
+      (unless (= (logand from 127) 0)
+        (emacs-cc-chartab-1--uncompress-at table from))
+      (unless (= (logand to 127) 127)
+        (emacs-cc-chartab-1--uncompress-at table to)))
     (emacs-char-table--topology-set-range
      (emacs-char-table--owner-root table) from to value)
     (when (< from 128)
@@ -636,11 +678,9 @@ Mutations and compatibility views follow GNU's recursive slot order."
      copy emacs-char-table--i-ascii
      (vconcat (emacs-char-table--topology-copy-leaf-span root 0)
               (emacs-char-table--topology-copy-leaf-span root 128)))
+    ;; The copied topology is the storage; derive the view from it on demand.
     (emacs-char-table--raw-set
-     copy emacs-char-table--i-ranges
-     (mapcar (lambda (entry)
-               (cons (cons (car (car entry)) (cdr (car entry))) (cdr entry)))
-             (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
+     copy emacs-char-table--i-ranges emacs-char-table--stale-ranges)
     (emacs-char-table--raw-set
      copy emacs-char-table--i-owner-state
      (emacs-char-table--owner-state-create
@@ -969,11 +1009,16 @@ declines to `emacs-char-table-aref' and then `emacs-char-table-ref-slow'
                    (emacs-char-table--raw-ref
                     (emacs-char-table--raw-ref ct emacs-char-table--i-ascii)
                     char))))))
+      (when (and (>= char 128) (stringp v)
+                 (emacs-char-table--unicode-property-p ct))
+        (setq v (emacs-cc-chartab-1--uncompress ct char v)))
       (if v v (emacs-char-table--fallback ct char))))
    ((and (integerp char) (>= char emacs-char-table--ascii-size)
          (emacs-char-table--owned-p ct))
     (let ((v (emacs-char-table--topology-ref
               (emacs-char-table--owner-root ct) char)))
+      (when (and (stringp v) (emacs-char-table--unicode-property-p ct))
+        (setq v (emacs-cc-chartab-1--uncompress ct char v)))
       (if v v (emacs-char-table--fallback ct char))))
    (t
     (let ((v (emacs-char-table--range-lookup ct char)))
@@ -1378,7 +1423,7 @@ character space is never enumerated."
         (table ct))
     (while table
       (let* ((vec (emacs-char-table--raw-ref table emacs-char-table--i-ascii))
-             (ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges))
+             (ranges (emacs-char-table--ranges table))
              ;; gnu562: resolve the storage once and read it with the same
              ;; primitive `emacs-char-table--raw-ref' would use per slot
              ;; (two of its calls per slot made an empty table's map cost
@@ -1407,14 +1452,18 @@ character space is never enumerated."
               (emacs-char-table--raw-ref table emacs-char-table--i-parent))))
     (sort boundaries #'<)))
 
-(defun emacs-char-table--map-run (function key from to value)
+(defun emacs-char-table--map-run (function key from to value unicode-values)
   "Call FUNCTION for a non-nil run FROM..TO with VALUE.
-Reuse KEY for ranges, as GNU Emacs does; callers must copy retained keys."
-  (if (= from to)
-      (when value (funcall function from value))
-    (setcar key from)
-    (setcdr key to)
-    (when value (funcall function key value))))
+Reuse KEY for ranges, as GNU Emacs does; callers must copy retained keys.
+If UNICODE-VALUES is non-nil, decode VALUE before passing it to FUNCTION."
+  (let ((decoded (if (and value unicode-values)
+                     (emacs-cc-chartab-1--decode unicode-values value)
+                   value)))
+    (if (= from to)
+        (when value (funcall function from decoded))
+      (setcar key from)
+      (setcdr key to)
+      (when value (funcall function key decoded)))))
 
 (defun emacs-char-table-map (function ct)
   "Call FUNCTION with (KEY VALUE) for each non-nil effective run of CT.
@@ -1426,7 +1475,9 @@ A retained native char-table (one the native image built, such as GNU
   (if (and (emacs-char-table--native-p ct)
            (fboundp 'nelisp--chartab-map-char-table))
       (nelisp--chartab-map-char-table function ct)
-  (let ((boundaries (emacs-char-table--map-boundaries ct))
+  (let ((unicode-values (when (emacs-char-table--unicode-property-p ct)
+                          (emacs-cc-chartab-1--prepare-map ct)))
+        (boundaries (emacs-char-table--map-boundaries ct))
         (key (cons nil nil))
         (from 0)
         ;; GNU seeds the pending run from the first stored slot or parent,
@@ -1446,10 +1497,12 @@ A retained native char-table (one the native image built, such as GNU
         (when (and (>= next from) (<= next emacs-char-table--max-char))
           (let ((next-value (emacs-char-table-ref ct next)))
             (unless (eq value next-value)
-              (emacs-char-table--map-run function key from (1- next) value)
+              (emacs-char-table--map-run function key from (1- next) value
+                                        unicode-values)
               (setq from next value next-value)))))
       (setq boundaries (cdr boundaries)))
-    (emacs-char-table--map-run function key from emacs-char-table--max-char value)))
+    (emacs-char-table--map-run function key from emacs-char-table--max-char value
+                              unicode-values)))
   nil)
 
 (defun emacs-char-table-copy (ct &optional valfn)

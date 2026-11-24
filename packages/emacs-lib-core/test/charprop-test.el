@@ -1,61 +1,38 @@
-;;; charprop-test.el --- tests for lightweight charprop facade  -*- lexical-binding: t; -*-
-
-;; Copyright (C) 2026 zawatton + Claude
+;;; charprop-test.el --- Unicode property registry tests -*- lexical-binding: t; -*-
 
 ;;; Code:
 
 (require 'nemacs-test-paths
          (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
                            (file-name-directory (or load-file-name buffer-file-name))))
-
 (require 'ert)
 
-(load (nemacs-test-paths-source "charprop.el")
-      nil t)
+(load (nemacs-test-paths-source "charprop.el") nil t)
 
-(ert-deftest charprop-test/feature-loads ()
+(ert-deftest charprop-test/generated-registry ()
   (should (featurep 'charprop))
-  (should (fboundp 'charprop--define-char-code-property))
-  (should (assq 'bidi-class charprop--registry))
-  (should (assq 'lowercase charprop--registry)))
+  (should (get 'bidi-class 'char-code-property-documentation))
+  (should (equal (get-char-code-property ?é 'decomposition) '(101 769))))
 
-(ert-deftest charprop-test/lazy-tables-do-not-force-unicode-loads ()
-  (should (stringp (nth 1 (assq 'name charprop--registry))))
-  (should-not (charprop--unicode-property-table-internal 'name))
-  (should-not (charprop--get-char-code-property ?A 'name)))
+(ert-deftest charprop-test/lazy-table ()
+  (let ((char-code-property-alist nil))
+    (define-char-code-property 'general-category "uni-category.el")
+    (should (equal (cdr (assq 'general-category char-code-property-alist))
+                   "uni-category.el"))
+    (should (eq (get-char-code-property ?A 'general-category) 'Lu))
+    (should (char-table-p (cdr (assq 'general-category char-code-property-alist))))))
 
-(ert-deftest charprop-test/define-and-get-vector-property ()
-  (let ((table (make-vector 128 nil)))
-    (aset table ?A 'letter-a)
-    (charprop--define-char-code-property 'nelisp-test-vector table
-                                         "test vector property")
-    (should (eq (charprop--get-char-code-property ?A 'nelisp-test-vector)
-                'letter-a))
-    (should (eq (charprop--unicode-property-table-internal
-                 'nelisp-test-vector)
-                table))))
+(ert-deftest charprop-test/anonymous-property ()
+  (unwind-protect
+      (progn
+        (should (eq (put-char-code-property ?x 'charprop-test-property 'example)
+                    'example))
+        (should (eq (get-char-code-property ?x 'charprop-test-property) 'example)))
+    (put-char-code-property ?x 'charprop-test-property nil)))
 
-(ert-deftest charprop-test/put-overrides-lazy-property ()
-  (charprop--define-char-code-property 'nelisp-test-lazy "uni-test.el"
-                                       "test lazy property")
-  (should-not (charprop--get-char-code-property ?x 'nelisp-test-lazy))
-  (should (eq (charprop--put-char-code-property ?x 'nelisp-test-lazy
-                                                'override)
-              'override))
-  (should (eq (charprop--get-char-code-property ?x 'nelisp-test-lazy)
-              'override))
-  (should-not (charprop--unicode-property-table-internal 'nelisp-test-lazy)))
-
-(ert-deftest charprop-test/description-is-lightweight ()
-  (should (equal (charprop--char-code-property-description
-                  'general-category 'Lu)
-                 "Lu"))
-  (should (equal (charprop--char-code-property-description
-                  'numeric-value 42)
-                 "42"))
-  (should-not (charprop--char-code-property-description
-               'name nil)))
+(ert-deftest charprop-test/description ()
+  (should (equal (char-code-property-description 'general-category 'Lu)
+                 "Letter, Uppercase"))
+  (should-not (char-code-property-description 'numeric-value 42)))
 
 (provide 'charprop-test)
-
-;;; charprop-test.el ends here
