@@ -89,27 +89,6 @@
                         (file-name-directory (expand-file-name path)))
                        default-directory))))))
 
-(ert-deftest find-file-dispatches-major-mode-via-auto-mode-alist ()
-  (emacs-fileio-test--with-fresh-world
-    (let ((calls nil))
-      (cl-letf (((symbol-function 'org-mode)
-                 (lambda ()
-                   (interactive)
-                   (setq major-mode 'org-mode
-                         mode-name "Org")
-                   (push 'org-mode calls)
-                   nil)))
-        (let ((path (emacs-fileio-test--tmp-path "notes.org")))
-          (unwind-protect
-              (progn
-                (with-temp-file path
-                  (insert "* heading\n"))
-                (find-file path)
-                (should (eq 'org-mode major-mode))
-                (should (equal '(org-mode) calls)))
-            (when (file-exists-p path)
-              (delete-file path))))))))
-
 (ert-deftest find-file-noselect-does-not-switch-to-buffer ()
   (emacs-fileio-test--with-fresh-world
     (emacs-fileio-test--with-temp-file path "stay"
@@ -149,18 +128,6 @@
                          (insert-file-contents path)
                          (buffer-string))))))))
 
-(ert-deftest save-buffer-no-op-when-not-modified ()
-  (emacs-fileio-test--with-fresh-world
-    (emacs-fileio-test--with-temp-file path "steady"
-      (let ((messages nil))
-        (cl-letf (((symbol-function 'message)
-                   (lambda (fmt &rest args)
-                     (push (apply #'format fmt args) messages))))
-          (find-file path)
-          (should-not (buffer-modified-p))
-          (should-not (save-buffer))
-          (should (equal '("(No changes need to be saved)") messages)))))))
-
 (ert-deftest write-file-changes-buffer-file-name-and-saves ()
   (emacs-fileio-test--with-fresh-world
     (let ((src (emacs-fileio-test--tmp-path "src.txt"))
@@ -185,15 +152,6 @@
           (delete-file src))
         (when (file-exists-p dst)
           (delete-file dst))))))
-
-(ert-deftest emacs-fileio-global-key-bindings-installed ()
-  ;; Re-install bindings explicitly so this test is robust against other
-  ;; modules' fixtures (e.g. *--with-fresh-world*) that swap current-global-map.
-  (emacs-fileio--ensure-global-bindings)
-  (let ((map (current-global-map)))
-    (should (eq #'find-file (lookup-key map (kbd "C-x C-f"))))
-    (should (eq #'save-buffer (lookup-key map (kbd "C-x C-s"))))
-    (should (eq #'write-file (lookup-key map (kbd "C-x C-w"))))))
 
 (ert-deftest emacs-fileio-switch-rename-kill-buffer-runtime ()
   (emacs-fileio-test--with-fresh-world

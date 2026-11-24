@@ -454,9 +454,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-comint.el"
     "emacs-replace.el"
     "emacs-ielm.el"
-    ;; GNU files.el directory-local-variables definitions (generated, verbatim)
-    ;; for project.el and anything calling `hack-dir-local-variables'.
-    "emacs-files-gnu.el"
     ;; GNU mule.el file-coding definitions (generated, verbatim): the
     ;; coding detection `insert-file-contents' handlers such as jka-compr use.
     "emacs-mule-gnu.el"
@@ -511,6 +508,11 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU C-core coverage (tools/ai/c-core-progress.org): every
     ;; src/emacs-cc-*.el unit, in name order.
     ,@(nelisp-bootstrap--c-core-unit-files)
+    ;; GNU files.el definitions (generated, verbatim): directory-local
+    ;; variables, file visiting, saving and backups.  After the C core, as
+    ;; in GNU loadup (some defcustom defaults call C primitives such as
+    ;; `secure-hash-algorithms').
+    "emacs-files-gnu.el"
     ;; GNU loadup.el loads jka-cmpr-hook after files.el and the C core; its
     ;; last form turns `auto-compression-mode' on, which reads files.el's
     ;; `file-name-version-regexp' (vars2) and coding.c's

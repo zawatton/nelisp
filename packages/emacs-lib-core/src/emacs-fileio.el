@@ -299,16 +299,6 @@ Thin helper so callers do not need to know the builtins' state table."
         name
       " *find-file*")))
 
-(defun emacs-fileio--ensure-global-bindings ()
-  "Install the M1 file I/O bindings into the global map."
-  (let ((map (or (and (fboundp 'current-global-map) (current-global-map))
-                 (and (fboundp 'make-sparse-keymap) (make-sparse-keymap)))))
-    (when (and map (fboundp 'use-global-map))
-      (use-global-map map)
-      (define-key map (kbd "C-x C-f") #'find-file)
-      (define-key map (kbd "C-x C-s") #'save-buffer)
-      (define-key map (kbd "C-x C-w") #'write-file))))
-
 ;;;###autoload
 (defun switch-to-buffer (buffer-or-name &optional norecord force-same-window)
   "Make BUFFER-OR-NAME current and return the selected buffer."
@@ -634,68 +624,8 @@ FILES-ONLY limits rows to buffers visiting files."
       buffer)))
 
 
-;;;###autoload
-(defun find-file (filename &optional wildcards)
-  "Visit FILENAME in the current window and return its buffer."
-  (interactive
-   (list (read-file-name "Find file: " default-directory nil nil)
-         nil))
-  (ignore wildcards)
-  (let ((buf (find-file-noselect filename)))
-    (if (with-current-buffer buf (derived-mode-p 'dired-mode))
-        ;; A Dired buffer owns its major mode and buffer-local state;
-        ;; re-activating a file mode here would wipe `dired-subdir-alist'.
-        (set-buffer buf)
-      (emacs-fileio--apply-buffer-state buf))
-    buf))
-
-;;;###autoload
-(defun save-buffer (&optional arg)
-  "Write the current buffer to its visited file.
-When the buffer is unmodified, emit a message and do nothing."
-  (interactive "P")
-  (ignore arg)
-  (let* ((buffer (current-buffer))
-         (native-p (emacs-fileio-native-public-buffer-p buffer))
-         (filename (if native-p
-                       (emacs-fileio--direct-buffer-file-name buffer)
-                     (buffer-file-name))))
-    (cond
-     ((null filename)
-      (signal 'error '("save-buffer: buffer is not visiting a file")))
-     ((not (buffer-modified-p))
-      (message "(No changes need to be saved)")
-      nil)
-     (t
-      (if native-p
-          (progn
-            (emacs-fileio-save-buffer-direct :buffer (current-buffer))
-            nil)
-        (write-region (point-min) (point-max) filename nil nil)
-        (set-buffer-modified-p nil)
-        filename)))))
-
-;;;###autoload
-(defun write-file (filename &optional confirm)
-  "Write the current buffer to FILENAME and visit it."
-  (interactive
-   (list (read-file-name "Write file: "
-                         (or default-directory "/")
-                         nil nil
-                         (buffer-name))))
-  (ignore confirm)
-  (let ((abs (expand-file-name filename))
-        (buf (current-buffer)))
-    (set-visited-file-name abs)
-    (emacs-fileio--remember-default-directory buf abs)
-    (setq default-directory
-          (emacs-fileio--buffer-default-directory buf))
-    (emacs-fileio--activate-major-mode buf abs)
-    (set-buffer-modified-p t)
-    (save-buffer)
-    abs))
-
-(emacs-fileio--ensure-global-bindings)
+;; `find-file', `save-buffer' and `write-file' and their C-x bindings come
+;; from GNU files.el (emacs-files-gnu.el).
 
 ;; Stock `files.el' surface.  The only other copy in this tree lives in
 ;; `src/package.el', which the bootstrap bundle does not carry, so the

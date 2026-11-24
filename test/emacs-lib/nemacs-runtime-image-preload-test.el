@@ -19,20 +19,7 @@
   nemacs-test-paths-repo-root)
 
 (defconst nemacs-runtime-image-preload-test--direct-install-functions
-  '(buffer-file-name
-    set-visited-file-name
-    find-file
-    find-file-noselect
-    find-file-read-only
-    find-alternate-file
-    find-file-other-window
-    find-file-other-frame
-    save-buffer
-    save-some-buffers
-    write-file
-    insert-file
-    list-directory
-    help-mode
+  '(help-mode
     help-go-back
     help-go-forward
     describe-key
@@ -271,18 +258,7 @@
   "Public command surface installed directly into vendor-core images.")
 
 (defconst nemacs-runtime-image-preload-test--direct-install-variables
-  '(ctl-x-map
-    ctl-x-4-map
-    ctl-x-5-map
-    files--current-file-name
-    files--buffer-file-names
-    files--buffer-string
-    files--buffer-strings
-    files--point
-    files--buffer-points
-    files--buffer-modified-p
-    files--buffer-modified-flags
-    emacs-process--fallback-tag
+  '(emacs-process--fallback-tag
     emacs-process--fallback-processes
     emacs-process--fallback-next-pid
     emacs-process--native-process-metadata
@@ -427,7 +403,6 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload-vendor-core-extension
                  nemacs-runtime-image-preload--install-file-command
                  nemacs-runtime-image-preload--function-cell-live-p
-                 nemacs-runtime-image-preload--install-files-core
                  nemacs-runtime-image-preload--install-help-command
                  nemacs-runtime-image-preload--install-help-core
                  nemacs-runtime-image-preload--install-module-command
@@ -607,7 +582,6 @@ The preload installers only `require' it when it is not yet a feature."
 
 (ert-deftest nemacs-runtime-image-preload-test/direct-install-creates-daily-core-surface ()
   (nemacs-runtime-image-preload-test--with-clean-direct-install
-    (should-not (featurep 'files))
     (should-not (featurep 'dired))
     (should-not (featurep 'help-mode))
     (should-not (featurep 'help-fns))
@@ -620,7 +594,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should-not (featurep 'emacs-frame-builtins))
     (should-not (featurep 'tab-bar))
     (should-not (featurep 'tab-line))
-    (should (nemacs-runtime-image-preload--install-files-core))
     (should (nemacs-runtime-image-preload--install-help-core))
     (should (nemacs-runtime-image-preload--install-elisp-core))
     (should (nemacs-runtime-image-preload--install-ielm-core))
@@ -630,7 +603,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should (nemacs-runtime-image-preload--install-tab-core))
     (should (nemacs-runtime-image-preload--install-support-core))
     (should (nemacs-runtime-image-preload--install-utility-i18n-core))
-    (should (featurep 'files))
     ;; The dired installer is a no-op now: genuine GNU dired.el comes from
     ;; the bootstrap bundle, not from a preload facade.
     (should-not (featurep 'dired))
@@ -752,18 +724,6 @@ The preload installers only `require' it when it is not yet a feature."
          (point-min) (point-max))
         (should (equal (nreverse nemacs-runtime-image-preload-test--seen)
                        '("foo" "food")))))
-    (should (equal (symbol-function 'find-file)
-                   '(lambda (&rest args)
-                      (require 'files-standalone-buffer)
-                      (apply 'files-standalone-find-file args))))
-    (should (equal (symbol-function 'buffer-file-name)
-                   '(lambda (&rest args)
-                      (require 'files-standalone-buffer)
-                      (apply 'files--buffer-file-name args))))
-    (should (equal (symbol-function 'set-visited-file-name)
-                   '(lambda (&rest args)
-                      (require 'files-standalone-buffer)
-                      (apply 'files--set-visited-file-name args))))
     (should (equal (symbol-function 'describe-key)
                    '(lambda (&rest args)
                       (require 'emacs-help)
@@ -1035,197 +995,6 @@ The preload installers only `require' it when it is not yet a feature."
         (should (nemacs-runtime-image-preload-vendor-core-extension))
         (should (equal (mapcar #'car (vendor-core-smoke-batch))
                        (mapcar #'car vendor-core-smoke-candidates))))))))
-
-(ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-supports-real-file-edit-flow ()
-  "Exercise direct preload against an actual read/edit/write path."
-  (let* ((source-functions '(files--buffer-file-name
-                             files--buffer-key
-                             files--buffer-file-cell
-                             files--buffer-state-cell
-                             files--buffer-live-or-unknown-p
-                             files--live-buffer-cells
-                             files--prune-dead-buffer-state
-                             files--set-buffer-state-cell
-                             files--buffer-string-value
-                             files--set-buffer-string-value
-                             files--buffer-point-value
-                             files--set-buffer-point-value
-                             files--buffer-modified-value
-                             files--set-buffer-modified-value
-                             files--set-buffer-file-name
-                             files--set-visited-file-name
-                             files--file-name-equal-p
-                             files--visited-buffer-for-file
-                             files--file-buffer-name
-                             files--create-buffer-for-file
-                             files--expand-file-name
-                             files--buffer-for-file
-                             files--read-file-text
-                             files--region-text
-                             files--write-file-text
-                             files--concat-strings
-                             files--current-buffer-if-available
-                             files--set-buffer-if-available
-                             files--file-readable-or-unknown-p
-                             files--insert-file-if-readable
-                             files--load-file-into-buffer
-                             files-standalone-find-file
-                             files-standalone-find-file-noselect
-                             files-standalone-find-file-read-only
-                             files-standalone-find-alternate-file
-                             files-standalone-save-buffer
-                             files--save-current-buffer-if-needed
-                             files--buffer-modified-for-save-p
-                             files--save-buffer-entry-if-needed
-                             files--save-buffer-entries-if-needed
-                             files-standalone-write-file
-                             files-standalone-save-some-buffers
-                             files-standalone-insert-file
-                             files-standalone-list-directory))
-         (source-variables '(files--buffer-string
-                             files--buffer-strings
-                             files--point
-                             files--buffer-points
-                             files--buffer-modified-p
-                             files--buffer-modified-flags
-                             files--current-file-name
-                             files--buffer-file-names
-                             files--standalone-runtime-p
-                             files--native-write-region
-                             files--native-insert-file-contents
-                             files--native-buffer-string))
-         (function-cells
-          (mapcar (lambda (symbol)
-                    (cons symbol
-                          (and (fboundp symbol)
-                               (symbol-function symbol))))
-                  source-functions))
-         (value-cells
-          (mapcar (lambda (symbol)
-                    (cons symbol
-                          (and (boundp symbol)
-                               (list (symbol-value symbol)))))
-                  source-variables))
-         (original-features features)
-         (input-file (make-temp-file "nemacs-runtime-edit-in-" nil ".el"))
-         (second-file (make-temp-file "nemacs-runtime-edit-second-" nil ".el"))
-         (output-file (make-temp-file "nemacs-runtime-edit-out-" nil ".el"))
-         visited-buffer
-         second-buffer)
-    (unwind-protect
-        (progn
-          (with-temp-file input-file
-            (insert "(alpha beta)"))
-          (with-temp-file second-file
-            (insert "(gamma)"))
-          (delete-file output-file)
-          (nemacs-runtime-image-preload-test--with-clean-direct-install
-            (setq features (remove 'files-standalone-buffer features))
-            (should (nemacs-runtime-image-preload-vendor-core-extension))
-            (setq visited-buffer (find-file input-file))
-            (should (bufferp visited-buffer))
-            (should (eq (current-buffer) visited-buffer))
-            (should (equal (buffer-string) "(alpha beta)"))
-            (goto-char (point-min))
-            (forward-sexp)
-            (should (= (point) (point-max)))
-            (goto-char (point-min))
-            (open-line 1)
-            (let ((last-command-event ?\()) (insert-pair))
-            (should (equal (buffer-string) "()\n(alpha beta)"))
-            (should (equal (save-buffer) input-file))
-            (with-temp-buffer
-              (insert-file-contents input-file)
-              (should (equal (buffer-string) "()\n(alpha beta)")))
-            (should (equal (write-file output-file) output-file))
-            (with-temp-buffer
-              (insert-file-contents output-file)
-              (should (equal (buffer-string) "()\n(alpha beta)")))
-            (setq second-buffer (find-file second-file))
-            (should (eq (current-buffer) second-buffer))
-            (goto-char (point-max))
-            (insert " delta")
-            (should (save-some-buffers))
-            (should (eq (current-buffer) second-buffer))
-            (with-temp-buffer
-              (insert-file-contents second-file)
-              (should (equal (buffer-string) "(gamma) delta")))))
-      (when (and visited-buffer (buffer-live-p visited-buffer))
-        (kill-buffer visited-buffer))
-      (when (and second-buffer (buffer-live-p second-buffer))
-        (kill-buffer second-buffer))
-      (dolist (file (list input-file second-file output-file))
-        (when (file-exists-p file)
-          (delete-file file)))
-      (setq features original-features)
-      (dolist (cell function-cells)
-        (if (cdr cell)
-            (let ((native-comp-enable-subr-trampolines nil))
-              (fset (car cell) (cdr cell)))
-          (fmakunbound (car cell))))
-      (dolist (cell value-cells)
-        (if (cdr cell)
-            (set (car cell) (cadr cell))
-          (makunbound (car cell)))))))
-
-(ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-supports-daily-edit-flow ()
-  "Exercise a small edit/save/help/project flow after direct preload."
-  (let ((cleanup-targets '(files-standalone-find-file
-                           files-standalone-save-buffer)))
-    (unwind-protect
-        (nemacs-runtime-image-preload-test--with-clean-direct-install
-          (let (calls saved-text)
-            (cl-letf (((symbol-function 'require)
-                       (lambda (feature &optional _filename _noerror)
-                         (push (list 'require feature) calls)
-                         (pcase feature
-                           ('files-standalone-buffer
-                            (fset 'files-standalone-find-file
-                                  (lambda (filename)
-                                    (push (list 'find-file filename) calls)
-                                    'visited-buffer))
-                            (fset 'files-standalone-save-buffer
-                                  (lambda ()
-                                    (setq saved-text (buffer-string))
-                                    (push '(save-buffer) calls)
-                                    'saved-buffer))
-                            (provide feature))
-                           ('emacs-help
-                            (fset 'describe-key
-                                  (lambda (symbol &optional _buffer)
-                                    (push (list 'describe-key symbol)
-                                          calls)
-                                    (list 'help symbol)))
-                            (provide feature))
-                           (_
-                            (provide feature)))
-                         feature)))
-              (should (nemacs-runtime-image-preload-vendor-core-extension))
-              (with-temp-buffer
-                (insert "(alpha beta)")
-                (goto-char (point-min))
-                (should (eq (find-file "note.el") 'visited-buffer))
-                (forward-sexp)
-                (should (= (point) (point-max)))
-                (goto-char (point-min))
-                (open-line 1)
-                (let ((last-command-event ?\()) (insert-pair))
-                (should (equal (buffer-string) "()\n(alpha beta)"))
-                (should (eq (save-buffer) 'saved-buffer))
-                (should (equal saved-text "()\n(alpha beta)")))
-              (should (equal (describe-key 'find-file)
-                             '(help find-file)))
-              (dolist (feature '(files-standalone-buffer
-                                  emacs-help))
-                (should (member (list 'require feature) calls)))
-              (should (member '(find-file "note.el") calls))
-              (should (member '(save-buffer) calls))
-              (should (member '(describe-key find-file) calls)))))
-      (dolist (symbol cleanup-targets)
-        (when (fboundp symbol)
-          (fmakunbound symbol)))
-      (dolist (feature '(files-standalone-buffer emacs-help))
-        (setq features (remove feature features))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/preload-vendor-core-base-before-extension ()
   (let ((calls nil))
