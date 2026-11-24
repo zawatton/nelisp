@@ -2870,20 +2870,13 @@ a buffer whose memo it never set (re-search-forward 84 us instead of 11)."
 Slot 204+C holds 1 for a word constituent C, 2 for a symbol constituent, else
 0, read through the predicates of the Lisp matcher.  The map is reused while
 the table object and `nlre--syntax-cache-generation' are unchanged, the same
-contract as the compiled-pattern cache (`nlre-clear-syntax-cache')."
+contract as the compiled-pattern cache (`nlre-clear-syntax-cache').  A refill
+also fills the class map (`nlre--nat-maps-fill')."
   (nlre--install-syntax-cache-hook)
   (let ((key (and nlre--syntax-table-reader (funcall nlre--syntax-table-reader))))
     (unless (and (eq key nlre--nat-syn-key)
                  (= nlre--syntax-cache-generation nlre--nat-syn-gen))
-      (setq nlre--syntax-table nil)
-      (let ((c 0))
-        (while (< c 128)
-          (aset nlre--nat-caps (+ 204 c)
-                (if (nlre--word-p c) 1 (if (nlre--symbol-p c) 2 0)))
-          (setq c (1+ c))))
-      (setq nlre--syntax-table nil
-            nlre--nat-syn-key key
-            nlre--nat-syn-gen nlre--syntax-cache-generation))))
+      (nlre--nat-maps-fill key))))
 
 ;; The class map (caps slots 332..459) feeds SYNCLS.  Same cache contract as
 ;; the word/symbol map: reused while the table object and
@@ -2944,20 +2937,49 @@ it; 16 (the exec declines) when that predicate has no answer."
             ((integerp (car e)) (logand (car e) 255))
             (t 16)))))
 
+(defun nlre--nat-maps-fill (key)
+  "Fill the assertion map (slots 204..331) and the class map (332..459).
+KEY is the current syntax table object.  One read of each ASCII entry feeds
+both maps: class code 2 (word) gives 1 and 3 (symbol) gives 2 in the assertion
+map, any other code gives 0, and code 16 (no answer) asks the predicates.
+The ASCII values come from one bulk read when the table has one."
+  (setq nlre--syntax-table nil)
+  (let* ((table (nlre--setup-syntax-table))
+         (vals (and (not (symbolp table))
+                    (fboundp 'emacs-char-table-ascii-values)
+                    (emacs-char-table-ascii-values table)))
+         (cls (>= (length nlre--nat-caps) 460))
+         (c 0))
+    (while (< c 128)
+      (let ((code (if vals
+                      (let ((e (aref vals c)))
+                        (cond ((not (consp e)) 0)
+                              ((integerp (car e)) (logand (car e) 255))
+                              (t 16)))
+                    (nlre--nat-cls-code table c))))
+        (if cls (aset nlre--nat-caps (+ 332 c) code))
+        (aset nlre--nat-caps (+ 204 c)
+              (if (= code 2) 1
+                (if (= code 3) 2
+                  (if (= code 16)
+                      (if (nlre--word-p c) 1 (if (nlre--symbol-p c) 2 0))
+                    0)))))
+      (setq c (1+ c))))
+  (setq nlre--syntax-table nil
+        nlre--nat-syn-key key
+        nlre--nat-syn-gen nlre--syntax-cache-generation)
+  (if (>= (length nlre--nat-caps) 460)
+      (setq nlre--nat-cls-key key
+            nlre--nat-cls-gen nlre--syntax-cache-generation)))
+
 (defun nlre--nat-cls-fill ()
-  "Fill the class map of `nlre--nat-caps' for the current syntax table."
+  "Fill the class map of `nlre--nat-caps' for the current syntax table.
+A refill also fills the assertion map (`nlre--nat-maps-fill')."
   (nlre--install-syntax-cache-hook)
   (let ((key (and nlre--syntax-table-reader (funcall nlre--syntax-table-reader))))
     (unless (and (eq key nlre--nat-cls-key)
                  (= nlre--syntax-cache-generation nlre--nat-cls-gen))
-      (setq nlre--syntax-table nil)
-      (let ((table (nlre--setup-syntax-table)) (c 0))
-        (while (< c 128)
-          (aset nlre--nat-caps (+ 332 c) (nlre--nat-cls-code table c))
-          (setq c (1+ c))))
-      (setq nlre--syntax-table nil
-            nlre--nat-cls-key key
-            nlre--nat-cls-gen nlre--syntax-cache-generation))))
+      (nlre--nat-maps-fill key))))
 
 ;; Class programs (SYNCLS) are used only by `nlre--nat-looking-at' and the
 ;; `string-match' entry in `nlre-string-match-lisp' (both without a harvested
