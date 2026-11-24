@@ -51,7 +51,7 @@ open(p, "w", encoding="utf-8").write(t.replace(a, b))
 PY
   fi
   "$here/nl-gate-units.sh" "$t2" "$out/closure" "$n" "$out/cache" || { echo "RED: warm closure-key run failed"; exit 1; }
-  GU_ENV="NELISP_STANDALONE_FULL_KEY=1" "$here/nl-gate-units.sh" "$t2" "$out/full" "$n" "$out/fullcache" || { echo "RED: full-key run failed"; exit 1; }
+  GU_ENV="${GU_ENV:-} NELISP_STANDALONE_FULL_KEY=1" "$here/nl-gate-units.sh" "$t2" "$out/full" "$n" "$out/fullcache" || { echo "RED: full-key run failed"; exit 1; }
   "$0" compare "$out/closure/units.tsv" "$out/full/units.tsv"
   ;;
 compare)
