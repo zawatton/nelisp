@@ -1561,10 +1561,10 @@ returns a float, while pixels and face columns return an integer."
 (unless (fboundp 'tty-display-color-p)
   (defun tty-display-color-p (&optional _terminal) nil))
 
-(unless (boundp 'outline-mode-syntax-table)
-  (defvar outline-mode-syntax-table (standard-syntax-table)))
-(unless (boundp 'text-mode-syntax-table)
-  (defvar text-mode-syntax-table (standard-syntax-table)))
+;; `text-mode-syntax-table' and `outline-mode-syntax-table' come from GNU
+;; text-mode.el and outline.el.  Binding them here to the standard syntax
+;; table itself made the GNU defvars no-ops, so all three were one object
+;; and define-derived-mode's parent fix-up made it its own parent.
 
 ;; `set' is a special form in NeLisp bootstrap but appears as void-function
 ;; in some funcall contexts.  Polyfill by routing through `eval' + `setq'.

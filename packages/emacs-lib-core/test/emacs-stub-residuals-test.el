@@ -210,8 +210,6 @@ Restore the original host bindings afterwards."
   (should (boundp 'display-line-numbers-width))
   (should (boundp 'display-line-numbers-widen))
   (should (boundp 'display-line-numbers-current-absolute))
-  (should (boundp 'outline-mode-syntax-table))
-  (should (boundp 'text-mode-syntax-table))
   (should (integerp emacs-major-version))
   (should (integerp emacs-minor-version))
   (should (boundp 'three-step-help))
