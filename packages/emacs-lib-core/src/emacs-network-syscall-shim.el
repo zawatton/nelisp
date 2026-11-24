@@ -432,22 +432,8 @@ carries a declare form aborts at call time."
     "Reader polyfill: the macro is absent and vendor server.el
 relies on it (`condition-case' itself works)."
     `(condition-case nil (progn ,@body) (error nil)))
-  (defalias 'emacs-network-syscall-shim--raw-functionp
-    (symbol-function 'functionp))
-  (defun functionp (f)
-    "Reader polyfill: older readers returned nil for closures/lambdas,
-which silently skips every process filter/sentinel dispatch.  Ask the
-builtin first, so closure objects (heap kind 23) and subrs keep their
-answer, then accept symbols with function bindings and (closure ...) /
-(lambda ...) forms."
-    (cond
-     ((null f) nil)
-     ((emacs-network-syscall-shim--raw-functionp f) t)
-     ((symbolp f) (fboundp f))
-     ((consp f) (if (memq (car f) '(lambda closure builtin)) t nil))
-     (t nil)))
-  (defvar emacs-network-syscall-shim--functionp-def (symbol-function 'functionp)
-    "The `functionp' polyfill this file installed (see emacs-parity-misc).")
+  ;; `functionp' is the prelude's GNU 31 FUNCTIONP (71d92883f); the reader
+  ;; polyfill that used to wrap it here is gone.
   ;; NeLisp v1.1.0 (Doc 200) ships a real `string-bytes' that counts
   ;; encoded bytes, so the polyfill below would now under-count every
   ;; multibyte string it is asked about: a three-character Japanese
