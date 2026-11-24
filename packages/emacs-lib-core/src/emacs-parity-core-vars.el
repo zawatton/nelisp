@@ -51,6 +51,14 @@
   (defvar mark-active nil
     "Non-nil means the mark and region are currently active in this buffer."))
 (make-variable-buffer-local 'mark-active)
+;; buffer.c DEFVAR_PER_BUFFERs used by GNU files.el's visiting and
+;; saving code: one value per buffer, nil by default.
+(unless (boundp 'buffer-file-format)
+  (defvar buffer-file-format nil
+    "List of formats to use when saving this buffer."))
+(dolist (var '(buffer-backed-up buffer-file-format buffer-auto-save-file-name
+               buffer-file-coding-system))
+  (make-variable-buffer-local var))
 ;; coding.c DEFVAR (coding.c:12000, C default nil); GNU jka-compr.el
 ;; reads and binds it when writing a compressed file.
 (unless (boundp 'last-coding-system-used)

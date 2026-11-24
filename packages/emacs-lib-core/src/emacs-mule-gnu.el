@@ -22,6 +22,14 @@ or one is an alias of the other."
 	     (or (eq eol-type-1 eol-type-2)
 		 (and (vectorp eol-type-1) (vectorp eol-type-2)))))))
 
+(defvar-local buffer-file-coding-system-explicit nil
+  "The file coding system explicitly specified for the current buffer.
+The value is a cons of coding systems for reading (decoding) and
+writing (encoding).
+Internal use only.")
+
+(put 'buffer-file-coding-system-explicit 'permanent-local t)
+
 (defcustom auto-coding-alist
   ;; .exe and .EXE are added to support archive-mode looking at DOS
   ;; self-extracting exe archives.
@@ -126,6 +134,10 @@ functions, so they won't be called at all."
 	  (setq coding-system (cdr (car alist)))
 	(setq alist (cdr alist))))
     coding-system))
+
+(put 'enable-character-translation 'permanent-local t)
+
+(put 'enable-character-translation 'safe-local-variable	#'booleanp)
 
 (defun find-auto-coding (filename size)
   ;; FIXME: Shouldn't we use nil rather than "" to mean that there's no file?

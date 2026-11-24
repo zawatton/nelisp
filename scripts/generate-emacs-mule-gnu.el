@@ -15,7 +15,8 @@
     auto-coding-alist auto-coding-regexp-alist auto-coding-regexp-alist-lookup
     auto-coding-file-name auto-coding-functions auto-coding-alist-lookup
     find-auto-coding set-auto-coding
-    sgml-xml-auto-coding-function sgml-html-meta-auto-coding-function)
+    sgml-xml-auto-coding-function sgml-html-meta-auto-coding-function
+    buffer-file-coding-system-explicit)
   "GNU mule.el names this file copies.")
 
 (defconst gen-mule--tail-forms
@@ -34,14 +35,19 @@
     (dolist (name gen-mule--names)
       (goto-char (point-min))
       (if (not (re-search-forward
-                (format "^(\\(?:defvar\\|defcustom\\|defconst\\|defun\\) %s\\(?:[ \n]\\|$\\)"
+                (format "^(\\(?:defvar-local\\|defvar\\|defcustom\\|defconst\\|defun\\) %s\\(?:[ \n]\\|$\\)"
                         (regexp-quote (symbol-name name)))
                 nil t))
           (error "Missing GNU mule.el definition: %s" name)
         (goto-char (match-beginning 0))
         (let ((beg (point)))
           (forward-sexp 1)
-          (push (cons beg (buffer-substring beg (point))) chunks))))
+          (push (cons beg (buffer-substring beg (point))) chunks)
+          ;; Keep the `put' forms that follow the definition directly.
+          (while (looking-at "\n+(put '[^ ]+ '[^ ]+ [^\n]*)")
+            (let ((pb (progn (skip-chars-forward "\n") (point))))
+              (forward-sexp 1)
+              (push (cons pb (buffer-substring pb (point))) chunks))))))
     (dolist (form gen-mule--tail-forms)
       (goto-char (point-min))
       (unless (search-forward (concat "\n" form "\n") nil t)

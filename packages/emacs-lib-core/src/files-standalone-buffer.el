@@ -716,6 +716,40 @@ overhead, so the fallback is skipped while the native subr is in place.")
       (funcall files--native-buffer-string)))
    (t nil)))
 
+(defun files--insert-file-contents-1 (filename visit beg end replace)
+  "Insert FILENAME for `insert-file-contents' when no handler applies."
+  (dolist (offset (list beg end))
+    (when (and offset
+               (not (and (numberp offset) (>= offset 0)
+                         (= offset (truncate offset)))))
+      (signal 'wrong-type-argument (list 'file-offset offset))))
+  (when (and visit (or beg end))
+    (error "Attempt to visit less than an entire file"))
+  (setq filename (files--expand-file-name filename))
+  (when (file-directory-p filename)
+    (signal 'file-error (list "Read error" "Is a directory" filename)))
+  (let ((text (files--read-file-text filename))
+        (pos (point)))
+    (unless text
+      (when visit (set-visited-file-name filename))
+      (signal 'file-missing
+              (list "Opening input file" "No such file or directory" filename)))
+    (when (or beg end)
+      (let* ((bytes (encode-coding-string text 'utf-8-unix))
+             (size (length bytes))
+             (from (min (truncate (or beg 0)) size))
+             (to (max from (min (truncate (or end size)) size))))
+        (setq text (decode-coding-string (substring bytes from to)
+                                        'utf-8-unix))))
+    (when replace
+      (delete-region (point-min) (point-max)))
+    (insert text)
+    (goto-char (min pos (point-max)))
+    (when visit
+      (set-visited-file-name filename)
+      (set-buffer-modified-p nil))
+    (list filename (length text))))
+
 (when (files--install-fallback-function-p 'insert-file-contents)
   (defun insert-file-contents (filename &optional visit beg end replace)
     "Insert FILENAME at point, optionally selecting byte offsets BEG to END.
@@ -734,41 +768,8 @@ REPLACE replaces the accessible contents; VISIT records the visited file."
                          'insert-file-contents))))
       (if handler
           (funcall handler 'insert-file-contents filename visit beg end replace)
-        (files--insert-file-contents-1 filename visit beg end replace))))
+        (files--insert-file-contents-1 filename visit beg end replace)))))
 
-  (defun files--insert-file-contents-1 (filename visit beg end replace)
-    "Insert FILENAME for `insert-file-contents' when no handler applies."
-    (dolist (offset (list beg end))
-      (when (and offset
-                 (not (and (numberp offset) (>= offset 0)
-                           (= offset (truncate offset)))))
-        (signal 'wrong-type-argument (list 'file-offset offset))))
-    (when (and visit (or beg end))
-      (error "Attempt to visit less than an entire file"))
-    (setq filename (files--expand-file-name filename))
-    (when (file-directory-p filename)
-      (signal 'file-error (list "Read error" "Is a directory" filename)))
-    (let ((text (files--read-file-text filename))
-          (pos (point)))
-      (unless text
-        (when visit (set-visited-file-name filename))
-        (signal 'file-missing
-                (list "Opening input file" "No such file or directory" filename)))
-      (when (or beg end)
-        (let* ((bytes (encode-coding-string text 'utf-8-unix))
-               (size (length bytes))
-               (from (min (truncate (or beg 0)) size))
-               (to (max from (min (truncate (or end size)) size))))
-          (setq text (decode-coding-string (substring bytes from to)
-                                          'utf-8-unix))))
-      (when replace
-        (delete-region (point-min) (point-max)))
-      (insert text)
-      (goto-char (min pos (point-max)))
-      (when visit
-        (set-visited-file-name filename)
-        (set-buffer-modified-p nil))
-      (list filename (length text)))))
 
 (defun files--region-text (start end)
   "Return the fallback text selected by START and END."
@@ -789,6 +790,29 @@ REPLACE replaces the accessible contents; VISIT records the visited file."
              lockname mustbenew))
    (t
     (signal 'file-error (list "Cannot write file" filename)))))
+
+(defun files--write-region-1
+    (start end filename append visit lockname mustbenew)
+  "Write text between START and END to FILENAME when no handler applies."
+  (let ((text (cond
+               ((stringp start) start)
+               ((null start) (buffer-substring (point-min) (point-max)))
+               (t (buffer-substring start end)))))
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    (when (and lockname (not (stringp lockname)))
+      (signal 'wrong-type-argument (list 'stringp lockname)))
+    (prog1 (files--write-file-text filename text append visit lockname
+                                   mustbenew)
+      ;; GNU fileio.c `write_region': a VISIT of t or a file name makes
+      ;; the buffer visit that file and marks it unmodified, recording
+      ;; the file's modification time.
+      (when (or (eq visit t) (stringp visit))
+        (setq buffer-file-name
+              (files--expand-file-name (if (stringp visit) visit filename)))
+        (when (fboundp 'set-visited-file-modtime)
+          (set-visited-file-modtime))
+        (set-buffer-modified-p nil)))))
 
 (when (files--install-fallback-function-p 'write-region)
   (defun write-region
@@ -811,20 +835,8 @@ REPLACE replaces the accessible contents; VISIT records the visited file."
           (funcall handler 'write-region
                    start end filename append visit lockname mustbenew)
         (files--write-region-1 start end filename append visit lockname
-                               mustbenew))))
+                               mustbenew)))))
 
-  (defun files--write-region-1
-      (start end filename append visit lockname mustbenew)
-    "Write text between START and END to FILENAME when no handler applies."
-    (let ((text (cond
-                 ((stringp start) start)
-                 ((null start) (buffer-substring (point-min) (point-max)))
-                 (t (buffer-substring start end)))))
-      (unless (stringp filename)
-        (signal 'wrong-type-argument (list 'stringp filename)))
-      (when (and lockname (not (stringp lockname)))
-        (signal 'wrong-type-argument (list 'stringp lockname)))
-      (files--write-file-text filename text append visit lockname mustbenew))))
 
 (defun files--current-buffer-if-available ()
   "Return the current buffer when buffer primitives exist."
@@ -1047,8 +1059,16 @@ Falls back to a read-based existence check when the reader exposes no
     (files--access-ok-p filename files--ok-read)))
 (when (files--install-fallback-function-p 'file-writable-p)
   (defun file-writable-p (filename)
-    "Return non-nil if FILENAME is writable, via access(2) W_OK."
-    (files--access-ok-p filename files--ok-write)))
+    "Return non-nil if FILENAME is writable, via access(2) W_OK.
+As GNU fileio.c does, a FILENAME that does not exist is writable when
+its directory exists and is writable, so a new file can be created."
+    (or (files--access-ok-p filename files--ok-write)
+        (and (not (files--access-ok-p filename files--ok-exist))
+             (let ((dir (file-name-directory
+                         (files--expand-file-name filename))))
+               (and dir
+                    (files--access-ok-p (directory-file-name dir)
+                                        files--ok-write)))))))
 (when (files--install-fallback-function-p 'file-executable-p)
   (defun file-executable-p (filename)
     "Return non-nil if FILENAME is executable/searchable, via access(2) X_OK."
