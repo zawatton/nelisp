@@ -16,7 +16,7 @@
   (file-name-directory emacs-tier3-facades-test--source))
 
 (defconst emacs-tier3-facades-test--features
-  '(emacs-tier3-facades calc gnus treesit nxml nxml-mode vc)
+  '(emacs-tier3-facades calc gnus treesit nxml nxml-mode)
   "Features provided by the Tier 3 facade file.")
 
 (defconst emacs-tier3-facades-test--loaders
@@ -24,8 +24,7 @@
     (gnus . "gnus")
     (treesit . "treesit")
     (nxml . "nxml")
-    (nxml-mode . "nxml-mode")
-    (vc . "vc"))
+    (nxml-mode . "nxml-mode"))
   "Tier 3 facade feature loaders.")
 
 (defconst emacs-tier3-facades-test--entrypoints
@@ -42,9 +41,7 @@
     nxml-balanced-close-start-tag-block
     url-retrieve url-retrieve-synchronously url-copy-file
     url-insert-file-contents url-generic-parse-url url-host url-port
-    url-filename url-type
-    vc-next-action vc-dir vc-print-log vc-diff vc-status vc-register
-    vc-responsible-backend vc-backend)
+    url-filename url-type)
   "Principal Tier 3 facade entrypoints.")
 
 (defmacro emacs-tier3-facades-test--with-clean-state (&rest body)
@@ -78,32 +75,6 @@
      (load emacs-tier3-facades-test--source nil t)
      ,@body))
 
-(defun emacs-tier3-facades-test--make-novc-temp-dir ()
-  "Return a temporary directory whose ancestors are not VC roots.
-Some CI/development machines intentionally have `/tmp/.git'.  A no-VC
-fixture created under such a parent is correctly detected as Git, so try
-several temp parents and keep only one that the facade reports as no VC."
-  (let ((parents (delete-dups
-                  (delq nil
-                        (list "/var/tmp" "/dev/shm" temporary-file-directory
-                              default-directory))))
-        candidate
-        result)
-    (while (and parents (not result))
-      (let ((parent (file-name-as-directory (car parents))))
-        (setq parents (cdr parents))
-        (when (and (file-directory-p parent)
-                   (file-writable-p parent))
-          (setq candidate (make-temp-file
-                           (expand-file-name "emacs-tier3-novc-" parent) t))
-          (if (vc-responsible-backend candidate)
-              (progn
-                (delete-directory candidate t)
-                (setq candidate nil))
-            (setq result candidate)))))
-    (or result
-        (error "Could not create non-VC temporary directory"))))
-
 (ert-deftest emacs-tier3-facades-test/feature-loaders-resolve-to-src ()
   (let ((load-path (cons emacs-tier3-facades-test--src-dir load-path)))
     (dolist (loader emacs-tier3-facades-test--loaders)
@@ -127,8 +98,7 @@ several temp parents and keep only one that the facade reports as no VC."
         (should (fboundp 'gnus))
         (should (fboundp 'treesit-available-p))
         (should (fboundp 'nxml-mode))
-        (should (fboundp 'url-retrieve))
-        (should (fboundp 'vc-next-action))))))
+        (should (fboundp 'url-retrieve))))))
 
 (ert-deftest emacs-tier3-facades-test/does-not-claim-widget-or-url-features ()
   (with-temp-buffer
@@ -166,33 +136,7 @@ several temp parents and keep only one that the facade reports as no VC."
     (should-not (url-host nil))
     (should-not (url-port nil))
     (should-not (url-filename nil))
-    (should-not (url-type nil))
-    (let ((root (emacs-tier3-facades-test--make-novc-temp-dir)))
-      (unwind-protect
-          (progn
-            (should-not (vc-responsible-backend root))
-            (should-not (vc-backend root)))
-        (when (file-directory-p root)
-          (delete-directory root t))))))
-
-(ert-deftest emacs-tier3-facades-test/vc-backend-detects-vc-markers ()
-  (emacs-tier3-facades-test--with-clean-facade
-    (dolist (case '((".git" . Git)
-                    (".hg" . Hg)
-                    (".svn" . SVN)))
-      (let* ((root (make-temp-file "emacs-tier3-vc-" t))
-             (nested (expand-file-name "src/lib" root))
-             (file (expand-file-name "feature.el" nested)))
-        (unwind-protect
-            (progn
-              (make-directory nested t)
-              (make-directory (expand-file-name (car case) root))
-              (with-temp-file file
-                (insert ";; feature\n"))
-              (should (eq (cdr case) (vc-responsible-backend nested)))
-              (should (eq (cdr case) (vc-backend file))))
-          (when (file-directory-p root)
-            (delete-directory root t)))))))
+    (should-not (url-type nil))))
 
 (ert-deftest emacs-tier3-facades-test/unsupported-entrypoints-signal-clearly ()
   (emacs-tier3-facades-test--with-clean-facade
@@ -203,8 +147,7 @@ several temp parents and keep only one that the facade reports as no VC."
                     (treesit-parser-create 'python)
                     (treesit-query-compile 'python "(_) @node")
                     (nxml-validate)
-                    (url-retrieve "https://example.invalid" #'ignore)
-                    (vc-next-action)))
+                    (url-retrieve "https://example.invalid" #'ignore)))
       (should-error (eval call t)
                     :type 'emacs-tier3-facade-unsupported))))
 

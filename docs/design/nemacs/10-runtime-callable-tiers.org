@@ -103,12 +103,12 @@ Tier 3 functions should either:
 Current proof anchor:
 
 - =src/emacs-tier3-facades.el= provides explicit facades for =widget=,
-  =calc=, =gnus=, =treesit=, =nxml=, =url=, and =vc= when that facade
-  library is required.  Info comes from vendored GNU =info.el=; the Info
-  facade and the =src/info.el= loader were removed.
+  =calc=, =gnus=, =treesit=, =nxml= and =url= when that facade library
+  is required.  Info and VC come from vendored GNU =info.el= and =vc.el=;
+  their facades and the =src/info.el= / =src/vc.el= loaders were removed.
 - Thin feature loaders in =src/widget.el=, =src/calc.el=, =src/gnus.el=,
   =src/treesit.el=, =src/nxml.el=, =src/nxml-mode.el=,
-  =src/url.el=, and =src/vc.el= make direct =(require 'widget)= style
+  and =src/url.el= make direct =(require 'widget)= style
   callers land on the same facade contract under the repo =load-path=.
 - =test/emacs-tier3-facades-test.el= pins =featurep=, principal =fboundp=,
   loader resolution, no-op predicate behavior, and

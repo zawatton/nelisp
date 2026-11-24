@@ -161,6 +161,15 @@ envelope.")
     dired-create-files
     dired-do-create-files
     dired-do-shell-command
+    ;; GNU vc.el / vc-git.el / vc-dir.el / vc-annotate.el command bodies.
+    vc-next-action
+    vc-checkin
+    vc--pick-or-revert
+    vc--apply-to-other-working-tree
+    vc-git-after-dir-status-stage
+    vc-git--checkin
+    vc-dir-update
+    vc-annotate
     ;; GNU mule.el (emacs-mule-gnu.el): the coding detector behind
     ;; `set-auto-coding'.
     find-auto-coding

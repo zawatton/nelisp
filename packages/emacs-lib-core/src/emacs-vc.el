@@ -41,16 +41,16 @@
 (defvar emacs-vc-log-max-entries 50
   "Maximum number of entries shown by `emacs-vc-print-log'.")
 
-(defvar emacs-vc-diff-buffer-name "*vc-diff*"
+(defvar emacs-vc-diff-buffer-name "*emacs-vc-diff*"
   "Buffer name used by `emacs-vc-diff'.")
 
-(defvar emacs-vc-log-buffer-name "*vc-change-log*"
+(defvar emacs-vc-log-buffer-name "*emacs-vc-change-log*"
   "Buffer name used by `emacs-vc-print-log'.")
 
-(defvar emacs-vc-dir-buffer-name "*vc-dir*"
+(defvar emacs-vc-dir-buffer-name "*emacs-vc-dir*"
   "Buffer name used by `emacs-vc-dir'.")
 
-(defvar emacs-vc-annotate-buffer-name "*vc-annotate*"
+(defvar emacs-vc-annotate-buffer-name "*emacs-vc-annotate*"
   "Buffer name used by `emacs-vc-annotate'.")
 
 ;;;; --- backend / work-tree root -------------------------------------
@@ -229,32 +229,6 @@ With FILE, restrict the diff to that path.  Returns the diff buffer."
                          (when file (list "--" file))))
            (res (apply #'emacs-vc--run-git root args)))
       (emacs-vc--show emacs-vc-diff-buffer-name (cdr res)))))
-
-;;;; --- key bindings -------------------------------------------------
-
-(defun emacs-vc--install-bindings ()
-  "Install the read-only VC key bindings on the global map (`C-x v' prefix)."
-  (let ((map (and (fboundp 'current-global-map) (current-global-map))))
-    (when (and map (fboundp 'define-key) (fboundp 'kbd))
-      (define-key map (kbd "C-x v =") #'emacs-vc-diff)
-      (define-key map (kbd "C-x v l") #'emacs-vc-print-log)
-      (define-key map (kbd "C-x v d") #'emacs-vc-dir)
-      (define-key map (kbd "C-x v g") #'emacs-vc-annotate))))
-
-(emacs-vc--install-bindings)
-
-;;;; --- standard-name facade install ---------------------------------
-
-(defun emacs-vc-install ()
-  "Bind the standard Emacs VC command names to the `emacs-vc-*' read-only
-implementations, overriding any Tier 3 `unsupported' stub.  Called from the
-`vc' loader (`vc.el'); NOT run on `require' so that a bare `(require
-\\='emacs-vc)' does not touch the shared `vc-*' symbols (keeps ERT / Tier 3
-facade tests isolated)."
-  (defalias 'vc-diff #'emacs-vc-diff)
-  (defalias 'vc-print-log #'emacs-vc-print-log)
-  (defalias 'vc-dir #'emacs-vc-dir)
-  (defalias 'vc-annotate #'emacs-vc-annotate))
 
 (provide 'emacs-vc)
 
