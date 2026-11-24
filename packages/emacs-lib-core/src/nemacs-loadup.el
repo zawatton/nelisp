@@ -66,6 +66,9 @@ frontends can observe the same startup slot without owning package semantics.")
 When nil, `nemacs-init' resolves it from `NEMACS_USER_EMACS_DIRECTORY',
 then from real Emacs ~/.emacs.d versus XDG precedence.")
 
+(defvar nemacs-startup-arguments nil
+  "Initial options from the frontend, passed to GNU startup.el.")
+
 (defvar nemacs-init-file-loaded nil
   "Non-nil after `nemacs-init' has completed user init discovery.")
 
@@ -161,7 +164,7 @@ standalone evaluator aborts on flagless)."
                  (equal (nelisp-ec-buffer-string) "")
                  (stringp initial-scratch-message)
                  (> (length initial-scratch-message) 0))
-        (nelisp-ec-insert initial-scratch-message)
+        (nelisp-ec-insert (substitute-command-keys initial-scratch-message))
         ;; Initial contents are startup state, not an unsaved user edit.
         (setf (nelisp-ec-buffer-modified-p buf) nil)))
     buf))
@@ -337,7 +340,15 @@ to the Phase 1 raw-load lane unchanged."
 eager boot, which is right for -Q sessions but not for an init file that
 uses them as GNU guarantees.")
 
-(defun nemacs-load-user-init-files ()
+(defun nemacs-load-user-init-files (&optional batch-p)
+  "Run the user-init phase for this session, with GNU batch semantics for BATCH-P."
+  (if (fboundp 'nemacs-gnu-startup-run)
+      (progn
+        (nemacs-gnu-startup-run batch-p nemacs-startup-arguments init-file-user)
+        (setq nemacs-init-file-loaded t))
+    (nemacs--load-user-init-files-legacy)))
+
+(defun nemacs--load-user-init-files-legacy ()
   "Load early-init.el, run the package slot, then load init.el.
 The loader is session-owned; frontend wrappers should delegate here instead
 of reimplementing init discovery.
@@ -431,14 +442,10 @@ guard: calling `nemacs-init' twice signals
 `nemacs-already-initialized' rather than re-running.
 
 Steps:
-  1. Load early-init.el when present.
-  2. Run the package activation hook point.
-  3. Load init.el when present.
-  4. Run `after-init-hook', create *scratch*.
-  5. Interactive only: show the startup splash screen when the
-     `emacs-startup-screen' gate allows it, then run
-     `nemacs-startup-hook'.
-  6. Mark `nemacs-initialized' = t.
+  1. Run the user-init phase, including the startup hooks.
+  2. Prepare the scratch buffer.
+  3. Show the splash screen if the interactive frontend permits it.
+  4. Run `nemacs-startup-hook' and mark `nemacs-initialized'.
 
 Returns the symbol `ready' on success."
   (when nemacs-initialized
@@ -448,15 +455,15 @@ Returns the symbol `ready' on success."
   ;; of bootstrap.
   (when (fboundp 'emacs-standalone-init)
     (emacs-standalone-init))
-  (when (fboundp 'run-hooks)
-    (run-hooks 'before-init-hook))
-  (nemacs-load-user-init-files)
-  (when (fboundp 'run-hooks)
-    (run-hooks 'after-init-hook))
-  (let ((buf (nemacs--ensure-scratch-buffer)))
-    (when (and buf (fboundp 'nelisp-ec-set-buffer))
-      (nelisp-ec-set-buffer buf)))
-  (nemacs--apply-initial-major-mode)
+  (let ((gnu-startup (fboundp 'nemacs-gnu-startup-run)))
+    (unless gnu-startup (run-hooks 'before-init-hook))
+    (nemacs-load-user-init-files batch-p)
+    (unless gnu-startup (run-hooks 'after-init-hook))
+    (let ((buf (nemacs--ensure-scratch-buffer)))
+      (when (and buf (fboundp 'nelisp-ec-set-buffer))
+        (nelisp-ec-set-buffer buf)))
+    (when (or (not gnu-startup) (eq major-mode 'fundamental-mode))
+      (nemacs--apply-initial-major-mode)))
   ;; Batch bootstraps never show the splash (Emacs `noninteractive'
   ;; semantics); this also keeps every existing `(nemacs-init t)' caller
   ;; on today's *scratch* initial buffer.
