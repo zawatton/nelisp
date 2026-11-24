@@ -2044,18 +2044,32 @@ mode rerun yet)."
 
 (when (emacs-fileio-builtins--install-function-p 'copy-file)
   (defun copy-file (file newname &optional ok-if-already-exists
-                         _keep-time _preserve-uid-gid _preserve-permissions)
-    "Copy FILE to NEWNAME (standalone MVP: byte-content copy).
+                         keep-time _preserve-uid-gid preserve-permissions)
+    "Copy FILE to NEWNAME (standalone: byte-content copy).
 Signal an error when NEWNAME already exists unless OK-IF-ALREADY-EXISTS is
-non-nil.  Modification time, uid/gid, and permission preservation are not
-modeled."
-    (when (and (not ok-if-already-exists)
-               (fboundp 'file-exists-p)
-               (file-exists-p newname))
-      (error "File already exists: %s" newname))
-    (with-temp-buffer
-      (insert-file-contents-literally file)
-      (write-region (point-min) (point-max) newname))
+non-nil.  As GNU fileio.c does, PRESERVE-PERMISSIONS gives the output
+file FILE's permission bits; otherwise a newly created NEWNAME gets them
+masked by `default-file-modes' and an existing one keeps its own.
+KEEP-TIME gives the output file FILE's modification time.
+uid/gid preservation is not modeled."
+    (let ((existed (and (fboundp 'file-exists-p) (file-exists-p newname))))
+      (when (and existed (not ok-if-already-exists))
+        (error "File already exists: %s" newname))
+      (with-temp-buffer
+        (insert-file-contents-literally file)
+        (write-region (point-min) (point-max) newname nil 0))
+      (let ((modes (and (fboundp 'file-modes) (file-modes file))))
+        (when (and modes (fboundp 'set-file-modes)
+                   (or preserve-permissions (not existed)))
+          (set-file-modes newname
+                          (if (or preserve-permissions
+                                  (not (fboundp 'default-file-modes)))
+                              modes
+                            (logand modes (default-file-modes))))))
+      (when (and keep-time (fboundp 'set-file-times))
+        (set-file-times newname
+                        (file-attribute-modification-time
+                         (file-attributes file)))))
     nil))
 
 (provide 'emacs-fileio-builtins)

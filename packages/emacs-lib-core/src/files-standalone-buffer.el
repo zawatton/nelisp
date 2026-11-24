@@ -1530,7 +1530,9 @@ when access(2) is unavailable."
       (signal 'wrong-type-argument (list 'stringp filename)))
     (cond
      (files--native-file-directory-p
-      (funcall files--native-file-directory-p filename))
+      ;; GNU fileio.c expands FILENAME first, so "~/dir" works.
+      (funcall files--native-file-directory-p
+               (files--expand-file-name filename)))
      ((fboundp 'nelisp--syscall-path-int)
       (let* ((d (files--expand-file-name filename))
              (n (length d))
