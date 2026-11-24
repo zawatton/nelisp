@@ -152,6 +152,9 @@ envelope.")
     query-replace-regexp
     occur-engine
     perform-replace
+    ;; GNU mule.el (emacs-mule-gnu.el): the coding detector behind
+    ;; `set-auto-coding'.
+    find-auto-coding
     ;; The baked regex bridge calls this on every string/buffer match.
     ;; Eliding it to a nil stub silently kills the whole regex surface.
     nelisp-rx--match-from

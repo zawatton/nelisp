@@ -45,11 +45,45 @@
 (unless (boundp 'window-combination-limit)
   (defvar window-combination-limit 'window-size
     "If non-nil, splitting a window makes a new parent window."))
+;; coding.c DEFVAR (coding.c:12000, C default nil); GNU jka-compr.el
+;; reads and binds it when writing a compressed file.
+(unless (boundp 'last-coding-system-used)
+  (defvar last-coding-system-used nil
+    "Coding system used in the latest file or process I/O."))
+;; fileio.c DEFVAR (fileio.c:6856, C default nil); GNU mule.el (here
+;; emacs-mule-gnu.el) sets it to `set-auto-coding'.
+(unless (boundp 'set-auto-coding-function)
+  (defvar set-auto-coding-function nil
+    "If non-nil, a function to call to decide a coding system of file.
+Two arguments are passed to this function: the file name
+and the length of a file contents following the point.
+This function should return a coding system to decode the file contents.
+It should check the file name against `auto-coding-alist'.
+If no coding system is decided, it should check a coding system
+specified in the heading lines with the format:
+	-*- ... coding: CODING-SYSTEM; ... -*-
+or local variable spec of the tailing lines with `coding:' tag."))
 ;; callproc.c DEFVAR (default "hexl", callproc.c:2188); GNU ielm.el starts
 ;; its dummy process with it.
 (unless (boundp 'hexl-program-name)
   (defvar hexl-program-name "hexl"
     "File name for the program that converts files to and from hexl format."))
+;; lread.c DEFVAR (initial value ("") at lread.c:5666).  GNU
+;; jka-cmpr-hook.el adds ".gz"; a nil start would leave only ".gz".
+(unless (boundp 'load-file-rep-suffixes)
+  (defvar load-file-rep-suffixes (list "")
+    "List of suffixes that indicate representations of the same file.
+This list should normally start with the empty string.
+
+Enabling Auto Compression mode appends the suffixes in
+`jka-compr-load-suffixes' to this list and disabling Auto Compression
+mode removes them again.  `load' and related functions use this list to
+determine whether they should look for compressed versions of a file
+and, if so, which suffixes they should try to append to the file name
+in order to do so.  However, if you want to customize which suffixes
+the loading functions recognize as compression suffixes, you should
+customize `jka-compr-load-suffixes' rather than the present variable."))
+
 ;; doc.c DEFVARs: the DOC file's name within `doc-directory', and the object
 ;; files GNU 31.1's build put into its DOC (help-fns' `help-C-file-name'
 ;; keeps a DOC source entry only when its file is listed).  The list is the
@@ -164,7 +198,6 @@ This is the stock GNU Emacs default used by Comint and Tramp."))
 ;; --- minor-mode state vars (read before their define-minor-mode sets them) ---
 (unless (boundp 'evil-mode) (defvar evil-mode nil))
 (unless (boundp 'mouse-wheel-mode) (defvar mouse-wheel-mode nil))
-(unless (boundp 'auto-compression-mode) (defvar auto-compression-mode nil))
 
 ;; --- input method state (headless: no input method active) ---
 (unless (boundp 'current-input-method)

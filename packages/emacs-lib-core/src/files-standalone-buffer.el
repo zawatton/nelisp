@@ -187,22 +187,30 @@ so it is cheap enough to run before every syscall-backed predicate below."
            (setq i (1+ i)))
          ok)))
 
-(defun files--file-name-handler-alist-active-p ()
-  "Return non-nil when `file-name-handler-alist' has any entry to match."
-  (and (boundp 'file-name-handler-alist) file-name-handler-alist))
+(defun files--file-name-handler-alist-active-p (&optional operation)
+  "Return non-nil when `file-name-handler-alist' has any entry to match.
+With OPERATION, ignore entries whose handler can never be chosen for
+OPERATION (see `emacs-fnh-handler-possible-p')."
+  (and (boundp 'file-name-handler-alist)
+       file-name-handler-alist
+       (or (null operation)
+           (not (fboundp 'emacs-fnh-handler-possible-p))
+           (emacs-fnh-handler-possible-p operation))))
 
 (defun files--expand-file-name (filename)
   "Expand FILENAME when the runtime supplies `expand-file-name'.
 T47: skips the full (handler-dispatching) `expand-file-name' round-trip
-when `file-name-handler-alist' is nil/empty -- so there is nothing a
-magic file name could match -- and FILENAME is already an absolute,
+when no `file-name-handler-alist' entry can handle `expand-file-name'
+-- so there is nothing a magic file name could match (jka-compr's
+handler, for one, lists only other operations) -- and FILENAME is already
+an absolute,
 normalized path.  This was the dominant per-call cost of every predicate
 below (`file-exists-p', `file-readable-p', `file-directory-p',
 `file-truename', ...), all of which call this helper at least once.
 Falls through to the real `expand-file-name' (still handler-dispatched)
 whenever a handler could plausibly apply, or FILENAME needs real work
 done (relative, `~', or containing `.'/`..'/`//')."
-  (if (and (not (files--file-name-handler-alist-active-p))
+  (if (and (not (files--file-name-handler-alist-active-p 'expand-file-name))
            (files--absolute-clean-p filename))
       filename
     (if (fboundp 'expand-file-name)
@@ -699,6 +707,21 @@ Return the absolute file name and the number of characters inserted.
 REPLACE replaces the accessible contents; VISIT records the visited file."
     (unless (stringp filename)
       (signal 'wrong-type-argument (list 'stringp filename)))
+    ;; GNU fileio.c: expand FILENAME, then let a `file-name-handler-alist'
+    ;; handler for `insert-file-contents' (jka-compr, Tramp, ...) do the
+    ;; whole operation and return its value.
+    (let ((handler (and (files--file-name-handler-alist-active-p
+                         'insert-file-contents)
+                        (fboundp 'find-file-name-handler)
+                        (find-file-name-handler
+                         (setq filename (files--expand-file-name filename))
+                         'insert-file-contents))))
+      (if handler
+          (funcall handler 'insert-file-contents filename visit beg end replace)
+        (files--insert-file-contents-1 filename visit beg end replace))))
+
+  (defun files--insert-file-contents-1 (filename visit beg end replace)
+    "Insert FILENAME for `insert-file-contents' when no handler applies."
     (dolist (offset (list beg end))
       (when (and offset
                  (not (and (numberp offset) (>= offset 0)
@@ -755,6 +778,28 @@ REPLACE replaces the accessible contents; VISIT records the visited file."
   (defun write-region
       (start end filename &optional append visit lockname mustbenew)
     "Write text between START and END to FILENAME."
+    ;; GNU fileio.c `write_region': expand FILENAME, then let a
+    ;; `file-name-handler-alist' handler for `write-region' (jka-compr,
+    ;; Tramp, ...) do the whole operation; a string VISIT is checked too.
+    (let ((handler
+           (and (stringp filename)
+                (files--file-name-handler-alist-active-p 'write-region)
+                (fboundp 'find-file-name-handler)
+                (or (find-file-name-handler
+                     (setq filename (files--expand-file-name filename))
+                     'write-region)
+                    (and (stringp visit)
+                         (find-file-name-handler
+                          (files--expand-file-name visit) 'write-region))))))
+      (if handler
+          (funcall handler 'write-region
+                   start end filename append visit lockname mustbenew)
+        (files--write-region-1 start end filename append visit lockname
+                               mustbenew))))
+
+  (defun files--write-region-1
+      (start end filename append visit lockname mustbenew)
+    "Write text between START and END to FILENAME when no handler applies."
     (let ((text (cond
                  ((stringp start) start)
                  ((null start) (buffer-substring (point-min) (point-max)))

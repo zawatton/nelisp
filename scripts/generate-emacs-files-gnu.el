@@ -39,7 +39,12 @@
     view-read-only auto-save-default buffer-file-read-only find-file-literally backup-enable-predicate normal-backup-enable-predicate
     out-of-memory-warning-percentage abort-if-file-too-large warn-maybe-out-of-memory files--message
     find-file-noselect find-file-noselect-1 after-find-file
-    find-directory-functions read-directory-name)
+    find-directory-functions read-directory-name
+    ;; The -*- line finder GNU mule.el's `find-auto-coding' calls, and the
+    ;; local-variables inhibition it checks.
+    inhibit-local-variables-regexps inhibit-local-variables-suffixes
+    inhibit-local-variables-ignore-case inhibit-local-variables-p
+    file-auto-mode-skip set-auto-mode-1)
   "GNU files.el names this file copies: the directory-local-variables
 subsystem, which the standalone lacks (project.el calls
 `hack-dir-local-variables').")

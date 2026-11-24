@@ -888,6 +888,92 @@ unless NOMODES is non-nil."
       (view-mode-enter))
     (run-hooks 'find-file-hook)))
 
+(defvar inhibit-local-variables-regexps
+  '("\\.tar\\'" "\\.t[bg]z\\'"
+    "\\.arc\\'" "\\.zip\\'" "\\.lzh\\'" "\\.lha\\'"
+    "\\.zoo\\'" "\\.[jew]ar\\'" "\\.xpi\\'" "\\.rar\\'"
+    "\\.7z\\'"
+    "\\.sx[dmicw]\\'" "\\.odt\\'"
+    "\\.diff\\'" "\\.patch\\'"
+    "\\.tiff?\\'" "\\.gif\\'" "\\.png\\'" "\\.jpe?g\\'")
+  "List of regexps matching file names in which to ignore local variables.
+This includes `-*-' lines as well as trailing \"Local Variables\" sections.
+Files matching this list are typically binary file formats.
+They may happen to contain sequences that look like local variable
+specifications, but are not really, or they may be containers for
+member files with their own local variable sections, which are
+not appropriate for the containing file.
+The function `inhibit-local-variables-p' uses this.")
+
+(defvar inhibit-local-variables-suffixes nil
+  "List of regexps matching suffixes to remove from file names.
+The function `inhibit-local-variables-p' uses this: when checking
+a file name, it first discards from the end of the name anything that
+matches one of these regexps.")
+
+(defvar inhibit-local-variables-ignore-case t
+  "Non-nil means `inhibit-local-variables-p' ignores case.")
+
+(defun inhibit-local-variables-p ()
+  "Return non-nil if file local variables should be ignored.
+This checks the file (or buffer) name against `inhibit-local-variables-regexps'
+and `inhibit-local-variables-suffixes'.  If
+`inhibit-local-variables-ignore-case' is non-nil, this ignores case."
+  (let ((temp inhibit-local-variables-regexps)
+	(name (if buffer-file-name
+		  (file-name-sans-versions buffer-file-name)
+		(buffer-name)))
+	(case-fold-search inhibit-local-variables-ignore-case))
+    (while (let ((sufs inhibit-local-variables-suffixes))
+	     (while (and sufs (not (string-match (car sufs) name)))
+	       (setq sufs (cdr sufs)))
+	     sufs)
+      (setq name (substring name 0 (match-beginning 0))))
+    (while (and temp
+		(not (string-match (car temp) name)))
+      (setq temp (cdr temp)))
+    temp))
+
+(defvar file-auto-mode-skip "^\\(#!\\|'\\\\\"\\)"
+  "Regexp of lines to skip when looking for file-local settings.
+If the first line matches this regular expression, then the -*-...-*- file-
+local settings will be consulted on the second line instead of the first.")
+
+(defun set-auto-mode-1 ()
+  "Find the -*- spec in the buffer.
+Call with point at the place to start searching from.
+If one is found, set point to the beginning and return the position
+of the end.  Otherwise, return nil; may change point.
+The variable `inhibit-local-variables-regexps' can cause a -*- spec to
+be ignored; but `enable-local-variables' and `local-enable-local-variables'
+have no effect."
+  (let (beg end)
+    (and
+     ;; Don't look for -*- if this file name matches any
+     ;; of the regexps in inhibit-local-variables-regexps.
+     (not (inhibit-local-variables-p))
+     (search-forward "-*-" (line-end-position
+                            ;; If the file begins with "#!"  (exec
+                            ;; interpreter magic), look for mode frobs
+                            ;; in the first two lines.  You cannot
+                            ;; necessarily put them in the first line
+                            ;; of such a file without screwing up the
+                            ;; interpreter invocation.  The same holds
+                            ;; for '\" in man pages (preprocessor
+                            ;; magic for the `man' program).
+                            (and (looking-at file-auto-mode-skip) 2))
+                     t)
+     (progn
+       (skip-chars-forward " \t")
+       (setq beg (point))
+       (search-forward "-*-" (line-end-position) t))
+     (progn
+       (forward-char -3)
+       (skip-chars-backward " \t")
+       (setq end (point))
+       (goto-char beg)
+       end))))
+
 (defvar ignored-local-variables
   '(ignored-local-variables safe-local-variable-values
     file-local-variables-alist dir-local-variables-alist)
