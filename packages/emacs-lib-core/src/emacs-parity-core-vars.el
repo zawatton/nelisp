@@ -45,11 +45,96 @@
 (unless (boundp 'window-combination-limit)
   (defvar window-combination-limit 'window-size
     "If non-nil, splitting a window makes a new parent window."))
+;; buffer.c DEFVAR_PER_BUFFER (buffer.c:5756): one value per buffer, nil
+;; by default.
+(unless (boundp 'mark-active)
+  (defvar mark-active nil
+    "Non-nil means the mark and region are currently active in this buffer."))
+(make-variable-buffer-local 'mark-active)
+;; coding.c DEFVAR (coding.c:12000, C default nil); GNU jka-compr.el
+;; reads and binds it when writing a compressed file.
+(unless (boundp 'last-coding-system-used)
+  (defvar last-coding-system-used nil
+    "Coding system used in the latest file or process I/O."))
+;; fileio.c DEFVAR (fileio.c:6856, C default nil); GNU mule.el (here
+;; emacs-mule-gnu.el) sets it to `set-auto-coding'.
+(unless (boundp 'set-auto-coding-function)
+  (defvar set-auto-coding-function nil
+    "If non-nil, a function to call to decide a coding system of file.
+Two arguments are passed to this function: the file name
+and the length of a file contents following the point.
+This function should return a coding system to decode the file contents.
+It should check the file name against `auto-coding-alist'.
+If no coding system is decided, it should check a coding system
+specified in the heading lines with the format:
+	-*- ... coding: CODING-SYSTEM; ... -*-
+or local variable spec of the tailing lines with `coding:' tag."))
 ;; callproc.c DEFVAR (default "hexl", callproc.c:2188); GNU ielm.el starts
 ;; its dummy process with it.
 (unless (boundp 'hexl-program-name)
   (defvar hexl-program-name "hexl"
     "File name for the program that converts files to and from hexl format."))
+;; lread.c DEFVAR (initial value ("") at lread.c:5666).  GNU
+;; jka-cmpr-hook.el adds ".gz"; a nil start would leave only ".gz".
+(unless (boundp 'load-file-rep-suffixes)
+  (defvar load-file-rep-suffixes (list "")
+    "List of suffixes that indicate representations of the same file.
+This list should normally start with the empty string.
+
+Enabling Auto Compression mode appends the suffixes in
+`jka-compr-load-suffixes' to this list and disabling Auto Compression
+mode removes them again.  `load' and related functions use this list to
+determine whether they should look for compressed versions of a file
+and, if so, which suffixes they should try to append to the file name
+in order to do so.  However, if you want to customize which suffixes
+the loading functions recognize as compression suffixes, you should
+customize `jka-compr-load-suffixes' rather than the present variable."))
+;; xdisp.c DEFVAR_INT (default 0, xdisp.c:38556); GNU info.el binds it
+;; around node display.
+(unless (boundp 'scroll-conservatively)
+  (defvar scroll-conservatively 0
+    "Scroll up to this many lines, to bring point back on screen.
+If point moves off-screen, redisplay will scroll by up to
+`scroll-conservatively' lines in order to bring point just barely
+onto the screen again.  If that cannot be done, then redisplay
+recenters point as usual.
+
+If the value is greater than 100, redisplay will never recenter point,
+but will always scroll just enough text to bring point into view, even
+if you move far away.
+
+A value of zero means always recenter point if it moves off screen."))
+;; callproc.c DEFVAR (callproc.c:2127; PATH_INFO, epaths.in default
+;; "/usr/local/share/info"); GNU info.el builds the Info directory list
+;; from it.
+(unless (boundp 'configure-info-directory)
+  (defvar configure-info-directory "/usr/local/share/info"
+    "For internal use by the build procedure only.
+This is the name of the directory in which the build procedure installed
+Emacs's info files; the default value for `Info-default-directory-list'
+includes this."))
+;; emacs.c DEFVAR (emacs.c:3565); nil in an installed Emacs.  GNU info.el
+;; reads it while building the Info directory list.
+(unless (boundp 'installation-directory)
+  (defvar installation-directory nil
+    "A directory within which to look for the `lib-src' and `etc' directories.
+In an installed Emacs, this is normally nil.  It is non-nil if
+both `lib-src' (on MS-DOS, `info') and `etc' directories are found
+within the variable `invocation-directory' or its parent.  For example,
+this is the case when running an uninstalled Emacs executable from its
+build directory."))
+;; callproc.c DEFVARs (non-Android defaults, callproc.c:2167 and 2173); GNU
+;; speedbar.el's `speedbar-fetch-etags-command' defcustom reads the latter.
+(unless (boundp 'ctags-program-name)
+  (defvar ctags-program-name "ctags"
+    "Name of the `ctags' program.
+Use this instead of calling `ctags' directly, as `ctags' may have been
+renamed to comply with executable naming restrictions on the system."))
+(unless (boundp 'etags-program-name)
+  (defvar etags-program-name "etags"
+    "Name of the `etags' program distributed with Emacs.
+Use this instead of calling `etags' directly, as `etags' may have been
+renamed to comply with executable naming restrictions on the system."))
 ;; doc.c DEFVARs: the DOC file's name within `doc-directory', and the object
 ;; files GNU 31.1's build put into its DOC (help-fns' `help-C-file-name'
 ;; keeps a DOC source entry only when its file is listed).  The list is the
@@ -164,7 +249,6 @@ This is the stock GNU Emacs default used by Comint and Tramp."))
 ;; --- minor-mode state vars (read before their define-minor-mode sets them) ---
 (unless (boundp 'evil-mode) (defvar evil-mode nil))
 (unless (boundp 'mouse-wheel-mode) (defvar mouse-wheel-mode nil))
-(unless (boundp 'auto-compression-mode) (defvar auto-compression-mode nil))
 
 ;; --- input method state (headless: no input method active) ---
 (unless (boundp 'current-input-method)

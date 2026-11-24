@@ -1160,3 +1160,7 @@ emacs-lisp/vc/ediff-vers.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/e
 emacs-lisp/wid-browse.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/wid-browse.el	sha256=9e1c1d871ace91598eb56d732a8d2460d290339a3dd2b17d9503838cc5afac41
 emacs-lisp/wid-edit.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/wid-edit.el	sha256=afa07a42aa34251f906b2e4c7b0037398a5a4fcf2355b15f26e9a60d7663584b
 emacs-lisp/xwidget.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/xwidget.el	sha256=f7e83e2d15bbf4ae08f15b1a554d4313fe5dadbb670168bf199eb8b8f3be6324
+emacs-lisp/pulse.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/pulse.el	sha256=c79ee9fc0d7c08bd8bcebc6207e6771228e2c16a47076debc1683203ab48dce7
+emacs-lisp/jka-cmpr-hook.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/jka-cmpr-hook.el	sha256=b6888b7d214c287c67a03d24f3d361b5f8e876d359f1cd6d4d97487e6bb4ad22
+emacs-lisp/jka-compr.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/jka-compr.el	sha256=3b0f8f8845c8856294c3aae9a074ec08d7afc8932384cc963e82001af3bff177
+staged-emacs-lisp/mule.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/international/mule.el.gz	sha256=ac5f4987cca50bbdbc70f8abeeec426ed54e8694728eaff3efee790b75e33e2d

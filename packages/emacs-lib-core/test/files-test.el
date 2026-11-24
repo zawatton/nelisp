@@ -754,7 +754,6 @@ cold-load in the standalone runtime image (which `require's the file at image
 build), so the syscall file gets a looser ceiling that still guards against
 runaway forms rather than the editing-shim limit."
   (dolist (spec '(("src/files.el" . 650)
-                  ("src/simple.el" . 650)
                   ("src/files-standalone-buffer.el" . 2000)))
     (let* ((file (expand-file-name (car spec) files-test--root))
            (oversized (files-test--oversized-top-level-forms file (cdr spec))))

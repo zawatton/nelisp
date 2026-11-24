@@ -152,8 +152,7 @@ def corpus_runtime_files():
         "packages/emacs-lib-core/src/nelisp-emacs-compat.el",
         "packages/emacs-lib-core/src/emacs-buffer.el",
         "packages/emacs-lib-core/src/emacs-faces.el",
-        "packages/emacs-lib-core/src/emacs-syntax-table.el",
-        "packages/emacs-lib-core/src/lisp.el")]
+        "packages/emacs-lib-core/src/emacs-syntax-table.el")]
 
 
 def corpus_load_directories():

@@ -135,42 +135,6 @@
 
 (provide 'gnus)
 
-;;;; info
-
-(unless (fboundp 'info)
-  (defun info (&optional _file-or-node _buffer)
-    "Tier 3 facade: signal unsupported Info browsing."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'info 'info)))
-
-(unless (fboundp 'Info-goto-node)
-  (defun Info-goto-node (&rest _args)
-    "Tier 3 facade: signal unsupported Info node navigation."
-    (emacs-tier3-facades--unsupported 'info 'Info-goto-node)))
-
-(unless (fboundp 'Info-find-node)
-  (defun Info-find-node (&rest _args)
-    "Tier 3 facade: signal unsupported Info node lookup."
-    (emacs-tier3-facades--unsupported 'info 'Info-find-node)))
-
-(unless (fboundp 'Info-directory)
-  (defun Info-directory (&rest _args)
-    "Tier 3 facade: signal unsupported Info directory browsing."
-    (emacs-tier3-facades--unsupported 'info 'Info-directory)))
-
-(unless (fboundp 'Info-mode)
-  (defun Info-mode ()
-    "Tier 3 facade: no-op Info mode."
-    (interactive)
-    nil))
-
-(unless (fboundp 'info-lookup-symbol)
-  (defun info-lookup-symbol (&rest _args)
-    "Tier 3 facade: signal unsupported Info symbol lookup."
-    (emacs-tier3-facades--unsupported 'info 'info-lookup-symbol)))
-
-(provide 'info)
-
 ;;;; treesit
 
 ;; GNU treesit.el defines this macro for byte-compiling against an Emacs
@@ -322,84 +286,6 @@
   (defun url-type (&rest _args)
     "Tier 3 facade: no URL type is available."
     nil))
-
-;;;; vc
-
-(defconst emacs-tier3-facades--vc-markers
-  '((".git" . Git)
-    (".hg" . Hg)
-    (".svn" . SVN))
-  "Supported VC root markers and their Emacs backend symbols.")
-
-(defun emacs-tier3-facades--vc-start-directory (file-or-dir)
-  "Return the directory to inspect for FILE-OR-DIR."
-  (let ((path (expand-file-name (or file-or-dir default-directory))))
-    (file-name-as-directory
-     (if (and (file-exists-p path) (not (file-directory-p path)))
-         (file-name-directory path)
-       path))))
-
-(defun emacs-tier3-facades--vc-responsible-backend (file-or-dir)
-  "Return the responsible VC backend for FILE-OR-DIR, or nil."
-  (let ((dir (emacs-tier3-facades--vc-start-directory file-or-dir))
-        parent
-        backend)
-    (while (and dir (not backend))
-      (dolist (entry emacs-tier3-facades--vc-markers)
-        (when (file-exists-p (expand-file-name (car entry) dir))
-          (setq backend (cdr entry))))
-      (setq parent (file-name-directory (directory-file-name dir)))
-      (setq dir (unless (or backend (null parent) (equal parent dir))
-                  parent)))
-    backend))
-
-(unless (fboundp 'vc-next-action)
-  (defun vc-next-action (&rest _args)
-    "Tier 3 facade: signal unsupported VC action."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'vc 'vc-next-action)))
-
-(unless (fboundp 'vc-dir)
-  (defun vc-dir (&rest _args)
-    "Tier 3 facade: signal unsupported VC directory UI."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'vc 'vc-dir)))
-
-(unless (fboundp 'vc-print-log)
-  (defun vc-print-log (&rest _args)
-    "Tier 3 facade: signal unsupported VC log display."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'vc 'vc-print-log)))
-
-(unless (fboundp 'vc-diff)
-  (defun vc-diff (&rest _args)
-    "Tier 3 facade: signal unsupported VC diff display."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'vc 'vc-diff)))
-
-(unless (fboundp 'vc-status)
-  (defun vc-status (&rest _args)
-    "Tier 3 facade: signal unsupported VC status display."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'vc 'vc-status)))
-
-(unless (fboundp 'vc-register)
-  (defun vc-register (&rest _args)
-    "Tier 3 facade: signal unsupported VC registration."
-    (interactive)
-    (emacs-tier3-facades--unsupported 'vc 'vc-register)))
-
-(unless (fboundp 'vc-responsible-backend)
-  (defun vc-responsible-backend (file-or-dir &rest _args)
-    "Return the VC backend responsible for FILE-OR-DIR, or nil."
-    (emacs-tier3-facades--vc-responsible-backend file-or-dir)))
-
-(unless (fboundp 'vc-backend)
-  (defun vc-backend (file-or-dir &rest _args)
-    "Return the VC backend for FILE-OR-DIR, or nil."
-    (emacs-tier3-facades--vc-responsible-backend file-or-dir)))
-
-(provide 'vc)
 
 (provide 'emacs-tier3-facades)
 

@@ -43,9 +43,6 @@
     completing-read
     minibuffer-complete
     minibuffer-complete-and-exit
-    project-current
-    project-find-file
-    project-switch-project
     emacs-process--fallback-process-p
     emacs-process--native-process-p
     emacs-process--process-object-p
@@ -175,9 +172,6 @@
     tab-line-tabs-window-buffers
     tab-line-tabs-fixed-window-buffers
     tab-line-tab-name-buffer
-    open-line
-    quoted-insert
-    indent-for-tab-command
     thread-first
     thread-last
     hash-table-empty-p
@@ -216,36 +210,6 @@
     map-into
     map-put!
     map-insert
-    forward-sexp
-    backward-sexp
-    mark-sexp
-    forward-list
-    backward-list
-    down-list
-    up-list
-    backward-up-list
-    kill-sexp
-    backward-kill-sexp
-    buffer-end
-    forward-sexp-default-function
-    beginning-of-defun
-    beginning-of-defun-raw
-    beginning-of-defun-comments
-    end-of-defun
-    mark
-    set-mark
-    push-mark
-    mark-defun
-    narrow-to-defun
-    insert-pair
-    insert-parentheses
-    delete-pair
-    kill-backward-up-list
-    raise-sexp
-    move-past-close-and-reindent
-    check-parens
-    field-complete
-    lisp-complete-symbol
     describe-buffer-case-table
     case-table-get-table
     get-upcase-table
@@ -318,17 +282,6 @@
     files--buffer-points
     files--buffer-modified-p
     files--buffer-modified-flags
-    max-mini-window-lines
-    indent-line-function
-    defun-prompt-regexp
-    parens-require-spaces
-    forward-sexp-function
-    beginning-of-defun-function
-    end-of-defun-function
-    end-of-defun-moves-to-eol
-    narrow-to-defun-include-comments
-    insert-pair-alist
-    delete-pair-blink-delay
     emacs-process--fallback-tag
     emacs-process--fallback-processes
     emacs-process--fallback-next-pid
@@ -339,7 +292,6 @@
     emacs-process-shell-command-switch
     emacs-process-call-process-region-input-file
     emacs-process-shell-command-on-region-output-file
-    lisp--mark
     mark-active
     nelisp-casetab--standard
     nelisp-casetab--current
@@ -476,24 +428,19 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-file-command
                  nemacs-runtime-image-preload--function-cell-live-p
                  nemacs-runtime-image-preload--install-files-core
-                 nemacs-runtime-image-preload--install-dired-command
-                 nemacs-runtime-image-preload--install-dired-core
                  nemacs-runtime-image-preload--install-help-command
                  nemacs-runtime-image-preload--install-help-core
                  nemacs-runtime-image-preload--install-module-command
                  nemacs-runtime-image-preload--install-elisp-core
                  nemacs-runtime-image-preload--install-ielm-core
                  nemacs-runtime-image-preload--install-minibuffer-core
-                 nemacs-runtime-image-preload--install-project-core
                  nemacs-runtime-image-preload--install-process-core
                  nemacs-runtime-image-preload--install-frame-core
                  nemacs-runtime-image-preload--install-tab-core
                  nemacs-runtime-image-preload--force-install-frame-tab-core
-                 nemacs-runtime-image-preload--install-simple-core
                  nemacs-runtime-image-preload--install-subr-x-core
                  nemacs-runtime-image-preload--install-seq-core
                  nemacs-runtime-image-preload--install-map-core
-                 nemacs-runtime-image-preload--install-lisp-core
                  nemacs-runtime-image-preload--install-case-table-core
                  nemacs-runtime-image-preload--install-cdl-core
                  nemacs-runtime-image-preload--install-range-core
@@ -661,14 +608,12 @@ The preload installers only `require' it when it is not yet a feature."
 (ert-deftest nemacs-runtime-image-preload-test/direct-install-creates-daily-core-surface ()
   (nemacs-runtime-image-preload-test--with-clean-direct-install
     (should-not (featurep 'files))
-    (should-not (featurep 'simple))
     (should-not (featurep 'dired))
     (should-not (featurep 'help-mode))
     (should-not (featurep 'help-fns))
     (should-not (featurep 'lisp-mode))
     (should-not (featurep 'ielm))
     (should-not (featurep 'minibuffer))
-    (should-not (featurep 'project))
     (should-not (featurep 'emacs-process))
     (should-not (featurep 'emacs-process-builtins))
     (should-not (featurep 'frame))
@@ -676,20 +621,16 @@ The preload installers only `require' it when it is not yet a feature."
     (should-not (featurep 'tab-bar))
     (should-not (featurep 'tab-line))
     (should (nemacs-runtime-image-preload--install-files-core))
-    (should (nemacs-runtime-image-preload--install-simple-core))
-    (should (nemacs-runtime-image-preload--install-dired-core))
     (should (nemacs-runtime-image-preload--install-help-core))
     (should (nemacs-runtime-image-preload--install-elisp-core))
     (should (nemacs-runtime-image-preload--install-ielm-core))
     (should (nemacs-runtime-image-preload--install-minibuffer-core))
-    (should (nemacs-runtime-image-preload--install-project-core))
     (should (nemacs-runtime-image-preload--install-process-core))
     (should (nemacs-runtime-image-preload--install-frame-core))
     (should (nemacs-runtime-image-preload--install-tab-core))
     (should (nemacs-runtime-image-preload--install-support-core))
     (should (nemacs-runtime-image-preload--install-utility-i18n-core))
     (should (featurep 'files))
-    (should (featurep 'simple))
     ;; The dired installer is a no-op now: genuine GNU dired.el comes from
     ;; the bootstrap bundle, not from a preload facade.
     (should-not (featurep 'dired))
@@ -702,14 +643,13 @@ The preload installers only `require' it when it is not yet a feature."
     ;; GNU ielm.el is autoloaded; the installer no longer provides it.
     (should-not (featurep 'ielm))
     (should (featurep 'minibuffer))
-    (should (featurep 'project))
     (should (featurep 'emacs-process))
     (should (featurep 'emacs-process-builtins))
     (should (featurep 'frame))
     (should (featurep 'emacs-frame-builtins))
     (should (featurep 'tab-bar))
     (should (featurep 'tab-line))
-    (dolist (feature '(subr-x seq map lisp case-table cdl range regi))
+    (dolist (feature '(subr-x seq map case-table cdl range regi))
       (should (featurep feature)))
     (dolist (feature '(hex-util map-ynp charprop charscript emoji-labels
                                 iso-transl cp51932 eucjp-ms fontset
@@ -768,15 +708,16 @@ The preload installers only `require' it when it is not yet a feature."
     (with-temp-buffer
       (insert "alpha")
       (goto-char (point-min))
-      (insert-pair)
-      (should (equal (buffer-string) "()alpha"))
+      ;; GNU lisp.el: `parens-require-spaces' adds the space before "alpha".
+      (let ((last-command-event ?\()) (insert-pair))
+      (should (equal (buffer-string) "() alpha"))
       (should (= (point) 2))
       (goto-char (point-min))
       (delete-pair)
-      (should (equal (buffer-string) "alpha")))
+      (should (equal (buffer-string) " alpha")))
     (with-temp-buffer
       (insert "(ok) )")
-      (should-error (check-parens) :type 'scan-error))
+      (should-error (check-parens) :type 'user-error))
     (with-temp-buffer
       (insert "'foo bar")
       (goto-char (point-min))
@@ -830,11 +771,7 @@ The preload installers only `require' it when it is not yet a feature."
     (should (equal (symbol-function 'emacs-lisp-mode)
                    '(lambda (&rest args)
                       (require 'lisp-mode)
-                      (apply 'emacs-mode-emacs-lisp-mode args))))
-    (should (equal (symbol-function 'project-current)
-                   '(lambda (&rest args)
-                      (require 'emacs-project)
-                      (apply 'project-current args))))))
+                      (apply 'emacs-mode-emacs-lisp-mode args))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/frame-and-tab-core-surface ()
   "Runtime frame/tab core should provide usable daily-driver state."
@@ -1194,7 +1131,7 @@ The preload installers only `require' it when it is not yet a feature."
             (should (= (point) (point-max)))
             (goto-char (point-min))
             (open-line 1)
-            (insert-pair)
+            (let ((last-command-event ?\()) (insert-pair))
             (should (equal (buffer-string) "()\n(alpha beta)"))
             (should (equal (save-buffer) input-file))
             (with-temp-buffer
@@ -1260,12 +1197,6 @@ The preload installers only `require' it when it is not yet a feature."
                                           calls)
                                     (list 'help symbol)))
                             (provide feature))
-                           ('emacs-project
-                            (fset 'project-current
-                                  (lambda (&rest _args)
-                                    (push '(project-current) calls)
-                                    '(project-vc "/tmp/runtime-project/")))
-                            (provide feature))
                            (_
                             (provide feature)))
                          feature)))
@@ -1278,26 +1209,22 @@ The preload installers only `require' it when it is not yet a feature."
                 (should (= (point) (point-max)))
                 (goto-char (point-min))
                 (open-line 1)
-                (insert-pair)
+                (let ((last-command-event ?\()) (insert-pair))
                 (should (equal (buffer-string) "()\n(alpha beta)"))
                 (should (eq (save-buffer) 'saved-buffer))
                 (should (equal saved-text "()\n(alpha beta)")))
               (should (equal (describe-key 'find-file)
                              '(help find-file)))
-              (should (equal (project-current)
-                             '(project-vc "/tmp/runtime-project/")))
               (dolist (feature '(files-standalone-buffer
-                                  emacs-help
-                                  emacs-project))
+                                  emacs-help))
                 (should (member (list 'require feature) calls)))
               (should (member '(find-file "note.el") calls))
               (should (member '(save-buffer) calls))
-              (should (member '(describe-key find-file) calls))
-              (should (member '(project-current) calls)))))
+              (should (member '(describe-key find-file) calls)))))
       (dolist (symbol cleanup-targets)
         (when (fboundp symbol)
           (fmakunbound symbol)))
-      (dolist (feature '(files-standalone-buffer emacs-help emacs-project))
+      (dolist (feature '(files-standalone-buffer emacs-help))
         (setq features (remove feature features))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/preload-vendor-core-base-before-extension ()

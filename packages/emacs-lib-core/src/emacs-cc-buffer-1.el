@@ -12,9 +12,13 @@
 
 (unless (fboundp 'barf-if-buffer-read-only)
   (defun barf-if-buffer-read-only (&optional position)
-    "Signal a `buffer-read-only' error if the current buffer is read-only."
+    "Signal a `buffer-read-only' error if the current buffer is read-only.
+If the text under POSITION (which defaults to point) has the
+`inhibit-read-only' text property set, the error will not be raised."
+    ;; buffer.c: a non-nil `inhibit-read-only' also suppresses the error.
     (let ((pos (or position (point))))
       (when (and buffer-read-only
+                 (not (and (boundp 'inhibit-read-only) inhibit-read-only))
                  (not (get-char-property pos 'inhibit-read-only)))
         (signal 'buffer-read-only (list (current-buffer))))
       nil)))

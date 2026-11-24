@@ -36,28 +36,59 @@
 
 (defun emacs-fnh-find-file-name-handler (filename operation)
   "Return the `file-name-handler-alist' entry matching FILENAME/OPERATION.
-Mirrors Emacs' C-level `find-file-name-handler': the first alist entry
-whose car matches FILENAME via `string-match-p' wins, unless that entry
-is excluded by `inhibit-file-name-handlers'/`inhibit-file-name-operation'."
+Mirrors Emacs' C-level `find-file-name-handler' (fileio.c): among the
+entries whose car matches FILENAME, the one whose match starts last
+wins; a handler whose `operations' property is non-nil is considered
+only for the operations it lists; and a handler is skipped when it is
+excluded by `inhibit-file-name-handlers'/`inhibit-file-name-operation'."
   (when (and (boundp 'file-name-handler-alist)
              file-name-handler-alist
              (stringp filename))
     (let ((inhibited (and (boundp 'inhibit-file-name-handlers)
                           (boundp 'inhibit-file-name-operation)
                           (eq inhibit-file-name-operation operation)
-                          inhibit-file-name-handlers)))
-      (catch 'emacs-fnh-handler
-        (dolist (entry file-name-handler-alist)
-          (when (and (consp entry)
-                     (stringp (car entry))
-                     (functionp (cdr entry))
-                     (string-match-p (car entry) filename)
-                     (not (memq (cdr entry) inhibited)))
-            (throw 'emacs-fnh-handler (cdr entry))))
-        nil))))
+                          inhibit-file-name-handlers))
+          (result nil)
+          (pos -1))
+      (dolist (entry file-name-handler-alist)
+        (when (and (consp entry)
+                   (stringp (car entry))
+                   (functionp (cdr entry)))
+          (let* ((handler (cdr entry))
+                 (operations (and (symbolp handler)
+                                  (get handler 'operations)))
+                 (match-pos (and (or (null operations)
+                                     (memq operation operations))
+                                 (save-match-data
+                                   (string-match (car entry) filename)))))
+            (when (and match-pos
+                       (> match-pos pos)
+                       (not (memq handler inhibited)))
+              (setq result handler
+                    pos match-pos)))))
+      result)))
 
 (unless (fboundp 'find-file-name-handler)
   (defalias 'find-file-name-handler #'emacs-fnh-find-file-name-handler))
+
+(defun emacs-fnh-handler-possible-p (operation)
+  "Return non-nil when a `file-name-handler-alist' entry could handle OPERATION.
+An entry whose handler is a symbol with a non-nil `operations' property
+that does not list OPERATION can never be chosen for it (fileio.c
+`Ffind_file_name_handler'), so callers may skip the handler lookup and
+the file name match altogether when this returns nil."
+  (and (boundp 'file-name-handler-alist)
+       (let ((tail file-name-handler-alist)
+             (found nil))
+         (while (and tail (not found))
+           (let ((handler (cdr-safe (car tail))))
+             (when (or (not (symbolp handler))
+                       (let ((operations (get handler 'operations)))
+                         (or (null operations)
+                             (memq operation operations))))
+               (setq found t)))
+           (setq tail (cdr tail)))
+         found)))
 
 (defun emacs-fnh-dispatch (operation local-function &rest args)
   "Run OPERATION, honouring a `file-name-handler-alist' match on (car ARGS).
@@ -75,7 +106,9 @@ convention.  Otherwise apply LOCAL-FUNCTION to ARGS unchanged."
 The closure inspects its first argument for a `file-name-handler-alist'
 match before falling back to LOCAL-FUNCTION; see `emacs-fnh-dispatch'."
   (lambda (&rest args)
-    (apply #'emacs-fnh-dispatch operation local-function args)))
+    (if (emacs-fnh-handler-possible-p operation)
+        (apply #'emacs-fnh-dispatch operation local-function args)
+      (apply local-function args))))
 
 ;;;; --- handler-aware standalone fallbacks -----------------------------
 ;;

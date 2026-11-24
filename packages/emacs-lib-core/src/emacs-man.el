@@ -6,13 +6,12 @@
 
 ;; Layer 2 (nelisp-emacs) manual-page viewer: run `man TOPIC' through the
 ;; `call-process' substrate, strip the overstrike formatting with `col -b',
-;; and show the result in a `*Man TOPIC*' buffer.
+;; and show the result in a `*emacs-man TOPIC*' buffer.
 ;;
 ;; This fits the standalone reader: `man' is an external command and
 ;; `call-process' works there (a held-open interactive subprocess does not).
-;; `woman' (normally a no-subprocess nroff formatter) is provided as the same
-;; viewer here -- the user-facing behaviour (display a man page) is identical;
-;; the pure-Elisp nroff path is a later target.
+;; GNU's `man', `Man-mode' and `woman' come from the vendored GNU man.el and
+;; woman.el; this viewer keeps its own names.
 ;;
 ;; Boundary (../nelisp-gui/docs/design/00-three-layer-architecture.org):
 ;;   - nelisp-emacs OWNS: the man invocation, output cleanup, and buffer.
@@ -37,7 +36,7 @@
 
 (defun emacs-man--buffer-name (topic)
   "Return the buffer name for TOPIC's manual page."
-  (format "*Man %s*" topic))
+  (format "*emacs-man %s*" topic))
 
 (defun emacs-man--nonblank-p (string)
   "Non-nil when STRING contains a non-whitespace character."
@@ -61,12 +60,12 @@
   (interactive)
   (when (fboundp 'kill-all-local-variables)
     (kill-all-local-variables))
-  (setq major-mode 'Man-mode
+  (setq major-mode 'emacs-man-mode
         mode-name "Man")
   nil)
 
 (defun emacs-man (topic)
-  "Display the manual page for TOPIC in a `*Man TOPIC*' buffer.
+  "Display the manual page for TOPIC in a `*emacs-man TOPIC*' buffer.
 Returns the buffer; signals an error when no page is found."
   (interactive "sManual entry: ")
   (let ((text (emacs-man--fetch topic)))
@@ -82,14 +81,6 @@ Returns the buffer; signals an error when no page is found."
       (when (fboundp 'display-buffer)
         (display-buffer buf))
       buf)))
-
-;;;; --- standard-name facade -----------------------------------------
-
-(defun emacs-man-install ()
-  "Bind the standard `woman' command name to the `emacs-man' implementation.
-`man' and `Man-mode' come from the vendored GNU man.el.  Not run on
-`require' (keeps a bare load from touching shared command symbols)."
-  (defalias 'woman #'emacs-man))
 
 (provide 'emacs-man)
 

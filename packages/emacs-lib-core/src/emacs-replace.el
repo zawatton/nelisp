@@ -5,14 +5,14 @@
 ;;; Commentary:
 
 ;; Layer 2 (nelisp-emacs) search-and-edit semantics: `occur' (collect matching
-;; lines into an *Occur* buffer and jump back to them), bulk `replace-regexp' /
+;; lines into an *emacs-occur* buffer and jump back to them), bulk `replace-regexp' /
 ;; `replace-string', `how-many', and the `flush-lines' / `keep-lines' line
 ;; filters.
 ;;
 ;; Boundary (../nelisp-gui/docs/design/00-three-layer-architecture.org):
 ;;   - nelisp-emacs OWNS: the line scan, match collection, occur-buffer
 ;;     construction, jump-to-occurrence, and the buffer-mutating replacements.
-;;   - nelisp-gui OWNS: rendering the *Occur* buffer + key transport.
+;;   - nelisp-gui OWNS: rendering the *emacs-occur* buffer + key transport.
 ;;
 ;; The scan runs `string-match' over the buffer text rather than
 ;; `re-search-forward': the standalone reader's buffer-search primitives are
@@ -21,7 +21,7 @@
 
 ;;; Code:
 
-(defvar emacs-occur-buffer-name "*Occur*"
+(defvar emacs-occur-buffer-name "*emacs-occur*"
   "Buffer name used by `emacs-occur'.")
 
 (defvar emacs-occur--matches nil
@@ -65,7 +65,7 @@ the line text (without its newline)."
     (emacs-replace--scan-lines regexp (buffer-string) (point-min))))
 
 (defun emacs-occur (regexp &optional buffer)
-  "Collect lines matching REGEXP into `*Occur*'; return the match count.
+  "Collect lines matching REGEXP into `*emacs-occur*'; return the match count.
 Stores the matches for `emacs-occur-goto' navigation."
   (interactive "sList lines matching regexp: ")
   (let* ((src (or buffer (current-buffer)))
@@ -516,21 +516,6 @@ the returned query-replace session stateful for GUI dispatch loops."
                 (when after-success
                   (funcall after-success session))
                 (emacs-query-replace-session-count session))))))))))
-
-;;;; --- standard-name facade -----------------------------------------
-
-(defun emacs-replace-install ()
-  "Bind the standard occur / replace command names to the `emacs-*'
-implementations.  Not run on `require' (keeps a bare load from touching
-shared command symbols)."
-  (defalias 'occur #'emacs-occur)
-  (defalias 'how-many #'emacs-replace-how-many)
-  (defalias 'replace-regexp #'emacs-replace-regexp)
-  (defalias 'replace-string #'emacs-replace-string)
-  (defalias 'flush-lines #'emacs-replace-flush-lines)
-  (defalias 'keep-lines #'emacs-replace-keep-lines)
-  (defalias 'query-replace #'emacs-query-replace)
-  (defalias 'query-replace-regexp #'emacs-query-replace-regexp))
 
 (provide 'emacs-replace)
 

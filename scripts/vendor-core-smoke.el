@@ -205,7 +205,6 @@ needs their install/init paths to have run before vendor files are required."
                        emacs-man
                        emacs-shell
                        emacs-ielm
-                       emacs-project
                        emacs-replace
                        emacs-comint
                        emacs-vc
@@ -374,10 +373,7 @@ needs their install/init paths to have run before vendor files are required."
   'ok)
 
 (defun vendor-core-smoke--check-lisp ()
-  "Load the common Lisp editing feature and verify sexp helpers."
-  (require 'lisp)
-  (vendor-core-smoke--assert (featurep 'lisp)
-                             "lisp feature was not provided")
+  "Verify the GNU emacs-lisp/lisp.el sexp helpers (it provides no feature)."
   (vendor-core-smoke--check-fbound
    '(forward-sexp backward-sexp mark-sexp forward-list backward-list
           down-list up-list backward-up-list kill-sexp backward-kill-sexp

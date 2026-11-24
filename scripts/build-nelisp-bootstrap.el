@@ -402,7 +402,8 @@ TRANSFORMER-SHA)."
 (defconst nelisp-bootstrap--gnu-library-files
   '(("cl-lib.el" . "emacs-lisp/emacs-lisp/cl-lib.el")
     ("subr-x.el" . "emacs-lisp/emacs-lisp/subr-x.el")
-    ("generator.el" . "emacs-lisp/emacs-lisp/generator.el"))
+    ("generator.el" . "emacs-lisp/emacs-lisp/generator.el")
+    ("jka-cmpr-hook.el" . "emacs-lisp/jka-cmpr-hook.el"))
   "Logical bundle names served by the genuine GNU library in the vendor tree.
 These libraries have no package shim; the bundle uses the GNU source.")
 
@@ -434,8 +435,7 @@ is relative to `nelisp-bootstrap-repo-root'."
     (sort names #'string<)))
 
 (defvar nelisp-bootstrap-late-extra-files
-  `("lisp.el"
-    "emacs-fileio.el"
+  `("emacs-fileio.el"
     "case-table.el"
     "emacs-process-events.el"
     "regi.el"
@@ -451,24 +451,22 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-xref.el"
     "emacs-compile.el"
     "emacs-vc.el"
-    "vc.el"
     "emacs-comint.el"
     "emacs-replace.el"
-    "replace.el"
     "emacs-ielm.el"
     ;; GNU files.el directory-local-variables definitions (generated, verbatim)
     ;; for project.el and anything calling `hack-dir-local-variables'.
     "emacs-files-gnu.el"
+    ;; GNU mule.el file-coding definitions (generated, verbatim): the
+    ;; coding detection `insert-file-contents' handlers such as jka-compr use.
+    "emacs-mule-gnu.el"
     ;; GNU window.el window-group functions (generated, verbatim) for
     ;; isearch.el, which reads the window-group start on every search step.
     "emacs-window-gnu.el"
-    "emacs-project.el"
-    "project.el"
     "emacs-shell.el"
     "emacs-eshell.el"
     "eshell.el"
     "emacs-man.el"
-    "woman.el"
     "emacs-calc.el"
     "calc.el"
     ;; Directory browser: the genuine GNU `dired.el' in the vendor tail is the
@@ -489,10 +487,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-translation-table.el"
     "emacs-parity-fns2.el"
     "emacs-parity-org.el"
-    ;; Lightweight standard simple.el shim.  Its visual-line mode family is
-    ;; needed before user init reaches visual-fill-column's global command;
-    ;; the full vendor simple.el remains intentionally out of the bundle.
-    "simple.el"
     ;; Stock variable fills that no other wired file provides.  Both are
     ;; purely additive -- every top-level form is
     ;; `(unless (boundp 'X) (defvar X ...))' -- so a real preload still wins.
@@ -517,6 +511,11 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU C-core coverage (tools/ai/c-core-progress.org): every
     ;; src/emacs-cc-*.el unit, in name order.
     ,@(nelisp-bootstrap--c-core-unit-files)
+    ;; GNU loadup.el loads jka-cmpr-hook after files.el and the C core; its
+    ;; last form turns `auto-compression-mode' on, which reads files.el's
+    ;; `file-name-version-regexp' (vars2) and coding.c's
+    ;; `file-coding-system-alist' (emacs-cc-coding-2).
+    "jka-cmpr-hook.el"
     ;; Interactive TTY glyph rendering must follow the mode/default variables.
     "emacs-redisplay.el"
     "emacs-redisplay-core.el")
@@ -668,9 +667,9 @@ These are existing vendor implementations, not local reimplementations.")
     ;; dired.el (+6.5s, needs an `easy-menu-define' keep-rule for woman's
     ;; `[menu-bar immediate]' lookup) and calc/calc.el (+11.5s, ~7s of it
     ;; live `calc-macs'/`rect'/`calc-loaddefs' loads).  isearch.el is
-    ;; bundled below (search-map comes from the keymap substrate).  woman.el's eager `woman-dired-define-keys' call is
-    ;; rewritten to the deferred `dired-mode-hook' branch in
-    ;; standalone-source-normalize.el.
+    ;; bundled below (search-map comes from the keymap substrate).  GNU
+    ;; dired.el is now bundled further down, with its menus kept, so
+    ;; woman.el's eager `woman-dired-define-keys' runs as in GNU.
     "emacs-lisp/progmodes/compile.el"
     "emacs-lisp/pcomplete.el"
     "emacs-lisp/shell.el"
@@ -1291,9 +1290,6 @@ concatenated bootstrap bundle must make the order explicit."
     ;; unprovided after an early top-level error.
     (dolist (pair '(("emacs-calc.el" . "calc.el")
                     ("emacs-eshell.el" . "eshell.el")
-                    ("emacs-project.el" . "project.el")
-                    ("emacs-replace.el" . "replace.el")
-                    ("emacs-vc.el" . "vc.el")
                     ("emacs-faces.el" . "emacs-faces-builtins.el")
                     ("emacs-frame.el" . "emacs-frame-builtins.el")
                     ("emacs-window.el" . "emacs-window-builtins.el")

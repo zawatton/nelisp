@@ -2932,21 +2932,6 @@ CONTENTS, matching the non-mutating fallback shape."
           (expand-file-name "vendor/emacs-lisp/gnus" root)
           (expand-file-name "vendor/emacs-lisp/mail" root))))
 
-(defconst emacs-org-outline--vendor-dired-shadow-symbols
-  '(dired dired-mode dired-find-file dired-next-line dired-previous-line
-    dired-up-directory dired-mark dired-unmark dired-flag-file-deletion
-    dired-do-flagged-delete dired-do-rename dired-do-copy)
-  "Function names `emacs-dired-min.el' owns that also exist in real Emacs
-`dired.el'.  Vendored Org (loaded below with `vendor/emacs-lisp' prepended
-to `load-path') pulls in the vendored `dired.el' as a transitive dependency,
-which -- being loaded after `emacs-dired-min.el' -- silently redefines every
-one of these to the real, host-oriented dired implementation, orphaning
-this project's own minimal dired buffer/state machinery for the rest of the
-process.  Save and restore these around the vendor `org-element' require so
-whichever of the two dired implementations this process already committed
-to before this call stays in effect; only used from
-`emacs-org-outline--try-vendor-org-element'.")
-
 (defun emacs-org-outline--try-vendor-org-element ()
   "Try loading an Org element parser (`org-element').
 Only the NeLisp standalone reader, which has no built-in Org, needs the
@@ -2980,10 +2965,7 @@ lightweight API and record why the full parser is absent."
     (let ((load-path (if (fboundp 'nelisp--write-stdout-bytes)
                          (append (emacs-org-outline--vendor-org-load-paths)
                                  load-path)
-                       load-path))
-          (saved (mapcar (lambda (sym)
-                           (cons sym (and (fboundp sym) (symbol-function sym))))
-                         emacs-org-outline--vendor-dired-shadow-symbols)))
+                       load-path)))
       ;; This shim provides `org-element-ast' so the lightweight API can be
       ;; used before the full parser is available.  The real vendor parser's
       ;; `(require 'org-element-ast)' then becomes a no-op, which would leave
@@ -2994,27 +2976,21 @@ lightweight API and record why the full parser is absent."
       ;; parser is optional, so a failure (e.g. a missing substrate function
       ;; hit while loading vendor `org-macs.el') is only recorded in
       ;; `emacs-org-outline--vendor-org-element-load-error' and the require
-      ;; is skipped, since it cannot succeed without the AST.  The shadow
-      ;; symbols are restored either way.
-      (unwind-protect
-          (condition-case err
-              (progn
-                (when (and (fboundp 'nelisp--write-stdout-bytes)
-                           (not (fboundp 'org-element-deferred-create)))
-                  (let* ((root (emacs-org-outline--repo-root))
-                         (ast-file (expand-file-name
-                                    "vendor/emacs-lisp/org/org-element-ast.el"
-                                    root)))
-                    (when (file-readable-p ast-file)
-                      (load ast-file nil 'no-message t t))))
-                (require 'org-element))
-            (error
-             (setq emacs-org-outline--vendor-org-element-load-error err)
-             nil))
-        (dolist (cell saved)
-          (if (cdr cell)
-              (fset (car cell) (cdr cell))
-            (fmakunbound (car cell)))))))))
+      ;; is skipped, since it cannot succeed without the AST.
+      (condition-case err
+          (progn
+            (when (and (fboundp 'nelisp--write-stdout-bytes)
+                       (not (fboundp 'org-element-deferred-create)))
+              (let* ((root (emacs-org-outline--repo-root))
+                     (ast-file (expand-file-name
+                                "vendor/emacs-lisp/org/org-element-ast.el"
+                                root)))
+                (when (file-readable-p ast-file)
+                  (load ast-file nil 'no-message t t))))
+            (require 'org-element))
+        (error
+         (setq emacs-org-outline--vendor-org-element-load-error err)
+         nil))))))
 
 (emacs-org-outline--try-vendor-org-element)
 

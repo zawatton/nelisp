@@ -361,12 +361,19 @@ Return nil without changing SYMBOL's value or properties."
 ;; `macroexpand-all' forcing nested `eval-when-compile' forms while
 ;; compile-time variables are temporarily bound, so the standalone path
 ;; returns a quoted constant like host Emacs's macroexpansion does.
+(defvar emacs-eval--standalone-compile-time-only-features '(gnus-sum speedbar)
+  "Features skipped when required only through `eval-when-compile'.
+Org source loads `gnus-sum' this way; pulling the full Gnus summary stack
+into standalone NeLisp during interpreted source load is not required for
+Org runtime behavior and exceeds the raw loader budget.  GNU info.el loads
+`speedbar' this way only for a macro its speedbar support uses; GNU loads
+the compiled info.elc, which never loads speedbar.")
+
 (defun emacs-eval--skip-standalone-compile-time-require-p (body)
-  "Return non-nil when BODY is a compile-time-only require to skip.
-Org source loads `gnus-sum' only through `eval-when-compile'.  Pulling the
-full Gnus summary stack into standalone NeLisp during interpreted source load
-is not required for Org runtime behavior and currently exceeds the raw loader
-budget, so keep the macroexpansion result while avoiding the require."
+  "Return the feature when BODY is a compile-time-only require to skip.
+See `emacs-eval--standalone-compile-time-only-features'.  The
+macroexpansion result (the quoted feature, as `require' returns) is kept
+while the require itself is avoided."
   (and (consp body)
        (null (cdr body))
        (consp (car body))
@@ -374,21 +381,24 @@ budget, so keep the macroexpansion result while avoiding the require."
        (consp (cdr (car body)))
        (consp (car (cdr (car body))))
        (eq (car (car (cdr (car body)))) 'quote)
-       (eq (car (cdr (car (cdr (car body))))) 'gnus-sum)))
+       (car (memq (car (cdr (car (cdr (car body)))))
+                  emacs-eval--standalone-compile-time-only-features))))
 
 (when (or (fboundp 'nl-write-file)
           (not (boundp 'emacs-version))
           (not (stringp emacs-version)))
   (defmacro eval-when-compile (&rest body)
-    (if (emacs-eval--skip-standalone-compile-time-require-p body)
-        (list 'quote 'gnus-sum)
-      (list 'quote (eval (cons 'progn body) t)))))
+    (let ((skipped (emacs-eval--skip-standalone-compile-time-require-p body)))
+      (if skipped
+          (list 'quote skipped)
+        (list 'quote (eval (cons 'progn body) t))))))
 
 (unless (fboundp 'eval-when-compile)
   (defmacro eval-when-compile (&rest body)
-    (if (emacs-eval--skip-standalone-compile-time-require-p body)
-        (list 'quote 'gnus-sum)
-      (list 'quote (eval (cons 'progn body) t)))))
+    (let ((skipped (emacs-eval--skip-standalone-compile-time-require-p body)))
+      (if skipped
+          (list 'quote skipped)
+        (list 'quote (eval (cons 'progn body) t))))))
 
 (unless (fboundp 'eval-and-compile)
   (defmacro eval-and-compile (&rest body) (cons 'progn body)))

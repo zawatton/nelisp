@@ -159,7 +159,6 @@ here rather than as a bare `file-error'."
                   "src/emacs-time.el"
                   "src/emacs-eval.el"
                   "src/emacs-easy-mmode.el"
-                  "src/lisp.el"
                   "src/emacs-list.el"
                   "src/emacs-subr-extras.el"
                   "src/emacs-backquote.el"
@@ -188,11 +187,20 @@ here rather than as a bare `file-error'."
                   "src/emacs-keymap-builtins.el"
                   "src/emacs-font-lock-builtins.el"
                   "src/emacs-minibuffer-builtins.el"
-                  "src/emacs-textmodes-stub.el"
-                  "src/simple.el"))
+                  "src/emacs-textmodes-stub.el"))
     (nelisp-emacs-org-bridge--trace "core-load %s" file)
     (load (nelisp-emacs-org-bridge--source-file file)
           nil 'no-message t t))
+  ;; GNU emacs-lisp/lisp.el (sexp motion, defun navigation) replaces the
+  ;; removed src/lisp.el stand-in.
+  ;; GNU simple.el replaces the removed src/simple.el stand-in.
+  (nelisp-emacs-org-bridge--trace "core-load vendor simple")
+  (load (nelisp-emacs-org-bridge--vendor-file "vendor/emacs-lisp/simple.el")
+        nil 'no-message t t)
+  (nelisp-emacs-org-bridge--trace "core-load vendor lisp")
+  (load (nelisp-emacs-org-bridge--vendor-file
+         "vendor/emacs-lisp/emacs-lisp/lisp.el")
+        nil 'no-message t t)
   (nelisp-emacs-org-bridge--trace "core-load vendor outline")
   (load (nelisp-emacs-org-bridge--vendor-file
          "vendor/emacs-lisp/outline.el")

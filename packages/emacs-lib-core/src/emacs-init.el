@@ -121,8 +121,7 @@ leave XCB on a different command family than the terminal consumer."
   (when (fboundp 'nelisp--repr)
     (require 'emacs-edit-builtins)
     (require 'emacs-replace)
-    (emacs-edit-install-native-command-shims)
-    (emacs-replace-install))
+    (emacs-edit-install-native-command-shims))
   t)
 
 (defun emacs-init-load-tui-core-features ()
