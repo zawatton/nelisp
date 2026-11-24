@@ -34109,11 +34109,15 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
 ;; the native subr stays reachable as `nelisp--native-signal'.
 (unless (fboundp 'nelisp--native-signal)
   (defalias 'nelisp--native-signal (symbol-function 'signal)))
-(defun signal (error-symbol data)
+(defun signal (error-symbol &optional data)
   "Signal an error of type ERROR-SYMBOL with DATA.
 ERROR-SYMBOL must have an `error-conditions' property; otherwise
 \(error \"Invalid error symbol\" ERROR-SYMBOL) is signaled.  A nil
-ERROR-SYMBOL re-signals DATA, whose car is the real symbol."
+ERROR-SYMBOL re-signals DATA, whose car is the real symbol.  When
+re-signaling an error object, as GNU Emacs 31.1 allows, DATA is omitted
+and ERROR-SYMBOL is the whole error descriptor (eval.c `signal_or_quit')."
+  (when (and (null data) (consp error-symbol))
+    (setq data (cdr error-symbol) error-symbol (car error-symbol)))
   (when (and (null error-symbol) (consp data))
     (setq error-symbol (car data) data (cdr data)))
   (unless (symbolp error-symbol)
