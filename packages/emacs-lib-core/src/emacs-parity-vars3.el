@@ -22,13 +22,7 @@
 ;;      vc-hooks.el makes it buffer-local and fills it when a file is under
 ;;      version control, so pre-binding nil can never shadow a real value.
 ;;
-;;   2. `lisp-imenu-generic-expression' -- DATA var (lisp-mode.el `defvar').
-;;      Pre-bound to the EXACT stock Emacs 30.1 value (machine-copied via
-;;      `prin1', not hand-transcribed).  If lisp-mode.el later loads and its
-;;      `defvar' does not override (var already bound), the value is byte-for-
-;;      byte identical to stock -- a harmless "shadow".
-;;
-;;   3. `treemacs-header-projects-button' -- `defconst'-owned (OVERRIDE-SAFE),
+;;   2. `treemacs-header-projects-button' -- `defconst'-owned (OVERRIDE-SAFE),
 ;;      verified at treemacs/src/elisp/treemacs-header-line.el:47 (sibling of
 ;;      `treemacs-header-close-button' already shimmed in vars2.el:99).  The
 ;;      real value is a propertized glyph carrying a mouse `local-map' built
@@ -74,18 +68,6 @@ being applied, but still respect file-local ones."))
 (unless (boundp 'mode-require-final-newline)
   (defvar mode-require-final-newline t
     "Whether to add a newline at end of file, in certain major modes."))
-
-;;;; --- lisp-mode.el: lisp-imenu-generic-expression (exact stock) -----
-;; Verbatim Emacs 30.1 value; `[[:space:]\n]' preserves the literal newline
-;; inside the `defvar' matcher's whitespace class.
-(unless (boundp 'lisp-imenu-generic-expression)
-  (defvar lisp-imenu-generic-expression
-    '((nil "^\\s-*(\\(cl-def\\(?:generic\\|ine-compiler-macro\\|m\\(?:acro\\|ethod\\)\\|subst\\|un\\)\\|def\\(?:advice\\|generic\\|ine-\\(?:advice\\|compil\\(?:ation-mode\\|er-macro\\)\\|derived-mode\\|g\\(?:\\(?:eneric\\|lobal\\(?:\\(?:ized\\)?-minor\\)\\)-mode\\)\\|inline\\|m\\(?:ethod-combination\\|inor-mode\\|odify-macro\\)\\|s\\(?:etf-expander\\|keleton\\)\\)\\|m\\(?:acro\\|ethod\\)\\|s\\(?:etf\\|ubst\\)\\|un\\*?\\)\\|ert-deftest\\)\\s-+\\(\\(?:\\w\\|\\s_\\|\\\\.\\)+\\)" 2)
-      (nil "^\\s-*(\\(def\\(?:\\(?:ine-obsolete-function-\\)?alias\\)\\)\\s-+'\\(\\(?:\\w\\|\\s_\\|\\\\.\\)+\\)" 2)
-      ("Variables" "^\\s-*(\\(def\\(?:c\\(?:onst\\(?:ant\\)?\\|ustom\\)\\|ine-symbol-macro\\|parameter\\|var-keymap\\)\\)\\s-+\\(\\(?:\\w\\|\\s_\\|\\\\.\\)+\\)" 2)
-      ("Variables" "^\\s-*(defvar\\(?:-local\\)?\\s-+\\(\\(?:\\w\\|\\s_\\|\\\\.\\)+\\)[[:space:]\n]+[^)]" 1)
-      ("Types" "^\\s-*(\\(cl-def\\(?:struct\\|type\\)\\|def\\(?:class\\|face\\|group\\|ine-\\(?:condition\\|error\\|widget\\)\\|package\\|struct\\|t\\(?:\\(?:hem\\|yp\\)e\\)\\)\\)\\s-+'?\\(\\(?:\\w\\|\\s_\\|\\\\.\\)+\\)" 2))
-    "Imenu generic expression for Lisp mode.  See `imenu-generic-expression'."))
 
 ;;;; --- treemacs-header-line.el: treemacs-header-projects-button ------
 ;; defconst-owned (override-safe); faithful visible glyph + face fallback.

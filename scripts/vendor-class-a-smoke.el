@@ -80,7 +80,9 @@ slow."
         (filename (vendor-class-a-smoke--entry-file entry)))
     (condition-case err
         (progn
-          (require feature filename)
+          (if (eq feature 'map-ynp)
+              (load "map-ynp" nil 'no-message)
+            (require feature filename))
           (list feature 'pass ""))
       (error
        (list feature 'fail (format "%S" err))))))

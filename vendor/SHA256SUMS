@@ -2055,3 +2055,4 @@ f8af2b727c3c6afb7fc274389045f6a8655bf5a135e876c24300b2f6372f3d66  vendor/emacs-l
 5b732365868bef65e0301dec07d0826fa23c34ce84808a3dba9cdc768e8406e1  vendor/emacs-lisp/winner.el
 d6879bda61910ce33c0bd2e5d35896b4f04de5cab3b2c366ff2fce5bd4009adf  vendor/emacs-lisp/x-dnd.el
 f34814415e6f802f3b1bed537243d3b65d4a7ec2b7d111f01f7814fb59211bec  vendor/emacs-lisp/xt-mouse.el
+51601fbcd1e27a8ff716eebb55c9ec719cca12762797a16e5fdea8f7edf3573a  vendor/emacs-lisp/obsolete/cdl.el

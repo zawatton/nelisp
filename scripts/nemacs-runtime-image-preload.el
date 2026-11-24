@@ -47,6 +47,8 @@
                 (list (concat repo-root "/vendor/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/vc")
+                      (concat repo-root "/vendor/emacs-lisp/international")
+                      (concat repo-root "/vendor/emacs-lisp/obsolete")
                       ;; Doc 37 (task #16): vendor Tramp's own
                       ;; directory plus `parse-time''s home under
                       ;; calendar/.  Path-only -- nothing here `require's
@@ -134,7 +136,17 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      "emacs-lisp/emacs-lisp/shorthands.el"
                      "emacs-lisp/emacs-lisp/eldoc.el"
                      "emacs-lisp/tooltip.el"
-                     "emacs-lisp/emacs-lisp/rmc.el"))
+                     "emacs-lisp/emacs-lisp/rmc.el"
+                     "emacs-lisp/international/mule-util.el"
+                     "emacs-lisp/obsolete/cdl.el"
+                     "emacs-lisp/hex-util.el"
+                     ;; GNU loaddefs autoloads these functions.  The source
+                     ;; deliberately has no `provide' form.
+                     "emacs-lisp/emacs-lisp/map-ynp.el"
+                     "emacs-lisp/international/idna-mapping.el"
+                     "emacs-lisp/international/emoji-labels.el"
+                     ;; The bootstrap has already loaded GNU button.el.
+                     "emacs-lisp/help-mode.el"))
     ;; Preserve the reader's native-row functions and the setenv that
     ;; shares the reader's environment store with getenv.
     (let ((pins (cond
@@ -397,7 +409,6 @@ the default batch image while the vendor surface is still expanding."
 (defun nemacs-runtime-image-preload--install-daily-driver-core ()
   "Install daily-driver feature facades into the current runtime image."
   (nemacs-runtime-image-preload--install-help-core)
-  (nemacs-runtime-image-preload--install-elisp-core)
   (nemacs-runtime-image-preload--install-ielm-core)
   (nemacs-runtime-image-preload--install-minibuffer-core)
   (nemacs-runtime-image-preload--install-dev-nav-core)
@@ -434,30 +445,8 @@ replay it in runtimes with minimal closure support."
                 '(require 'emacs-help)
                 (list 'apply (list 'quote public) 'args)))))
 
-(defun nemacs-runtime-image-preload--define-help-button-types ()
-  "Define the `help-xref' and `help-function-def' button types.
-GNU libraries such as cl-extra define subtypes of them when they load, and
-`quit-window' and friends reach cl-extra lazily, after this stub has provided
-`help-mode' without loading the real file."
-  (let ((define
-         (lambda ()
-           (unless (get 'help-xref 'button-category-symbol)
-             (define-button-type 'help-xref))
-           (unless (get 'help-function-def 'button-category-symbol)
-             (define-button-type 'help-function-def :supertype 'help-xref)))))
-    (if (fboundp 'define-button-type)
-        (funcall define)
-      (eval-after-load 'button define))))
-
 (defun nemacs-runtime-image-preload--install-help-core ()
-  "Install the minimal help daily-driver surface without source `load'."
-  (unless (featurep 'help-mode)
-    (dolist (symbol '(help-mode
-                      help-go-back
-                      help-go-forward))
-      (nemacs-runtime-image-preload--install-help-command symbol))
-    (provide 'help-mode)
-    (nemacs-runtime-image-preload--define-help-button-types))
+  "Install the remaining help command facade."
   ;; `describe-function', `describe-variable' and `describe-symbol' are GNU
   ;; help-fns.el's (autoloaded from loaddefs); only `describe-key' is still
   ;; rendered by `emacs-help'.
@@ -472,20 +461,6 @@ GNU libraries such as cl-extra define subtypes of them when they load, and
           (list 'lambda '(&rest args)
                 (list 'require (list 'quote feature))
                 (list 'apply (list 'quote target) 'args)))))
-
-(defun nemacs-runtime-image-preload--install-elisp-core ()
-  "Install the minimal `lisp-mode' daily-driver surface."
-  (unless (featurep 'lisp-mode)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-lisp-mode 'lisp-mode 'emacs-mode-emacs-lisp-mode)
-    (nemacs-runtime-image-preload--install-module-command
-     'lisp-mode 'lisp-mode 'emacs-mode-emacs-lisp-mode)
-    (nemacs-runtime-image-preload--install-module-command
-     'eval-defun 'emacs-elisp-eval 'eval-defun)
-    (unless (fboundp 'indent-sexp)
-      (fset 'indent-sexp '(lambda (&optional _endpos) nil)))
-    (provide 'lisp-mode))
-  t)
 
 (defun nemacs-runtime-image-preload--install-ielm-core ()
   "Leave `ielm' to GNU ielm.el, autoloaded from loaddefs.
@@ -509,15 +484,11 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
   t)
 
 (defun nemacs-runtime-image-preload--install-dev-nav-core ()
-  "Install minimal imenu/xref/compile/VC daily-driver navigation facades."
-  (unless (featurep 'imenu)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-imenu-create-index 'emacs-imenu 'emacs-imenu-create-index)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-imenu 'emacs-imenu 'emacs-imenu)
-    (nemacs-runtime-image-preload--install-module-command
-     'imenu 'emacs-imenu 'emacs-imenu)
-    (provide 'imenu))
+  "Install lazy entry points for the NeLisp navigation modules."
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-imenu-create-index 'emacs-imenu 'emacs-imenu-create-index)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-imenu 'emacs-imenu 'emacs-imenu)
   ;; `xref-find-definitions' and friends are GNU xref.el's (autoloaded
   ;; from loaddefs); only the emacs-xref names are wrapped here.
   (unless (featurep 'xref)
@@ -529,44 +500,24 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
      'emacs-xref-pop-marker-stack
      'emacs-xref
      'emacs-xref-pop-marker-stack))
-  (unless (featurep 'compile)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-compile-run 'emacs-compile 'emacs-compile-run)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-compile-errors 'emacs-compile 'emacs-compile-errors)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-compile-next-error 'emacs-compile 'emacs-compile-next-error)
-    (nemacs-runtime-image-preload--install-module-command
-     'compile 'emacs-compile 'emacs-compile-run)
-    (nemacs-runtime-image-preload--install-module-command
-     'grep 'emacs-compile 'emacs-compile-run)
-    (nemacs-runtime-image-preload--install-module-command
-     'next-error 'emacs-compile 'emacs-compile-next-error)
-    (nemacs-runtime-image-preload--install-module-command
-     'previous-error 'emacs-compile 'emacs-compile-previous-error)
-    (provide 'compile))
-  (unless (featurep 'vc)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-vc-status 'emacs-vc 'emacs-vc-status)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-vc-diff 'emacs-vc 'emacs-vc-diff)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-vc-print-log 'emacs-vc 'emacs-vc-print-log)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-vc-dir 'emacs-vc 'emacs-vc-dir)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-vc-annotate 'emacs-vc 'emacs-vc-annotate)
-    (nemacs-runtime-image-preload--install-module-command
-     'emacs-vc-revision-diff 'emacs-vc 'emacs-vc-revision-diff)
-    (nemacs-runtime-image-preload--install-module-command
-     'vc-diff 'emacs-vc 'emacs-vc-diff)
-    (nemacs-runtime-image-preload--install-module-command
-     'vc-print-log 'emacs-vc 'emacs-vc-print-log)
-    (nemacs-runtime-image-preload--install-module-command
-     'vc-dir 'emacs-vc 'emacs-vc-dir)
-    (nemacs-runtime-image-preload--install-module-command
-     'vc-annotate 'emacs-vc 'emacs-vc-annotate)
-    (provide 'vc))
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-compile-run 'emacs-compile 'emacs-compile-run)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-compile-errors 'emacs-compile 'emacs-compile-errors)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-compile-next-error 'emacs-compile 'emacs-compile-next-error)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-vc-status 'emacs-vc 'emacs-vc-status)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-vc-diff 'emacs-vc 'emacs-vc-diff)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-vc-print-log 'emacs-vc 'emacs-vc-print-log)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-vc-dir 'emacs-vc 'emacs-vc-dir)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-vc-annotate 'emacs-vc 'emacs-vc-annotate)
+  (nemacs-runtime-image-preload--install-module-command
+   'emacs-vc-revision-diff 'emacs-vc 'emacs-vc-revision-diff)
   t)
 
 (defun nemacs-runtime-image-preload--install-shell-core ()
@@ -2005,382 +1956,6 @@ image startup."
     (provide 'case-table))
   t)
 
-(defun nemacs-runtime-image-preload--install-cdl-core ()
-  "Install lightweight `cdl' command names without source `load'."
-  (unless (featurep 'cdl)
-    (unless (fboundp 'cdl-get-file)
-      (fset 'cdl-get-file
-            (lambda (&rest args)
-              (apply #'call-process "ncdump" nil t nil args))))
-    (unless (fboundp 'cdl-put-region)
-      (fset 'cdl-put-region
-            (lambda (start end file)
-              (call-process-region start end "ncgen" nil nil nil "-o" file))))
-    (provide 'cdl))
-  t)
-
-(defun nemacs-runtime-image-preload--range-normalize (range)
-  "Normalize RANGE for the direct runtime-image `range' facade."
-  (if (listp (cdr-safe range))
-      range
-    (list range)))
-
-(defun nemacs-runtime-image-preload--range-denormalize (range)
-  "Return a single span when RANGE contains exactly one cons span."
-  (if (and (consp (car range))
-           (null (cdr range)))
-      (car range)
-    range))
-
-(defun nemacs-runtime-image-preload--range-span-start (span)
-  "Return first number in SPAN."
-  (if (consp span) (car span) span))
-
-(defun nemacs-runtime-image-preload--range-span-end (span)
-  "Return last number in SPAN."
-  (if (consp span) (cdr span) span))
-
-(defun nemacs-runtime-image-preload--range-insert-sorted-unique
-    (number numbers)
-  "Insert NUMBER into sorted NUMBERS unless it is already present."
-  (cond
-   ((null numbers) (list number))
-   ((= number (car numbers)) numbers)
-   ((< number (car numbers)) (cons number numbers))
-   (t (cons (car numbers)
-            (nemacs-runtime-image-preload--range-insert-sorted-unique
-             number (cdr numbers))))))
-
-(defun nemacs-runtime-image-preload--range-numbers (range)
-  "Expand RANGE into a sorted list of unique numbers."
-  (let (numbers)
-    (dolist (span (nemacs-runtime-image-preload--range-normalize range))
-      (cond
-       ((numberp span)
-        (setq numbers
-              (nemacs-runtime-image-preload--range-insert-sorted-unique
-               span numbers)))
-       ((consp span)
-        (let ((number (car span))
-              (end (cdr span)))
-          (while (<= number end)
-            (setq numbers
-                  (nemacs-runtime-image-preload--range-insert-sorted-unique
-                   number numbers))
-            (setq number (1+ number)))))))
-    numbers))
-
-(defun nemacs-runtime-image-preload--range-number-member-p
-    (number numbers)
-  "Return non-nil when NUMBER appears in sorted NUMBERS."
-  (catch 'done
-    (while numbers
-      (cond
-       ((= number (car numbers))
-        (throw 'done t))
-       ((< number (car numbers))
-        (throw 'done nil)))
-      (setq numbers (cdr numbers)))
-    nil))
-
-(defun nemacs-runtime-image-preload--range-compress-list (numbers)
-  "Convert sorted NUMBERS to a compact range list."
-  (let ((numbers (copy-sequence numbers))
-        result first last)
-    (while numbers
-      (let ((number (car numbers)))
-        (cond
-         ((null first)
-          (setq first number
-                last number))
-         ((= number last)
-          nil)
-         ((= number (1+ last))
-          (setq last number))
-         (t
-          (push (if (= first last) first (cons first last)) result)
-          (setq first number
-                last number))))
-      (setq numbers (cdr numbers)))
-    (when first
-      (push (if (= first last) first (cons first last)) result))
-    (nreverse result)))
-
-(defun nemacs-runtime-image-preload--install-range-core ()
-  "Install lightweight `range' helpers without source `load'."
-  (unless (featurep 'range)
-    (unless (fboundp 'range-normalize)
-      (fset 'range-normalize
-            '(lambda (range)
-               (nemacs-runtime-image-preload--range-normalize range))))
-    (unless (fboundp 'range-denormalize)
-      (fset 'range-denormalize
-            '(lambda (range)
-               (nemacs-runtime-image-preload--range-denormalize range))))
-    (unless (fboundp 'range-compress-list)
-      (fset 'range-compress-list
-            '(lambda (numbers)
-               (nemacs-runtime-image-preload--range-compress-list numbers))))
-    (unless (fboundp 'range-uncompress)
-      (fset 'range-uncompress
-            '(lambda (ranges)
-               (nemacs-runtime-image-preload--range-numbers ranges))))
-    (unless (fboundp 'range-concat)
-      (fset 'range-concat
-            '(lambda (range1 range2)
-               (range-compress-list
-                (let ((numbers
-                       (nemacs-runtime-image-preload--range-numbers range1)))
-                  (dolist (number
-                           (nemacs-runtime-image-preload--range-numbers range2)
-                           numbers)
-                    (setq numbers
-                          (nemacs-runtime-image-preload--range-insert-sorted-unique
-                           number numbers))))))))
-    (unless (fboundp 'range-add-list)
-      (fset 'range-add-list
-            '(lambda (ranges list)
-               (range-concat ranges (range-compress-list list)))))
-    (unless (fboundp 'range-difference)
-      (fset 'range-difference
-            '(lambda (range1 range2)
-               (let ((remove
-                      (nemacs-runtime-image-preload--range-numbers range2))
-                     result)
-                 (dolist (number
-                          (nemacs-runtime-image-preload--range-numbers range1))
-                   (unless
-                       (nemacs-runtime-image-preload--range-number-member-p
-                        number remove)
-                     (push number result)))
-                 (range-compress-list (nreverse result))))))
-    (unless (fboundp 'range-remove)
-      (fset 'range-remove
-            '(lambda (range1 range2)
-               (range-difference range1 range2))))
-    (unless (fboundp 'range-intersection)
-      (fset 'range-intersection
-            '(lambda (range1 range2)
-               (let ((right
-                      (nemacs-runtime-image-preload--range-numbers range2))
-                     result)
-                 (dolist (number
-                          (nemacs-runtime-image-preload--range-numbers range1))
-                   (when
-                       (nemacs-runtime-image-preload--range-number-member-p
-                        number right)
-                     (push number result)))
-                 (range-denormalize
-                  (range-compress-list (nreverse result)))))))
-    (unless (fboundp 'range-member-p)
-      (fset 'range-member-p
-            '(lambda (number ranges)
-               (catch 'done
-                 (dolist
-                     (span
-                      (nemacs-runtime-image-preload--range-normalize ranges))
-                   (let ((start
-                          (nemacs-runtime-image-preload--range-span-start
-                           span))
-                         (end
-                          (nemacs-runtime-image-preload--range-span-end
-                           span)))
-                     (cond
-                      ((and (<= start number) (<= number end))
-                       (throw 'done t))
-                      ((> start number)
-                       (throw 'done nil)))))
-                 nil))))
-    (unless (fboundp 'range-list-intersection)
-      (fset 'range-list-intersection
-            '(lambda (list ranges)
-               (let (result)
-                 (dolist (number list)
-                   (when (range-member-p number ranges)
-                     (push number result)))
-                 (nreverse result)))))
-    (unless (fboundp 'range-list-difference)
-      (fset 'range-list-difference
-            '(lambda (list ranges)
-               (let (result)
-                 (dolist (number list)
-                   (unless (range-member-p number ranges)
-                     (push number result)))
-                 (nreverse result)))))
-    (unless (fboundp 'range-length)
-      (fset 'range-length
-            '(lambda (range)
-               (length
-                (nemacs-runtime-image-preload--range-numbers range)))))
-    (unless (fboundp 'range-map)
-      (fset 'range-map
-            '(lambda (func range)
-               (dolist
-                   (number
-                    (nemacs-runtime-image-preload--range-numbers range))
-                 (funcall func number)))))
-    (provide 'range))
-  t)
-
-(defun nemacs-runtime-image-preload--regi-line-string ()
-  "Return the current line without the trailing newline."
-  (buffer-substring-no-properties (line-beginning-position)
-                                  (line-end-position)))
-
-(defun nemacs-runtime-image-preload--regi-predicate-match-p
-    (pred negate-p case-fold-search-value)
-  "Return non-nil when PRED matches the current line."
-  (let* ((case-fold-search case-fold-search-value)
-         (value (eval pred))
-         (matched
-          (cond
-           ((stringp value) (looking-at value))
-           (t value))))
-    (if negate-p (not matched) matched)))
-
-(defun nemacs-runtime-image-preload--regi-handle-result
-    (result working-frame current-frame)
-  "Return (DONE-P WORKING-FRAME CURRENT-FRAME STEP) for RESULT."
-  (let ((done-p nil)
-        (step 1))
-    (when (consp result)
-      (let ((frame-cell (assq 'frame result))
-            (step-cell (assq 'step result)))
-        (when frame-cell
-          (setq working-frame (cdr frame-cell)))
-        (when step-cell
-          (setq step (cdr step-cell)))
-        (when (memq 'continue result)
-          (setq current-frame (cdr current-frame)))
-        (when (memq 'abort result)
-          (setq done-p t))))
-    (unless (and (consp result) (memq 'continue result))
-      (setq current-frame working-frame))
-    (list done-p working-frame current-frame step)))
-
-(defun nemacs-runtime-image-preload--regi-frame-specials (frame)
-  "Return (BEGIN END EVERY WORKING-FRAME) for FRAME."
-  (let (begin-tag end-tag every-tag working-frame)
-    (dolist (entry frame)
-      (let ((pred (car entry))
-            (func (cadr entry)))
-        (cond
-         ((eq pred 'begin) (setq begin-tag func))
-         ((eq pred 'end)   (setq end-tag func))
-         ((eq pred 'every) (setq every-tag func))
-         (t                (push entry working-frame)))))
-    (list begin-tag end-tag every-tag (nreverse working-frame))))
-
-(defun nemacs-runtime-image-preload--regi-pos (&optional position col-p)
-  "Return point or column at a line-relative POSITION."
-  (save-excursion
-    (cond
-     ((eq position 'bol)  (beginning-of-line))
-     ((eq position 'boi)
-      (beginning-of-line)
-      (let ((end (line-end-position)))
-        (while (and (< (point) end)
-                    (let ((char
-                           (aref (buffer-substring-no-properties
-                                  (point) (1+ (point)))
-                                 0)))
-                      (or (= char ?\s) (= char ?\t))))
-          (forward-char 1))))
-     ((eq position 'bonl) (forward-line 1))
-     ((eq position 'bopl) (forward-line -1))
-     (t (end-of-line)))
-    (if col-p
-        (- (point) (line-beginning-position))
-      (point))))
-
-(defun nemacs-runtime-image-preload--regi-mapcar
-    (predlist func &optional negate-p case-fold-search-p)
-  "Build a regi frame from PREDLIST and FUNC."
-  (let (frame)
-    (dolist (pred predlist (nreverse frame))
-      (let ((entry (list pred func)))
-        (when (or negate-p case-fold-search-p)
-          (setq entry (append entry (list negate-p))))
-        (when case-fold-search-p
-          (setq entry (append entry (list case-fold-search-p))))
-        (push entry frame)))))
-
-(defun nemacs-runtime-image-preload--regi-interpret
-    (frame &optional start end)
-  "Interpret regi FRAME over the current buffer."
-  (save-excursion
-    (save-restriction
-      (when (and start end)
-        (let ((lo (min start end))
-              (hi (max start end)))
-          (narrow-to-region
-           (save-excursion
-             (goto-char lo)
-             (line-beginning-position))
-           (save-excursion
-             (goto-char hi)
-             (forward-line 1)
-             (point)))))
-      (goto-char (point-min))
-      (let* ((specials
-              (nemacs-runtime-image-preload--regi-frame-specials frame))
-             (begin-tag (nth 0 specials))
-             (end-tag (nth 1 specials))
-             (every-tag (nth 2 specials))
-             (working-frame (nth 3 specials))
-             (current-frame working-frame)
-             done-p)
-        (when begin-tag
-          (eval begin-tag))
-        (while (and (not done-p) (not (eobp)))
-          (cond
-           ((null current-frame)
-            (setq current-frame working-frame)
-            (forward-line 1))
-           (t
-            (let* ((entry (car current-frame))
-                   (pred (nth 0 entry))
-                   (func (nth 1 entry))
-                   (negate-p (nth 2 entry))
-                   (case-fold-search-value (nth 3 entry)))
-              (cond
-               ((nemacs-runtime-image-preload--regi-predicate-match-p
-                 pred negate-p case-fold-search-value)
-                (let* ((curline
-                        (nemacs-runtime-image-preload--regi-line-string))
-                       (curframe current-frame)
-                       (curentry entry)
-                       (result (eval func))
-                       (state
-                        (nemacs-runtime-image-preload--regi-handle-result
-                         result working-frame current-frame)))
-                  (setq done-p (nth 0 state)
-                        working-frame (nth 1 state)
-                        current-frame (nth 2 state))
-                  (unless (and (consp result) (memq 'continue result))
-                    (forward-line (nth 3 state)))))
-               (t
-                (setq current-frame (cdr current-frame)))))))
-          (when every-tag
-            (eval every-tag)))
-        (when end-tag
-          (eval end-tag))))))
-
-(defun nemacs-runtime-image-preload--install-regi-core ()
-  "Install lightweight `regi' interpreter without source `load'."
-  (unless (featurep 'regi)
-    (unless (boundp 'curline) (defvar curline nil))
-    (unless (boundp 'curframe) (defvar curframe nil))
-    (unless (boundp 'curentry) (defvar curentry nil))
-    (unless (fboundp 'regi-pos)
-      (fset 'regi-pos #'nemacs-runtime-image-preload--regi-pos))
-    (unless (fboundp 'regi-mapcar)
-      (fset 'regi-mapcar #'nemacs-runtime-image-preload--regi-mapcar))
-    (unless (fboundp 'regi-interpret)
-      (fset 'regi-interpret #'nemacs-runtime-image-preload--regi-interpret))
-    (provide 'regi))
-  t)
-
 (defun nemacs-runtime-image-preload--install-support-core ()
   "Install lightweight support facades without source load."
   (nemacs-runtime-image-preload--install-subr-x-core)
@@ -2389,89 +1964,6 @@ image startup."
   (unless (featurep 'emacs-symbol)
     (require 'emacs-symbol))
   (nemacs-runtime-image-preload--install-case-table-core)
-  (nemacs-runtime-image-preload--install-cdl-core)
-  (nemacs-runtime-image-preload--install-range-core)
-  (nemacs-runtime-image-preload--install-regi-core)
-  t)
-
-(defun nemacs-runtime-image-preload--hex-digit-value (char)
-  "Return hexadecimal value for CHAR."
-  (cond
-   ((and (<= ?0 char) (<= char ?9)) (- char ?0))
-   ((and (<= ?a char) (<= char ?f)) (+ 10 (- char ?a)))
-   ((and (<= ?A char) (<= char ?F)) (+ 10 (- char ?A)))
-   (t (error "Invalid hexadecimal digit `%c'" char))))
-
-(defun nemacs-runtime-image-preload--install-hex-util-core ()
-  "Install the lightweight `hex-util' surface without source `load'."
-  (unless (featurep 'hex-util)
-    (unless (fboundp 'decode-hex-string)
-      (fset 'decode-hex-string
-            (lambda (string)
-              (let* ((len (length string))
-                     (dst (make-string (/ len 2) 0))
-                     (idx 0)
-                     (pos 0))
-                (while (< pos len)
-                  (aset dst idx
-                        (+ (* (nemacs-runtime-image-preload--hex-digit-value
-                               (aref string pos))
-                              16)
-                           (nemacs-runtime-image-preload--hex-digit-value
-                            (aref string (1+ pos)))))
-                  (setq idx (1+ idx)
-                        pos (+ pos 2)))
-                dst))))
-    (unless (fboundp 'encode-hex-string)
-      (fset 'encode-hex-string
-            (lambda (string)
-              (let* ((digits "0123456789abcdef")
-                     (len (length string))
-                     (dst (make-string (* len 2) 0))
-                     (idx 0)
-                     (pos 0))
-                (while (< pos len)
-                  (let ((char (aref string pos)))
-                    (aset dst idx (aref digits (/ char 16)))
-                    (setq idx (1+ idx))
-                    (aset dst idx (aref digits (% char 16)))
-                    (setq idx (1+ idx)
-                          pos (1+ pos))))
-                dst))))
-    (provide 'hex-util))
-  t)
-
-(defun nemacs-runtime-image-preload--install-map-ynp-core ()
-  "Install the lightweight `map-ynp' prompt surface without source `load'."
-  (unless (featurep 'map-ynp)
-    (unless (boundp 'read-answer-short)
-      (defvar read-answer-short 'auto))
-    (unless (boundp 'read-answer-map--memoize)
-      (defvar read-answer-map--memoize nil))
-    (unless (fboundp 'map-y-or-n-p)
-      (fset 'map-y-or-n-p
-            (lambda (prompter actor list &optional _help _action-alist
-                              _no-cursor-in-echo-area)
-              (let ((actions 0))
-                (dolist (object list actions)
-                  (let ((prompt (if (stringp prompter)
-                                    (format prompter object)
-                                  (funcall prompter object))))
-                    (when (and prompt
-                               (or (not (stringp prompt))
-                                   (y-or-n-p prompt)))
-                      (funcall actor object)
-                      (setq actions (1+ actions)))))))))
-    (unless (fboundp 'read-answer)
-      (fset 'read-answer
-            (lambda (question answers)
-              (let ((input (read-from-minibuffer
-                            (format "%s(%s) "
-                                    question
-                                    (mapconcat #'car answers ", ")))))
-                (or (car (assoc input answers))
-                    (car (car answers)))))))
-    (provide 'map-ynp))
   t)
 
 (defun nemacs-runtime-image-preload--install-charscript-core ()
@@ -2488,22 +1980,6 @@ image startup."
                 (make-char-table 'char-script-table nil)
               [])))
     (provide 'charscript))
-  t)
-
-(defun nemacs-runtime-image-preload--install-emoji-labels-core ()
-  "Install representative `emoji-labels' data without source `load'."
-  (unless (featurep 'emoji-labels)
-    (unless (boundp 'emoji--labels)
-      (defvar emoji--labels '(("Smileys" ("smiling" "😀" "🙂")))))
-    (unless (boundp 'emoji--names)
-      (defvar emoji--names
-        (let ((table (make-hash-table :test 'equal)))
-          (puthash "😀" "grinning face" table)
-          (puthash "🙂" "slightly smiling face" table)
-          table)))
-    (unless (boundp 'emoji--derived)
-      (defvar emoji--derived (make-hash-table :test 'equal)))
-    (provide 'emoji-labels))
   t)
 
 (defun nemacs-runtime-image-preload--install-iso-transl-core ()
@@ -2552,23 +2028,6 @@ image startup."
     (provide feature))
   t)
 
-(defun nemacs-runtime-image-preload--install-idna-mapping-core ()
-  "Install the lightweight `idna-mapping' vector without source `load'."
-  (unless (featurep 'idna-mapping)
-    (unless (boundp 'idna-mapping-table)
-      (defvar idna-mapping-table
-        (let ((table (make-vector #x110000 nil))
-              (i ?A))
-          (while (<= i ?Z)
-            (aset table i (char-to-string (+ ?a (- i ?A))))
-            (setq i (1+ i)))
-          (aset table #x7f t)
-          (aset table #x00ad 'ignored)
-          (aset table #x212a "k")
-          table)))
-    (provide 'idna-mapping))
-  t)
-
 (defun nemacs-runtime-image-preload--install-ja-dic-utl-core ()
   "Install the lightweight `ja-dic-utl' helper surface without source `load'."
   (unless (featurep 'ja-dic-utl)
@@ -2594,17 +2053,13 @@ image startup."
 
 (defun nemacs-runtime-image-preload--install-utility-i18n-core ()
   "Install utility/i18n surfaces and load the generated Unicode registry."
-  (nemacs-runtime-image-preload--install-hex-util-core)
-  (nemacs-runtime-image-preload--install-map-ynp-core)
   (require 'charprop)
   (nemacs-runtime-image-preload--install-charscript-core)
-  (nemacs-runtime-image-preload--install-emoji-labels-core)
   (nemacs-runtime-image-preload--install-iso-transl-core)
   (nemacs-runtime-image-preload--install-translation-table-core
    'cp51932 'cp51932-decode 'cp51932-encode)
   (nemacs-runtime-image-preload--install-translation-table-core
    'eucjp-ms 'eucjp-ms-decode 'eucjp-ms-encode)
-  (nemacs-runtime-image-preload--install-idna-mapping-core)
   (nemacs-runtime-image-preload--install-ja-dic-utl-core)
   t)
 

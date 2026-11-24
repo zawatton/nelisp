@@ -19,14 +19,7 @@
   nemacs-test-paths-repo-root)
 
 (defconst nemacs-runtime-image-preload-test--direct-install-functions
-  '(help-mode
-    help-go-back
-    help-go-forward
-    describe-key
-    emacs-lisp-mode
-    lisp-mode
-    eval-defun
-    indent-sexp
+  '(describe-key
     completing-read
     minibuffer-complete
     minibuffer-complete-and-exit
@@ -220,29 +213,6 @@
     set-standard-case-table
     standard-syntax-table
     modify-syntax-entry
-    cdl-get-file
-    cdl-put-region
-    range-normalize
-    range-denormalize
-    range-difference
-    range-intersection
-    range-compress-list
-    range-uncompress
-    range-add-list
-    range-remove
-    range-member-p
-    range-list-intersection
-    range-list-difference
-    range-length
-    range-concat
-    range-map
-    regi-pos
-    regi-mapcar
-    regi-interpret
-    decode-hex-string
-    encode-hex-string
-    map-y-or-n-p
-    read-answer
     iso-transl-define-keys
     iso-transl-set-language
     x-decompose-font-name
@@ -272,13 +242,8 @@
     nelisp-casetab--standard
     nelisp-casetab--current
     case-table--standard-syntax-table
-    read-answer-short
-    read-answer-map--memoize
     charprop--registry
     char-script-table
-    emoji--labels
-    emoji--names
-    emoji--derived
     key-translation-map
     iso-transl-ctl-x-8-map
     iso-transl-char-map
@@ -287,15 +252,11 @@
     script-representative-chars
     fontset-alias-alist
     standard-fontset-spec
-    idna-mapping-table
     skkdic-okurigana-table
     skkdic-okuri-ari
     skkdic-okuri-nasi
     skkdic-prefix
     skkdic-postfix
-    curline
-    curframe
-    curentry
     shell-file-name
     shell-command-switch
     emacs-process-shell-file-name
@@ -314,20 +275,17 @@
   "Global variables installed directly into vendor-core images.")
 
 (defconst nemacs-runtime-image-preload-test--direct-install-features
-  '(files simple dired help-mode help-fns lisp-mode ielm
-          minibuffer project subr-x seq map lisp case-table cdl range regi
+  '(files simple dired help-fns ielm
+          minibuffer project subr-x seq map lisp case-table
           emacs-process emacs-process-builtins
           frame emacs-frame-builtins tab-bar tab-line
-          hex-util map-ynp charprop charscript emoji-labels iso-transl
-          cp51932 eucjp-ms fontset idna-mapping ja-dic-utl)
+          charprop charscript iso-transl
+          cp51932 eucjp-ms fontset ja-dic-utl)
   "Features installed directly into vendor-core images.")
 
 (defconst nemacs-runtime-image-preload-test--translation-symbols
   '(cp51932-decode cp51932-encode eucjp-ms-decode eucjp-ms-encode)
   "Translation-table symbols installed directly into vendor-core images.")
-
-(defvar nemacs-runtime-image-preload-test--seen nil
-  "Dynamic scratch list used by direct runtime-image facade tests.")
 
 (defmacro nemacs-runtime-image-preload-test--with-emacs-symbol (&rest body)
   "Run BODY with `emacs-symbol' provided, as in a baked base image.
@@ -406,7 +364,6 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-help-command
                  nemacs-runtime-image-preload--install-help-core
                  nemacs-runtime-image-preload--install-module-command
-                 nemacs-runtime-image-preload--install-elisp-core
                  nemacs-runtime-image-preload--install-ielm-core
                  nemacs-runtime-image-preload--install-minibuffer-core
                  nemacs-runtime-image-preload--install-process-core
@@ -417,19 +374,11 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-seq-core
                  nemacs-runtime-image-preload--install-map-core
                  nemacs-runtime-image-preload--install-case-table-core
-                 nemacs-runtime-image-preload--install-cdl-core
-                 nemacs-runtime-image-preload--install-range-core
-                 nemacs-runtime-image-preload--install-regi-core
                  nemacs-runtime-image-preload--install-support-core
-                 nemacs-runtime-image-preload--install-hex-util-core
-                 nemacs-runtime-image-preload--install-map-ynp-core
                  nemacs-runtime-image-preload--install-charprop-core
                  nemacs-runtime-image-preload--install-charscript-core
-                 nemacs-runtime-image-preload--install-emoji-labels-core
                  nemacs-runtime-image-preload--install-iso-transl-core
                  nemacs-runtime-image-preload--install-translation-table-core
-                 nemacs-runtime-image-preload--install-fontset-core
-                 nemacs-runtime-image-preload--install-idna-mapping-core
                  nemacs-runtime-image-preload--install-ja-dic-utl-core
                  nemacs-runtime-image-preload--install-utility-i18n-core))
     (should (fboundp sym))))
@@ -583,9 +532,7 @@ The preload installers only `require' it when it is not yet a feature."
 (ert-deftest nemacs-runtime-image-preload-test/direct-install-creates-daily-core-surface ()
   (nemacs-runtime-image-preload-test--with-clean-direct-install
     (should-not (featurep 'dired))
-    (should-not (featurep 'help-mode))
     (should-not (featurep 'help-fns))
-    (should-not (featurep 'lisp-mode))
     (should-not (featurep 'ielm))
     (should-not (featurep 'minibuffer))
     (should-not (featurep 'emacs-process))
@@ -595,7 +542,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should-not (featurep 'tab-bar))
     (should-not (featurep 'tab-line))
     (should (nemacs-runtime-image-preload--install-help-core))
-    (should (nemacs-runtime-image-preload--install-elisp-core))
     (should (nemacs-runtime-image-preload--install-ielm-core))
     (should (nemacs-runtime-image-preload--install-minibuffer-core))
     (should (nemacs-runtime-image-preload--install-process-core))
@@ -606,12 +552,10 @@ The preload installers only `require' it when it is not yet a feature."
     ;; The dired installer is a no-op now: genuine GNU dired.el comes from
     ;; the bootstrap bundle, not from a preload facade.
     (should-not (featurep 'dired))
-    (should (featurep 'help-mode))
     ;; help-fns is GNU help-fns.el, autoloaded; the installer no longer
     ;; provides the feature.
     (should-not (featurep 'help-fns))
     (should (fboundp 'describe-key))
-    (should (featurep 'lisp-mode))
     ;; GNU ielm.el is autoloaded; the installer no longer provides it.
     (should-not (featurep 'ielm))
     (should (featurep 'minibuffer))
@@ -621,11 +565,10 @@ The preload installers only `require' it when it is not yet a feature."
     (should (featurep 'emacs-frame-builtins))
     (should (featurep 'tab-bar))
     (should (featurep 'tab-line))
-    (dolist (feature '(subr-x seq map case-table cdl range regi))
+    (dolist (feature '(subr-x seq map case-table))
       (should (featurep feature)))
-    (dolist (feature '(hex-util map-ynp charprop charscript emoji-labels
-                                iso-transl cp51932 eucjp-ms fontset
-                                idna-mapping ja-dic-utl))
+    (dolist (feature '(charprop charscript iso-transl cp51932 eucjp-ms
+                                fontset ja-dic-utl))
       (should (featurep feature)))
     (dolist (symbol nemacs-runtime-image-preload-test--direct-install-functions)
       (should (fboundp symbol)))
@@ -639,17 +582,11 @@ The preload installers only `require' it when it is not yet a feature."
     (should (eq (lookup-key ctl-x-map "i") 'insert-file))
     (should (eq (lookup-key ctl-x-4-map "f") 'find-file-other-window))
     (should (eq (lookup-key ctl-x-5-map "f") 'find-file-other-frame))
-    (should (equal (encode-hex-string "AZ") "415a"))
-    (should (equal (decode-hex-string "415a") "AZ"))
-    (should (hash-table-p emoji--names))
-    (should (hash-table-p emoji--derived))
     (should (keymapp iso-transl-ctl-x-8-map))
     (should (get 'cp51932-decode 'translation-table))
     (should (get 'cp51932-encode 'translation-table))
     (should (get 'eucjp-ms-decode 'translation-table))
     (should (get 'eucjp-ms-encode 'translation-table))
-    (should (and (vectorp idna-mapping-table)
-                 (> (length idna-mapping-table) #x10ffff)))
     (let ((table (make-char-table 'case-table)))
       (should (char-table-p table))
       (should (= (char-table-range table ?A) ?A))
@@ -696,42 +633,10 @@ The preload installers only `require' it when it is not yet a feature."
       (mark-sexp)
       (should (= (mark t) 5))
       (should mark-active))
-    (should (equal (range-compress-list '(1 2 2 3 7 9 10))
-                   '((1 . 3) 7 (9 . 10))))
-    (should (equal (range-uncompress '((1 . 3) 7 (9 . 10)))
-                   '(1 2 3 7 9 10)))
-    (should (equal (range-difference '((1 . 6) 10) '((3 . 4) 10))
-                   '((1 . 2) (5 . 6))))
-    (should (equal (range-intersection '((1 . 5) 8) '((3 . 7)))
-                   '(3 . 5)))
-    (should (= (range-length '((1 . 3) 5 (7 . 9))) 7))
-    (should (equal (regi-mapcar '("^a" "^b")
-                                '(push curline
-                                       nemacs-runtime-image-preload-test--seen)
-                                t nil)
-                   '(("^a" (push curline
-                                  nemacs-runtime-image-preload-test--seen)
-                      t)
-                     ("^b" (push curline
-                                  nemacs-runtime-image-preload-test--seen)
-                      t))))
-    (let ((nemacs-runtime-image-preload-test--seen nil))
-      (with-temp-buffer
-        (insert "foo\nbar\nfood\n")
-        (regi-interpret
-         '(("^foo" (push curline
-                         nemacs-runtime-image-preload-test--seen)))
-         (point-min) (point-max))
-        (should (equal (nreverse nemacs-runtime-image-preload-test--seen)
-                       '("foo" "food")))))
     (should (equal (symbol-function 'describe-key)
                    '(lambda (&rest args)
                       (require 'emacs-help)
-                      (apply 'describe-key args))))
-    (should (equal (symbol-function 'emacs-lisp-mode)
-                   '(lambda (&rest args)
-                      (require 'lisp-mode)
-                      (apply 'emacs-mode-emacs-lisp-mode args))))))
+                      (apply 'describe-key args))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/frame-and-tab-core-surface ()
   "Runtime frame/tab core should provide usable daily-driver state."
@@ -976,25 +881,22 @@ The preload installers only `require' it when it is not yet a feature."
         (when (and buffer (buffer-live-p buffer))
           (kill-buffer buffer))))))
 
-(ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-satisfies-all-smoke-candidates ()
-  "The runtime-image vendor-core extension must cover every smoke lane directly."
-
-  (nemacs-runtime-image-preload-test--with-emacs-symbol  (nemacs-runtime-image-preload-test--with-clean-direct-install
-    ;; The harness's own Layer 2 priming `require's app packages such as
-    ;; `emacs-init'; this test only checks what the extension itself provides.
-    (let ((vendor-core-smoke--layer2-ready t)
-          (vendor-core-smoke-modules nil)
-          (vendor-core-smoke-module-spec nil)
-          (vendor-core-smoke-default-limit 0)
-          (vendor-core-smoke-strict t))
-      (cl-letf (((symbol-function 'require)
-                 (lambda (feature &optional _filename _noerror)
-                   (unless (featurep feature)
-                     (error "runtime preload did not provide %S" feature))
-                   feature)))
-        (should (nemacs-runtime-image-preload-vendor-core-extension))
-        (should (equal (mapcar #'car (vendor-core-smoke-batch))
-                       (mapcar #'car vendor-core-smoke-candidates))))))))
+(ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-satisfies-facade-smoke-candidates ()
+  (nemacs-runtime-image-preload-test--with-emacs-symbol
+    (nemacs-runtime-image-preload-test--with-clean-direct-install
+      (let* ((facades '(subr-x seq map case-table minibuffer frame tab-line
+                        charprop charscript iso-transl cp51932 eucjp-ms ja-dic-utl))
+             (vendor-core-smoke--layer2-ready t)
+             (vendor-core-smoke-modules
+              (mapcar #'vendor-core-smoke--candidate-entry facades))
+             (vendor-core-smoke-strict t))
+        (cl-letf (((symbol-function 'require)
+                   (lambda (feature &optional _filename _noerror)
+                     (unless (featurep feature)
+                       (error "runtime preload did not provide %S" feature))
+                     feature)))
+          (should (nemacs-runtime-image-preload-vendor-core-extension))
+          (should (equal (mapcar #'car (vendor-core-smoke-batch)) facades)))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/preload-vendor-core-base-before-extension ()
   (let ((calls nil))

@@ -542,9 +542,9 @@ needs their install/init paths to have run before vendor files are required."
   'ok)
 
 (defun vendor-core-smoke--check-map-ynp ()
-  "Load the lightweight map-ynp feature and verify prompt helpers."
-  (require 'map-ynp)
-  (vendor-core-smoke--check-feature-provided 'map-ynp)
+  "Check the GNU prompt helpers, loading their source if needed."
+  (unless (boundp 'read-answer-map--memoize)
+    (load "map-ynp" nil 'no-message))
   (vendor-core-smoke--check-fbound
    '(map-y-or-n-p read-answer))
   (vendor-core-smoke--check-bound
@@ -632,14 +632,15 @@ needs their install/init paths to have run before vendor files are required."
   'ok)
 
 (defun vendor-core-smoke--check-idna-mapping ()
-  "Load the lightweight idna-mapping feature and verify direct elt table."
+  "Load GNU IDNA data and verify the table supports Unicode lookup."
   (require 'idna-mapping)
   (vendor-core-smoke--check-feature-provided 'idna-mapping)
   (vendor-core-smoke--check-bound '(idna-mapping-table))
   (vendor-core-smoke--assert
-   (and (vectorp idna-mapping-table)
-        (> (length idna-mapping-table) #x10ffff))
-   "idna-mapping-table is not a full Unicode vector")
+   (and (equal (elt idna-mapping-table ?A) "a")
+        (eq (elt idna-mapping-table #x00ad) 'ignored)
+        (equal (elt idna-mapping-table #xff3a) "z"))
+   "idna-mapping-table lacks the expected Unicode mappings")
   'ok)
 
 (defun vendor-core-smoke--check-ja-dic-utl ()

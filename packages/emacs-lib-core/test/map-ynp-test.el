@@ -1,4 +1,4 @@
-;;; map-ynp-test.el --- ERT for lightweight map-ynp facade  -*- lexical-binding: t; -*-
+;;; map-ynp-test.el --- ERT for GNU map-ynp  -*- lexical-binding: t; -*-
 
 ;;; Code:
 
@@ -9,22 +9,22 @@
 (require 'ert)
 (require 'cl-lib)
 
-(load (nemacs-test-paths-source "map-ynp.el")
-      nil t)
+(load (nemacs-test-paths-vendor "emacs-lisp/emacs-lisp/map-ynp.el") nil t)
 
 (defmacro map-ynp-test--with-keys (keys &rest body)
-  "Run BODY while `read-key' returns KEYS in order."
+  "Run BODY while `read-key-sequence-vector' returns KEYS in order."
   (declare (indent 1))
-  `(let ((events ,keys))
-     (cl-letf (((symbol-function 'read-key)
-                (lambda (&optional _prompt)
-                  (let ((event (car events)))
-                    (setq events (cdr events))
-                    event))))
+  `(let ((events ,keys)
+         (use-dialog-box nil)
+         (y-or-n-p-use-read-key t))
+     (cl-letf (((symbol-function 'read-key-sequence-vector)
+                (lambda (&rest _)
+                  (unless events
+                    (error "Unexpected key read"))
+                  (vector (pop events)))))
        ,@body)))
 
-(ert-deftest map-ynp-test/require-loads-standard-feature ()
-  (should (featurep 'map-ynp))
+(ert-deftest map-ynp-test/source-loads-standard-commands ()
   (should (fboundp 'map-y-or-n-p))
   (should (fboundp 'read-answer))
   (should (boundp 'read-answer-short))
@@ -88,9 +88,13 @@
 
 (ert-deftest map-ynp-test/read-answer-short-and-long ()
   (let ((answers '(("yes" ?y "accept")
-                   ("no" ?n "skip"))))
+                   ("no" ?n "skip")))
+        (use-dialog-box nil))
     (let ((read-answer-short t))
-      (map-ynp-test--with-keys '(?y)
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (_prompt _initial keymap &rest _)
+                   (should (keymapp keymap))
+                   "yes")))
         (should (equal (read-answer "Proceed? " answers) "yes"))))
     (let ((read-answer-short nil))
       (cl-letf (((symbol-function 'read-from-minibuffer)
