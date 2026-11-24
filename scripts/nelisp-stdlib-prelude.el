@@ -8741,13 +8741,18 @@ in case you use it as a menu with `x-popup-menu'."
 ;; `autoload'-stub function cells, which this substrate's `keymapp' (an
 ;; explicit reduced flattened model, see above) never produces.
 (defun nelisp--get-keymap (object)
-  (cond
-   ((and (consp object) (eq (car object) 'keymap)) object)
-   ((and (symbolp object) object (fboundp 'indirect-function)
-         (let ((tem (indirect-function object)))
-           (and (consp tem) (eq (car tem) 'keymap))))
-    (indirect-function object))
-   (t (signal 'wrong-type-argument (list 'keymapp object)))))
+  "keymap.c get_keymap (OBJECT, 1, 1): OBJECT's keymap, loading a symbol's
+keymap autoload."
+  (let ((tem (and (symbolp object) object (fboundp 'indirect-function)
+                  (indirect-function object))))
+    (when (and (consp tem) (eq (car tem) 'autoload) (eq (nth 4 tem) 'keymap)
+               (fboundp 'autoload-do-load))
+      (autoload-do-load tem object)
+      (setq tem (indirect-function object)))
+    (cond
+     ((and (consp object) (eq (car object) 'keymap)) object)
+     ((and (consp tem) (eq (car tem) 'keymap)) tem)
+     (t (signal 'wrong-type-argument (list 'keymapp object))))))
 
 ;; GNU Emacs 31.1 src/keymap.c:Fkeymapp via get_keymap (OBJECT, 0, 0): a
 ;; keymap, a non-nil symbol whose function definition (after alias
@@ -8762,7 +8767,9 @@ in case you use it as a menu with `x-popup-menu'."
       (setq tem (indirect-function tem)))
     (if (and (consp tem)
              (or (eq (car tem) 'keymap)
-                 (and (eq (car tem) 'autoload) (eq (nth 4 tem) 'keymap))))
+                 ;; get_keymap: only a symbol autoloaded as a keymap.
+                 (and (symbolp object) (eq (car tem) 'autoload)
+                      (eq (nth 4 tem) 'keymap))))
         t
       nil)))
 (fset 'keymapp #'nelisp--keymapp)
