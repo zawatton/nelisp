@@ -508,13 +508,13 @@ nonoverlapping, adjacent `eq' values merged; one walk over ROOT's nodes."
     (aref state 2)))
 
 (defun emacs-char-table--ranges (table)
-  "Return TABLE's ranges view, rebuilding an owned table's stale view."
+  "Return TABLE's ranges view, derived from an owned table's topology.
+The view is not cached in the table: the native `equal' compares a
+tagged table slot by slot, so a cache filled on one of two equal tables
+would make them unequal."
   (let ((ranges (emacs-char-table--raw-ref table emacs-char-table--i-ranges)))
     (if (eq ranges emacs-char-table--stale-ranges)
-        (let ((fresh (emacs-char-table--topology-runs
-                      (emacs-char-table--owner-root table))))
-          (emacs-char-table--raw-set table emacs-char-table--i-ranges fresh)
-          fresh)
+        (emacs-char-table--topology-runs (emacs-char-table--owner-root table))
       ranges)))
 
 (defun emacs-char-table--owner-publish-span (table from to)
@@ -868,11 +868,9 @@ slot count, which remains fixed for the lifetime of the table."
       (emacs-char-table--raw-set ct emacs-char-table--i-default init)
       (emacs-char-table--raw-set ct emacs-char-table--i-parent nil)
       (emacs-char-table--raw-set ct emacs-char-table--i-ascii ascii)
+      ;; Owned: the ranges view is derived from the topology on demand.
       (emacs-char-table--raw-set
-       ct emacs-char-table--i-ranges
-       (when init
-         (list (cons (cons emacs-char-table--ascii-size
-                           emacs-char-table--max-char) init))))
+       ct emacs-char-table--i-ranges emacs-char-table--stale-ranges)
       (emacs-char-table--raw-set ct emacs-char-table--i-extra
                                  (make-vector slots nil))
       (emacs-char-table--raw-set
@@ -1657,6 +1655,61 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (defalias 'char-category-set #'emacs-char-table-char-category-set))
 (when (emacs-char-table--install-function-p 'modify-category-entry)
   (defalias 'modify-category-entry #'emacs-char-table-modify-category-entry))
+
+;;;; --- equal ---------------------------------------------------------
+
+(defun emacs-char-table--tagged-p (object)
+  "Return non-nil when OBJECT is a tagged (library) char-table vector."
+  (and (vectorp object)
+       (> (length object) emacs-char-table--i-extra)
+       (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag)))
+
+(defun emacs-char-table--tagged-equal (a b)
+  "GNU fns.c internal_equal for two tagged char-tables A and B.
+Every slot is compared: subtype, default, parent, extra slots and the
+contents tree element by element (an owned table's topology has GNU's
+sub-char-table layout).  The derived ASCII cache and ranges view are not
+compared; they are functions of the contents."
+  (and (eq (emacs-char-table--raw-ref a emacs-char-table--i-subtype)
+           (emacs-char-table--raw-ref b emacs-char-table--i-subtype))
+       (equal (emacs-char-table--raw-ref a emacs-char-table--i-default)
+              (emacs-char-table--raw-ref b emacs-char-table--i-default))
+       (equal (emacs-char-table--raw-ref a emacs-char-table--i-parent)
+              (emacs-char-table--raw-ref b emacs-char-table--i-parent))
+       (equal (emacs-char-table--raw-ref a emacs-char-table--i-extra)
+              (emacs-char-table--raw-ref b emacs-char-table--i-extra))
+       (let ((owned-a (emacs-char-table--owned-p a))
+             (owned-b (emacs-char-table--owned-p b)))
+         (cond
+          ((and owned-a owned-b)
+           (equal (emacs-char-table--owner-root a)
+                  (emacs-char-table--owner-root b)))
+          ((or owned-a owned-b)
+           ;; One sparse and one owned table: compare what they store.
+           (and (equal (emacs-char-table-ascii-vector a)
+                       (emacs-char-table-ascii-vector b))
+                (equal (emacs-char-table--ranges a)
+                       (emacs-char-table--ranges b))))
+          (t
+           (and (equal (emacs-char-table--raw-ref a emacs-char-table--i-ascii)
+                       (emacs-char-table--raw-ref b emacs-char-table--i-ascii))
+                (equal (emacs-char-table--ranges a)
+                       (emacs-char-table--ranges b))))))))
+
+;; The prelude's `equal' hands two char-tables to `nelisp--char-table-equal',
+;; which reads native char-tables only.  Tagged tables compare here.
+(when (fboundp 'nelisp--char-table-equal)
+  (unless (fboundp 'emacs-char-table--native-char-table-equal)
+    (defalias 'emacs-char-table--native-char-table-equal
+      (symbol-function 'nelisp--char-table-equal)))
+  (defun nelisp--char-table-equal (a b)
+    "Return non-nil when char-tables A and B are `equal' (fns.c)."
+    (let ((tagged-a (emacs-char-table--tagged-p a))
+          (tagged-b (emacs-char-table--tagged-p b)))
+      (cond
+       ((and tagged-a tagged-b) (emacs-char-table--tagged-equal a b))
+       ((or tagged-a tagged-b) nil)
+       (t (emacs-char-table--native-char-table-equal a b))))))
 
 (provide 'emacs-char-table)
 
