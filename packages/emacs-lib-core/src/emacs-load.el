@@ -25,6 +25,15 @@
 (declare-function nelisp--syscall-path-int "nelisp-runtime"
                   (number path integer))
 
+(declare-function nelisp--rd-read-one "nelisp-stdlib-prelude" (string start end))
+(declare-function emacs-load--elc-decode "emacs-load" (bytes))
+(declare-function emacs-load--elc-read-slice "emacs-load" (source start end))
+(declare-function emacs-load--elc-read-fallback "emacs-load"
+                  (source start end native-end))
+(declare-function emacs-load--elc-skip-blocks "emacs-load" (source position limit))
+(declare-function emacs-load--elc-doc-start-p "emacs-load" (source pos))
+(declare-function emacs-load--elc-unquote-doc "emacs-load" (source start end))
+
 (when (or (fboundp 'rdf)
           (fboundp 'nelisp--eval-source-string)
           (not (boundp 'emacs-version))
@@ -4015,6 +4024,84 @@ comment is the safety check; GNU does not impose a numeric version cap."
             (if (> newline 4) (aref header 4) 1)
           0))))
 
+  (defun emacs-load--elc-decode (bytes)
+    "Decode utf-8-emacs BYTES.
+Return (TEXT . BYTE8-OFFSETS), where each offset marks an encoded raw
+byte that will occupy one byte after `string-as-unibyte'."
+    (let ((start 0) (cursor 0) (shrink 0) chunks offsets next)
+      ;; Unlike the external UTF-8 decoder, Emacs's .elc encoding also
+      ;; accepts C0/C1 followed by a continuation as a single raw byte.
+      (while (setq next (string-match-p "[\300\301]" bytes cursor))
+        (setq cursor (1+ next))
+        (when (and (< cursor (length bytes)) (<= 128 (aref bytes cursor) 191))
+          (push (emacs-load--reader-slice bytes start next) chunks)
+          (push (char-to-string (+ #x3fff80
+                                   (* 64 (- (aref bytes next) 192))
+                                   (- (aref bytes cursor) 128)))
+                chunks)
+          (push (- next shrink) offsets)
+          (setq cursor (1+ cursor)
+                start cursor
+                shrink (1+ shrink))))
+      (cons (if chunks
+                (apply #'concat
+                       (nreverse (cons (emacs-load--reader-slice bytes start (length bytes))
+                                       chunks)))
+              (emacs-load--reader-slice bytes 0 (length bytes)))
+            offsets)))
+
+  (defun emacs-load--elc-read-slice (source start end)
+    "Read one .elc form and return its value and byte position."
+    (let* ((decoded (emacs-load--elc-decode
+                     (substring source start end)))
+           (text (car decoded))
+           (parsed (nelisp--rd-read-one text 0 (length text))))
+      (if (= (cdr parsed) (length text))
+          (cons (car parsed) end)
+        (let* ((prefix (substring text 0 (cdr parsed)))
+               (bytes (length (emacs-load--byte-indexed-source prefix)))
+               (extra 0))
+          (dolist (offset (cdr decoded))
+            (when (< offset bytes) (setq extra (1+ extra))))
+          (cons (car parsed) (+ start bytes extra))))))
+
+  (defun emacs-load--elc-read-fallback (source start end native-end)
+    "Read the .elc form in SOURCE starting at byte START using the Lisp reader."
+    (let ((scan-end (and (not native-end)
+                         (memq (aref source start) '(40 91))
+                         (ignore-errors
+                           (emacs-load--artifact-source-form-end source start)))))
+      ;; Bound the decoding work when the native reader declines a container.
+      ;; The source scanner is a hint, so retry if it cut the form short.
+      (if (and scan-end (< scan-end end))
+          (condition-case nil
+              (emacs-load--elc-read-slice source start scan-end)
+            ((end-of-file invalid-read-syntax)
+             (emacs-load--elc-read-slice source start end)))
+        (emacs-load--elc-read-slice source start (or native-end end)))))
+
+  (defun emacs-load--elc-skip-blocks (source position limit)
+    "Return the first form start in SOURCE at or after POSITION.
+Skip whitespace, comments and top-level `#@NNN' lazy-docstring blocks.  As in
+lread.c, NNN counts bytes after the digits, including the marker's space, so
+SOURCE must be byte-indexed.  `#@00' discards the remainder."
+    (let ((p (nelisp--load-skip-space-and-comments source position))
+          (done nil))
+      (while (not done)
+        (if (and (< (1+ p) limit) (= (aref source p) 35)
+                 (= (aref source (1+ p)) 64))
+            (let ((q (+ p 2)) (n 0))
+              (if (and (<= (+ p 4) limit)
+                       (= (aref source q) 48) (= (aref source (1+ q)) 48))
+                  (setq p limit done t)
+                (while (and (< q limit) (<= 48 (aref source q) 57))
+                  (setq n (+ (* n 10) (- (aref source q) 48))
+                        q (1+ q)))
+                (setq p (nelisp--load-skip-space-and-comments
+                         source (min limit (+ q n))))))
+          (setq done t)))
+      p))
+
   (defun emacs-load--eval-elc (source resolved)
     "Read GNU compiled SOURCE incrementally and execute its top-level forms.
 Keep the original byte offsets and byte-code objects, without the source
@@ -4041,29 +4128,28 @@ loader's defalias rewrites or native artifact compilation.  Top-level
           (lexical-binding nil)
           (position 0)
           (limit (length source))
+          (next-hash -1)
           (count 0))
-      (while (< (setq position
-                      (nelisp--load-skip-space-and-comments source position))
+      (while (< (setq position (emacs-load--elc-skip-blocks source position limit))
                 limit)
         (let ((parsed
-               (condition-case err
-                   ;; GNU Fload feeds its native reader at the current
-                   ;; stream cursor.  Reuse the existing bounded one-form
-                   ;; entry; the Lisp reference handles declined syntax.
-                   (or (and (fboundp 'nelisp--read-all-from-string-native)
-                            (condition-case nil
-                                (nelisp--read-all-from-string-native
-                                 source position limit)
-                              (error nil)))
-                       (read-from-string source position limit))
-                 (end-of-file
-                  ;; GNU's #@00 explicitly discards the remaining input.
-                  (if (and (<= (+ position 4) limit)
-                           (string= (substring source position (+ position 4))
-                                    "#@00"))
-                      (cons nil limit)
-                    ;; GNU's file reader includes load-true-file-name.
-                    (signal 'end-of-file (list resolved)))))))
+               (condition-case nil
+                   (let ((native
+                          (and (fboundp 'nelisp--read-all-from-string-native)
+                               (condition-case nil
+                                   (nelisp--read-all-from-string-native
+                                    source position limit)
+                                 (error nil)))))
+                     (when (< next-hash position)
+                       (setq next-hash (or (string-search "#^" source position)
+                                           limit)))
+                     ;; The native parser treats char-table syntax as a
+                     ;; vector.  Otherwise keep its byte-indexed fast path.
+                     (if (and native (>= next-hash (cdr native)))
+                         native
+                       (emacs-load--elc-read-fallback source position limit
+                                                      (cdr native))))
+                 (end-of-file (signal 'end-of-file (list resolved))))))
           (unless (and (consp parsed) (integerp (cdr parsed))
                        (> (cdr parsed) position))
             (signal 'end-of-file (list "compiled load reader made no progress")))
@@ -4072,6 +4158,59 @@ loader's defalias rewrites or native artifact compilation.  Top-level
                 count (1+ count))
           (emacs-load--periodic-gc count)))
       t))
+
+  (defun emacs-load--elc-doc-start-p (source pos)
+    "Return non-nil if byte POS follows a lazy docstring header or delimiter."
+    (and (< 0 pos (length source))
+         (let ((previous (aref source (1- pos))))
+           (or (= previous 31)
+               (and (= previous 32)
+                    (let ((i (- pos 2)))
+                      (while (and (>= i 0) (<= 48 (aref source i) 57))
+                        (setq i (1- i)))
+                      (and (> i 0)
+                           (= (aref source i) 64)
+                           (= (aref source (1- i)) 35))))))))
+
+  (defun emacs-load--elc-unquote-doc (source start end)
+    "Return the bytes of SOURCE from START to END after undoing ^A quoting."
+    (let ((cursor start) chunks next)
+      (while (and (setq next (string-search "\001" source cursor)) (< next end))
+        (push (substring source cursor next) chunks)
+        (let ((quoted (if (< (1+ next) end) (aref source (1+ next)) 0)))
+          (push (unibyte-string
+                 (cond ((= quoted 1) 1)
+                       ((= quoted 48) 0)
+                       ((= quoted 95) 31)
+                       (t (error "Invalid data in documentation file -- %c followed by code %03o"
+                                 1 quoted))))
+                chunks))
+        (setq cursor (+ next 2)))
+      (if chunks
+          (apply #'concat (nreverse (cons (substring source cursor end) chunks)))
+        (substring source start end))))
+
+  (defun get-doc-string (location &optional unibyte)
+    "Return the external documentation for LOCATION.
+A cons (FILE . POS) points to a byte offset in a compiled Lisp file.
+Return nil for a stale location or a reference to the undumped DOC file.
+When UNIBYTE is non-nil, return the unquoted bytes."
+    (when (and (consp location) (stringp (car location))
+               (integerp (cdr location)))
+      (let* ((file (car location))
+             (pos (abs (cdr location)))
+             (path (if (file-name-absolute-p file) file
+                     (expand-file-name
+                      file (and (boundp 'lisp-directory)
+                                (symbol-value 'lisp-directory)))))
+             (source (emacs-load--read-file-string path)))
+        (cond
+         ((null source)
+          (format "Cannot open doc string file \"%s\"\n" file))
+         ((emacs-load--elc-doc-start-p source pos)
+          (let* ((end (or (string-search "\037" source pos) (length source)))
+                 (bytes (emacs-load--elc-unquote-doc source pos end)))
+            (if unibyte bytes (car (emacs-load--elc-decode bytes)))))))))
 
   (defun nelisp--load-resolved-file (resolved noerror)
     "Load exact absolute RESOLVED path, honoring NOERROR for open failures.
@@ -4324,6 +4463,10 @@ Unlike `load', this never searches `load-path' or adds a suffix."
 ;; GNU loaddefs installs this macro autoload before packages such as
 ;; treesit.el use it.  Keep the implementation lazy and require the genuine
 ;; vendored shortdoc library when expansion is first requested.
+;; Byte-compiled expansions of the macro access this registry directly.
+(defvar shortdoc--groups nil
+  "Short documentation groups registered by loaded libraries.")
+
 (unless (fboundp 'define-short-documentation-group)
   (autoload 'define-short-documentation-group "shortdoc" nil nil 'macro))
 

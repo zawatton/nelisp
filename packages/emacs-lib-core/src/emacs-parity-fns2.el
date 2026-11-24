@@ -308,6 +308,24 @@ the selected window."
 ;; terminal color names (Emacs' `tty-standard-colors'), the real color set a
 ;; non-graphic display supports.
 
+(unless (fboundp 'tty-color-alist)
+  ;; GNU initializes these ANSI entries before loading Lisp clients.
+  (defvar tty-defined-color-alist
+    (mapcar #'copy-sequence
+            '(("black"   0     0     0     0)
+              ("red"     1 65535     0     0)
+              ("green"   2     0 65535     0)
+              ("yellow"  3 65535 65535     0)
+              ("blue"    4     0     0 65535)
+              ("magenta" 5 65535     0 65535)
+              ("cyan"    6     0 65535 65535)
+              ("white"   7 65535 65535 65535)))
+    "Colors currently defined for the standalone terminal.")
+
+  (defun tty-color-alist (&optional _frame)
+    "Return the color entries of the standalone terminal."
+    tty-defined-color-alist))
+
 (unless (fboundp 'defined-colors)
   (defun defined-colors (&optional frame)
     "Return a list of colors supported for a particular FRAME.

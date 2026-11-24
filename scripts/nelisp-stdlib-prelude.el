@@ -22236,7 +22236,8 @@ line-continuation escapes, which generate nothing)."
   "Replace, in place, the placeholders of labels already completed in OBJECT; leave those still being read.
 For an object that copies what it is given (`make-interpreted-closure' copies the environment), so that a
 placeholder left in the argument could not be reached after the copy."
-  (let ((number (nelisp--rd-label-proxy-number object)))
+  (let ((number (and (consp object)
+                     (nelisp--rd-label-proxy-number object))))
     (cond
      (number
       (let ((entry (assq number nelisp--rd-labels)))
@@ -22250,7 +22251,9 @@ placeholder left in the argument could not be reached after the copy."
           (setcar object (nelisp--rd-resolve-completed-labels-deep (car object) next-seen))
           (setcdr object (nelisp--rd-resolve-completed-labels-deep (cdr object) next-seen))))
       object)
-     ((vectorp object)
+     ((or (and (vectorp object)
+               (not (and (fboundp 'char-table-p) (char-table-p object))))
+          (nelisp--rd-chartab-subtable-p object))
       (unless (memq object seen)
         (let ((i 0) (next-seen (cons object seen)))
           (while (< i (length object))
@@ -22261,7 +22264,8 @@ placeholder left in the argument could not be reached after the copy."
 
 (defun nelisp--rd-resolve-labels (object seen)
   "Replace `#N#' proxies in OBJECT, preserving sharing and cycles."
-  (let ((number (nelisp--rd-label-proxy-number object)))
+  (let ((number (and (consp object)
+                     (nelisp--rd-label-proxy-number object))))
     (if number
         (let ((entry (assq number nelisp--rd-labels)))
           (unless (and entry (eq (nth 1 entry) 'done))
@@ -22280,7 +22284,8 @@ placeholder left in the argument could not be reached after the copy."
             (setcdr object
                     (nelisp--rd-resolve-labels (cdr object) next-seen))))
         object)
-       ((vectorp object)
+       ((and (vectorp object)
+             (not (and (fboundp 'char-table-p) (char-table-p object))))
         (unless (memq object seen)
           (let ((i 0) (next-seen (cons object seen)))
             (while (< i (length object))
@@ -22310,6 +22315,76 @@ placeholder left in the argument could not be reached after the copy."
               (setq i (1+ i)))))
         object)
        (t object)))))
+
+(defconst nelisp--rd-chartab-chars [65536 4096 128 1]
+  "Characters covered by one slot at each GNU char-table depth.")
+
+(defvar nelisp--rd-chartab-subtable-tag (make-symbol "sub-char-table")
+  "Private record type for GNU `#^^[' reader objects.")
+
+(defun nelisp--rd-chartab-subtable-p (object)
+  (and (recordp object)
+       (eq (type-of object) nelisp--rd-chartab-subtable-tag)))
+
+(defun nelisp--rd-chartab-make-subtable (slots)
+  "Validate the raw depth, minimum character and contents in SLOTS."
+  (let ((depth (and (>= (length slots) 2) (aref slots 0))))
+    (unless (and (integerp depth) (<= 1 depth 3))
+      (signal 'invalid-read-syntax '("Invalid depth in sub-char-table")))
+    (unless (= (length slots) (+ 2 (aref [64 16 32 128] depth)))
+      (signal 'invalid-read-syntax '("Invalid size in sub-char-table")))
+    (unless (and (integerp (aref slots 1)) (<= 0 (aref slots 1) #x3fffff))
+      (signal 'invalid-read-syntax '("Invalid minimum character in sub-char-table")))
+    (record nelisp--rd-chartab-subtable-tag slots)))
+
+(defun nelisp--rd-chartab-flush (ct run)
+  (when (aref run 2)
+    (set-char-table-range ct (cons (aref run 0) (aref run 1)) (aref run 2))
+    (aset run 2 nil)))
+
+(defun nelisp--rd-chartab-fill (ct slots start count depth base minimum run)
+  "Copy COUNT raw SLOTS from START, at DEPTH and BASE, to CT.
+Ignore characters below MINIMUM and coalesce adjacent non-nil leaves in RUN."
+  (let ((span (aref nelisp--rd-chartab-chars depth)) (i 0))
+    (while (< i count)
+      (let* ((entry (aref slots (+ start i)))
+             (lo (+ base (* i span)))
+             (hi (+ lo span -1)))
+        (when (>= hi minimum)
+          (cond
+           ((null entry) (nelisp--rd-chartab-flush ct run))
+           ((nelisp--rd-chartab-subtable-p entry)
+            (let* ((sub (aref entry 1))
+                   (sub-depth (aref sub 0)))
+              (nelisp--rd-chartab-fill ct sub 2 (- (length sub) 2)
+                                       sub-depth (aref sub 1) minimum run)))
+           ((and (eq (aref run 2) entry) (= (1+ (aref run 1)) lo))
+            (aset run 1 hi))
+           (t
+            (nelisp--rd-chartab-flush ct run)
+            (aset run 0 (max minimum lo))
+            (aset run 1 hi)
+            (aset run 2 entry)))))
+      (setq i (1+ i)))))
+
+(defun nelisp--rd-chartab-from-raw (raw)
+  "Build a char-table from GNU's default, parent, purpose, ASCII and slots."
+  (unless (>= (length raw) 68)
+    (signal 'invalid-read-syntax '("Invalid size char-table")))
+  (let* ((ct (make-char-table (aref raw 2)))
+         (ascii (aref raw 3))
+         (extra (substring raw 68))
+         (run (vector 0 0 nil)))
+    (emacs-char-table--raw-set ct emacs-char-table--i-extra extra)
+    ;; GNU reads ASCII directly from slot 3, independently of the tree.
+    (if (nelisp--rd-chartab-subtable-p ascii)
+        (nelisp--rd-chartab-fill ct (aref ascii 1) 2 128 3 0 0 run)
+      (when ascii (set-char-table-range ct '(0 . 127) ascii)))
+    (nelisp--rd-chartab-fill ct raw 4 64 0 0 128 run)
+    (nelisp--rd-chartab-flush ct run)
+    (set-char-table-range ct nil (aref raw 0))
+    (when (aref raw 1) (set-char-table-parent ct (aref raw 1)))
+    ct))
 
 (defun nelisp--rd-read-one (string start end)
   "Read one form and resolve labels using a table local to this read."
@@ -22574,6 +22649,18 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                      (set-text-properties (car r1) (car r2) (car r3) str)
                      (setq k (cdr r3))))))
                (cons str k))))
+          ;; `#^[...]' char-table and `#^^[...]' sub-char-table (GNU lread.c).
+          ((and (< (1+ i) n) (= (aref s (1+ i)) 94))
+           (let* ((sub (and (< (+ i 2) n) (= (aref s (+ i 2)) 94)))
+                  (start (if sub (+ i 3) (+ i 2))))
+             (unless (and (< start n) (= (aref s start) 91))
+               (signal 'invalid-read-syntax (list "#^")))
+             (let ((r (nelisp--rd-one s start n)))
+               (cons (if sub
+                         (nelisp--rd-chartab-make-subtable (car r))
+                       (nelisp--rd-chartab-from-raw
+                        (nelisp--rd-resolve-completed-labels-deep (car r) nil)))
+                     (cdr r)))))
           ;; `#&LENGTH"BYTES"' bool-vector literal (GNU Emacs lread.c):
           ;; each byte holds 8 bits low-bit-first, trailing bits of the
           ;; last byte are 0.  BYTES is read through `nelisp--rd-unescape'
@@ -22666,42 +22753,28 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                    (nelisp--rd-radix-integer s (1+ j) n base))
                  (signal 'invalid-read-syntax (list "#"))))))))
        (t
-         (let* ((e (nelisp--rd-atom-end s i n))
-                (raw-tok (substring s i e))
-                (escaped (nelisp--rd-symbol-unescape raw-tok)))
-           (cons (cond ((nelisp--rd-numeric-token-p raw-tok)
-                        ;; Doc 190 Phase A: `read'/`read-from-string''s own
-                        ;; numeric-token path.  A plain decimal-integer
-                        ;; token routes through the bignum-aware native
-                        ;; `nl--read-int' instead of `string-to-number' (Doc
-                        ;; 187 made `string-to-number''s own int loop signal
-                        ;; `overflow-error' on this exact input; PROMOTING to
-                        ;; a Bignum here is what makes `(read (prin1-to-
-                        ;; string big))' round-trip -- see
-                        ;; `scripts/standalone-bignum-smoke.el'.  Float
-                        ;; tokens (anything with `.'/`e'/`E') are unaffected.
-                        (if (nelisp--rd-int-token-p raw-tok)
-                            (let ((digits (if (= (aref raw-tok (1- (length raw-tok))) 46)
-                                              (substring raw-tok 0 -1)
-                                            raw-tok)))
-                              (if (fboundp 'nl--read-int)
-                                  (nl--read-int digits)
-                                (string-to-number digits)))
-                          (string-to-number raw-tok)))
-                      ;; `intern' on "nil"/"t" allocates a fresh Symbol Sexp
-                      ;; that is NOT `eq' to the canonical nil/t sentinel this
-                      ;; runtime's `while'/`if'/`car'/`cdr' etc. compare
-                      ;; against -- it prints as "nil"/"t" (name-based printer)
-                      ;; but is truthy, so any caller that reads dynamic text
-                      ;; (e.g. an artifact manifest's `:features nil') and then
-                      ;; loops `(while features ...)' spins forever.  Route the
-                      ;; two self-evaluating symbols through the literal
-                      ;; embedded here so they resolve to the SAME sentinel
-                      ;; `defun'/`if' bodies use throughout the interpreter.
-                       ((string= raw-tok "nil") nil)
-                       ((string= raw-tok "t") (nelisp--rd-position-symbol t i))
-                       (t (nelisp--rd-position-symbol (intern escaped) i)))
-                 e)))))))
+        (let* ((e (nelisp--rd-atom-end s i n))
+               (raw-tok (substring s i e)))
+          (cons
+           (cond
+            ;; Keep the canonical sentinels.  `intern' on "nil" or "t"
+            ;; can allocate a symbol that only looks like the sentinel.
+            ((string= raw-tok "nil") nil)
+            ((string= raw-tok "t") (nelisp--rd-position-symbol t i))
+            ((nelisp--rd-numeric-token-p raw-tok)
+             ;; Doc 190 Phase A: route decimal integers through the
+             ;; bignum-aware native reader.  Floats use string-to-number.
+             (if (nelisp--rd-int-token-p raw-tok)
+                 (let ((digits (if (= (aref raw-tok (1- (length raw-tok))) 46)
+                                   (substring raw-tok 0 -1)
+                                 raw-tok)))
+                   (if (fboundp 'nl--read-int)
+                       (nl--read-int digits)
+                     (string-to-number digits)))
+               (string-to-number raw-tok)))
+            (t (nelisp--rd-position-symbol
+                (intern (nelisp--rd-symbol-unescape raw-tok)) i)))
+           e)))))))
 
 (unless (fboundp 'read-from-string)
   ;; PERF (Doc 201 §6.9 item 5): this is `nelisp--rd-one', a reader written

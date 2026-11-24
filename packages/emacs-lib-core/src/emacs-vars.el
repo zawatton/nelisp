@@ -33,6 +33,19 @@ at load time, so the variable must exist before net/tramp-cache.el loads."))
   (defvar temporary-file-directory "/tmp/"
     "Polyfill: NeLisp standalone fallback for Emacs' temporary-file-directory."))
 
+;; Tramp evaluates the standard value to find a local directory even
+;; when the live variable has been customized.
+(unless (get 'temporary-file-directory 'standard-value)
+  (put 'temporary-file-directory 'standard-value
+       '((file-name-as-directory
+          (or (getenv "TMPDIR") (getenv "TMP") (getenv "TEMP") "/tmp")))))
+
+;; Defaults installed by GNU's generated loaddefs before their providers
+;; load.  The compiled initializers can refer to them directly.
+(defvar diff-command "diff")
+(defvar savehist-mode nil)
+(defvar save-place-mode nil)
+
 (unless (boundp 'locale-coding-system)
   (defvar locale-coding-system 'utf-8
     "Polyfill: NeLisp standalone forces utf-8."))
