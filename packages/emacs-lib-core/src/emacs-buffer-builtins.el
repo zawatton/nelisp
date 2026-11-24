@@ -540,6 +540,13 @@ called directly."
   (when (and (current-buffer) (nelisp-buffer-p (current-buffer)))
     (emacs-buffer-builtins--share-text (current-buffer))))
 
+(defun emacs-buffer-builtins--kill-one (orig buffer)
+  "Remove BUFFER from the window state and then kill it with ORIG."
+  ;; GNU kill-buffer replaces and unrecords the buffer while it is live.
+  (when (and (featurep 'window) (buffer-live-p buffer))
+    (replace-buffer-in-windows buffer))
+  (funcall orig buffer))
+
 (defun emacs-buffer-builtins--indirect-kill (orig buffer)
   "Kill BUFFER and its indirect children when BUFFER is a base buffer."
   (let* ((ext (gethash buffer emacs-buffer--state))
@@ -552,7 +559,7 @@ called directly."
           (dolist (marker (nelisp-buffer-markers peer))
             (setf (nelisp-marker-buffer marker) nil))
           (setf (nelisp-buffer-markers peer) nil)
-          (funcall orig peer)
+          (emacs-buffer-builtins--kill-one orig peer)
           (remhash peer emacs-buffer--state))))
     (when base
       (let ((remaining (delq buffer
@@ -560,7 +567,7 @@ called directly."
         (if (cdr remaining)
             (puthash base remaining emacs-buffer-builtins--indirect-families)
           (remhash base emacs-buffer-builtins--indirect-families))))
-    (prog1 (funcall orig buffer)
+    (prog1 (emacs-buffer-builtins--kill-one orig buffer)
       (when (not (buffer-live-p buffer))
         (remhash buffer emacs-buffer--state)))))
 
