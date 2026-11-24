@@ -104,4 +104,10 @@ the library file(s) specified by dynamic-library-alist."
     ;; made treemacs choose `imagemagick' icons and fail in `create-image';
     ;; GNU built without those libraries answers nil as well.
     (and (memq type '(png jpeg gif tiff xpm svg pbm)) t)))
+(defvar image-types '(png jpeg gif tiff xpm svg pbm)
+  "List of potentially supported image types.
+Each element of the list is a symbol for an image type, like `jpeg' or `png'.
+To check whether it is really supported, use `image-type-available-p'.
+GNU defines this in image.c; `image--check-type' (image.el) rejects any type
+that is not a member, so an unbound or nil value makes `create-image' fail.")
 (provide 'emacs-cc-image-1)

@@ -460,7 +460,7 @@ name that is already defined is not replaced."
                   (and (string-prefix-p vendor (file-name-as-directory dir))
                        (not (string-prefix-p staged dir))))
                 (nelisp-standalone--reader-tree-load-path)))
-         (forms nil))
+         (forms nil) (pending-defvar nil) (pending-sym nil))
     (with-temp-buffer
       (let ((coding-system-for-read 'utf-8-unix))
         (insert-file-contents (expand-file-name "vendor/emacs-lisp/loaddefs.el" root)))
@@ -468,15 +468,40 @@ name that is already defined is not replaced."
       (condition-case nil
           (while t
             (forward-comment (point-max))
-            (let* ((start (point)) (form (read (current-buffer))))
-              (when (and (eq (car-safe form) 'autoload)
-                         (stringp (nth 2 form))
-                         (or (member (nth 2 form) '("cl-lib" "cl-print"))
-                             (cl-some (lambda (dir)
-                                        (file-exists-p
-                                         (expand-file-name (concat (nth 2 form) ".el") dir)))
-                                      dirs)))
-                (push (buffer-substring-no-properties start (point)) forms))))
+            (let* ((start (point)) (form (read (current-buffer)))
+                   (lib (and (memq (car-safe form) '(autoload custom-autoload))
+                             (stringp (nth 2 form)) (nth 2 form)))
+                   (present (and lib
+                                 (or (member lib '("cl-lib" "cl-print"))
+                                     (cl-some (lambda (dir)
+                                                (file-exists-p
+                                                 (expand-file-name (concat lib ".el") dir)))
+                                              dirs)))))
+              ;; A loaddefs.el option or minor mode is `(defvar SYM VALUE DOC)'
+              ;; (or a `defcustom' with :initialize) followed by `custom-autoload' and `autoload'.  GNU binds SYM at
+              ;; startup whether or not the library has loaded, so keep the
+              ;; defvar of every such entry, present library or not: savehist's
+              ;; defcustom :set reads `savehist-mode' while loading, and time.el
+              ;; reads `rmail-spool-directory' without requiring rmail.  A
+              ;; computed value is wrapped in `ignore-errors': one that needs a
+              ;; function the image lacks stays unbound, as before.
+              (cond
+               ((and (memq (car-safe form) '(defvar defcustom)) (cddr form))
+                (setq pending-defvar
+                      (let ((text (buffer-substring-no-properties start (point))))
+                        (if (and (eq (car form) 'defvar)
+                                 (or (atom (nth 2 form)) (eq (car-safe (nth 2 form)) 'quote)))
+                            text
+                          (concat "(ignore-errors " text ")")))
+                      pending-sym (nth 1 form)))
+               ((eq (car-safe form) 'custom-autoload)
+                (when (and pending-defvar (eq (nth 1 (cadr form)) pending-sym))
+                  (push pending-defvar forms))
+                (setq pending-defvar nil))
+               (t
+                (setq pending-defvar nil)
+                (when (and present (eq (car-safe form) 'autoload))
+                  (push (buffer-substring-no-properties start (point)) forms))))))
         (end-of-file nil)))
     (concat "\n;; --- GNU Emacs 31.1 loaddefs.el: autoloads of vendored libraries ---\n"
             (mapconcat #'identity (nreverse forms) "\n")

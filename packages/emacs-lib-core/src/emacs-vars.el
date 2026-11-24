@@ -32,6 +32,15 @@ at load time, so the variable must exist before net/tramp-cache.el loads."))
 (unless (boundp 'temporary-file-directory)
   (defvar temporary-file-directory "/tmp/"
     "Polyfill: NeLisp standalone fallback for Emacs' temporary-file-directory."))
+;; GNU files.el declares this with defcustom, so `standard-value' holds the
+;; default form.  net/tramp-compat.el evaluates it at load time:
+;; (eval (car (get 'temporary-file-directory 'standard-value)) t).
+(unless (get 'temporary-file-directory 'standard-value)
+  (put 'temporary-file-directory 'standard-value
+       '((file-name-as-directory
+          (cond ((memq system-type '(ms-dos windows-nt))
+                 (or (getenv "TEMP") (getenv "TMPDIR") (getenv "TMP") "c:/temp"))
+                (t (or (getenv "TMPDIR") (getenv "TMP") (getenv "TEMP") "/tmp")))))))
 
 (unless (boundp 'locale-coding-system)
   (defvar locale-coding-system 'utf-8
