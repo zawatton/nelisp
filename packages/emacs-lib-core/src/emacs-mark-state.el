@@ -42,6 +42,31 @@ apply this shared default at startup; buffer-local overrides remain intact."
       (error "The mark is not active now"))
     (marker-position (mark-marker))))
 
+;; GNU Emacs 31.1 src/editfns.c region_limit / Fregion_beginning /
+;; Fregion_end.
+(defun emacs-mark-state--region-limit (beginningp)
+  "editfns.c region_limit: point or the clipped mark, per BEGINNINGP."
+  (when (and (bound-and-true-p transient-mark-mode)
+             (not (bound-and-true-p mark-even-if-inactive))
+             (not (bound-and-true-p mark-active)))
+    (signal 'mark-inactive nil))
+  (let ((m (marker-position (mark-marker))))
+    (unless m
+      (error "The mark is not set now, so there is no region"))
+    (if (eq (< (point) m) beginningp)
+        (point)
+      (max (point-min) (min m (point-max))))))
+
+(unless (fboundp 'region-beginning)
+  (defun region-beginning ()
+    "Return the integer value of point or mark, whichever is smaller."
+    (emacs-mark-state--region-limit t)))
+
+(unless (fboundp 'region-end)
+  (defun region-end ()
+    "Return the integer value of point or mark, whichever is larger."
+    (emacs-mark-state--region-limit nil)))
+
 (unless (fboundp 'set-mark)
   (defun set-mark (position)
     "Move the mark to POSITION; a nil position detaches it."
