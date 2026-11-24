@@ -51231,14 +51231,24 @@ resolved fine.  Same feature, different answer per entry point."
    "\n;; --- GNU Emacs 31.1 keymap.el: keymap substrate ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/keymap.el"
-    '(keymap--check keymap--compile-check key-parse key-valid-p keymap-set
-      define-keymap--compile define-keymap))
-   ;; Preserve global bindings in the standalone keymap representation.
+    '(keymap--check keymap--compile-check keymap-set keymap-global-set
+      keymap-local-set keymap-global-unset keymap-local-unset keymap-unset
+      keymap-substitute keymap-set-after key-parse key-valid-p key-translate
+      key-translate-select key-translate-remove keymap-lookup
+      keymap-local-lookup keymap-global-lookup define-keymap--compile
+      define-keymap make-non-key-event))
+   ;; GNU subr.el's `kbd' (built on keymap.el's `key-parse' above) and its
+   ;; global keymap tree, before help.el binds into `global-map'.  The two
+   ;; `fset' forms are GNU's text (the source index covers only defs).
+   "\n;; --- GNU Emacs 31.1 subr.el: kbd and the global keymap tree ---\n"
+   (nelisp-vendor-source-forms "vendor/staged-emacs-lisp/subr.el" '(kbd))
+   (nelisp-vendor-source-forms
+    "vendor/staged-emacs-lisp/subr.el"
+    '(esc-map ctl-x-4-map ctl-x-4-prefix ctl-x-5-map ctl-x-5-prefix
+      tab-prefix-map ctl-x-map))
+   "\n(fset 'ESC-prefix esc-map)\n(fset 'Control-X-prefix ctl-x-map)\n"
+   (nelisp-vendor-source-forms "vendor/staged-emacs-lisp/subr.el" '(global-map))
    "\n;; --- Standalone global keymap substrate ---\n"
-   "(defvar global-map (make-sparse-keymap) \"Global keymap.\")\n"
-   ;; GNU keymap.c binds the C-created prefix maps into the global map.
-   "(define-key global-map [27] 'ESC-prefix)\n"
-   "(define-key global-map [24] 'Control-X-prefix)\n"
    "(defun current-global-map () global-map)\n"
    "(defun global-set-key (key definition)\n"
    "  (define-key (current-global-map) key definition))\n"

@@ -1154,3 +1154,5 @@ aa5bbc34cf01d1fb659429ffad73041902c35a6dca69d3f19257f0fcd20fb156  vendor/emacs-l
 509a79d5a5b729f6af5b7d2a38e52e1aff5bd585acba4bc75ea34e76ba879e76  vendor/emacs-lisp/epa-hook.el
 3ddc94fa89f9c757347f1ed88b58635f79c4b2d2c5e99e2a6857532e69d5d777  vendor/emacs-lisp/textmodes/bibtex.el
 5a53bdb5a5caa1c8696e4a5553cc7eaa575a15543fa609a0ae4a76e8e4b503e6  vendor/emacs-lisp/textmodes/table.el
+a424b330983676eea5dec092c62d50257a9aa5871c13cacd5833d8f9b604e62d  vendor/staged-emacs-lisp/frame.el
+04fe2ad62ca70565f6c59ad6ca02e200869942dc8c7df03fbec74244ddc98e51  vendor/staged-emacs-lisp/mule-cmds.el

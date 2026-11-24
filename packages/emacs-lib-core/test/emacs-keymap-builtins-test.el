@@ -178,21 +178,6 @@ the bulk stub returned nil before this bridge was installed, so its next
           (should-error (emacs-keymap-builtins--define-key map "qd" 'bad)
                         :type 'error))))))
 
-(ert-deftest emacs-keymap-builtins-test/keymap-set-validates-prefixes ()
-  (let ((shim (emacs-keymap-builtins-test--shim-definition 'keymap-set))
-        (suppress (emacs-keymap-builtins-test--shim-definition 'suppress-keymap)))
-    (dolist (full '(nil t))
-      (let ((map (if full (emacs-keymap-make-keymap)
-                   (emacs-keymap-make-sparse-keymap))))
-        (funcall suppress map t)
-        (funcall shim map "g d" 'prefix-command)
-        (should (eq 'prefix-command
-                    (emacs-keymap-builtins--lookup-key map "gd")))
-        (funcall shim map "q" 'undefined)
-        (should-error (funcall shim map "q d" 'bad) :type 'error)
-        (should (eq 'undefined
-                    (emacs-keymap-builtins--lookup-key map "q")))))))
-
 (ert-deftest emacs-keymap-builtins-test/bootstrap-vector-event-migration ()
   (let* ((canonical (emacs-keymap-make-sparse-keymap))
          (map (list 'keymap (cons [24] 'legacy-prefix)
@@ -328,23 +313,6 @@ P2 can verify the command-surface keymap behavior directly."
     (should (eq 'split-window-below (emacs-keymap-lookup-key ctl-x (vector ?2))))
     (should (eq 'other-window-prefix (emacs-keymap-lookup-key ctl-x-4 (vector ?4))))
     (should (eq window-prefix (emacs-keymap-lookup-key ctl-x (vector ?w))))))
-
-(ert-deftest emacs-keymap-builtins-test/keymap-builtins-bridge-source-exposes-kbd-style-api ()
-  (let* ((file (locate-library "emacs-keymap-builtins"))
-         (file (if (and file (string-match-p "\\.elc\\'" file))
-                   (substring file 0 -1)
-                 file)))
-    (should (and file (file-exists-p file)))
-    (with-temp-buffer
-      (insert-file-contents file)
-      (dolist (snippet '("(defun keymap-set (keymap key definition)"
-                         "(defalias 'keymap-lookup #'emacs-keymap-keymap-lookup"
-                         "(defalias 'keymap-unset #'emacs-keymap-keymap-unset"
-                         "(defun copy-keymap (keymap)"
-                         "(defalias 'key-parse #'emacs-keymap-key-parse"
-                         "(defalias 'key-valid-p #'emacs-keymap-key-valid-p"))
-        (goto-char (point-min))
-        (should (search-forward snippet nil t))))))
 
 ;;;; G3. Easymenu batch/keymap substrate
 

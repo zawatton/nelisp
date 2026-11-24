@@ -1170,3 +1170,5 @@ emacs-lisp/eshell/esh-module-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/3
 emacs-lisp/epa-hook.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/epa-hook.el	sha256=509a79d5a5b729f6af5b7d2a38e52e1aff5bd585acba4bc75ea34e76ba879e76
 emacs-lisp/textmodes/bibtex.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/bibtex.el	sha256=3ddc94fa89f9c757347f1ed88b58635f79c4b2d2c5e99e2a6857532e69d5d777
 emacs-lisp/textmodes/table.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/table.el	sha256=5a53bdb5a5caa1c8696e4a5553cc7eaa575a15543fa609a0ae4a76e8e4b503e6
+staged-emacs-lisp/frame.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/frame.el.gz	sha256=a424b330983676eea5dec092c62d50257a9aa5871c13cacd5833d8f9b604e62d
+staged-emacs-lisp/mule-cmds.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/international/mule-cmds.el.gz	sha256=04fe2ad62ca70565f6c59ad6ca02e200869942dc8c7df03fbec74244ddc98e51
