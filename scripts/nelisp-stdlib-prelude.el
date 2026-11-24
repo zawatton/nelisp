@@ -19188,10 +19188,12 @@ filter it already wrote."
           ((bufferp destination) destination)
           ((stringp destination) (get-buffer-create destination))))
   (defun nelisp--process-insert-output (file destination)
+    ;; GNU callproc.c inserts the output before point, leaving point after
+    ;; it; `insert-file-contents' leaves point before the inserted text.
     (let ((buffer (nelisp--process-output-buffer destination)))
       (when (and file buffer)
         (with-current-buffer buffer
-          (insert-file-contents file)))))
+          (forward-char (car (cdr (insert-file-contents file))))))))
   (defun nelisp--process-valid-destination-p (destination)
     (if (consp destination)
         (and (null (cddr destination))
@@ -19222,9 +19224,13 @@ filter it already wrote."
            (stderr (cond ((eq err-dest t) t)
                          ((null err-dest) "/dev/null")
                          (t err-dest)))
-           (redirect (nelisp--process-redirection stdout stderr
-                                                  (and (boundp 'default-directory)
-                                                       default-directory))))
+           ;; GNU callproc.c `get_current_directory' expands the buffer's
+           ;; directory (so "~/..." works) before running the child.
+           (redirect (nelisp--process-redirection
+                      stdout stderr
+                      (and (boundp 'default-directory)
+                           (stringp default-directory)
+                           (expand-file-name default-directory)))))
       (unwind-protect
           (let ((rc (apply #'nelisp-process-call-process
                            resolved infile redirect display args)))
