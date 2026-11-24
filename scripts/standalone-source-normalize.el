@@ -1726,19 +1726,13 @@ runtime meaning."
          (equal standalone-source-normalize-current-file "replace.el")
          (symbolp (cadr form)))
     (list (list 'defvar (cadr form) nil)))
-   ;; S2 coverage batch 6 (2026-09-29): woman.el ends with
-   ;; `(if (featurep (quote dired)) (woman-dired-define-keys)
-   ;;    (add-hook (quote dired-mode-hook) (function woman-dired-define-keys)))'.
-   ;; On this standalone `(featurep (quote dired))' is already t (src/dired.el
-   ;; is the repo's minimal stand-in, not GNU dired.el), but that stand-in's
-   ;; `dired-mode-map' has no `[menu-bar immediate]' sub-keymap, so the eager
-   ;; branch signals `emacs-keymap-not-keymap' at load time.  Always take the
-   ;; deferred branch: the hook runs when a Dired mode actually starts.
+   ;; GNU dired.el's five menus build `dired-mode-map's [menu-bar ...]
+   ;; sub-keymaps, which GNU woman.el (and other Dired extensions) extend
+   ;; with `define-key-after' when they load; keep them as GNU does.
    ((and (consp form)
-         (eq (car form) 'if)
-         (equal standalone-source-normalize-current-file "woman.el")
-         (equal (cadr form) '(featurep 'dired)))
-    (list '(add-hook 'dired-mode-hook #'woman-dired-define-keys)))
+         (eq (car form) 'easy-menu-define)
+         (equal standalone-source-normalize-current-file "dired.el"))
+    (list (standalone-source-normalize-form form)))
    ;; Key/menu declarations are UI wiring, not callable runtime definitions.
    ;; They appear in long contiguous runs in files such as org-agenda.el and
    ;; add substantial load pressure in standalone replay.

@@ -31,7 +31,7 @@ unit_for_path() {
     Makefile|bin/nemacs|scripts/build-nelisp-bootstrap.el|scripts/nemacs-runtime-image-preload.el|scripts/nemacs-runtime-process-preload.el|scripts/probe-vendor-class-a-standalone.py|scripts/probe-vendor-class-a-standalone.sh|scripts/standalone-source-normalize.el|scripts/vendor-class-a-smoke.el|scripts/vendor-core-smoke.el|scripts/vendor-form-standalone-walk.el|scripts/verify-nemacs-standalone-batch-repl.sh|scripts/verify-vendor-class-a-repl.sh|scripts/verify-vendor-core-repl.sh|src/nemacs-runtime-stdlib-extra.el|test/nemacs-bootstrap-nelisp-test.el|test/nemacs-loadup-test.el|test/runtime-stdlib-extra-test.el|test/standalone-source-normalize-test.el)
       printf '%s' "bootstrap-runtime-image-replay"
       ;;
-    src/calendar.el|src/emacs-dired-min-gui.el|src/emacs-help.el|src/emacs-project.el|src/eshell.el|src/isearch.el|src/lisp.el|src/lisp-mode.el|src/minibuffer.el|src/project.el|src/simple.el|src/woman.el)
+    src/calendar.el|src/emacs-dired-min-gui.el|src/emacs-help.el|src/emacs-project.el|src/eshell.el|src/isearch.el|src/lisp.el|src/lisp-mode.el|src/minibuffer.el|src/project.el|src/simple.el)
       printf '%s' "built-in-workflow"
       ;;
     scripts/build-nelisp-emacs-org-bridge-bundle.el|scripts/nemacs-org-mode-smoke-probe.el|scripts/nemacs-org-step-probe.el|scripts/nemacs-org-workflow-probe.el|src/emacs-org-agenda.el|src/emacs-org-outline.el|src/emacs-org-table.el|src/emacs-textmodes-stub.el|src/nelisp-emacs-org-bridge.el|test/nelisp-emacs-org-bridge-test.el)

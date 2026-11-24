@@ -471,7 +471,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-eshell.el"
     "eshell.el"
     "emacs-man.el"
-    "woman.el"
     "emacs-calc.el"
     "calc.el"
     ;; Directory browser: the genuine GNU `dired.el' in the vendor tail is the
@@ -674,9 +673,9 @@ These are existing vendor implementations, not local reimplementations.")
     ;; dired.el (+6.5s, needs an `easy-menu-define' keep-rule for woman's
     ;; `[menu-bar immediate]' lookup) and calc/calc.el (+11.5s, ~7s of it
     ;; live `calc-macs'/`rect'/`calc-loaddefs' loads).  isearch.el is
-    ;; bundled below (search-map comes from the keymap substrate).  woman.el's eager `woman-dired-define-keys' call is
-    ;; rewritten to the deferred `dired-mode-hook' branch in
-    ;; standalone-source-normalize.el.
+    ;; bundled below (search-map comes from the keymap substrate).  GNU
+    ;; dired.el is now bundled further down, with its menus kept, so
+    ;; woman.el's eager `woman-dired-define-keys' runs as in GNU.
     "emacs-lisp/progmodes/compile.el"
     "emacs-lisp/pcomplete.el"
     "emacs-lisp/shell.el"
