@@ -4,6 +4,11 @@
 
 (defun emacs-cc-category-1--docs-for (table)
   "Return TABLE's category docstrings from char-table extra-slot 0."
+  ;; The emacs-lib mutation path can reach this store before the prelude's
+  ;; category accessors have seeded the standard table.
+  (when (and (boundp 'emacs-cc-category-1--standard-docs-p)
+             (not emacs-cc-category-1--standard-docs-p))
+    (nelisp--category-standard))
   (let ((docs (emacs-char-table-extra-slot table 0)))
     (unless (and (vectorp docs) (= (length docs) 95))
       (signal 'wrong-type-argument (list 'category-docstrings docs)))

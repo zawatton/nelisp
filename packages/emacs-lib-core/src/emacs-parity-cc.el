@@ -228,12 +228,12 @@ evaluation."
           (puthash cache-key (cons 'ok value) emacs-parity-cc--lang-constant-cache))
         value))))
 
-(defun emacs-parity-cc--cached-c-define-lang-constant (name source-file newentries)
-  "Wrapper for `c-define-lang-constant' that invalidates memoized values."
+(defun emacs-parity-cc--cached-c-define-lang-constant (&rest arguments)
+  "Invalidate memoized values and forward ARGUMENTS to the CC Mode provider."
   (when emacs-parity-cc--lang-constant-cache
     (clrhash emacs-parity-cc--lang-constant-cache))
-  (funcall emacs-parity-cc--orig-c-define-lang-constant
-           name source-file newentries))
+  ;; GNU 31.1 can call with two arguments; older providers used three.
+  (apply emacs-parity-cc--orig-c-define-lang-constant arguments))
 
 (defun emacs-parity-cc--install ()
   "Install the CC-Mode-specific parity overrides.
