@@ -704,7 +704,6 @@ NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES = \
 	emacs-replace \
 	emacs-shell-command \
 	emacs-vc \
-	emacs-project \
 	emacs-elisp-eval \
 	emacs-elisp-mode \
 	emacs-font-lock \

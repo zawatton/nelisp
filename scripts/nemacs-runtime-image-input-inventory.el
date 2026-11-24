@@ -69,8 +69,7 @@
     (vendor-core lazy-feature emacs-help "src/emacs-help.el")
     (vendor-core lazy-feature emacs-elisp-eval "src/emacs-elisp-eval.el")
     (vendor-core lazy-feature emacs-ielm "src/emacs-ielm.el")
-    (vendor-core lazy-feature emacs-minibuffer-builtins "src/emacs-minibuffer-builtins.el")
-    (vendor-core lazy-feature emacs-project "src/emacs-project.el"))
+    (vendor-core lazy-feature emacs-minibuffer-builtins "src/emacs-minibuffer-builtins.el"))
   "Known runtime-image bake and runtime-lazy feature inputs.")
 
 (defun nemacs-runtime-image-input-inventory--tsv-cell (value)

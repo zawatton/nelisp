@@ -151,7 +151,6 @@ the default batch image while the vendor surface is still expanding."
   (nemacs-runtime-image-preload--install-elisp-core)
   (nemacs-runtime-image-preload--install-ielm-core)
   (nemacs-runtime-image-preload--install-minibuffer-core)
-  (nemacs-runtime-image-preload--install-project-core)
   (nemacs-runtime-image-preload--install-dev-nav-core)
   (nemacs-runtime-image-preload--install-shell-core)
   (nemacs-runtime-image-preload--install-process-core)
@@ -320,17 +319,6 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
                (require 'emacs-minibuffer-builtins)
                (exit-minibuffer))))
     (provide 'minibuffer))
-  t)
-
-(defun nemacs-runtime-image-preload--install-project-core ()
-  "Install the minimal `project' daily-driver surface."
-  (unless (featurep 'project)
-    (dolist (symbol '(project-current
-                      project-find-file
-                      project-switch-project))
-      (nemacs-runtime-image-preload--install-module-command
-       symbol 'emacs-project symbol))
-    (provide 'project))
   t)
 
 (defun nemacs-runtime-image-preload--install-dev-nav-core ()

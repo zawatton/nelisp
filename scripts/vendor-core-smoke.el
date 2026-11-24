@@ -205,7 +205,6 @@ needs their install/init paths to have run before vendor files are required."
                        emacs-man
                        emacs-shell
                        emacs-ielm
-                       emacs-project
                        emacs-replace
                        emacs-comint
                        emacs-vc

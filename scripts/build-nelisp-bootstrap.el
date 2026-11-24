@@ -465,8 +465,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU window.el window-group functions (generated, verbatim) for
     ;; isearch.el, which reads the window-group start on every search step.
     "emacs-window-gnu.el"
-    "emacs-project.el"
-    "project.el"
     "emacs-shell.el"
     "emacs-eshell.el"
     "eshell.el"
@@ -1296,7 +1294,6 @@ concatenated bootstrap bundle must make the order explicit."
     ;; unprovided after an early top-level error.
     (dolist (pair '(("emacs-calc.el" . "calc.el")
                     ("emacs-eshell.el" . "eshell.el")
-                    ("emacs-project.el" . "project.el")
                     ("emacs-vc.el" . "vc.el")
                     ("emacs-faces.el" . "emacs-faces-builtins.el")
                     ("emacs-frame.el" . "emacs-frame-builtins.el")
