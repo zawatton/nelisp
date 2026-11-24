@@ -211,6 +211,10 @@ pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-inf
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-code-info	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--merge-face-heights	364441f9fabb 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--merge-face-heights	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-add-variant	8be48ac4c92b 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-add-variant	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-build-variant	6db1adf4f3bf 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-build-variant	e3f2648caa3a 1
 pinned-site ignore-errors	nelisp-native-unit.el	defun nelisp-native-unit--unload-handle	a2ff32dedaa2 1
 # 2026-09-12, Doc 202 (lisp/nelisp-native-callsite.el).  Three handlers, all
 # answering "is this symbol in THIS binary" rather than degrading a result:
