@@ -122,7 +122,7 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
          (slot (car state))
          (cell (cdr state)))
     (or cell
-        (and slot (emacs-keymap--slot-char-p event)
+        (and slot (emacs-keymap--slot-char-p event slot)
              (let ((value (emacs-keymap--slot-ref slot event)))
                (and value (cons event value)))))))
 
@@ -151,11 +151,11 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
     (cond
      (remove
       (when cell (setcdr keymap (delq cell (cdr keymap))))
-      (when (and slot (emacs-keymap--slot-char-p event))
+      (when (and slot (emacs-keymap--slot-char-p event slot))
         (emacs-keymap--slot-set slot event nil)))
      ;; Keep a sparse nil cell: nil in a dense slot means inherit instead.
      ((null def)
-      (when (and slot (emacs-keymap--slot-char-p event))
+      (when (and slot (emacs-keymap--slot-char-p event slot))
         (emacs-keymap--slot-set slot event nil))
       (if cell (setcdr cell nil)
         (setcdr keymap (cons (cons event nil) (cdr keymap)))))

@@ -2,7 +2,8 @@
 
 ;; Run: emacs --batch -l scripts/generate-emacs-keys-gnu.el
 ;; Copies, verbatim, the top-level `define-key' / `keymap-set' forms that GNU Emacs 31.1
-;; window.el, frame.el, mule-cmds.el and loaddefs.el (all preloaded in GNU)
+;; window.el, frame.el, mule-cmds.el, mule-conf.el and loaddefs.el (all
+;; preloaded in GNU)
 ;; apply to the global keymap tree, into
 ;; packages/emacs-lib-core/src/emacs-keys-gnu.el.  The standalone loads its
 ;; own window/frame implementation instead of those files, so only their
@@ -19,16 +20,23 @@
 
 (defconst gen-keys--sources
   '("vendor/staged-emacs-lisp/window.el" "vendor/staged-emacs-lisp/frame.el"
-    "vendor/staged-emacs-lisp/mule-cmds.el" "vendor/emacs-lisp/loaddefs.el")
+    "vendor/staged-emacs-lisp/mule-cmds.el"
+    "vendor/emacs-lisp/international/mule-conf.el"
+    "vendor/emacs-lisp/loaddefs.el")
   "Pinned GNU sources, in GNU loadup order.")
 
 (defun gen-keys--copy-p (form)
-  "Non-nil when FORM binds a key in a global prefix map to a plain DEF."
+  "Non-nil when FORM binds a key in a global prefix map to a plain DEF.
+Also copies mule-conf.el's `set-char-table-range' on `global-map's
+char-table, which makes every multibyte character self-insert."
+  (or
+   (and (eq (car-safe form) 'set-char-table-range)
+        (equal (nth 1 form) '(nth 1 global-map)))
   (and (memq (car-safe form) '(define-key keymap-set))
        (memq (nth 1 form) gen-keys--maps)
        (let ((def (nth 3 form)))
          (or (null def) (stringp def) (vectorp def)
-             (memq (car-safe def) '(quote function))))))
+             (memq (car-safe def) '(quote function)))))))
 
 (let* ((root (file-name-directory
               (directory-file-name

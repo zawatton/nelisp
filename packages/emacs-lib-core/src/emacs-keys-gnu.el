@@ -37,6 +37,10 @@
 (define-key ctl-x-map "\\" 'activate-transient-input-method)
 (define-key global-map "\C-\\" 'toggle-input-method)
 (define-key ctl-x-map "8\r" 'insert-char)
+;; vendor/emacs-lisp/international/mule-conf.el
+(set-char-table-range (nth 1 global-map)
+		      (cons 128 (max-char))
+		      'self-insert-command)
 ;; vendor/emacs-lisp/loaddefs.el
 (keymap-set ctl-x-r-map "b" #'bookmark-jump)
 (keymap-set ctl-x-r-map "m" #'bookmark-set)

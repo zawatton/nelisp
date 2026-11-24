@@ -7026,6 +7026,8 @@ inode-number, device-number and file-number."
 
 (define-key ctl-x-map "i" 'insert-file)
 
+(define-key esc-map "~" 'not-modified)
+
 (define-key ctl-x-map "\C-d" 'list-directory)
 
 (define-key ctl-x-map "\C-c" 'save-buffers-kill-terminal)

@@ -195,13 +195,13 @@ subsystem, which the standalone lacks (project.el calls
                 (forward-sexp 1)
                 (push (cons (+ pb (cadr spec)) (buffer-substring pb (point))) chunks)))))))))
   ;; GNU files.el's own key bindings for its commands (top-level
-  ;; define-key forms on the C-x maps) and its
+  ;; define-key forms on the C-x maps and esc-map) and its
   ;; (provide 'files '(remote-wildcards)), copied verbatim.
   (with-temp-buffer
     (insert-file-contents src)
     (goto-char (point-min))
     (while (re-search-forward
-            "^(\\(?:define-key ctl-x-\\(?:[45]-\\)?map \\|provide 'files \\)" nil t)
+            "^(\\(?:define-key \\(?:ctl-x-\\(?:[45]-\\)?\\|esc-\\)map \\|provide 'files \\)" nil t)
       (goto-char (match-beginning 0))
       (let ((beg (point)))
         (forward-sexp 1)

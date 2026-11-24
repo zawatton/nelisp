@@ -486,9 +486,15 @@ KEYMAP when installed, otherwise nil."
   (when (boundp 'overriding-terminal-local-map)
     (set 'overriding-terminal-local-map nil)))
 
-(defun emacs-keymap--slot-char-p (k)
-  "Return non-nil when K is a character handled by a full slot's fast path."
-  (and (integerp k) (>= k 0) (< k emacs-keymap--full-slot-size)))
+(defun emacs-keymap--slot-char-p (k &optional slot)
+  "Return non-nil when K is a character held by the full slot SLOT.
+A char-table slot holds every character, as in GNU keymap.c (e.g. the
+128..max-char self-insert range of GNU `global-map'); the legacy
+=(t . VECTOR)= slot holds only characters below its size."
+  (and (integerp k) (>= k 0)
+       (< k (if (and slot (emacs-char-table-p slot))
+                (1+ (max-char))
+              emacs-keymap--full-slot-size))))
 
 (defun emacs-keymap--slot-ref (slot k)
   "Return SLOT's binding for character K (char-table or legacy cons)."
@@ -532,7 +538,7 @@ sparse binding cons cell whose car matches K, or nil."
   (let ((state (emacs-keymap--tail-state keymap k)))
     (let ((slot (car state))
           (existing (cdr state)))
-    (if (and slot (emacs-keymap--slot-char-p k))
+    (if (and slot (emacs-keymap--slot-char-p k slot))
         ;; full-keymap slot path
         (emacs-keymap--slot-set slot k def)
       (cond
@@ -603,7 +609,7 @@ keep their relative order outside the sparse binding block."
             (emacs-keymap--set-binding keymap k sub))
           (emacs-keymap--define-key-after-1 sub rest def after))
       (let ((slot (emacs-keymap--full-slot keymap)))
-        (if (and slot (emacs-keymap--slot-char-p k))
+        (if (and slot (emacs-keymap--slot-char-p k slot))
             (emacs-keymap--slot-set slot k def)
           (emacs-keymap--define-key-after-in-sparse keymap k def after))))))
 
@@ -643,7 +649,7 @@ job (see `emacs-keymap--lookup-with-parent')."
   (let* ((state (emacs-keymap--tail-state keymap k))
          (slot (car state))
          (binding (cdr state)))
-    (or (and slot (emacs-keymap--slot-char-p k)
+    (or (and slot (emacs-keymap--slot-char-p k slot)
              (emacs-keymap--slot-ref slot k))
         (and binding (cdr binding)))))
 
