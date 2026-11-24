@@ -154,9 +154,10 @@ evaluator, which consults the hashtable rather than the function cell."
             (forms (emacs-easy-mmode--keyword-tail body)))
         (append
          (list 'progn
-               (list 'defvar (car variable-spec) init doc)
+               (when (symbolp (car variable-spec))
+                 (list 'defvar (car variable-spec) init doc))
                (list 'defvar hook nil)
-               (unless global
+               (when (and (not global) (symbolp (car variable-spec)))
                  (list 'make-variable-buffer-local
                        (list 'quote (car variable-spec))))
                (emacs-easy-mmode--minor-mode-alist-form mode lighter)
@@ -179,7 +180,7 @@ evaluator, which consults the hashtable rather than the function cell."
                                                (car variable-spec)))))))))
          (list
           (list 'put (list 'quote mode) ''interactive-form ''(interactive "P")))
-         (when global
+         (when (and global (symbolp (car variable-spec)))
            (list
             (list 'when mode
                   (list 'add-to-list ''global-minor-modes (list 'quote mode)))))

@@ -2,6 +2,10 @@
 
 ;; Batch-mode compatibility for the fontset C primitives.
 
+(defvar fontset-alias-alist
+  '(("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default" . "fontset-default"))
+  "Alist of fontset names and their aliases.")
+
 (unless (fboundp 'fontset-font)
   (defun fontset-font (name ch &optional all)
     "Return a font name pattern for character CH in fontset NAME.

@@ -21,8 +21,9 @@
 (unless (fboundp 'window-top-child)
   (defun window-top-child (&optional window)
     "Return the topmost child window of window WINDOW."
-    (emacs-cc-window-6--window window 'window-valid-p)
-    nil))
+    (let ((win (emacs-cc-window-6--window window 'window-valid-p)))
+      (when (eq (emacs-window-direction win) 'vertical)
+        (car (emacs-window-children win))))))
 
 (unless (fboundp 'window-top-line)
   (defun window-top-line (&optional window)
@@ -34,13 +35,15 @@
   (defun window-total-height (&optional window round)
     "Return the height of window WINDOW in canonical lines."
     (ignore round)
-    (window-height (emacs-cc-window-6--window window 'window-valid-p))))
+    (emacs-window-total-lines
+     (emacs-cc-window-6--window window 'window-valid-p))))
 
 (unless (fboundp 'window-total-width)
   (defun window-total-width (&optional window round)
     "Return the total width of window WINDOW in canonical columns."
     (ignore round)
-    (window-width (emacs-cc-window-6--window window 'window-valid-p))))
+    (emacs-window-total-cols
+     (emacs-cc-window-6--window window 'window-valid-p))))
 
 (unless (fboundp 'window-use-time)
   (defun window-use-time (&optional window)

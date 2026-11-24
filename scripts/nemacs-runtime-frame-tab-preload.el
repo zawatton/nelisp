@@ -249,11 +249,20 @@
              (emacs-frame--runtime-ref object 'backend)
            nil)))
 
+(fset 'window-system
+      '(lambda (&optional frame)
+         ;; The synthetic batch frame is a terminal for Lisp callers.
+         (let* ((target (or frame (selected-frame)))
+                (type (framep target)))
+           (unless type
+             (signal 'wrong-type-argument (list 'framep target)))
+           (unless (memq type '(t stub)) type))))
+
 ;; Core's `nelisp--check-live-frame' (nelisp-stdlib-prelude.el) is the single
 ;; chokepoint behind `internal-lisp-face-p', `internal-make-lisp-face',
 ;; `internal-copy-lisp-face', `internal-get/set-lisp-face-attribute',
 ;; `internal-lisp-face-empty-p', `internal-merge-in-global-face',
-;; `frame-parameter'/`set-frame-parameter', and `window-system': it
+;; and `frame-parameter'/`set-frame-parameter': it
 ;; unconditionally signals `wrong-type-argument' for ANY non-nil FRAME, on
 ;; the documented assumption that "this runtime never creates a frame" (so
 ;; `frame-list' is always `(nil)' and no FRAME argument can ever be live).
@@ -430,107 +439,10 @@
 (fset 'display-pixel-width '(lambda (&optional display) 1024))
 (fset 'display-pixel-height '(lambda (&optional display) 768))
 
-(setq tab-bar-mode nil)
-(setq tab-bar--tabs nil)
-(setq tab-bar--selected-index 0)
 (setq tab-line-mode nil)
 (setq global-tab-line-mode nil)
 (setq tab-line-format nil)
 
-(fset 'tab-bar--ensure-tabs
-      '(lambda ()
-         (if tab-bar--tabs
-             nil
-           (progn
-             (setq tab-bar--tabs
-                   (list (list (cons 'name "1")
-                               (cons 'explicit-name nil))))
-             (setq tab-bar--selected-index 0)))
-         tab-bar--tabs))
-
-(fset 'tab-bar-tabs '(lambda (&optional frame) (tab-bar--ensure-tabs)))
-(fset 'tab-bar-current-tab
-      '(lambda (&optional frame)
-         (nth tab-bar--selected-index (tab-bar--ensure-tabs))))
-(fset 'tab-bar-current-tab-index
-      '(lambda (&optional frame)
-         (tab-bar--ensure-tabs)
-         tab-bar--selected-index))
-(fset 'tab-bar-new-tab
-      '(lambda (&optional arg)
-         (tab-bar--ensure-tabs)
-         (let ((tab (list (cons 'name
-                                (number-to-string
-                                 (+ (length tab-bar--tabs) 1)))
-                          (cons 'explicit-name nil))))
-           (setq tab-bar--tabs (append tab-bar--tabs (list tab)))
-           (setq tab-bar--selected-index (- (length tab-bar--tabs) 1))
-           tab)))
-(fset 'tab-bar-select-tab
-      '(lambda (tab-number)
-         (tab-bar--ensure-tabs)
-         (let ((index (- tab-number 1)))
-           (if (>= index 0)
-               (if (< index (length tab-bar--tabs))
-                   (setq tab-bar--selected-index index)
-                 nil)
-             nil)
-           (tab-bar-current-tab))))
-(fset 'tab-bar-switch-to-next-tab
-      '(lambda (&optional arg)
-         (tab-bar--ensure-tabs)
-         (let ((count (length tab-bar--tabs))
-               (index (+ tab-bar--selected-index (if arg arg 1))))
-           (while (< index 0) (setq index (+ index count)))
-           (while (>= index count) (setq index (- index count)))
-           (setq tab-bar--selected-index index)
-           (tab-bar-current-tab))))
-(fset 'tab-bar-switch-to-prev-tab
-      '(lambda (&optional arg)
-         (tab-bar-switch-to-next-tab (- 0 (if arg arg 1)))))
-(fset 'tab-bar-close-tab
-      '(lambda (&optional tab-number)
-         (tab-bar--ensure-tabs)
-         (if (<= (length tab-bar--tabs) 1)
-             (tab-bar-current-tab)
-           (let ((index (if tab-number (- tab-number 1) tab-bar--selected-index))
-                 (i 0)
-                 (new-tabs nil))
-             (dolist (tab tab-bar--tabs)
-               (if (= i index)
-                   nil
-                 (setq new-tabs (append new-tabs (list tab))))
-               (setq i (+ i 1)))
-             (setq tab-bar--tabs new-tabs)
-             (if (>= tab-bar--selected-index (length tab-bar--tabs))
-                 (setq tab-bar--selected-index (- (length tab-bar--tabs) 1))
-               nil)
-             (tab-bar-current-tab)))))
-(fset 'tab-bar-rename-tab
-      '(lambda (name &optional tab-number)
-         (tab-bar--ensure-tabs)
-         (let* ((index (if tab-number (- tab-number 1) tab-bar--selected-index))
-                (tab (nth index tab-bar--tabs))
-                (name-cell (assq 'name tab))
-                (explicit-cell (assq 'explicit-name tab)))
-           (if name-cell (setcdr name-cell name) nil)
-           (if explicit-cell (setcdr explicit-cell t) nil)
-           tab)))
-(fset 'tab-bar-mode
-      '(lambda (&optional arg)
-         (setq tab-bar-mode (if arg (> arg 0) (if tab-bar-mode nil t)))
-         (tab-bar--ensure-tabs)
-         tab-bar-mode))
-(fset 'tab-bar-height '(lambda (&optional frame) (if tab-bar-mode 1 0)))
-(fset 'tab-new '(lambda (&optional arg) (tab-bar-new-tab arg)))
-(fset 'tab-close '(lambda (&optional tab-number)
-                    (tab-bar-close-tab tab-number)))
-(fset 'tab-next '(lambda (&optional arg) (tab-bar-switch-to-next-tab arg)))
-(fset 'tab-previous '(lambda (&optional arg)
-                       (tab-bar-switch-to-prev-tab arg)))
-(fset 'tab-select '(lambda (tab-number) (tab-bar-select-tab tab-number)))
-(fset 'tab-rename '(lambda (name &optional tab-number)
-                     (tab-bar-rename-tab name tab-number)))
 (fset 'tab-line-mode
       '(lambda (&optional arg)
          (setq tab-line-mode (if arg (> arg 0) (if tab-line-mode nil t)))
@@ -558,7 +470,6 @@
 
 (provide 'frame)
 (provide 'emacs-frame-builtins)
-(provide 'tab-bar)
 (provide 'tab-line)
 
 ;;; nemacs-runtime-frame-tab-preload.el ends here

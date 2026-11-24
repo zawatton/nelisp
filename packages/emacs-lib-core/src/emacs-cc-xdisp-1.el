@@ -1,6 +1,12 @@
 ;;; emacs-cc-xdisp-1.el --- xdisp C-core compatibility -*- lexical-binding: t; -*-
 ;;; Code:
 
+(unless (boundp 'glyphless-char-display)
+  (put 'glyphless-char-display 'char-table-extra-slots 1)
+  (defvar glyphless-char-display (make-char-table 'glyphless-char-display)
+    "Character table of glyphless display methods.")
+  (set-char-table-extra-slot glyphless-char-display 0 'empty-box))
+
 (defun emacs-cc-xdisp-1--object-string (object)
   (cond ((stringp object) object)
         ((null object) (and (fboundp 'buffer-string) (buffer-string)))

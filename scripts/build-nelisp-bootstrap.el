@@ -40,10 +40,9 @@ final `.el' suffix with `.repl'.")
   '("emacs-parity-core-vars.el"
     ;; GNU 31.1 subr-x.el from vendor/; moved to its early slot below.
     "emacs-lisp/emacs-lisp/subr-x.el"
-    ;; Standalone runtime-speed and abbrev-table repairs.  Their prerequisites
+    ;; Standalone runtime-speed repairs.  Their prerequisites
     ;; are available by the `emacs-string.el' insertion anchor.
     "emacs-parity-addtolist.el"
-    "emacs-parity-abbrev.el"
     "seq.el"
     "map.el"
     "json.el"
@@ -463,9 +462,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU mule.el file-coding definitions (generated, verbatim): the
     ;; coding detection `insert-file-contents' handlers such as jka-compr use.
     "emacs-mule-gnu.el"
-    ;; GNU window.el window-group functions (generated, verbatim) for
-    ;; isearch.el, which reads the window-group start on every search step.
-    "emacs-window-gnu.el"
     "emacs-shell.el"
     "emacs-eshell.el"
     "eshell.el"
@@ -480,6 +476,8 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; as preload-local shims: Org's chain reaches replace-buffer-contents,
     ;; pcomplete-uniqify-list, newline-and-indent, and define-skeleton during
     ;; source loading.
+    "emacs-lisp/obarray.el"
+    "emacs-lisp/abbrev.el"
     "emacs-parity-shims.el"
     "emacs-parity-misc.el"
     ;; `emacs-parity-fns2.el' requires `emacs-translation-table' (its

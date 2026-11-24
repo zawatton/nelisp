@@ -108,7 +108,7 @@ nothing.")
       (emacs-easy-mmode--mode-setq-form-for-variable mode mode nil))
 
     (defun emacs-easy-mmode--variable-spec (mode spec)
-      "Return (VARIABLE SETTER) for MODE's `:variable' SPEC."
+      "Return (PLACE SETTER) for MODE's `:variable' SPEC."
       (cond
        ((null spec) (list mode nil))
        ((eq spec t) (list mode nil))
@@ -132,6 +132,9 @@ nothing.")
              (consp (cdr spec)) (consp (cadr spec))
              (eq (car (cadr spec)) 'quote) (symbolp (cadr (cadr spec))))
 	(list (cadr (cadr spec)) nil))
+       ;; frame.el stores Auto Raise and Auto Lower in the selected frame.
+       ((and (consp spec) (eq (car spec) 'frame-parameter))
+        (list spec nil))
        ((and (consp spec) (symbolp (car spec)))
 	(list (car spec)
               (if (symbolp (cdr spec))
@@ -156,11 +159,14 @@ mode-specific symbol."
                                (list '< 'arg 1))
 			 nil)
                    (list t t))))
-	(if setter
-            (list 'let (list (list '--easy-mmode-value-- value-form))
-                  (list 'funcall setter '--easy-mmode-value--)
-                  variable)
-          (list 'setq variable value-form))))
+        (cond
+         (setter
+          (list 'let (list (list '--easy-mmode-value-- value-form))
+                (list 'funcall setter '--easy-mmode-value--)
+                variable))
+         ((consp variable)
+          (append (list 'set-frame-parameter) (cdr variable) (list value-form)))
+         (t (list 'setq variable value-form)))))
 
     (defmacro define-minor-mode (mode doc &rest body)
       "Fallback `define-minor-mode' for standalone NeLisp.
@@ -180,9 +186,10 @@ implementation, but the vendor-visible load-time surfaces for
             (forms (emacs-easy-mmode--keyword-tail body)))
 	(append
 	 (list 'progn
-               (list 'defvar (car variable-spec) init doc)
+               (when (symbolp (car variable-spec))
+                 (list 'defvar (car variable-spec) init doc))
                (list 'defvar hook nil)
-               (unless global
+               (when (and (not global) (symbolp (car variable-spec)))
 		 (list 'make-variable-buffer-local
                        (list 'quote (car variable-spec))))
                (emacs-easy-mmode--minor-mode-alist-form mode lighter)
@@ -208,7 +215,7 @@ implementation, but the vendor-visible load-time surfaces for
 		(list 'quote mode)
 		''interactive-form
 		''(interactive "P")))
-	 (when global
+	 (when (and global (symbolp (car variable-spec)))
            (list
             (list 'when mode
                   (list 'add-to-list ''global-minor-modes

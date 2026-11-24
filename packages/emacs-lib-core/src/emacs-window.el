@@ -427,7 +427,7 @@ configured minimum."
               (list :total total :new new-sz :old old-sz)))
     (cons new-sz old-sz)))
 
-(defun emacs-window-split-window (&optional window size side)
+(defun emacs-window-split-window (&optional window size side new-parent reference)
   "Split WINDOW into two and return the new window.
 
 SIDE is one of `below' (default), `above', `right', `left'.  For the
@@ -435,10 +435,17 @@ top/bottom pair the split is *vertical* (stacked); for left/right it is
 *horizontal* (side-by-side).  This matches Emacs.
 
 WINDOW defaults to the selected window.  SIZE, if non-nil, specifies the
-size of the *new* window."
+size of the *new* window.  NEW-PARENT forces a new split node.
+REFERENCE supplies the new window's buffer, point and start and allows
+splitting an internal window."
   (let* ((win  (or window (emacs-window-selected-window)))
-         (side (or side 'below)))
-    (emacs-window--check-leaf win)
+         (side (or side 'below))
+         (source (or reference win)))
+    (if reference
+        (progn
+          (emacs-window--check-live win)
+          (emacs-window--check-leaf reference))
+      (emacs-window--check-leaf win))
     (let* ((vertical (memq side '(below above)))
            (total    (if vertical
                          (emacs-window-total-lines win)
@@ -448,23 +455,24 @@ size of the *new* window."
            (new-sz   (car sizes))
            (old-sz   (cdr sizes))
            (new-leaf (emacs-window--make-leaf
-                      (emacs-window-buffer win)
+                      (if reference (emacs-window-window-buffer source)
+                        (emacs-window-buffer source))
                       (if vertical (emacs-window-total-cols win) new-sz)
                       (if vertical new-sz (emacs-window-total-lines win)))))
       ;; Both leaves initially show the same buffer position.  Redisplay can
       ;; then recenter each at its own body height, including inactive leaves.
-      (setf (emacs-window-point new-leaf) (emacs-window-point win)
-            (emacs-window-start new-leaf) (emacs-window-start win))
+      (setf (emacs-window-point new-leaf) (emacs-window-point source)
+            (emacs-window-start new-leaf) (emacs-window-start source))
       ;; resize the original
-      (if vertical
-          (setf (emacs-window-total-lines win) old-sz)
-        (setf (emacs-window-total-cols win) old-sz))
+      (emacs-window--resize-tree win
+                                 (if vertical (emacs-window-total-cols win) old-sz)
+                                 (if vertical old-sz (emacs-window-total-lines win)))
       ;; If WIN already lives in a split with the same direction, just
       ;; insert NEW-LEAF as a sibling.  Otherwise wrap WIN inside a new
       ;; split node.
       (let ((parent (emacs-window-parent win))
             (dir    (if vertical 'vertical 'horizontal)))
-        (if (and parent (eq (emacs-window-direction parent) dir))
+        (if (and (not new-parent) parent (eq (emacs-window-direction parent) dir))
             (emacs-window--insert-sibling parent win new-leaf side)
           (emacs-window--wrap-in-split win new-leaf dir side)))
       ;; Selected window stays on WIN unless caller selects new-leaf.

@@ -813,7 +813,8 @@ simplification.)"
     "Return the internal root of FRAME-OR-WINDOW's live window tree."
     (let ((root (if (window-valid-p frame-or-window) frame-or-window
                   (let ((frame (emacs-window-builtins--frame frame-or-window)))
-                    (or (emacs-frame-root-window frame)
+                    (or (and (emacs-frame-p frame)
+                             (emacs-frame-root-window frame))
                         (and (eq frame (selected-frame)) (emacs-window-selected-window)))))))
       (while (emacs-window-parent root) (setq root (emacs-window-parent root)))
       root)))
