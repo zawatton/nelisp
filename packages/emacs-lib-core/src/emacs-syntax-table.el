@@ -298,7 +298,11 @@ uses the native bridge.  Falls back to a global setting without a buffer."
   (if (fboundp 'nelisp--repr)
       ;; The swap engine saves and restores this local across buffer switches,
       ;; so the variable cell alone is the per-buffer store (no sidecar write).
-      (set (make-local-variable emacs-syntax-table--local-key) table)
+      ;; Bound means the current buffer already has its local (see
+      ;; `emacs-syntax-table-current'); `make-local-variable' costs ~6 us.
+      (if (boundp emacs-syntax-table--local-key)
+          (set emacs-syntax-table--local-key table)
+        (set (make-local-variable emacs-syntax-table--local-key) table))
     (let ((buf (emacs-syntax-table--buffer)))
       (if (and buf (fboundp 'emacs-buffer-set-buffer-local-value))
           (emacs-buffer-set-buffer-local-value emacs-syntax-table--local-key buf table)
@@ -347,11 +351,20 @@ uses the native bridge.  Falls back to a global setting without a buffer."
   (unless (and (integerp char) (<= 0 char) (<= char #x3fffff))
     (signal 'wrong-type-argument (list 'characterp char))))
 
+(defvar emacs-syntax-table--checked nil
+  "The last two tables `emacs-syntax-table--check-table' accepted.
+A char-table's subtype never changes, so a table seen here needs no check;
+two entries cover the alternation of `with-syntax-table'.")
+
 (defun emacs-syntax-table--check-table (table)
   "Require a char-table with syntax-table subtype."
-  (unless (and (emacs-char-table-p table)
-               (eq (emacs-char-table-subtype table) 'syntax-table))
-    (signal 'wrong-type-argument (list 'syntax-table-p table))))
+  (unless (or (eq table (car emacs-syntax-table--checked))
+              (eq table (cdr emacs-syntax-table--checked)))
+    (unless (and (emacs-char-table-p table)
+                 (eq (emacs-char-table-subtype table) 'syntax-table))
+      (signal 'wrong-type-argument (list 'syntax-table-p table)))
+    (setq emacs-syntax-table--checked
+          (cons table (car emacs-syntax-table--checked)))))
 
 (defun emacs-syntax-table-modify-entry (char descriptor &optional table)
   "Set CHAR or its inclusive range to DESCRIPTOR in TABLE; return nil."
