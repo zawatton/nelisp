@@ -42,6 +42,22 @@ is fatal."
      (when (fboundp 'nelisp--write-stdout-bytes)
        (nelisp--write-stdout-bytes
         (format "ORG-BAKE warm org-mode failed: %S\n" err)))))
+  ;; The first `find-file' of a fresh process lazily loads a long chain (about
+  ;; 100 s interpreted, measured on the base image); pay it here once.
+  (let ((file (make-temp-file "nemacs-org-warm-" nil ".org")))
+    (unwind-protect
+        (condition-case err
+            (progn
+              (with-temp-file file (insert "* TODO warm\nSCHEDULED: <2026-01-01 Thu>\n"))
+              (let ((buf (find-file-noselect file)))
+                (with-current-buffer buf (org-mode))
+                (kill-buffer buf)))
+          (error
+           (push (cons 'find-file err) nemacs-org-extension-failures)
+           (when (fboundp 'nelisp--write-stdout-bytes)
+             (nelisp--write-stdout-bytes
+              (format "ORG-BAKE warm find-file failed: %S\n" err)))))
+      (ignore-errors (delete-file file))))
   (unless (featurep 'org)
     (error "org bake: feature org did not load: %S" nemacs-org-extension-failures))
   t)
