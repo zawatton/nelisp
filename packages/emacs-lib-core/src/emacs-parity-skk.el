@@ -307,6 +307,10 @@ alias target), otherwise to `customize-customized'."
     ("minibuffer-prompt-properties" . "'(read-only t face minibuffer-prompt)")
     ("read-file-name-completion-ignore-case" . "nil")
     ("after-init-time" . "nil")
+    ;; Org (org-persist.el) -- C startup variable, and the epa-hook.el
+    ;; autoloaded default regexp that org-persist reads without requiring epa.
+    ("before-init-time" . "(current-time)")
+    ("epa-file-name-regexp" . "\"\\\\.gpg\\\\(~\\\\|\\\\.~[0-9]+~\\\\)?\\\\'\"")
     ("dump-mode" . "nil")
     ("custom-dirlocals-field-map" . "(make-sparse-keymap)")
     ("custom-field-keymap"

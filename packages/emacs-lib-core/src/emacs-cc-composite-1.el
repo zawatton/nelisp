@@ -108,5 +108,14 @@
           (signal 'args-out-of-range (list (current-buffer) pos)))
         nil))))
 
+(unless (fboundp 'decompose-region)
+  ;; GNU lisp/composite.el (not vendored); org calls it for pretty entities.
+  (defun decompose-region (start end)
+    "Remove all compositions and glyphs from START to END."
+    (let ((modified-p (buffer-modified-p))
+          (inhibit-read-only t))
+      (remove-text-properties start end '(composition nil))
+      (restore-buffer-modified-p modified-p))))
+
 (provide 'emacs-cc-composite-1)
 ;;; emacs-cc-composite-1.el ends here

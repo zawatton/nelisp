@@ -55,4 +55,12 @@
     (ignore pixels-p)
     0))
 
+(unless (fboundp 'window-full-width-p)
+  ;; GNU lisp/window.el (not vendored); org-fit-window-to-buffer calls it.
+  (defun window-full-width-p (&optional window)
+    "Return non-nil if WINDOW is as wide as its frame."
+    (let ((window (or window (selected-window))))
+      (= (window-total-width window)
+         (window-total-width (frame-root-window window))))))
+
 (provide 'emacs-cc-window-6)

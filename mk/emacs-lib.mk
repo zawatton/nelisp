@@ -2298,6 +2298,21 @@ bake-org-runtime-dump:
 	test -s "$(abspath $(NEMACS_ORG_RUNTIME_DUMP)).tmp"
 	mv "$(NEMACS_ORG_RUNTIME_DUMP).tmp" "$(NEMACS_ORG_RUNTIME_DUMP)"
 
+# Org image smoke: runs the same probe on the baked flat dump (the fast path)
+# and, as a control, on GNU Emacs.  Each prints ORG-LOAD / ORG-OUTLINE /
+# ORG-EXPORT / ORG-AGENDA PASS lines.
+org-image-smoke: bake-org-runtime-dump
+	test -x "$(NELISP_BIN)"
+	@out="$$(./tools/run-with-deadline.sh $(NEMACS_ORG_RUNTIME_BAKE_TIMEOUT) --label org-image -- env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" --cold-load-from "$(abspath $(NEMACS_ORG_RUNTIME_DUMP))" --eval \
+		"(progn (nemacs-runtime-dump-reinit) (setq nemacs-org-smoke-fixture \"$(abspath $(NEMACS_ORG_SMOKE_FIXTURE))\") (load \"$(abspath $(NEMACS_ORG_SMOKE_PROBE))\" nil t t))" 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	for k in ORG-LOAD ORG-OUTLINE ORG-EXPORT ORG-AGENDA; do printf '%s\n' "$$out" | grep -q "^$$k PASS" || exit 1; done
+
+org-image-smoke-gnu:
+	$(EMACS) -Q --batch --eval '(setq nemacs-org-smoke-fixture "$(abspath $(NEMACS_ORG_SMOKE_FIXTURE))")' -l "$(abspath $(NEMACS_ORG_SMOKE_PROBE))" 2>&1 | tee "$(BUILD_DIR)/org-image-smoke-gnu.log"
+	@for k in ORG-LOAD ORG-OUTLINE ORG-EXPORT ORG-AGENDA; do grep -q "^$$k PASS" "$(BUILD_DIR)/org-image-smoke-gnu.log" || exit 1; done
+
 # Task #17 (M2).  Scratch git repo fixture shared by magit-status-smoke and
 # magit-tui-smoke: NUM_COMMITS commits on `main', one unstaged edit, two
 # untracked files (scripts/nemacs-magit-fixture.sh has the full recipe).

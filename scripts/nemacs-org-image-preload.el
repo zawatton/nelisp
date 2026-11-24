@@ -33,6 +33,15 @@ is fatal."
        (when (fboundp 'nelisp--write-stdout-bytes)
          (nelisp--write-stdout-bytes
           (format "ORG-BAKE feature %S failed: %S\n" feature err))))))
+  ;; Warm the lazily loaded `org-modules' libraries (ol-*) so the first
+  ;; `org-mode' in a started image does not pay for them.
+  (condition-case err
+      (with-temp-buffer (org-mode))
+    (error
+     (push (cons 'org-mode err) nemacs-org-extension-failures)
+     (when (fboundp 'nelisp--write-stdout-bytes)
+       (nelisp--write-stdout-bytes
+        (format "ORG-BAKE warm org-mode failed: %S\n" err)))))
   (unless (featurep 'org)
     (error "org bake: feature org did not load: %S" nemacs-org-extension-failures))
   t)
