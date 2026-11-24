@@ -48,9 +48,7 @@
   (defvar mode-line-format " %b "
     "Track H bridge: default mode-line format for preloaded buffers."))
 
-(unless (boundp 'auto-mode-alist)
-  (defvar auto-mode-alist nil
-    "Track H bridge: file-extension → major-mode association list."))
+;; `auto-mode-alist' is GNU files.el's (emacs-files-gnu.el).
 
 (unless (boundp 'fundamental-mode-hook)
   (defvar fundamental-mode-hook nil
@@ -354,8 +352,7 @@ Reset the local keymap, syntax and case tables, and mode-line display.
     (force-mode-line-update)
     nil))
 
-(when (emacs-mode-builtins--install-function-p 'set-auto-mode)
-  (defalias 'set-auto-mode #'emacs-mode-set-auto-mode))
+;; `set-auto-mode' is GNU files.el's (emacs-files-gnu.el).
 
 (when (emacs-mode-builtins--install-function-p 'make-mode-line-mouse-map)
   (defalias 'make-mode-line-mouse-map

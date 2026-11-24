@@ -393,7 +393,7 @@ once, after the mode hook."
       (insert-file-contents file)
       (dolist (sym '(fundamental-mode text-mode emacs-lisp-mode
                      run-mode-hooks kill-all-local-variables
-                     set-auto-mode define-derived-mode))
+                     define-derived-mode))
         (goto-char (point-min))
         (should (search-forward
                  (format "(when (emacs-mode-builtins--install-function-p '%s)"
