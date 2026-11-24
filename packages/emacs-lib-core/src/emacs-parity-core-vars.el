@@ -28,6 +28,11 @@
 ;; configure switches.  The standalone runtime is built without GNU's
 ;; configure script, so it has no such switches; do not copy the host build's
 ;; optional-capability flags into this runtime.
+(unless (boundp 'system-configuration-features)
+  (defvar system-configuration-features ""
+    "String listing some of the main features this Emacs was compiled with.
+GNU sets this from configure (emacs.c); the NeLisp standalone has no
+configure-time feature list, so it is empty, as for a minimal build."))
 (unless (boundp 'system-configuration-options)
   (defvar system-configuration-options ""
     "GNU configure options used to build this runtime; none for standalone."))

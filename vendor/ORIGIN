@@ -1173,3 +1173,16 @@ emacs-lisp/textmodes/table.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/te
 staged-emacs-lisp/frame.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/frame.el.gz	sha256=a424b330983676eea5dec092c62d50257a9aa5871c13cacd5833d8f9b604e62d
 staged-emacs-lisp/mule-cmds.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/international/mule-cmds.el.gz	sha256=04fe2ad62ca70565f6c59ad6ca02e200869942dc8c7df03fbec74244ddc98e51
 emacs-lisp/startup.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/startup.el	sha256=856927b8ef69c4028a5aea917fad5ddcce5d4eff1c677ea85ed8db47f7dba0ce
+emacs-lisp/progmodes/cc-defs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-defs.el	sha256=807faa559e5234ad1b54f4a18d8952583e096bf861563e9156a41711cd1ca983
+emacs-lisp/progmodes/cc-vars.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-vars.el	sha256=de1b5f41bb94a662b1f0d92729dfc08497f1f22be70ad5e1ba06bf962dfae4b9
+emacs-lisp/progmodes/cc-engine.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-engine.el	sha256=b3341156a619538b44eedf0fabb95db4ab6839f154487c305a7517c5fce43ddf
+emacs-lisp/progmodes/cc-langs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-langs.el	sha256=18960b45dc6bbff27392671eef2912b5e04a6d45e4745aeab22eea71a5aea037
+emacs-lisp/progmodes/cc-cmds.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-cmds.el	sha256=e1118880d47e49db31839f3e4d68e172e2efa114245f00da8de81131763b0757
+emacs-lisp/progmodes/cc-align.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-align.el	sha256=e9faae4a95a0f6771d9f7dcfdb1cc4ce155f528e2b5110ecc58e43886c71dab8
+emacs-lisp/progmodes/cc-menus.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-menus.el	sha256=4582f2ed1262cecca232758d438f185d18331086f64761737456e10e47907fe5
+emacs-lisp/progmodes/cc-styles.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-styles.el	sha256=051763c4ecc21b515c8405eccbda03930b0e221b2f45644528dc9a853fad0842
+emacs-lisp/progmodes/cc-guess.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/cc-guess.el	sha256=a2deb772656b0a2e52c5a3ce7e59aaca03b3ae9ce253e45a5113c3c7df190479
+emacs-lisp/progmodes/grep.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/grep.el	sha256=715c78c7ac9854d18c1ab88b7f697e548aa57b0f67f65993021c676346b05fa2
+emacs-lisp/progmodes/python.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/python.el	sha256=62a1fe94e6bc18e71f6e00129a05d407f03e5587789b49f098f6cc62cd6b123d
+emacs-lisp/emacs-lisp/compat.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/compat.el	sha256=107dab1067491cf937ea7b032b2c7963e59455289625360feb315399a6cc285e
+emacs-lisp/progmodes/subword.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/progmodes/subword.el	sha256=ce6cefc43494277b2e95da708964fd6d769f4ddeb840badc876e49d3cfc2bb0e
