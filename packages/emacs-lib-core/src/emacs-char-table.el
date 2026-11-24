@@ -664,6 +664,9 @@ Mutations and compatibility views follow GNU's recursive slot order."
 (defvar emacs-char-table--native-set-extra-slot-fn
   (and (fboundp 'set-char-table-extra-slot)
        (symbol-function 'set-char-table-extra-slot)))
+(defvar emacs-char-table--native-set-parent-fn
+  (and (fboundp 'set-char-table-parent)
+       (symbol-function 'set-char-table-parent)))
 
 (defun emacs-char-table--native-vector-bridge-p ()
   "Return non-nil when NeLisp dispatches tagged vectors natively."
@@ -1282,10 +1285,18 @@ rather than materialised."
 
 (defun emacs-char-table-set-parent (ct parent)
   "Set CT's parent to PARENT (a char-table or nil).  Returns PARENT."
+  (catch 'emacs-char-table--set-parent-done
   (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (emacs-char-table--check-table ct)
   (when (emacs-char-table--native-p ct)
-    (error "Cannot set the parent of a native char-table"))
+    ;; A native table (e.g. a case table or GNU global-map's) takes a
+    ;; native parent or nil through the core primitive, which bumps the
+    ;; native char-table epoch itself.
+    (if (and emacs-char-table--native-set-parent-fn
+             (or (null parent) (emacs-char-table--native-p parent)))
+        (progn (funcall emacs-char-table--native-set-parent-fn ct parent)
+               (throw 'emacs-char-table--set-parent-done parent))
+      (error "Cannot set a non-native parent on a native char-table")))
   (when parent
     (unless (emacs-char-table-p parent)
       (signal 'wrong-type-argument (list 'char-table-p parent)))
@@ -1305,7 +1316,7 @@ rather than materialised."
         (setq ancestor (emacs-char-table--raw-ref
                         ancestor emacs-char-table--i-parent)))))
   (emacs-char-table--raw-set ct emacs-char-table--i-parent parent)
-  parent)
+  parent))
 
 (defun emacs-char-table-subtype (ct)
   "Return CT's subtype."

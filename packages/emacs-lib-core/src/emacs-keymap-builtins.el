@@ -103,7 +103,14 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
     (signal 'wrong-type-argument (list 'arrayp key)))
   (let (events)
     (dolist (event (emacs-keymap-builtins--description-events key))
-      (when (consp event) (setq event (car event)))
+      ;; keymap.c: a (MODIFIERS... BASE) list event goes through
+      ;; `event-convert-list' (lucid_event_type_list_p); other conses
+      ;; keep the old car fallback.
+      (when (consp event)
+        (setq event (if (and (fboundp 'nelisp--event-lucid-list-p)
+                             (nelisp--event-lucid-list-p event))
+                        (event-convert-list event)
+                      (car event))))
       (unless (or (integerp event) (symbolp event) (stringp event))
         (signal 'wrong-type-argument (list 'stringp event)))
       (push event events))
@@ -274,8 +281,7 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
 (when (emacs-keymap-builtins--install-function-p 'make-sparse-keymap)
   (defalias 'make-sparse-keymap #'emacs-keymap-make-sparse-keymap))
 
-(when (emacs-keymap-builtins--install-function-p 'keymapp)
-  (defalias 'keymapp #'emacs-keymap-keymapp))
+;; `keymapp' is the prelude's GNU keymap.c port (prefix symbols count).
 
 (when (emacs-keymap-builtins--install-function-p 'copy-keymap)
   (defun copy-keymap (keymap)
