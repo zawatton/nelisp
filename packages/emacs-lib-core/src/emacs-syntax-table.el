@@ -798,7 +798,12 @@ comments.  Whitespace is skipped only while looking for the next comment."
     "Return the current syntax char-table."
     (emacs-syntax-table-current)))
 
+(defvar emacs-syntax-table--own-setter nil
+  "Non-nil when `set-syntax-table' is this library's definition, so
+`with-syntax-table' may restore through `emacs-syntax-table-set-current'.")
+
 (when (emacs-syntax-table--install-function-p 'set-syntax-table)
+  (setq emacs-syntax-table--own-setter t)
   (defun set-syntax-table (table)
     "Make TABLE the current buffer's syntax char-table and return TABLE.
 Signal `wrong-type-argument' unless TABLE has syntax-table subtype."
@@ -818,9 +823,17 @@ BODY, keep their own table (a new buffer starts with the standard table)."
              (,old-buffer (current-buffer)))
          (unwind-protect
              (progn (set-syntax-table ,table) ,@body)
-           (save-current-buffer
-             (set-buffer ,old-buffer)
-             (set-syntax-table ,old-table)))))))
+           ;; The saved table came from `syntax-table', so the restore needs
+           ;; no type check; and when OLD-BUFFER is still current, switching
+           ;; to it is a no-op (a killed one still errors in `set-buffer').
+           ,(let ((restore (if emacs-syntax-table--own-setter
+                               `(emacs-syntax-table-set-current ,old-table)
+                             `(set-syntax-table ,old-table))))
+              `(if (eq (current-buffer) ,old-buffer)
+                   ,restore
+                 (save-current-buffer
+                   (set-buffer ,old-buffer)
+                   ,restore))))))))
 
 (when (emacs-syntax-table--install-function-p 'parse-partial-sexp)
   (defun parse-partial-sexp (from to &optional targetdepth stopbefore
