@@ -116,6 +116,19 @@ Only 128th through 159th elements have a meaning.")
 (unless (get 'coding-system-error 'error-conditions)
   (put 'coding-system-error 'error-conditions '(coding-system-error error))
   (put 'coding-system-error 'error-message "Invalid coding system"))
+;; syms_of_coding: operation target indices for `find-operation-coding-system'
+;; and the two extra slots of translation tables.
+(put 'insert-file-contents 'target-idx 0)
+(put 'write-region 'target-idx 2)
+(put 'call-process 'target-idx 0)
+(put 'call-process-region 'target-idx 2)
+(put 'start-process 'target-idx 2)
+(put 'open-network-stream 'target-idx 3)
+(put 'translation-table 'char-table-extra-slots 2)
+;; syms_of_character: Vtranslation_table_vector = make_nil_vector (16).
+(unless (boundp 'translation-table-vector)
+  (defvar translation-table-vector (make-vector 16 nil)
+    "Vector recording all translation tables ever defined."))
 
 ;;;; --- spec access -----------------------------------------------------
 

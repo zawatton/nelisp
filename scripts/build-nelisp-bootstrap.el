@@ -480,12 +480,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-lisp/abbrev.el"
     "emacs-parity-shims.el"
     "emacs-parity-misc.el"
-    ;; `emacs-parity-fns2.el' requires `emacs-translation-table' (its
-    ;; `coding-system-get'/`define-translation-table' section); that owner
-    ;; module has no other requirer on the default boot path and is not
-    ;; naturally reached via `load-history', so it needs its own bootstrap
-    ;; manifest entry immediately ahead of its consumer.
-    "emacs-translation-table.el"
     "emacs-parity-fns2.el"
     "emacs-parity-org.el"
     ;; Stock variable fills that no other wired file provides.  Both are

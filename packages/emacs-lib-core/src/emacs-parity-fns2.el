@@ -131,24 +131,6 @@ rather than a fabricated value."
                                   nemacs-parity--ascii-incompatible-coding-systems)))))
          t)))
 
-;;;; --- mule.el: define-translation-table (loader wiring) --------------
-;; T62: `define-translation-table' -- and its companions
-;; `make-translation-table' / `make-translation-table-from-alist' --
-;; already have a real, faithful implementation in
-;; `emacs-translation-table.el' (written for the `cp51932'/`eucjp-ms'
-;; lightweight coding-system facades), but nothing on the default boot
-;; path ever requires that file: `cp51932.el'/`eucjp-ms.el' are the only
-;; other requirers, and neither is part of the bundle either.  The load
-;; matrix hit `(void-function define-translation-table)' for `cp5022x'
-;; (a user ELPA package outside this repo, not vendored here, that calls
-;; `define-translation-table' at top level).  `emacs-parity-fns2.el' is
-;; already ahead of every vendor/user package in the bundle order (same
-;; reasoning as `coding-system-get' above), so requiring the real owner
-;; module from here -- rather than duplicating its logic -- makes the
-;; whole translation-table surface available before any coding-system
-;; package can reference it.
-(require 'emacs-translation-table)
-
 ;;;; --- vc-hooks.el: vc-directory-exclusion-list (loader wiring) -------
 ;; T62: `vc-directory-exclusion-list' -- a real, faithful defcustom in the
 ;; vendored `vendor/emacs-lisp/vc/vc-hooks.el' -- was void on the default
