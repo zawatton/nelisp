@@ -476,8 +476,6 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-file-command
                  nemacs-runtime-image-preload--function-cell-live-p
                  nemacs-runtime-image-preload--install-files-core
-                 nemacs-runtime-image-preload--install-dired-command
-                 nemacs-runtime-image-preload--install-dired-core
                  nemacs-runtime-image-preload--install-help-command
                  nemacs-runtime-image-preload--install-help-core
                  nemacs-runtime-image-preload--install-module-command
@@ -677,7 +675,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should-not (featurep 'tab-line))
     (should (nemacs-runtime-image-preload--install-files-core))
     (should (nemacs-runtime-image-preload--install-simple-core))
-    (should (nemacs-runtime-image-preload--install-dired-core))
     (should (nemacs-runtime-image-preload--install-help-core))
     (should (nemacs-runtime-image-preload--install-elisp-core))
     (should (nemacs-runtime-image-preload--install-ielm-core))

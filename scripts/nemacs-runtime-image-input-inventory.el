@@ -66,7 +66,6 @@
     (interactive feature emacs-tui-event "src/emacs-tui-event.el")
     (interactive feature emacs-redisplay-core "src/emacs-redisplay-core.el")
     (vendor-core lazy-feature files-standalone-buffer "src/files-standalone-buffer.el")
-    (vendor-core lazy-feature emacs-dired-min "src/emacs-dired-min.el")
     (vendor-core lazy-feature emacs-help "src/emacs-help.el")
     (vendor-core lazy-feature emacs-elisp-eval "src/emacs-elisp-eval.el")
     (vendor-core lazy-feature emacs-ielm "src/emacs-ielm.el")

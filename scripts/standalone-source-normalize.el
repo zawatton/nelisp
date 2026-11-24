@@ -156,6 +156,11 @@ envelope.")
     ;; fontifier run by every Info node display.
     Info-insert-dir
     Info-fontify-node
+    ;; GNU dired-aux.el: the engine behind dired's copy/rename/symlink
+    ;; commands, its caller, and the `!' shell command.
+    dired-create-files
+    dired-do-create-files
+    dired-do-shell-command
     ;; GNU mule.el (emacs-mule-gnu.el): the coding detector behind
     ;; `set-auto-coding'.
     find-auto-coding

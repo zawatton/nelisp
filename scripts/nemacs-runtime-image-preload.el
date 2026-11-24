@@ -147,7 +147,6 @@ the default batch image while the vendor surface is still expanding."
   "Install daily-driver feature facades into the current runtime image."
   (nemacs-runtime-image-preload--install-files-core)
   (nemacs-runtime-image-preload--install-simple-core)
-  (nemacs-runtime-image-preload--install-dired-core)
   (nemacs-runtime-image-preload--install-help-core)
   (nemacs-runtime-image-preload--install-elisp-core)
   (nemacs-runtime-image-preload--install-ielm-core)
@@ -240,21 +239,6 @@ replay it in runtimes with minimal closure support."
        (condition-case nil
            (symbol-function symbol)
          (error nil))))
-
-(defun nemacs-runtime-image-preload--install-dired-command (public)
-  "Install PUBLIC as a lazy wrapper around `emacs-dired-min'."
-  (unless (nemacs-runtime-image-preload--function-cell-live-p public)
-    (fset public
-          (list 'lambda '(&rest args)
-                '(require 'emacs-dired-min)
-                (list 'apply (list 'quote public) 'args)))))
-
-(defun nemacs-runtime-image-preload--install-dired-core ()
-  "Leave `dired' to the genuine GNU dired.el carried by the bootstrap bundle.
-The former lazy wrappers pointed at the `emacs-dired-min' polyfill and, being
-live function cells, made the bundle's guarded GNU `dired-mode' definition
-skip, so the polyfill's ec-layer buffers leaked into the runtime."
-  t)
 
 (defun nemacs-runtime-image-preload--install-help-command (public)
   "Install PUBLIC as a lazy wrapper around `emacs-help'."

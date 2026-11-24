@@ -700,7 +700,6 @@ NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES = \
 	emacs-dump \
 	image-loader \
 	nemacs-loaddefs \
-	emacs-dired-min \
 	files-standalone-buffer \
 	emacs-replace \
 	emacs-shell-command \
@@ -813,7 +812,6 @@ TEST_FAST_FILES = \
 	$(NEMACS_TEST_DIR)/emacs-minibuffer-test.el \
 	$(NEMACS_TEST_DIR)/emacs-command-loop-builtins-test.el \
 	$(NEMACS_TEST_DIR)/emacs-faces-builtins-test.el \
-	$(NEMACS_TEST_DIR)/emacs-dired-min-test.el \
 	$(NEMACS_TEST_DIR)/vendor-first-core-modes-test.el \
 	$(NEMACS_TEST_DIR)/emacs-help-test.el \
 	$(NEMACS_TEST_DIR)/emacs-info-test.el \
