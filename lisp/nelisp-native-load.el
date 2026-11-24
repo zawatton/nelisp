@@ -723,6 +723,9 @@ The file is one `;;;' header line followed by a single readable plist."
 
 (defconst nelisp-native-load-codegen-flag-symbols
   '(nelisp-aot-compiler-alignhot-perturb nelisp-aot-compiler-cold-layout
+    nelisp-aot-compiler-arm64-no-symbol-word-eq
+    nelisp-aot-compiler-jump-thread-functions nelisp-aot-compiler-slot-reload-functions
+    nelisp-aot-compiler-zero-init-batch-functions
     nelisp-aot-compiler-fixnum-loop-budget nelisp-aot-compiler-fixnum-loops
     nelisp-aot-compiler-fixnum-loop-quit-poll
     nelisp-aot-compiler--fxloop-mutation
@@ -741,30 +744,46 @@ A host test checks this against every bound `nelisp-aot-compiler-*' variable,
 so a new switch cannot be forgotten.")
 
 (defconst nelisp-native-load-default-codegen-settings
-  '(:flags ((nelisp-aot-compiler-alignhot-perturb)
-            (nelisp-aot-compiler-cold-layout . t)
-            (nelisp-aot-compiler-fixnum-loop-budget . 65536)
-            (nelisp-aot-compiler-fixnum-loops)
-            (nelisp-aot-compiler-fixnum-loop-quit-poll . t)
-            (nelisp-aot-compiler--fxloop-mutation)
-            (nelisp-aot-compiler-hot-alignment :entry 64 :arm 32 :loop 32 :unit-tail 64)
-            (nelisp-aot-compiler-lisp-inline-incdec . t)
-            (nelisp-aot-compiler-lisp-open-defects)
-            (nelisp-aot-compiler-lisp-word-fixnum-test . t)
-            (nelisp-aot-compiler-regalloc . t)
-            (nelisp-aot-compiler-regraw . t)
-            (nelisp-aot-compiler-spillcall . t)
-            (nelisp-aot-compiler-tco-enabled)
-            (nelisp-aot-compiler-threaded-dispatch . t)
-            (nelisp-aot-compiler-threaded-dispatch-functions wf_bytecode_w_fast_run)
-            (nelisp-aot-compiler-vm-register-functions
-             (wf_bytecode_w_fast_run pc sp raw data mem length go depth)
-             (wf_bytecode_execute_frame pc sp done depth))
-            (nelisp-aot-compiler-wasm-genuine-alloc)
-            (nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers)
-            (nelisp-aot-compiler-buffer-leaves)
-            (nelisp-aot-compiler-buffer-leaves-inline))
-    :compiler-sha256 "d61ddbf35f8a78d2d533828a661693cedf724efe44541ec9776a03d5fb93fdb7")
+  (quote (:flags
+	  ((nelisp-aot-compiler-alignhot-perturb)
+	   (nelisp-aot-compiler-cold-layout . t)
+	   (nelisp-aot-compiler-arm64-no-symbol-word-eq)
+	   (nelisp-aot-compiler-jump-thread-functions wf_aot_1 wf_aot_2
+						      wf_aot_4 wf_aot_5
+						      wf_aot_6)
+	   (nelisp-aot-compiler-slot-reload-functions wf_aot_1 wf_aot_2
+						      wf_aot_4 wf_aot_5
+						      wf_aot_6)
+	   (nelisp-aot-compiler-zero-init-batch-functions wf_aot_1 wf_aot_2
+							  wf_aot_4 wf_aot_5
+							  wf_aot_6)
+	   (nelisp-aot-compiler-fixnum-loop-budget . 65536)
+	   (nelisp-aot-compiler-fixnum-loops)
+	   (nelisp-aot-compiler-fixnum-loop-quit-poll . t)
+	   (nelisp-aot-compiler--fxloop-mutation)
+	   (nelisp-aot-compiler-hot-alignment :entry 64 :arm 32 :loop 32
+					      :unit-tail 64)
+	   (nelisp-aot-compiler-lisp-inline-incdec . t)
+	   (nelisp-aot-compiler-lisp-open-defects)
+	   (nelisp-aot-compiler-lisp-word-fixnum-test . t)
+	   (nelisp-aot-compiler-regalloc . t) (nelisp-aot-compiler-regraw . t)
+	   (nelisp-aot-compiler-spillcall . t)
+	   (nelisp-aot-compiler-tco-enabled)
+	   (nelisp-aot-compiler-threaded-dispatch . t)
+	   (nelisp-aot-compiler-threaded-dispatch-functions
+	    wf_bytecode_w_fast_run)
+	   (nelisp-aot-compiler-vm-register-functions
+	    (wf_bytecode_w_fast_run pc sp raw data mem length go depth)
+	    (wf_bytecode_execute_frame pc sp done depth)
+	    (wf_aot_5 blk fail x1 x2 env) (wf_aot_4 blk x5 x4 x3 env)
+	    (wf_aot_1 x7 blk x8 fail x4) (wf_aot_2 blk fail env x2 x3)
+	    (wf_aot_6 blk fail env x2 x3))
+	   (nelisp-aot-compiler-wasm-genuine-alloc)
+	   (nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers)
+	   (nelisp-aot-compiler-buffer-leaves)
+	   (nelisp-aot-compiler-buffer-leaves-inline))
+	  :compiler-sha256
+	  "ce17a3a706f9c97ad89b9f6c2338f2e3783c43dc0406f22d208d8f91db5ccb84"))
   "Codegen settings and compiler source hash a loader without the compiler enforces.
 Generated from the default session of `nelisp-aot-compiler'.  A host test fails
 when this drifts from the compiler (regenerate with
