@@ -105,8 +105,9 @@ nil means infer each paragraph's direction from its own content."))
     "Function used by Font Lock to unfontify a region."))
 
 (unless (boundp 'indent-line-function)
-  (defvar indent-line-function nil
-    "Function called to indent the current line."))
+  ;; GNU indent.el's default; a nil here shadows that defvar.
+  (defvar indent-line-function 'indent-relative
+    "Function to indent the current line."))
 
 (unless (boundp 'indent-region-function)
   (defvar indent-region-function nil

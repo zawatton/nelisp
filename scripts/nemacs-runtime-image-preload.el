@@ -146,7 +146,6 @@ the default batch image while the vendor surface is still expanding."
 (defun nemacs-runtime-image-preload--install-daily-driver-core ()
   "Install daily-driver feature facades into the current runtime image."
   (nemacs-runtime-image-preload--install-files-core)
-  (nemacs-runtime-image-preload--install-simple-core)
   (nemacs-runtime-image-preload--install-help-core)
   (nemacs-runtime-image-preload--install-elisp-core)
   (nemacs-runtime-image-preload--install-ielm-core)
@@ -1356,40 +1355,6 @@ image startup."
                ""))))
   (provide 'tab-bar)
   (provide 'tab-line)
-  t)
-
-(defun nemacs-runtime-image-preload--install-simple-core ()
-  "Install the minimal `simple' daily-driver surface without source `load'."
-  (unless (featurep 'simple)
-    (unless (boundp 'max-mini-window-lines)
-      (defvar max-mini-window-lines 1))
-    (unless (boundp 'indent-line-function)
-      (defvar indent-line-function nil))
-    (unless (fboundp 'open-line)
-      (fset 'open-line
-            (lambda (&optional n)
-              (let ((count (or n 1))
-                    (pos (point)))
-                (while (> count 0)
-                  (newline)
-                  (setq count (1- count)))
-                (goto-char pos)))))
-    (unless (fboundp 'quoted-insert)
-      (fset 'quoted-insert
-            (lambda (&optional arg)
-              (let ((count (or arg 1))
-                    (char (read-char)))
-                (while (> count 0)
-                  (self-insert-command 1 char)
-                  (setq count (1- count)))))))
-    (unless (fboundp 'indent-for-tab-command)
-      (fset 'indent-for-tab-command
-            (lambda (&optional _arg)
-              (if (and (boundp 'indent-line-function)
-                       (functionp indent-line-function))
-                  (funcall indent-line-function)
-                (self-insert-command 1 9)))))
-    (provide 'simple))
   t)
 
 (defun nemacs-runtime-image-preload--install-subr-x-core ()

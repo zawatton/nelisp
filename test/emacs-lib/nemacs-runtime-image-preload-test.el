@@ -172,9 +172,6 @@
     tab-line-tabs-window-buffers
     tab-line-tabs-fixed-window-buffers
     tab-line-tab-name-buffer
-    open-line
-    quoted-insert
-    indent-for-tab-command
     thread-first
     thread-last
     hash-table-empty-p
@@ -285,8 +282,6 @@
     files--buffer-points
     files--buffer-modified-p
     files--buffer-modified-flags
-    max-mini-window-lines
-    indent-line-function
     emacs-process--fallback-tag
     emacs-process--fallback-processes
     emacs-process--fallback-next-pid
@@ -443,7 +438,6 @@ The preload installers only `require' it when it is not yet a feature."
                  nemacs-runtime-image-preload--install-frame-core
                  nemacs-runtime-image-preload--install-tab-core
                  nemacs-runtime-image-preload--force-install-frame-tab-core
-                 nemacs-runtime-image-preload--install-simple-core
                  nemacs-runtime-image-preload--install-subr-x-core
                  nemacs-runtime-image-preload--install-seq-core
                  nemacs-runtime-image-preload--install-map-core
@@ -614,7 +608,6 @@ The preload installers only `require' it when it is not yet a feature."
 (ert-deftest nemacs-runtime-image-preload-test/direct-install-creates-daily-core-surface ()
   (nemacs-runtime-image-preload-test--with-clean-direct-install
     (should-not (featurep 'files))
-    (should-not (featurep 'simple))
     (should-not (featurep 'dired))
     (should-not (featurep 'help-mode))
     (should-not (featurep 'help-fns))
@@ -628,7 +621,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should-not (featurep 'tab-bar))
     (should-not (featurep 'tab-line))
     (should (nemacs-runtime-image-preload--install-files-core))
-    (should (nemacs-runtime-image-preload--install-simple-core))
     (should (nemacs-runtime-image-preload--install-help-core))
     (should (nemacs-runtime-image-preload--install-elisp-core))
     (should (nemacs-runtime-image-preload--install-ielm-core))
@@ -639,7 +631,6 @@ The preload installers only `require' it when it is not yet a feature."
     (should (nemacs-runtime-image-preload--install-support-core))
     (should (nemacs-runtime-image-preload--install-utility-i18n-core))
     (should (featurep 'files))
-    (should (featurep 'simple))
     ;; The dired installer is a no-op now: genuine GNU dired.el comes from
     ;; the bootstrap bundle, not from a preload facade.
     (should-not (featurep 'dired))
