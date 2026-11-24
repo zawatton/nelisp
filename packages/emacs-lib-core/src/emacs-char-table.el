@@ -614,9 +614,20 @@ Mutations and compatibility views follow GNU's recursive slot order."
     (emacs-char-table--owner-refresh-ascii-cache table)
     nil))
 
+(defun emacs-char-table--unicode-property-p (table)
+  "Return non-nil for an owned table with the GNU Unicode layout."
+  (and (vectorp table)
+       (eq (emacs-char-table--raw-ref table emacs-char-table--i-subtype)
+           'char-code-property-table)
+       (emacs-char-table--owned-p table)
+       (eq (emacs-char-table-extra-slot-count table) 5)
+       (fboundp 'emacs-cc-chartab-1--uncompress)))
+
 (defun emacs-char-table--owner-set-char (table char value)
   "Apply GNU's single-character write path to owned TABLE."
   (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
+  (when (and (>= char 128) (emacs-char-table--unicode-property-p table))
+    (emacs-cc-chartab-1--uncompress-at table char))
   (let ((cache (emacs-char-table--owner-cache table)))
     (if (and (< char 128) (emacs-char-table--topology-node-p cache))
         (aset (emacs-char-table--topology-node-contents cache) char value)
@@ -638,6 +649,11 @@ Mutations and compatibility views follow GNU's recursive slot order."
       (emacs-char-table--owner-refresh-ascii-cache table))
     value)
    (t
+    (when (emacs-char-table--unicode-property-p table)
+      (unless (= (logand from 127) 0)
+        (emacs-cc-chartab-1--uncompress-at table from))
+      (unless (= (logand to 127) 127)
+        (emacs-cc-chartab-1--uncompress-at table to)))
     (emacs-char-table--topology-set-range
      (emacs-char-table--owner-root table) from to value)
     (when (< from 128)
@@ -993,11 +1009,16 @@ declines to `emacs-char-table-aref' and then `emacs-char-table-ref-slow'
                    (emacs-char-table--raw-ref
                     (emacs-char-table--raw-ref ct emacs-char-table--i-ascii)
                     char))))))
+      (when (and (>= char 128) (stringp v)
+                 (emacs-char-table--unicode-property-p ct))
+        (setq v (emacs-cc-chartab-1--uncompress ct char v)))
       (if v v (emacs-char-table--fallback ct char))))
    ((and (integerp char) (>= char emacs-char-table--ascii-size)
          (emacs-char-table--owned-p ct))
     (let ((v (emacs-char-table--topology-ref
               (emacs-char-table--owner-root ct) char)))
+      (when (and (stringp v) (emacs-char-table--unicode-property-p ct))
+        (setq v (emacs-cc-chartab-1--uncompress ct char v)))
       (if v v (emacs-char-table--fallback ct char))))
    (t
     (let ((v (emacs-char-table--range-lookup ct char)))
@@ -1431,14 +1452,18 @@ character space is never enumerated."
               (emacs-char-table--raw-ref table emacs-char-table--i-parent))))
     (sort boundaries #'<)))
 
-(defun emacs-char-table--map-run (function key from to value)
+(defun emacs-char-table--map-run (function key from to value unicode-values)
   "Call FUNCTION for a non-nil run FROM..TO with VALUE.
-Reuse KEY for ranges, as GNU Emacs does; callers must copy retained keys."
-  (if (= from to)
-      (when value (funcall function from value))
-    (setcar key from)
-    (setcdr key to)
-    (when value (funcall function key value))))
+Reuse KEY for ranges, as GNU Emacs does; callers must copy retained keys.
+If UNICODE-VALUES is non-nil, decode VALUE before passing it to FUNCTION."
+  (let ((decoded (if (and value unicode-values)
+                     (emacs-cc-chartab-1--decode unicode-values value)
+                   value)))
+    (if (= from to)
+        (when value (funcall function from decoded))
+      (setcar key from)
+      (setcdr key to)
+      (when value (funcall function key decoded)))))
 
 (defun emacs-char-table-map (function ct)
   "Call FUNCTION with (KEY VALUE) for each non-nil effective run of CT.
@@ -1450,7 +1475,9 @@ A retained native char-table (one the native image built, such as GNU
   (if (and (emacs-char-table--native-p ct)
            (fboundp 'nelisp--chartab-map-char-table))
       (nelisp--chartab-map-char-table function ct)
-  (let ((boundaries (emacs-char-table--map-boundaries ct))
+  (let ((unicode-values (when (emacs-char-table--unicode-property-p ct)
+                          (emacs-cc-chartab-1--prepare-map ct)))
+        (boundaries (emacs-char-table--map-boundaries ct))
         (key (cons nil nil))
         (from 0)
         ;; GNU seeds the pending run from the first stored slot or parent,
@@ -1470,10 +1497,12 @@ A retained native char-table (one the native image built, such as GNU
         (when (and (>= next from) (<= next emacs-char-table--max-char))
           (let ((next-value (emacs-char-table-ref ct next)))
             (unless (eq value next-value)
-              (emacs-char-table--map-run function key from (1- next) value)
+              (emacs-char-table--map-run function key from (1- next) value
+                                        unicode-values)
               (setq from next value next-value)))))
       (setq boundaries (cdr boundaries)))
-    (emacs-char-table--map-run function key from emacs-char-table--max-char value)))
+    (emacs-char-table--map-run function key from emacs-char-table--max-char value
+                              unicode-values)))
   nil)
 
 (defun emacs-char-table-copy (ct &optional valfn)
