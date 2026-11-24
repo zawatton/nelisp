@@ -1362,6 +1362,21 @@ image startup."
     (defvar tab-bar--tabs nil))
   (unless (boundp 'tab-bar--selected-index)
     (defvar tab-bar--selected-index 0))
+  ;; GNU preloads tab-bar.el, so bookmark.el's top-level
+  ;; `(custom-add-choice 'tab-bar-new-tab-choice ...)' finds the option's
+  ;; `custom-type' (a `choice').  Without it, loading bookmark (consult) signals
+  ;; "Not a choice type: nil".  The type is copied from GNU tab-bar.el.
+  (unless (boundp 'tab-bar-new-tab-choice)
+    (defvar tab-bar-new-tab-choice t))
+  (unless (get 'tab-bar-new-tab-choice 'custom-type)
+    (put 'tab-bar-new-tab-choice 'custom-type
+         '(choice (const :tag "Current buffer" t)
+                  (const :tag "Current window" window)
+                  (string :tag "Buffer" "*scratch*")
+                  (directory :tag "Directory" :value "~/")
+                  (file :tag "File" :value "~/.emacs")
+                  (function :tag "Function")
+                  (const :tag "Duplicate tab" clone))))
   (unless (boundp 'tab-line-mode)
     (defvar tab-line-mode nil))
   (unless (boundp 'global-tab-line-mode)
