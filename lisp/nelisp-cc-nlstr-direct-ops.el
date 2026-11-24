@@ -143,7 +143,15 @@ value form using the `ptr-read-u64' grammar op in nested position.")
     ;; escapes only change its representation flag; the boxed NlStr layout and
     ;; byte buffer remain untouched.
     (defun nl_mut_str_mark_unibyte (sexp)
-      (and (ptr-write-u8 sexp 0 15) sexp)))
+      (and (ptr-write-u8 sexp 0 15) sexp))
+    ;; The inverse flag change, for a builder whose raw bytes have just been
+    ;; rewritten in their multibyte (BYTE8) form.
+    (defun nl_mut_str_mark_multibyte (sexp)
+      (and (ptr-write-u8 sexp 0 6) sexp))
+    ;; Raw-pointer byte store into a builder's own buffer; callers keep I
+    ;; below the builder's length.
+    (defun nl_bytes_set_byte (bytes i b)
+      (and (ptr-write-u8 bytes i b) 1)))
   "AOT direct-symbol source for `nl_str_bytes_ptr'.
 
 Replaces the Rust `#[no_mangle] pub unsafe extern \"C\" fn nl_str_bytes_ptr'

@@ -667,7 +667,7 @@
         (if (< code 128)
             (nelisp_reader_prog2 (mut-str-push-byte scratch code)
                                 (nelisp_reader_string_body src next n scratch))
-          (if (= (sexp-tag scratch) 15) -2
+          (if (= (nelisp_reader_scratch_to_multibyte scratch) 0) -2
             (seq
              (cond
               ((< code 2048)
@@ -819,15 +819,52 @@
       (nelisp_reader_scratch_has_high_loop
        (str-bytes-ptr scratch) 0 (mut-str-len scratch)))
 
+    ;; GNU `read_string_literal' lets raw-byte escapes (\NNN, \xNN in
+    ;; 128..255) and multibyte characters share one literal: the string is
+    ;; then multibyte and each raw byte is the BYTE8 character #x3FFF00+B,
+    ;; stored as C0|((B>>6)&1), 80|(B&3F).  A builder still in unibyte form
+    ;; (tag 15) is widened in place when the first multibyte character comes.
+    (defun nelisp_reader_scratch_count_high (data i len k)
+      (if (>= i len)
+          k
+        (nelisp_reader_scratch_count_high
+         data (+ i 1) len (if (>= (nl_bytes_byte_at data i) 128) (+ k 1) k))))
+
+    (defun nelisp_reader_scratch_widen_byte8 (scratch)
+      (let* ((n (mut-str-len scratch))
+             (k (nelisp_reader_scratch_count_high (str-bytes-ptr scratch) 0 n 0))
+             (pad 0) (i (- n 1)) (j 0) (data 0) (b 0))
+        (seq
+         (while (< pad k) (seq (mut-str-push-byte scratch 0) (setq pad (+ pad 1))))
+         ;; The pushes may have moved the buffer: take its address afterwards.
+         (setq data (str-bytes-ptr scratch))
+         (setq j (+ n (- k 1)))
+         (while (>= i 0)
+           (seq
+            (setq b (nl_bytes_byte_at data i))
+            (if (< b 128)
+                (seq (nl_bytes_set_byte data j b) (setq j (- j 1)))
+              (seq (nl_bytes_set_byte data j (+ 128 (logand b 63)))
+                   (nl_bytes_set_byte data (- j 1) (+ 192 (logand (/ b 64) 1)))
+                   (setq j (- j 2))))
+            (setq i (- i 1))))
+         (nl_mut_str_mark_multibyte scratch)
+         1)))
+
+    ;; 1 once SCRATCH is a multibyte (tag 6) builder, widening a unibyte one.
+    (defun nelisp_reader_scratch_to_multibyte (scratch)
+      (if (= (sexp-tag scratch) 15)
+          (nelisp_reader_scratch_widen_byte8 scratch)
+        1))
+
     (defun nelisp_reader_string_plain (str-ptr cursor n scratch)
       (nelisp_reader_string_plain_p str-ptr (str-data-ptr str-ptr) cursor n scratch))
 
     (defun nelisp_reader_string_plain_p (str-ptr dp cursor n scratch)
       (let* ((b (ptr-byte-at dp cursor)))
-        ;; A plain high source byte belongs to a UTF-8 character.  Once a
-        ;; raw-byte escape has made SCRATCH tag 15 the two representations
-        ;; cannot coexist.
-        (if (if (>= b 128) (= (sexp-tag scratch) 15) 0)
+        ;; A plain high source byte belongs to a UTF-8 character; a builder
+        ;; made unibyte by a raw-byte escape is widened first.
+        (if (if (>= b 128) (= (nelisp_reader_scratch_to_multibyte scratch) 0) 0)
             -2
           (nelisp_reader_prog2
            (mut-str-push-byte scratch b)
@@ -852,7 +889,7 @@
 
     (defun nelisp_reader_string_push_multibyte
         (str-ptr next n scratch value)
-      (if (= (sexp-tag scratch) 15)
+      (if (= (nelisp_reader_scratch_to_multibyte scratch) 0)
           -2
         ;; A three-digit octal escape is at most 511, hence two UTF-8 bytes.
         (nelisp_reader_prog2
@@ -869,9 +906,14 @@
            (mut-str-push-byte scratch value)
            (nelisp_reader_string_body str-ptr next n scratch))
         ;; A high byte already in a tag-6 builder is a UTF-8 character seen
-        ;; before this escape.  Do not flip that invalid mixture to tag 15.
+        ;; before this escape: the literal is multibyte and the raw byte is
+        ;; its BYTE8 character.
         (if (= (nelisp_reader_scratch_has_high_p scratch) 1)
-            -2
+            (nelisp_reader_prog2
+             (mut-str-push-byte scratch (+ 192 (logand (/ value 64) 1)))
+             (nelisp_reader_prog2
+              (mut-str-push-byte scratch (+ 128 (logand value 63)))
+              (nelisp_reader_string_body str-ptr next n scratch)))
           (nelisp_reader_prog2
            (nl_mut_str_mark_unibyte scratch)
            (nelisp_reader_prog2
