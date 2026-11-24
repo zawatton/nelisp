@@ -272,15 +272,17 @@ its local-variable sidecar.  Do not turn their syntax tables into globals."
 
 (defun emacs-syntax-table-current ()
   "Return the active syntax char-table.
-Precedence: a `with-syntax-table' dynamic binding, then the current buffer's
-buffer-local table, then the standard table."
+Precedence: a global `emacs-syntax-table--current' (only set when there is no
+buffer to own the table), then the current buffer's buffer-local table, then the
+standard table.  `with-syntax-table' no longer binds the global: it sets and
+restores the current buffer's table, as GNU does."
   (or emacs-syntax-table--current
-      ;; Standalone swap engine: the current buffer's live buffer-local
-      ;; value sits in the variable's global cell, so an unbound cell means
-      ;; no local table and the (slow) sidecar lookup below cannot find one.
-      (if (and (fboundp 'nelisp--repr)
-               (not (boundp emacs-syntax-table--local-key)))
-          nil
+      (if (fboundp 'nelisp--repr)
+          ;; Standalone swap engine: the current buffer's live buffer-local
+          ;; value sits in the variable's global cell, so an unbound cell means
+          ;; no local table and a bound one is the current buffer's own table.
+          (and (boundp emacs-syntax-table--local-key)
+               (symbol-value emacs-syntax-table--local-key))
         (let ((buf (emacs-syntax-table--buffer)))
           (and buf
                (fboundp 'emacs-buffer-local-variable-p)
@@ -293,15 +295,14 @@ buffer-local table, then the standard table."
 Normalize bootstrap records to their shared sparse view so array access
 uses the native bridge.  Falls back to a global setting without a buffer."
   (setq table (emacs-char-table--storage table))
-  (let ((buf (emacs-syntax-table--buffer)))
-    (if (and buf (fboundp 'emacs-buffer-set-buffer-local-value))
-        (progn
+  (if (fboundp 'nelisp--repr)
+      ;; The swap engine saves and restores this local across buffer switches,
+      ;; so the variable cell alone is the per-buffer store (no sidecar write).
+      (set (make-local-variable emacs-syntax-table--local-key) table)
+    (let ((buf (emacs-syntax-table--buffer)))
+      (if (and buf (fboundp 'emacs-buffer-set-buffer-local-value))
           (emacs-buffer-set-buffer-local-value emacs-syntax-table--local-key buf table)
-          ;; Keep the native current buffer's live binding coherent with the
-          ;; explicit sidecar write, including repeated writes before a switch.
-          (when (fboundp 'nelisp--repr)
-            (set (make-local-variable emacs-syntax-table--local-key) table)))
-      (setq emacs-syntax-table--current table)))
+        (setq emacs-syntax-table--current table))))
   table)
 
 (defun emacs-syntax-table-make (&optional parent)
@@ -793,9 +794,20 @@ Signal `wrong-type-argument' unless TABLE has syntax-table subtype."
 
 (when (emacs-syntax-table--install-function-p 'with-syntax-table)
   (defmacro with-syntax-table (table &rest body)
-    "Evaluate BODY with TABLE as the current syntax char-table."
+    "Evaluate BODY with TABLE as the current buffer's syntax char-table.
+As GNU subr.el: set the table of the current buffer and restore the previous
+table in that buffer afterwards.  Other buffers, including ones created inside
+BODY, keep their own table (a new buffer starts with the standard table)."
     (declare (indent 1) (debug t))
-    `(let ((emacs-syntax-table--current ,table)) ,@body)))
+    (let ((old-table (make-symbol "table"))
+          (old-buffer (make-symbol "buffer")))
+      `(let ((,old-table (syntax-table))
+             (,old-buffer (current-buffer)))
+         (unwind-protect
+             (progn (set-syntax-table ,table) ,@body)
+           (save-current-buffer
+             (set-buffer ,old-buffer)
+             (set-syntax-table ,old-table)))))))
 
 (when (emacs-syntax-table--install-function-p 'parse-partial-sexp)
   (defun parse-partial-sexp (from to &optional targetdepth stopbefore
