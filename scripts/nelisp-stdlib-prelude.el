@@ -8833,21 +8833,86 @@ Any key definitions that are subkeymaps are recursively copied.
 However, a key definition which is a symbol whose definition is a keymap
 is not copied."
     (nelisp--copy-keymap-1 keymap 0)))
-(defun nelisp--keymap-normalize-sequence (key)
-  "Return KEY in the event-vector representation used by keymap bindings.
-GNU `kbd' returns a string for ASCII/control sequences, while `keymap-set'
-stores the vector returned by `key-parse'.  Normalize strings at both the
-binding and lookup boundaries so those public forms address the same entry."
-  (if (and (stringp key) (fboundp 'key-parse))
-      (key-parse key)
-    key))
+(defun nelisp--keymap-events (key)
+  "Return KEY's events as a list, with meta expanded to an ESC prefix."
+  (let ((events nil))
+    (dolist (event (append key nil))
+      (when (and (stringp key) (integerp event) (>= event 128) (< event 256)
+                 (not (multibyte-string-p key)))
+        (setq event (logior (- event 128) #x8000000)))
+      (if (and (integerp event) (/= 0 (logand event #x8000000)))
+          (progn (push 27 events)
+                 (push (logand event (lognot #x8000000)) events))
+        (push event events)))
+    (nreverse events)))
+(defun nelisp--keymap-char-slot-p (event)
+  "Non-nil when EVENT is a character a keymap char-table can hold."
+  (and (integerp event) (>= event 0) (< event #x400000)))
+(defun nelisp--keymap-access (map event)
+  "Return MAP's binding cell for EVENT, searching parents (keymap.c access_keymap)."
+  (let ((tail (cdr map)) (found nil))
+    (while (and tail (not found))
+      (let ((elt (if (consp tail) (car tail) tail)))
+        (cond
+         ((eq elt 'keymap) nil)
+         ((char-table-p elt)
+          (when (nelisp--keymap-char-slot-p event)
+            (let ((v (aref elt event)))
+              (when v (setq found (cons event v))))))
+         ((and (consp elt) (eql (car elt) event))
+          (setq found elt))))
+      (setq tail (and (consp tail) (cdr tail))))
+    found))
+(defun nelisp--keymap-store (map event def)
+  "Store DEF for EVENT in MAP itself (keymap.c store_in_keymap)."
+  (let ((tail map) (insertion map) (done nil))
+    (while (and (not done) (consp (cdr tail)) (not (eq (car (cdr tail)) 'keymap)))
+      (let ((elt (car (cdr tail))))
+        (cond
+         ((and (char-table-p elt) (nelisp--keymap-char-slot-p event))
+          (aset elt event def) (setq done t))
+         ((and (consp elt) (eql (car elt) event))
+          (setcdr elt def) (setq done t))
+         ((or (char-table-p elt) (stringp elt))
+          (setq insertion (cdr tail)))))
+      (setq tail (cdr tail)))
+    (unless done
+      (setcdr insertion (cons (cons event def) (cdr insertion))))
+    def))
+(defun nelisp--keymap-prefix-map (binding)
+  "Return the keymap BINDING names as a prefix, or nil (keymap.c get_keymap)."
+  (setq binding (nelisp--get-keyelt binding))
+  (cond
+   ((and (symbolp binding) binding (fboundp binding)
+         (keymapp (indirect-function binding)))
+    (indirect-function binding))
+   ((and (consp binding) (eq (car binding) 'keymap)) binding)
+   (t nil)))
 (unless (fboundp 'define-key)
   (defun define-key (keymap key def &optional _remove)
+    "In KEYMAP, define key sequence KEY as DEF (GNU keymap.c Fdefine_key)."
     (unless (or (stringp key) (vectorp key))
       (signal 'wrong-type-argument (list 'arrayp key)))
-    (setq key (nelisp--keymap-normalize-sequence key))
-    (setcdr keymap (cons (cons key def) (cdr keymap)))
-    def))
+    (let ((map (nelisp--get-keymap keymap))
+          (events (nelisp--keymap-events key))
+          (idx 0))
+      (while (cdr events)
+        (let* ((event (car events))
+               (cell (nelisp--keymap-access map event))
+               (sub (and cell (nelisp--keymap-prefix-map (cdr cell)))))
+          (setq idx (1+ idx))
+          (cond
+           (sub (setq map sub))
+           ((and cell (cdr cell))
+            (error "Key sequence %s starts with non-prefix key %s"
+                   (key-description key) (key-description (substring key 0 idx))))
+           (t (let ((new (make-sparse-keymap)))
+                (nelisp--keymap-store map event new)
+                (setq map new)))))
+        (setq events (cdr events)))
+      (when events
+        (nelisp--keymap-store map (car events) def))
+      def)))
 ;; GNU Emacs 31.1 lisp/subr.el:1348 (preloaded, not autoloaded), staged
 ;; verbatim: this substrate's own `define-key' above already flattens a
 ;; whole key sequence into one binding cons instead of one nested keymap
@@ -17546,8 +17611,12 @@ and so on.
         (let ((tail (cdr map)))
           (while (and (consp tail) (not (eq (car tail) 'keymap)))
             (let ((item (car tail)))
-              (when (consp item)
-                (funcall function (car item) (cdr item))))
+              (cond
+               ((consp item) (funcall function (car item) (cdr item)))
+               ((char-table-p item)
+                (map-char-table (lambda (key value)
+                                  (when value (funcall function key value)))
+                                item))))
             (setq tail (cdr tail))))
         (setq map (keymap-parent map))))
     nil))
@@ -17681,76 +17750,7 @@ PARENT if non-nil should be a keymap."
       ,@(if (keymapp maps) (list maps) maps)
       ,@parent)))
 
-;; `button-buffer-map'/`button-map' are plain `defvar-keymap' forms in
-;; real Emacs's (preloaded) lisp/button.el.  NOT staged via this
-;; substrate's own `defvar-keymap'/`define-keymap'/`keymap-set': those
-;; are excerpted separately from `vendor/staged-emacs-lisp/keymap.el' by
-;; the standalone build (`scripts/nelisp-standalone-build.el' greps that
-;; file for exactly those 3 names) and linked in AFTER this whole
-;; prelude file's own bootstrap forms run -- confirmed this session: a
-;; `defvar-keymap' call placed here, at prelude-bootstrap time, hits
-;; `void-function' every time (verified directly: `(fboundp
-;; 'defvar-keymap)' is nil during this file's own top-level forms, `t'
-;; once the standalone binary has finished starting).  Built instead
-;; from this substrate's own always-available-from-the-start primitives
-;; (`make-sparse-keymap'/`define-key'/`set-keymap-parent', all defined
-;; earlier in this same file), using plain event vectors rather than
-;; `kbd' for the bracket-syntax entries (`<backtab>', `<mouse-2>', the
-;; two-event `<mode-line> <mouse-2>' style ones): this substrate's own
-;; `kbd' does not parse bracket syntax into symbols the way real Emacs's
-;; does (confirmed this session: `(kbd "<backtab>")' returns the STRING
-;; "<backtab>", not the symbol vector `[backtab]'; `(kbd "<mode-line>
-;; <mouse-2>")' collapses to the single string "<mode-line><mouse-2>",
-;; losing the two-event split entirely) -- matches this file's own
-;; existing precedent (`mode-line-major-mode-keymap' above uses `[mode-
-;; line down-mouse-1]' vector literals directly for the same reason).
-;; Needed for real: `man.el''s own top-level `(defvar-keymap Man-mode-map
-;; :parent (make-composed-keymap button-buffer-map special-mode-map)
-;; ...)', reached through `woman.el''s own unconditional `(require
-;; 'man)'.
-(unless (boundp 'button-buffer-map)
-  (defvar button-buffer-map
-    (let ((map (make-sparse-keymap)))
-      (define-key map "\t" #'forward-button)
-      (define-key map [backtab] #'backward-button)
-      map)
-    "Keymap useful for buffers containing buttons.
-Mode-specific keymaps may want to use this as their parent keymap."))
-
-(unless (boundp 'button-map)
-  (defvar button-map
-    (let ((map (make-sparse-keymap)))
-      (set-keymap-parent map button-buffer-map)
-      (define-key map "\r" #'push-button)
-      (define-key map [mouse-2] #'push-button)
-      (define-key map [follow-link] 'mouse-face)
-      (define-key map [mode-line mouse-2] #'push-button)
-      (define-key map [header-line mouse-2] #'push-button)
-      (define-key map [mode-line touchscreen-down] #'push-button)
-      (define-key map [header-line touchscreen-down] #'push-button)
-      (define-key map [touchscreen-down] #'push-button)
-      map)
-    "Keymap used by buttons."))
-
-;; Mirrors GNU Emacs 31.1 src/keymap.c:get_keyelt: a raw stored binding
-;; cell is not always the definition itself.  Real `access_keymap_1'
-;; (the engine behind `lookup-key') unwraps two "decorated" shapes
-;; before ever handing a binding back to a caller: `(menu-item NAME
-;; DEFN . PROPS)' (a new-style menu item -- DEFN is the actual
-;; definition, PROPS's `:filter' is not applied here, matching this
-;; substrate's `lookup-key' never passing AUTOLOAD=t either) and
-;; `(STRING . DEFN)' (an old-style menu item with a title/help string in
-;; front -- looping handles `(STRING HELP . DEFN)' too, since stripping
-;; once leaves another `(STRING . DEFN)'-shaped cons).  Needed for real:
-;; real `comint.el' stores exactly `(cons "Complete" (make-sparse-keymap
-;; "Complete"))' as `comint-mode-map''s `[menu-bar completion]' binding,
-;; and real `shell.el' does `(copy-keymap (lookup-key comint-mode-map
-;; [menu-bar completion]))' at its own top level -- without this
-;; unwrap, `lookup-key' handed `copy-keymap' the raw `("Complete"
-;; keymap "Complete")' cons instead of the keymap inside it, and
-;; `copy-keymap' rejected that (correctly: real Emacs's own `get_keymap'
-;; would reject it exactly the same way, since real `lookup-key' never
-;; lets that raw shape escape in the first place).
+;; `button-buffer-map' and `button-map' come from GNU button.el (bundled).
 (defun nelisp--get-keyelt (object)
   "Mirror GNU Emacs 31.1 src/keymap.c:get_keyelt.  See the block
 comment above this definition for which two binding shapes this
@@ -17769,26 +17769,25 @@ unwraps and why."
 
 (unless (fboundp 'lookup-key)
   (defun lookup-key (keymap key &optional _accept-default)
-    "Look up KEY in KEYMAP and its parent chain (`set-keymap-parent',
-above), returning the binding or nil.  String and vector event sequences
-are normalized to the same event vector, as in GNU `lookup-key'.  The
-found binding is unwrapped through `nelisp--get-keyelt' (above), same
-as real Emacs's own `access_keymap_1'.  This flattened substrate still
-does not build prefix maps or return the number of matching leading
-events for an unbound prefix.
-
-(fn KEYMAP KEY &optional ACCEPT-DEFAULT)"
+    "Look up key sequence KEY in KEYMAP (GNU keymap.c Flookup_key).
+Return the definition, nil if unbound, or the number of leading events
+that form a complete binding when KEY is too long."
     (unless (or (stringp key) (vectorp key))
       (signal 'wrong-type-argument (list 'arrayp key)))
-    (let ((tail (cdr keymap)) (result nil) (done nil)
-          (normalized-key (nelisp--keymap-normalize-sequence key)))
-      (while (and tail (consp tail) (not done))
-        (let ((item (car tail)))
-          (if (and (consp item)
-                   (equal (nelisp--keymap-normalize-sequence (car item))
-                          normalized-key))
-              (progn (setq result (nelisp--get-keyelt (cdr item))) (setq done t))
-            (setq tail (cdr tail)))))
+    (let ((map (nelisp--get-keymap keymap))
+          (events (nelisp--keymap-events key))
+          (idx 0) (result nil) (done nil))
+      (if (null events)
+          (setq result map)
+        (while (and events (not done))
+          (let* ((cell (nelisp--keymap-access map (car events)))
+                 (cmd (and cell (nelisp--get-keyelt (cdr cell)))))
+            (setq idx (1+ idx) events (cdr events))
+            (if (null events)
+                (setq result cmd done t)
+              (let ((sub (nelisp--keymap-prefix-map cmd)))
+                (if sub (setq map sub)
+                  (setq result idx done t)))))))
       result)))
 
 ;; GNU keymap.c primitives that vendored help-mode.el, keymap.el and
@@ -17811,21 +17810,36 @@ events for an unbound prefix.
       found)))
 (unless (fboundp 'where-is-internal)
   (defun where-is-internal (definition &optional keymap firstonly _noindirect _no-remap)
-    "Return key sequences bound to DEFINITION (GNU keymap.c, flat maps)."
+    "Return key sequences bound to DEFINITION (GNU keymap.c), as vectors."
     (let ((maps (cond ((keymapp keymap) (list keymap (current-global-map)))
                       ((consp keymap) (append keymap nil))
                       (t (current-active-maps))))
-          (found nil))
+          (found nil) (seen nil))
       (dolist (map maps)
-        (let ((m map))
-          (while (and m (keymapp m))
-            (dolist (item (cdr m))
-              (when (and (consp item) (not (eq (car item) 'keymap))
-                         (eq (nelisp--get-keyelt (cdr item)) definition)
-                         (or (vectorp (car item)) (stringp (car item))))
-                (let ((k (nelisp--keymap-normalize-sequence (car item))))
-                  (unless (member k found) (push k found)))))
-            (setq m (keymap-parent m)))))
+        (let ((todo (list (cons [] (nelisp--get-keymap map)))))
+          (while todo
+            (let* ((entry (pop todo)) (prefix (car entry)) (m (cdr entry)))
+              (unless (memq m seen)
+                (push m seen)
+                (map-keymap
+                 (lambda (event binding)
+                   (when (integerp event)
+                     (let* ((key (vconcat prefix (vector event)))
+                            (def (nelisp--get-keyelt binding))
+                            (sub (nelisp--keymap-prefix-map def)))
+                       (cond
+                        ((eq def definition)
+                         (unless (member key found) (push key found)))
+                        (sub (push (cons key sub) todo)))))
+                   (when (symbolp event)
+                     (let* ((key (vconcat prefix (vector event)))
+                            (def (nelisp--get-keyelt binding))
+                            (sub (nelisp--keymap-prefix-map def)))
+                       (cond
+                        ((eq def definition)
+                         (unless (member key found) (push key found)))
+                        (sub (push (cons key sub) todo))))))
+                 m))))))
       (setq found (nreverse found))
       (if firstonly (car found) found))))
 
@@ -29139,132 +29153,16 @@ Meta-foo as command input turns into this character followed by foo."))
 When it is read, do `(eval help-form)', and display result if it's a string.
 If the value of `help-form' is nil, this char can be read normally."))
 
-;; `help-map' is a real `defvar-keymap' in real Emacs's (preloaded)
-;; lisp/help.el.  Built here with this substrate's own always-available
-;; `make-sparse-keymap'/`define-key' (see the `button-buffer-map' block
-;; comment above for why not via `defvar-keymap' itself: it is staged
-;; separately from vendor keymap.el and unavailable this early in
-;; bootstrap) rather than staged verbatim, but the BINDING SET itself is
-;; verbatim from real `help.el' with 3 exceptions: the `(help-key)'
-;; entry is dropped (redundant with the "?"/"<f1>"/"<help>" entries
-;; below it for this substrate's own no-dispatch-loop purposes, and
-;; `help-key' -- the function, not `help-char' the variable -- is not
-;; itself staged); the two 2-event sequences ("4 i", "4 s") are dropped,
-;; matching this substrate's own documented "no multi-event key
-;; sequences" limitation (see the block comment above `make-sparse-
-;; keymap', much further up this file); string keys use literal
-;; control-character escapes (`"\C-a"') rather than `kbd', whose own
-;; bracket/multi-key parsing is unreliable here (see the `button-
-;; buffer-map' block comment above for the measured specifics).  Needed
-;; for real: `term.el''s own top-level `(defvar term-mode-map (let ((map
-;; (copy-keymap help-map))) ...))'-style construction (`M-x term' and
-;; friends inherit from the global help map in real Emacs), reached
-;; through `term.el''s own unconditional `(require 'ehelp)' ->
-;; `(require 'help-mode)'-equivalent chain.
-(unless (boundp 'help-map)
-  (defvar help-map
-    (let ((map (make-sparse-keymap)))
-      (define-key map "." #'display-local-help)
-      (define-key map "?" #'help-for-help)
-      (define-key map [help] #'help-for-help)
-      (define-key map [f1] #'help-for-help)
-      (define-key map "\C-a" #'about-emacs)
-      (define-key map "\C-c" #'describe-copying)
-      (define-key map "\C-d" #'view-emacs-debugging)
-      (define-key map "\C-e" #'view-external-packages)
-      (define-key map "\C-f" #'view-emacs-FAQ)
-      (define-key map "\r" #'view-order-manuals)
-      (define-key map "\C-n" #'view-emacs-news)
-      (define-key map "\C-o" #'describe-distribution)
-      (define-key map "\C-p" #'view-emacs-problems)
-      (define-key map "\C-q" #'help-quick-toggle)
-      (define-key map "\C-s" #'search-forward-help-for-help)
-      (define-key map "\C-t" #'view-emacs-todo)
-      (define-key map "\C-w" #'describe-no-warranty)
-      (define-key map "\C-\\" #'describe-input-method)
-      (define-key map "C" #'describe-coding-system)
-      (define-key map "F" #'Info-goto-emacs-command-node)
-      (define-key map "I" #'describe-input-method)
-      (define-key map "K" #'Info-goto-emacs-key-command-node)
-      (define-key map "L" #'describe-language-environment)
-      (define-key map "S" #'info-lookup-symbol)
-      (define-key map "a" #'apropos-command)
-      (define-key map "b" #'describe-bindings)
-      (define-key map "c" #'describe-key-briefly)
-      (define-key map "d" #'apropos-documentation)
-      (define-key map "e" #'view-echo-area-messages)
-      (define-key map "f" #'describe-function)
-      (define-key map "g" #'describe-gnu-project)
-      (define-key map "h" #'view-hello-file)
-      (define-key map "u" #'apropos-user-option)
-      (define-key map "i" #'info)
-      (define-key map "k" #'describe-key)
-      (define-key map "l" #'view-lossage)
-      (define-key map "m" #'describe-mode)
-      (define-key map "o" #'describe-symbol)
-      (define-key map "n" #'view-emacs-news)
-      (define-key map "p" #'finder-by-keyword)
-      (define-key map "P" #'describe-package)
-      (define-key map "r" #'info-emacs-manual)
-      (define-key map "R" #'info-display-manual)
-      (define-key map "s" #'describe-syntax)
-      (define-key map "t" #'help-with-tutorial)
-      (define-key map "v" #'describe-variable)
-      (define-key map "w" #'where-is)
-      (define-key map "x" #'describe-command)
-      (define-key map "q" #'help-quit)
-      map)
-    "Keymap for characters following the Help key."))
-
-;; The prefix keymaps below are created by C in real Emacs 31.1 (src/keymap.c:
-;; `esc-map' and `ctl-x-map', full keymaps bound in `global-map' through the
-;; `ESC-prefix' / `Control-X-prefix' function cells; src/minibuf.c:
-;; `minibuffer-local-map', a sparse keymap), so no Lisp file ever defines them
-;; and this substrate had none (void-variable).  `isearch.el' binds into
-;; `esc-map' and `search-map' at load time and uses `minibuffer-local-map' as
-;; the parent of `minibuffer-local-isearch-map'.  Differences from GNU:
-;; `esc-map'/`ctl-x-map' are SPARSE here, because a `make-keymap' char-table
-;; baked into the image makes test/nelisp-eln-same-artifact-smoke.sh segfault
-;; (measured by bisection); `global-map' does not exist yet at this point, so
-;; the two `define-key' bindings into it are made right after its definition
-;; in scripts/nelisp-standalone-build.el; and `minibuffer-local-map' is left
-;; empty (GNU's bindings.el fills it in, and that file is not loaded).
-(unless (boundp 'esc-map)
-  (defvar esc-map (make-sparse-keymap)
-    "Default keymap for ESC (meta) commands.
-The normal global definition of the character ESC indirects to this keymap.")
-  (fset 'ESC-prefix esc-map))
-(unless (boundp 'ctl-x-map)
-  (defvar ctl-x-map (make-sparse-keymap)
-    "Default keymap for C-x commands.
-The normal global definition of the character C-x indirects to this keymap.")
-  (fset 'Control-X-prefix ctl-x-map))
+;; GNU Emacs 31.1 defines the global keymap tree (`esc-map', `ctl-x-map',
+;; `ctl-x-4-map', `ctl-x-5-map', `tab-prefix-map', `global-map') in subr.el
+;; and `search-map' in bindings.el.  The native build stages the subr.el
+;; tree right after keymap.el's `key-parse'; bindings.el is the generated
+;; emacs-bindings-gnu.el in the bootstrap.  `minibuffer-local-map'
+;; (minibuf.c in GNU) is left empty here; GNU's bindings.el fills it in.
 (unless (boundp 'minibuffer-local-map)
   (defvar minibuffer-local-map (make-sparse-keymap)
     "Default keymap to use when reading from the minibuffer."))
 
-;; `search-map' is a `defvar-keymap' in GNU Emacs 31.1's (preloaded)
-;; lisp/bindings.el, followed by `(define-key esc-map "s" search-map)'.
-;; Same binding set, built with `define-key' because `defvar-keymap' is not
-;; usable this early in bootstrap (see the `button-buffer-map' block comment
-;; above) and because nested `define-key' on a prefix map that was itself
-;; bound with `define-key' does not propagate here, so the "h" prefix is
-;; built with vector sequences on the one map instead.
-(unless (boundp 'search-map)
-  (defvar search-map
-    (let ((map (make-sparse-keymap)))
-      (define-key map "o" #'occur)
-      (define-key map "\M-w" #'eww-search-words)
-      (define-key map [?h ?r] #'highlight-regexp)
-      (define-key map [?h ?p] #'highlight-phrase)
-      (define-key map [?h ?l] #'highlight-lines-matching-regexp)
-      (define-key map [?h ?.] #'highlight-symbol-at-point)
-      (define-key map [?h ?u] #'unhighlight-regexp)
-      (define-key map [?h ?f] #'hi-lock-find-patterns)
-      (define-key map [?h ?w] #'hi-lock-write-interactive-patterns)
-      map)
-    "Keymap for search related commands.")
-  (define-key esc-map "s" search-map))
 
 ;; `cl-callf' is defined in GNU cl-macs.el (autoloaded from cl-lib).  Real
 ;; `isearch.el' uses it at load time (`isearch-define-mode-toggle' expands to
