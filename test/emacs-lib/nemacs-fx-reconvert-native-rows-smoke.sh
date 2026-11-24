@@ -1,14 +1,15 @@
 #!/bin/sh
 # Smoke for `nemacs-runtime-image-preload--reconvert-native-rows' (F284/F285, F293).
 # A row function whose word-VM record was compiled before its callees existed
-# (nconc before cddr) is not converted to its native row; the pass compiles it
-# again and converts it, and `mapcan', which applies `nconc', links to the new
-# record.  The stale state is forced here so the check does not depend on boot
+# (F284: nconc before cddr) is not converted to its native row; the pass
+# compiles it again and converts it, and a row that calls it links to the new
+# record.  The fixture is `delete' and `delete-dups' (which calls `delete'):
+# nconc is a native subr since the 9d92ebc17 row regeneration.  The stale state is forced here so the check does not depend on boot
 # order.  (The stale `none' of `nelisp--rris' needs the regexp library of a
 # replayed image and is checked by the regfix probes; the generic stale-none
 # retry is covered by nemacs-fx-retry-stale-none-smoke.sh.)
-#  1. Fix check: retry-stale-fx then reconvert -> nconc and mapcan native, no
-#     converted row lost (superset), mapcan still correct.
+#  1. Fix check: retry-stale-fx then reconvert -> delete and delete-dups native,
+#     no converted row lost (superset), delete-dups still correct.
 #  2. Discriminating control (NEMACS_RECONV_MODE=retry-only): the SAME stale
 #     state with ONLY the pre-existing retry-stale-fx pass must still FAIL, so
 #     only the new reconvert pass can have made check 1 pass.
@@ -30,20 +31,20 @@ cat >"$tmp/t.el" <<EOT
   (let ((r (gethash (rc-body f) nelisp--fx-table)))
     (and (vectorp r) (integerp (aref r 1)) (<= (aref r 1) -16) (memq f nelisp-nc--converted) t)))
 ;; Force the stale state: a plain VM record, not converted.
-(dolist (f '(nconc mapcan))
+(dolist (f '(delete delete-dups))
   (setq nelisp-nc--converted (delq f nelisp-nc--converted))
   (remhash (rc-body f) nelisp--fx-table) (remhash (rc-body f) nelisp--fx-pending)
   (nelisp-nc--orig-register-fn f (symbol-function f)))
 (let* ((mode (or (getenv "NEMACS_RECONV_MODE") "full"))
-       (before (list (rc-native-p 'nconc) (rc-native-p 'mapcan)))
+       (before (list (rc-native-p 'delete) (rc-native-p 'delete-dups)))
        (conv0 (copy-sequence nelisp-nc--converted))
        (n (progn
             (nemacs-runtime-image-preload--retry-stale-fx)
             (unless (equal mode "retry-only")
               (nemacs-runtime-image-preload--reconvert-native-rows)))))
-  (princ (format "stale-before=%s nconc-native=%s mapcan-native=%s mapcan-ok=%s reconverted=%s superset=%s\n"
-                 (equal before '(nil nil)) (rc-native-p 'nconc) (rc-native-p 'mapcan)
-                 (equal (mapcan #'list '(1 2 3)) '(1 2 3)) (and (integerp n) (>= n 1))
+  (princ (format "stale-before=%s delete-native=%s dups-native=%s dups-ok=%s reconverted=%s superset=%s\n"
+                 (equal before '(nil nil)) (rc-native-p 'delete) (rc-native-p 'delete-dups)
+                 (equal (delete-dups (list 1 2 1 3)) '(1 2 3)) (and (integerp n) (>= n 1))
                  (let ((ok t)) (dolist (c conv0) (unless (memq c nelisp-nc--converted) (setq ok nil))) ok))))
 EOT
 # Scenario 3: needs a converted native row first (passes of scenario 1), then a failing re-registration.
@@ -52,34 +53,34 @@ cat >"$tmp/r.el" <<EOT
 ;;; -*- lexical-binding: t; -*-
 (load "$here/scripts/nemacs-runtime-image-preload.el" nil t t)
 (defun rc-body (f) (nthcdr 3 (nelisp--closure-cons (symbol-function f))))
-(dolist (f '(nconc mapcan))
+(dolist (f '(delete delete-dups))
   (setq nelisp-nc--converted (delq f nelisp-nc--converted))
   (remhash (rc-body f) nelisp--fx-table) (remhash (rc-body f) nelisp--fx-pending)
   (nelisp-nc--orig-register-fn f (symbol-function f)))
 (nemacs-runtime-image-preload--retry-stale-fx)
 (nemacs-runtime-image-preload--reconvert-native-rows)
 $1
-(let* ((body (rc-body 'mapcan))
+(let* ((body (rc-body 'delete-dups))
        (old (gethash body nelisp--fx-table))
        (orig (symbol-function 'nelisp--fx-register))
        (r 'unset))
   (fset 'nelisp--fx-register (lambda (&rest _) (error "boom")))
-  (setq r (condition-case nil (nemacs-runtime-image-preload--reconvert-row 'mapcan) (error 'signalled)))
+  (setq r (condition-case nil (nemacs-runtime-image-preload--reconvert-row 'delete-dups) (error 'signalled)))
   (fset 'nelisp--fx-register orig)
   (princ (format "was-native=%s restored=%s converted=%s result=%s\n"
                  (and (vectorp old) (integerp (aref old 1)) (<= (aref old 1) -16) t)
                  (eq (gethash body nelisp--fx-table) old)
-                 (and (memq 'mapcan nelisp-nc--converted) t) r)))
+                 (and (memq 'delete-dups nelisp-nc--converted) t) r)))
 EOT
 }
 run() { NELISP_HOME=$root "$bin" --load "$1" 2>&1 </dev/null | head -1; }
 fail=0
-want="stale-before=t nconc-native=t mapcan-native=t mapcan-ok=t reconverted=t superset=t"
+want="stale-before=t delete-native=t dups-native=t dups-ok=t reconverted=t superset=t"
 out=$(run "$tmp/t.el")
 if [ "$out" = "$want" ]; then echo "PASS reconvert-native-rows"; else echo "FAIL reconvert ($out)"; fail=1; fi
 neg=$(NEMACS_RECONV_MODE=retry-only run "$tmp/t.el")
 case "$neg" in
-  *"nconc-native=nil"*) echo "PASS control-retry-only-still-stale ($neg)";;
+  *"delete-native=nil"*) echo "PASS control-retry-only-still-stale ($neg)";;
   *) echo "FAIL control-retry-only-not-stale ($neg)"; fail=1;;
 esac
 mk3 ""
