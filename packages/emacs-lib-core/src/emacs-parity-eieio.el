@@ -298,17 +298,19 @@ port must too, or `(get VECTOR 'cl--class)' aborts with
     "Substrate structs are always `record'-typed (GNU stores nil)."
     nil))
 
-;; cl-macs.el declares its arglist-destructuring state with BARE `(defvar V)'
-;; forms, which the standalone bootstrap drops; `cl--transform-lambda' then
-;; `let*'-binds them lexically and `cl--do-arglist' (a separate function)
-;; hits "void-variable cl--bind-lets".  Make them genuinely special.
-(when emacs-parity-eieio--standalone-p
+;; cl-macs.el declares its arglist-destructuring state with bare `(defvar V)'
+;; forms.  REPL replay evaluates each form in a separate lexical scope, so
+;; bindings in `cl--transform-lambda' are invisible to `cl--do-arglist'.
+;; Give those variables a shared special declaration.
+;; The REPL bootstrap can use GNU cl-macs without the legacy cl-defstruct
+;; accessor table that guards the EIEIO registration above.
+(when (fboundp 'nelisp--eval-source-string)
   (defvar cl--bind-block nil)
   (defvar cl--bind-defs nil)
   (defvar cl--bind-enquote nil)
   (defvar cl--bind-lets nil)
   (defvar cl--bind-forms nil)
-  ;; Same bare-`defvar' loss for cl-seq.el's keyword-parsing state
+  ;; The same applies to cl-seq.el's keyword-parsing state
   ;; ("void-variable cl-test" in the magit bundle) and cl-macs.el's loop
   ;; and optimize state.
   (defvar cl--alist nil)

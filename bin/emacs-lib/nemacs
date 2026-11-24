@@ -1075,7 +1075,7 @@ case "$NEMACS_DRIVER" in
             if ! cold_build_allowed_p; then
               cold_skipped_by_policy=1
               echo "nemacs: no current cold image; starting without one (~20 s)" >&2
-              echo "  Build one deliberately with: NEMACS_COLD_BUILD=1 $0 --version" >&2
+              echo "  Build one deliberately with: NEMACS_COLD_BUILD=1 $0 --driver=nelisp --batch -Q --no-banner" >&2
               echo "  or: make -C \"$NEMACS_HOME\" nemacs-cold-image   (~550 MB; ~20 s or ~52 min, see cold_build_allowed_p)" >&2
             elif ! invalidate_cold_source_cache; then
               echo "nemacs: cannot remove stale cold image; no cold image this start" >&2
@@ -1188,8 +1188,10 @@ case "$NEMACS_DRIVER" in
         tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-cold-boot.XXXXXX.el")"
         printf '%s\n0\n' "$COLD_BOOT_LINE" > "$tmp"
         set +e
+        # The implicit cold REPL has room for only one option.  The explicit
+        # REPL accepts both and keeps evaluated return values off stdout.
         "$NEMACS_NELISP" --cold-load-from "$NEMACS_COLD_IMAGE" \
-          --no-prompt --no-print < "$tmp"
+          --repl --no-prompt --no-print < "$tmp"
         rc=$?
         set -e
         rm -f "$tmp"

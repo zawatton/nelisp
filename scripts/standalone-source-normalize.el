@@ -143,6 +143,10 @@ envelope.")
     normal-top-level
     command-line
     command-line-1
+    ;; Replay initializes propertized defaults, and startup messages edit
+    ;; *Messages* through the ordinary buffer insertion path.
+    emacs-buffer-string-text-property
+    emacs-buffer-builtins--change-edit
     ;; Every VC backend command (`vc-diff', `vc-print-log', ...) runs through
     ;; `vc-do-command'; an elided body makes the VC workflow unusable.
     vc-do-command
