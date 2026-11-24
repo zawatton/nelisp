@@ -195,3 +195,9 @@ nelisp--tp-leftmost
 nelisp-ov--char-property-and-overlay
 next-single-char-property-change
 nelisp-goto-char
+nlre--nat-cls-fill
+nlre--nat-cls-ensure
+nlre--nat-program-cls
+nlre--install-syntax-cache-hook
+nlre--ct-epoch-sync
+nlre--ct-epoch
