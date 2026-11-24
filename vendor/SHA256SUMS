@@ -991,3 +991,7 @@ f40a45af7adb50ca3f21726595d6edc2307f571f50ff2e62920c3883d92c7d38  vendor/emacs-l
 7ba4c1540abfd7a71346f7e46ccc17bde7838df081ad86ee918779260f633b21  vendor/emacs-lisp/emacs-lisp/radix-tree.el
 e85a96263a1b810143f978b50f2b5bc045e52e3fb0749d9e2a9554d1ecf2bfdc  vendor/emacs-etc/DOC
 afd8734ea0c95bc7a66a8ef5c4b6e7d0afde922ad6ddd1e705872a03559227f2  vendor/emacs-lisp/emacs-lisp/comp-common.el
+c79ee9fc0d7c08bd8bcebc6207e6771228e2c16a47076debc1683203ab48dce7  vendor/emacs-lisp/pulse.el
+b6888b7d214c287c67a03d24f3d361b5f8e876d359f1cd6d4d97487e6bb4ad22  vendor/emacs-lisp/jka-cmpr-hook.el
+3b0f8f8845c8856294c3aae9a074ec08d7afc8932384cc963e82001af3bff177  vendor/emacs-lisp/jka-compr.el
+ac5f4987cca50bbdbc70f8abeeec426ed54e8694728eaff3efee790b75e33e2d  vendor/staged-emacs-lisp/mule.el
