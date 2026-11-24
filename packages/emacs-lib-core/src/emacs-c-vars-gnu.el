@@ -354,7 +354,7 @@
 (unless (boundp 'input-method-previous-message) (condition-case nil (defvar input-method-previous-message nil) (error nil)))
 (unless (boundp 'input-pending-p-filter-events) (condition-case nil (defvar input-pending-p-filter-events t) (error nil)))
 (unless (boundp 'installation-directory) (condition-case nil (defvar installation-directory nil) (error nil)))
-(unless (boundp 'integer-width) (condition-case nil (defvar integer-width 0) (error nil)))
+(unless (boundp 'integer-width) (condition-case nil (defvar integer-width 65536) (error nil)))
 (unless (boundp 'internal--daemon-sockname) (condition-case nil (defvar internal--daemon-sockname nil) (error nil)))
 (unless (boundp 'internal--get-default-lexical-binding-function) (condition-case nil (defvar internal--get-default-lexical-binding-function nil) (error nil)))
 (unless (boundp 'internal--text-quoting-flag) (condition-case nil (defvar internal--text-quoting-flag nil) (error nil)))
