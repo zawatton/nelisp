@@ -52102,6 +52102,7 @@ skipped and re-run once cl-preloaded has defined the base types."
     find-tag-default find-tag-default-as-regexp
     find-tag-default-as-symbol-regexp play-sound string-or-null-p
     list-of-strings-p plistp integer-or-null-p field-at-pos sha1
+    with-restriction without-restriction
     remove-yank-excluded-properties insert-for-yank insert-for-yank-1
     insert-buffer-substring-as-yank insert-into-buffer
     replace-string-in-region replace-regexp-in-region

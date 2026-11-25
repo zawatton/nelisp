@@ -13,6 +13,10 @@
          (position (symbol-function 'marker-position))
          (detach (symbol-function 'set-marker)) (go (symbol-function 'goto-char))
          (wide (symbol-function 'widen)) (narrow (symbol-function 'narrow-to-region))
+         (restore-buffer (and (fboundp 'nelisp--restore-current-buffer)
+                              (symbol-function 'nelisp--restore-current-buffer)))
+         (restore-excursion (and (fboundp 'nelisp--restore-excursion)
+                                  (symbol-function 'nelisp--restore-excursion)))
          (save-limits (and (fboundp 'nelisp--save-restriction)
                            (symbol-function 'nelisp--save-restriction)))
          (restore-limits (and (fboundp 'nelisp--restore-restriction)
@@ -21,14 +25,18 @@
        (let ((buffer (funcall current)))
          (cond
           ((memq opcode '(97 114))
-           (lambda () (when (funcall live buffer) (funcall select buffer))))
+           (if restore-buffer
+               (lambda () (funcall restore-buffer buffer))
+             (lambda () (when (funcall live buffer) (funcall select buffer)))))
           ((= opcode 138)
            (let ((marker (funcall point-marker-value)))
-             (lambda ()
-               (unwind-protect
-                   (when (funcall live buffer)
-                     (funcall select buffer) (funcall go (funcall position marker)))
-                 (funcall detach marker nil)))))
+             (if restore-excursion
+                 (lambda () (funcall restore-excursion marker))
+               (lambda ()
+                 (unwind-protect
+                     (when (funcall live buffer)
+                       (funcall select buffer) (funcall go (funcall position marker)))
+                   (funcall detach marker nil))))))
           ((and (= opcode 140) save-limits restore-limits)
            ;; GNU save_restriction_save / _restore: the buffer itself when it is
            ;; not narrowed, else a marker pair; no markers for the common case.

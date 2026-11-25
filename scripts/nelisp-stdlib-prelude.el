@@ -10863,11 +10863,26 @@ otherwise every later edit would walk the capacity left by markers long dead."
          (t tbl))))))
 
 (defmacro nelisp-buffer--do-markers (spec &rest body)
-  "Run BODY with (car SPEC) bound to each marker of the buffer (cadr SPEC)."
-  (let ((tbl (make-symbol "tbl")))
-    `(let ((,tbl (nelisp-buffer--marker-table ,(car (cdr spec)))))
+  "Run BODY for each marker of the buffer.
+SPEC is (MARKER BUFFER).  BODY may update marker slots, but it must not
+change the chain or invoke user code."
+  (let ((tbl (make-symbol "table"))
+        (meta (make-symbol "metadata"))
+        (pairs (make-symbol "pairs"))
+        (limit (make-symbol "limit"))
+        (idx (make-symbol "index")))
+    `(let ((,tbl (nelisp-buffer--marker-table ,(cadr spec))))
        (when ,tbl
-         (maphash (lambda (,(car spec) _v) ,@body) ,tbl)))))
+         ;; Markers cannot have nil keys, and both remhash and weak GC
+         ;; clear vacant key slots.  The values are unused.
+         (let* ((,meta (nelisp--hash-meta ,tbl))
+                (,pairs (aref ,meta 11))
+                (,limit (* 2 (aref ,meta 3)))
+                (,idx 0))
+           (while (< ,idx ,limit)
+             (let ((,(car spec) (aref ,pairs ,idx)))
+               (when ,(car spec) ,@body))
+             (setq ,idx (+ 2 ,idx))))))))
 
 (defun nelisp-buffer--marker-list (buf)
   "Return BUF's chained markers as a fresh list (introspection and tests)."
@@ -12642,25 +12657,18 @@ The character before POS sits at POS - 2 in the 0-based text."
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
   "Advance markers at or past AT by INSERTED-LEN."
   (nelisp-buffer--do-markers (m buf)
-    (when (nelisp-marker-p m)
-      (let ((pos (nelisp-marker-position m)))
-        (cond
-         ((< pos at) nil)
-         ((and (= pos at) (null (nelisp-marker-insertion-type m))) nil)
-         (t (setf (nelisp-marker-position m) (+ pos inserted-len))))))))
+    (let ((pos (aref m 2)))
+      (when (or (> pos at)
+                (and (= pos at) (eq (aref m 0) 'nelisp-marker-ins)))
+        (aset m 2 (+ pos inserted-len))))))
 
 (defun nelisp-buffer--shift-markers-on-delete (buf start end)
   "Collapse markers inside [START, END] to START, shift markers past END."
   (let ((delta (- end start)))
     (nelisp-buffer--do-markers (m buf)
-      (when (nelisp-marker-p m)
-        (let ((pos (nelisp-marker-position m)))
-          (cond
-           ((<= pos start) nil)
-           ((>= pos end)
-            (setf (nelisp-marker-position m) (- pos delta)))
-           (t
-            (setf (nelisp-marker-position m) start))))))))
+      (let ((pos (aref m 2)))
+        (when (> pos start)
+          (aset m 2 (if (> pos end) (- pos delta) start)))))))
 
 (defun nelisp-buffer--shift-text-properties-on-insert (buf at len)
   "Grow B's intervals for LEN characters inserted at 1-based AT, the new text
@@ -12856,8 +12864,7 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
     ;; as if still valid -- out of range now that the buffer is empty.
     (setf (nelisp-buffer-pend b) nil)
     (nelisp-buffer--do-markers (m b)
-      (when (nelisp-marker-p m)
-        (setf (nelisp-marker-position m) 1)))
+      (aset m 2 1))
     (setf (nelisp-buffer-text-properties b) nil)
     (when (and ovt (> oldlen 0))
       (nelisp-ov--adjust-delete b 1 oldlen)
@@ -12917,13 +12924,12 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
 
 (defun nelisp-make-marker ()
   "Return a marker not yet attached to any buffer."
-  (nelisp-marker--make))
+  (record 'nelisp-marker nil 1))
 
 (defun nelisp-copy-marker (buf pos &optional insertion-type)
   "Return a fresh marker inside BUF at POS."
-  (let ((m (nelisp-marker--make :buffer buf
-                                :position pos
-                                :insertion-type insertion-type)))
+  (let ((m (record (if insertion-type 'nelisp-marker-ins 'nelisp-marker)
+                   buf pos)))
     (nelisp-buffer--chain-marker buf m)
     m))
 
@@ -14123,12 +14129,19 @@ You cannot count on them to still be there!"))
     pos)
 (unless (fboundp 'goto-char)
   (fset 'goto-char (symbol-function 'nelisp--goto-char-reference)))
+
+(defvar nelisp-buffer--inhibited-hooks (make-hash-table :test 'eq :weakness 'key)
+  "Buffers created with non-nil INHIBIT-BUFFER-HOOKS.")
+
 (unless (fboundp 'generate-new-buffer)
-  (defun generate-new-buffer (name &optional _inhibit-buffer-hooks)
+  (defun generate-new-buffer (name &optional inhibit-buffer-hooks)
     (nelisp--check-string name)
     (when (= (length name) 0)
       (signal 'error (list "Empty string for buffer name is not allowed")))
-    (nelisp-generate-new-buffer name)))
+    (let ((buffer (nelisp-generate-new-buffer name)))
+      (when inhibit-buffer-hooks
+        (puthash buffer t nelisp-buffer--inhibited-hooks))
+      buffer)))
 (unless (fboundp 'get-buffer)
   (defun get-buffer (buffer-or-name)
     (cond
@@ -14192,8 +14205,9 @@ current one dies, then detach its markers and drop its local variables.
        ((null b) (signal 'error (list "No buffer to kill")))
        ((not (buffer-live-p b)) nil)
        (t
-        (when (or (default-value 'kill-buffer-hook)
-                  (assq 'kill-buffer-hook (gethash b nelisp-buffer-local--owned)))
+        (when (and (not (gethash b nelisp-buffer--inhibited-hooks))
+                   (or (default-value 'kill-buffer-hook)
+                       (assq 'kill-buffer-hook (gethash b nelisp-buffer-local--owned))))
           (setq hook-ran t)
           (let ((current nelisp--current-buffer))
             (unwind-protect
@@ -14236,13 +14250,18 @@ under `narrow-to-region' both answer the narrowed bound)."
   (let ((b (or buffer nelisp--current-buffer)))
     (and b (buffer-live-p b) (nelisp-buffer-name b)))))
 (unless (fboundp 'get-buffer-create)
-  (defun get-buffer-create (buffer-or-name &optional _inhibit-buffer-hooks)
+  (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
     (cond
      ((nelisp-buffer-p buffer-or-name) buffer-or-name)
      ((stringp buffer-or-name)
       (when (= (length buffer-or-name) 0)
         (signal 'error (list "Empty string for buffer name is not allowed")))
-      (nelisp-get-buffer-create buffer-or-name))
+      (if inhibit-buffer-hooks
+          (or (nelisp-get-buffer buffer-or-name)
+              (let ((buffer (nelisp-get-buffer-create buffer-or-name)))
+                (puthash buffer t nelisp-buffer--inhibited-hooks)
+                buffer))
+        (nelisp-get-buffer-create buffer-or-name)))
      (t (signal 'wrong-type-argument (list 'stringp buffer-or-name))))))
 ;; feat/standalone-agent-compat: `generate-new-buffer-name' is a real Emacs
 ;; primitive (buffer.c), not a `subr-x'/library function, so the agent host
@@ -14296,21 +14315,9 @@ the accessible portion."
 (unless (fboundp 'widen)
   (fset 'widen (symbol-function 'nelisp--widen-reference)))
 
-;; `save-restriction' is real Emacs's own special form (src/editfns.c),
-;; not staged from any Lisp file; built here on this substrate's own
-;; already-genuine, per-buffer `narrow-to-region'/`widen' primitives
-;; (confirmed above -- unlike syntax tables, buffer narrowing IS real
-;; per-buffer state here).  Uses markers (already a real, working
-;; primitive family: `copy-marker'/`marker-position') for BEG/END so a
-;; narrowing boundary survives insertions/deletions during BODY the same
-;; way real Emacs's own marker-backed save/restore does, and restores
-;; via `with-current-buffer' (already fboundp) so BODY switching to a
-;; different buffer and never switching back still restores the
-;; ORIGINAL buffer's restriction, not whatever buffer happens to be
-;; current at exit -- matching real Emacs's own contract ("this special
-;; form ... saves the current buffer's restrictions", not "the buffer
-;; current at exit"'s).  Needed for real: `lisp/simple.el''s own
-;; `count-lines' (staged below) wraps its whole body in this.
+;; GNU editfns.c saves moving bounds only when the buffer is narrowed.
+;; Restoring the saved buffer's bounds leaves the body's current buffer
+;; in place.
 (defun nelisp--buffer-narrowed-p (b)
   "Non-nil when B's accessible portion is smaller than the whole buffer."
   (let ((begv (nelisp-buffer-narrow-start b)))
@@ -14322,20 +14329,29 @@ the accessible portion."
   "GNU save_restriction_save: the buffer itself when it is not narrowed,
 else a (BEG-MARKER . END-MARKER) pair that follows edits."
   (let ((b nelisp--current-buffer))
-    (if (nelisp--buffer-narrowed-p b)
-        (cons (copy-marker (nelisp-buffer-narrow-start b) nil)
-              (copy-marker (nelisp-buffer-narrow-end b) t))
+    (if (and (nelisp-buffer-narrow-start b) (nelisp--buffer-narrowed-p b))
+        (cons (nelisp-copy-marker b (nelisp-buffer-narrow-start b))
+              (nelisp-copy-marker b (nelisp-buffer-narrow-end b) t))
       b)))
 (defun nelisp--restore-restriction (state)
   "GNU save_restriction_restore."
-  (if (nelisp-buffer-p state)
-      (when (buffer-live-p state) (nelisp-widen state))
-    (let ((b (marker-buffer (car state))))
-      (when b
-        (nelisp-narrow-to-region (marker-position (car state))
-                                 (marker-position (cdr state)) b))
-      (set-marker (car state) nil)
-      (set-marker (cdr state) nil)))
+  (if (consp state)
+      (let* ((start (car state))
+             (end (cdr state))
+             (b (nelisp-marker-buffer start)))
+        (when b
+          (let ((first (nelisp-marker-position start))
+                (last (nelisp-marker-position end)))
+            (nelisp-marker-delete start)
+            (nelisp-marker-delete end)
+            (setf (nelisp-buffer-narrow-start b) first
+                  (nelisp-buffer-narrow-end b) last)
+            (let ((pt (nelisp-point b)))
+              (when (or (< pt first) (> pt last))
+                (nelisp-goto-char pt b))))))
+    (when (and (nelisp-buffer-narrow-start state) (buffer-live-p state))
+      (setf (nelisp-buffer-narrow-start state) nil
+            (nelisp-buffer-narrow-end state) nil)))
   nil)
 (unless (fboundp 'save-restriction)
   (defmacro save-restriction (&rest body)
@@ -14627,10 +14643,9 @@ text inherit sticky text properties, as `insert-and-inherit' does.
 AT the insertion point always advances, regardless of its own
 `insertion-type' -- `insert-before-markers''s contract."
     (nelisp-buffer--do-markers (m buf)
-      (when (nelisp-marker-p m)
-        (let ((pos (nelisp-marker-position m)))
-          (when (>= pos at)
-            (setf (nelisp-marker-position m) (+ pos inserted-len))))))))
+      (let ((pos (aref m 2)))
+        (when (>= pos at)
+          (aset m 2 (+ pos inserted-len)))))))
 (unless (fboundp 'nelisp-insert-before-markers)
   (defun nelisp-insert-before-markers (text &optional buf)
     "Like `nelisp-insert', but every marker exactly at the insertion
@@ -14966,23 +14981,6 @@ With non-nil UNIQUE, pick a different name when NEWNAME is in use."
         (setf (nelisp-buffer-name b) newname)
         (puthash newname b nelisp-buffer--registry)
         newname)))))
-(unless (fboundp 'with-restriction)
-  (defmacro with-restriction (start end &rest rest)
-    "Execute BODY with restrictions set to START and END (GNU subr.el).
-A leading `:label LABEL' pair is accepted; labels do not lock `widen' here.
-
-(fn START END [:label LABEL] BODY...)"
-    (declare (indent 2) (debug t))
-    (when (eq (car rest) :label) (setq rest (cddr rest)))
-    `(save-restriction (narrow-to-region ,start ,end) ,@rest)))
-(unless (fboundp 'without-restriction)
-  (defmacro without-restriction (&rest rest)
-    "Execute BODY without restrictions (GNU subr.el).
-
-(fn [:label LABEL] BODY...)"
-    (declare (indent 0) (debug t))
-    (when (eq (car rest) :label) (setq rest (cddr rest)))
-    `(save-restriction (widen) ,@rest)))
 ;; GNU casefiddle.c's region loop replaces one source character at a time,
 ;; preserving marker positions and text properties while point follows any
 ;; changed character count.  The bootstrap's gap-string buffer is the only
@@ -18795,47 +18793,36 @@ MAJOR-MODE and MODE-NAME, installs the syntax table, runs PARENT (or
 ;; record)' via `make-syntax-table' -> `nelisp--syntax-make-table' ->
 ;; `make-nelisp--syntax-table'.
 
-;; Marker slice 1/2: this used to be `(unless (fboundp 'save-excursion)
-;; ...)', which never fired -- `lisp/nelisp-stdlib-eval-special.el''s
-;; own unconditional stub (see the block comment above this section)
-;; loads first and already satisfies `fboundp', so the guarded form
-;; here was dead code and the ACTIVE `save-excursion' was plain
-;; `progn', saving nothing.  Defining it unconditionally instead -- this
-;; file loads after that stub, and `defmacro' always overwrites the
-;; macro cell of whoever loaded last -- makes THIS body the one
-;; actually installed, without touching that other file (out of this
-;; slice's scope).  `save-excursion' is already `shared-shadowing' via
-;; that pre-existing unconditional stub, so this does not newly move
-;; `emacs-compat''s count; it only fixes which body wins.
-;;
-;; The saved point is now a MARKER in the buffer that was current at
-;; save time, not a bare integer -- real Emacs's own `save_excursion_
-;; save'/`-restore' (editfns.c) do the same, and the difference is
-;; observable: probed against Emacs 31.1, `(with-temp-buffer (insert
-;; "xxxxxx") (goto-char 6) (save-excursion (goto-char 1) (insert "XXX"))
-;; (point))' answers 9 (the saved point rides along with the 3-
-;; character insertion that landed before it) -- an integer save would
-;; restore to the ORIGINAL numeric offset 6, landing three characters
-;; too early.  The marker is detached again in the cleanup form so it
-;; does not linger in the buffer's marker list after the macro returns.
+;; The special-form implementation uses the same marker representation
+;; and weak chain as the public constructors.
+(defun nelisp--point-marker ()
+  "Return a marker for point in the current buffer, with insertion type nil."
+  (let* ((buffer nelisp--current-buffer)
+         (marker (record 'nelisp-marker buffer (point))))
+    (nelisp-buffer--chain-marker buffer marker)
+    marker))
+
+(defun nelisp--restore-excursion (marker)
+  "Restore the buffer and point saved in MARKER, then detach it."
+  (let ((buffer (aref marker 1)))
+    ;; Killing a buffer detaches all its markers.
+    (when buffer
+      (unless (and (eq buffer nelisp--current-buffer)
+                   (eq buffer nelisp-buffer--current))
+        (setq nelisp--current-buffer buffer
+              nelisp-buffer--current buffer))
+      (let ((position (aref marker 2)))
+        (nelisp-marker-delete marker)
+        (goto-char position)))))
+
 (defmacro save-excursion (&rest body)
-  "Save point (as a marker) and the current buffer; run BODY; restore
-both, even on non-local exit; return BODY's value.  See the block
-comment above this definition for why the saved point is a marker, not
-an integer, and why this is unconditional rather than `unless (fboundp
-...)' guarded."
-  (let ((buf (make-symbol "buf")) (m (make-symbol "marker")))
-    `(let ((,buf nelisp--current-buffer)
-           (,m (point-marker)))
+  "Run BODY and restore buffer and point on exit.
+The saved point is a marker that follows edits in the original buffer."
+  (let ((m (make-symbol "marker")))
+    `(let ((,m (nelisp--point-marker)))
        (unwind-protect
            (progn ,@body)
-         (when (buffer-live-p ,buf)
-           (set-buffer ,buf)
-           ;; The buffer is live, so the saved marker is still attached:
-           ;; the accessor equals `marker-position' without its type check.
-           (goto-char (nelisp-marker-position ,m)))
-         ;; Same as (set-marker M nil), minus its argument dispatch (F424).
-         (nelisp-marker-delete ,m)))))
+         (nelisp--restore-excursion ,m)))))
 
 (defun nelisp--line-number-at (pos buf)
   "1-based line number of POS in BUF, counting newlines from
@@ -19090,29 +19077,35 @@ moves point to the scan failure position and signals `user-error'
     "Position MARKER before character number POSITION in BUFFER.
 See the block comment above this section for the exact semantics,
 probed against Emacs 31.1."
-    (unless (nelisp-marker-p marker)
+    (unless (and (recordp marker)
+                 (let ((type (aref marker 0)))
+                   (or (eq type 'nelisp-marker) (eq type 'nelisp-marker-ins))))
       (signal 'wrong-type-argument (list 'markerp marker)))
-    (let* ((buf (cond ((null buffer) nelisp--current-buffer)
-                       ((nelisp-buffer-p buffer) buffer)
-                       (t (signal 'wrong-type-argument (list 'bufferp buffer)))))
-           (live (and buf (buffer-live-p buf))))
-      (cond
-       ((or (null position)
-            (and (nelisp-marker-p position) (null (nelisp-marker-buffer position)))
-            (not live))
-        (nelisp-marker-delete marker))
-       (t
-        (let ((pos (cond ((integerp position) position)
-                          ((nelisp-marker-p position) (nelisp-marker-position position))
-                          (t (signal 'wrong-type-argument
-                                      (list 'integer-or-marker-p position))))))
-          (setq pos (max 1 (min (1+ (nelisp-buffer-size buf)) pos)))
-          (unless (eq (nelisp-marker-buffer marker) buf)
-            (nelisp-marker-delete marker)
-            (nelisp-buffer--chain-marker buf marker)
-            (setf (nelisp-marker-buffer marker) buf))
-          (setf (nelisp-marker-position marker) pos))))
-      marker)))
+    (when (and buffer
+               (not (and (recordp buffer) (eq (aref buffer 0) 'nelisp-buffer))))
+      (signal 'wrong-type-argument (list 'bufferp buffer)))
+    (let ((buf (or buffer nelisp--current-buffer)))
+      (if (and position buf
+               (eq buf (gethash (aref buf 1) nelisp-buffer--registry)))
+          (progn
+            (unless (fixnump position)
+              (setq position (if (nelisp-marker-p position)
+                                 (and (aref position 1) (aref position 2))
+                               (signal 'wrong-type-argument
+                                       (list 'integer-or-marker-p position)))))
+            (if position
+                (let ((old (aref marker 1))
+                      (limit (1+ (aref buf 14))))
+                  (unless (eq old buf)
+                    (when old (nelisp-buffer--unchain-marker old marker))
+                    (nelisp-buffer--chain-marker buf marker)
+                    (aset marker 1 buf))
+                  (aset marker 2 (cond ((< position 1) 1)
+                                       ((> position limit) limit)
+                                       (t position))))
+              (nelisp-marker-delete marker)))
+        (nelisp-marker-delete marker)))
+    marker))
 
 (unless (fboundp 'move-marker)
   (defalias 'move-marker 'set-marker
@@ -19122,7 +19115,7 @@ marker' under a second name, not a distinct primitive."))
 (unless (fboundp 'make-marker)
   (defun make-marker ()
     "Return a marker that does not point anywhere."
-    (nelisp-marker--make)))
+    (record 'nelisp-marker nil 1)))
 
 (unless (fboundp 'copy-marker)
   (defun copy-marker (&optional position type)
@@ -19131,31 +19124,29 @@ POSITION nil (the default) returns a marker pointing nowhere.  An
 integer POSITION points at that position in the current buffer.  A
 marker POSITION copies its buffer and position (or copies its
 pointing-nowhere-ness, if it has none).  TYPE non-nil makes the new
-marker advance past text inserted at it -- see `marker-insertion-type'.
-
-Delegates to `set-marker' immediately above for the actual placement,
-which is where POSITION's three-way dispatch (nil / integer / marker)
-and the resulting BUFFER default live; probed against Emacs 31.1 to
-confirm this composition reproduces `Fcopy_marker' exactly, including
-that copying a nowhere-pointing marker produces another nowhere-
-pointing marker regardless of which buffer happens to be current."
-    (unless (or (null position) (integerp position) (nelisp-marker-p position))
-      (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
-    ;; libcomp: GNU `Fcopy_marker' (marker.c) allocates the marker with its
-    ;; insertion type in one step (`build_marker'), positionally: the record
-    ;; `nelisp-marker'/`nelisp-marker-ins' (buffer nil, position 1) directly,
-    ;; not the keyword constructor and a retype afterwards.
-    (let ((new (record (if type 'nelisp-marker-ins 'nelisp-marker) nil 1)))
-      (set-marker new position
-                  (and (nelisp-marker-p position) (nelisp-marker-buffer position)))
-      new)))
+marker advance past text inserted at it -- see `marker-insertion-type'."
+    (cond
+     ((fixnump position)
+      (let ((buffer nelisp--current-buffer))
+        (nelisp-copy-marker buffer
+                            (max 1 (min (1+ (nelisp-buffer-len buffer)) position))
+                            type)))
+     (t
+      (when (and position (not (nelisp-marker-p position)))
+        (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
+      (let ((buffer (and position (aref position 1))))
+        (if buffer
+            (nelisp-copy-marker buffer (aref position 2) type)
+          (record (if type 'nelisp-marker-ins 'nelisp-marker) nil 1)))))))
 
 (unless (fboundp 'marker-position)
   (defun marker-position (marker)
     "Return the position of MARKER, or nil if it points nowhere."
-    (unless (nelisp-marker-p marker)
+    (unless (and (recordp marker)
+                 (let ((type (aref marker 0)))
+                   (or (eq type 'nelisp-marker) (eq type 'nelisp-marker-ins))))
       (signal 'wrong-type-argument (list 'markerp marker)))
-    (and (nelisp-marker-buffer marker) (nelisp-marker-position marker))))
+    (and (aref marker 1) (aref marker 2))))
 
 (unless (fboundp 'marker-buffer)
   (defun marker-buffer (marker)
@@ -19188,13 +19179,7 @@ pointing marker regardless of which buffer happens to be current."
 ;; current.  Insertion type nil (the struct default), matching real
 ;; Emacs's `build_marker'.
 (unless (fboundp 'point-marker)
-  (defun point-marker ()
-    "Return value of point, as a marker, in the current buffer."
-    ;; Positional record (F424): no keyword plist, no struct constructor.
-    (let* ((b nelisp--current-buffer)
-           (m (record 'nelisp-marker b (nelisp-point b))))
-      (nelisp-buffer--chain-marker b m)
-      m)))
+  (fset 'point-marker (symbol-function 'nelisp--point-marker)))
 
 (unless (fboundp 'point-min-marker)
   (defun point-min-marker ()
@@ -30844,14 +30829,22 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 ;; GNU editfns.c:Fsave_current_buffer records an unwind action before
 ;; evaluating BODY.  The special-object dispatcher already owns evaluation;
 ;; keep its implementation in Lisp, using the same unwind structure.
+(defun nelisp--restore-current-buffer (buffer)
+  "Re-select BUFFER if it is live and the body changed the selection."
+  (when (and buffer
+             (not (and (eq buffer nelisp--current-buffer)
+                       (eq buffer nelisp-buffer--current)))
+             (eq buffer (gethash (aref buffer 1) nelisp-buffer--registry)))
+    (setq nelisp--current-buffer buffer
+          nelisp-buffer--current buffer)))
+
 (defmacro nelisp--save-current-buffer (&rest body)
   (let ((saved (make-symbol "saved-buffer")))
     ;; This fixed unwind frame needs no general backquote traversal.  Emit
     ;; the evaluator's conditional directly, including its implicit nil arm.
-    (list 'let (list (list saved '(current-buffer)))
+    (list 'let (list (list saved 'nelisp--current-buffer))
           (list 'unwind-protect (cons 'progn body)
-                (list 'if (list 'buffer-live-p saved)
-                      (list 'set-buffer saved))))))
+                (list 'nelisp--restore-current-buffer saved)))))
 (nelisp--set-special-form-implementation
  'save-current-buffer (symbol-function 'nelisp--save-current-buffer))
 

@@ -190,7 +190,9 @@ GNU file commands bind this option while entering and reverting Dired.")
                       (assoc-delete-all old-name nelisp-ec--buffers)))
           (nelisp-ec-buffer-name--setter buffer new-name))
         (force-mode-line-update)
-        (run-hooks 'buffer-list-update-hook)
+        (unless (and (boundp 'nelisp-buffer--inhibited-hooks)
+                     (gethash buffer nelisp-buffer--inhibited-hooks))
+          (run-hooks 'buffer-list-update-hook))
         new-name))))
 
 (defun emacs-fileio--buffer-default-directory (&optional buffer)
@@ -494,21 +496,25 @@ NEWNAME must be a nonempty string."
                                   (nelisp-ec-buffer-p target))
                              #'nelisp-ec-kill-buffer
                            #'nelisp-kill-buffer))
+               (inhibit-hooks (and (boundp 'nelisp-buffer--inhibited-hooks)
+                                   (gethash target nelisp-buffer--inhibited-hooks)))
                (result nil))
           (unwind-protect
               (progn
-                (set-buffer target)
+                (unless inhibit-hooks (set-buffer target))
                 (setq result
-                      (if (not (run-hook-with-args-until-failure
-                                'kill-buffer-query-functions))
+                      (if (and (not inhibit-hooks)
+                               (not (run-hook-with-args-until-failure
+                                     'kill-buffer-query-functions)))
                           nil
                         (if (not (emacs-fileio--buffer-live-p target))
                             t
-                          (run-hooks 'kill-buffer-hook)
-                          ;; GNU runs the hook in the current buffer left by
-                          ;; query functions, then restores the caller.
-                          (when (emacs-fileio--buffer-live-p caller)
-                            (set-buffer caller))
+                          (unless inhibit-hooks
+                            (run-hooks 'kill-buffer-hook)
+                            ;; GNU runs the hook in the current buffer left by
+                            ;; query functions, then restores the caller.
+                            (when (emacs-fileio--buffer-live-p caller)
+                              (set-buffer caller)))
                           (if (not (emacs-fileio--buffer-live-p target))
                               t
                             (let ((alternate
