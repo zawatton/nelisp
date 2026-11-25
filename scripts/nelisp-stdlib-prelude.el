@@ -32873,7 +32873,7 @@ environment has the shape accepted by `nelisp--fx-env-ok-p' or
         (when (and name (fboundp name)
                    (eq (car-safe (nelisp--closure-cons (symbol-function name))) 'closure)
                    (eq (nthcdr 3 (nelisp--closure-cons (symbol-function name))) body))
-          (let ((trace (nelisp--fx-trace-file)) (t0 (float-time)))
+          (let* ((trace (nelisp--fx-trace-file)) (t0 (and trace (float-time))))
             (nelisp--fx-register name)
             (nelisp--fx-retry-errored)
             (when trace
@@ -32995,13 +32995,17 @@ environment and formals the code was compiled under (F391); the VM runs the
 record only for a closure whose own environment and formals match them
 \(`m5_fx_rec_valid'). A cap record keeps its markers and names in order,
 with fresh placeholder pairs that hold no captured values."
-  ;; Compiler-private -2 selects the nullary constant path.  Ordinary VM
-  ;; calls keep the original executor prologue.
-  (let ((code (car c)))
-    (when (and (null capnames) (= (cdr c) 0) (= (nth 1 shape) 0)
-               (= (length code) 6) (= (aref code 0) 17)
-               (= (aref code 2) 1) (= (aref code 4) 0))
-      (setcdr c -2)))
+  ;; Lower a constant or fixed argument projection to the native leaf
+  ;; entry. Keep the code vector and the closure's public representation.
+  (let ((code (car c))
+        (min (nth 1 shape))
+        (max (nth 2 shape)))
+    (when (and (null capnames) (= min max (cdr c))
+               (= (length code) 6) (= (aref code 0) 17) (= (aref code 4) 0)
+               (or (= (aref code 2) 1)
+                   (and (= (aref code 2) 2) (<= 0 (aref code 3))
+                        (< (aref code 3) min))))
+      (setcdr c (if (= min 0) -2 -3))))
   (prog1 (vector (car c) (cdr c)
                  (if capnames nelisp--fx-cap-arity (nth 1 shape))
                  nelisp--fx-next-index name
@@ -33164,18 +33168,19 @@ Compiling such a body ends in `none' after `macroexpand-all' of all of it,
 which at boot is most of a failed first-call compilation's cost.  Quoted
 and backquoted data is not searched, so a template mentioning `lambda'
 still compiles."
-  (let ((todo (list body)) (found nil))
-    (while (and todo (not found))
-      (let ((x (pop todo)))
-        (when (consp x)
-          (let ((head (car x)))
-            (cond
-             ((memq head '(quote \`)) nil)
-             ((memq head nelisp--fx-hopeless-heads) (setq found t))
-             (t (while (consp x)
-                  (when (consp (car x)) (push (car x) todo))
-                  (setq x (cdr x)))))))))
-    found))
+  (when nelisp--fx-hopeless-heads
+    (let ((todo (list body)) (found nil))
+      (while (and todo (not found))
+        (let ((x (pop todo)))
+          (when (consp x)
+            (let ((head (car x)))
+              (cond
+               ((memq head '(quote \`)) nil)
+               ((memq head nelisp--fx-hopeless-heads) (setq found t))
+               (t (while (consp x)
+                    (when (consp (car x)) (push (car x) todo))
+                    (setq x (cdr x)))))))))
+      found)))
 
 (defun nelisp--fx-arglist-shape (args)
   "(LOCALS MIN MAX REST-INDEX) for the lambda list ARGS, or nil.
