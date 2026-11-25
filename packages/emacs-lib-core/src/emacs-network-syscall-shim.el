@@ -442,21 +442,7 @@ relies on it (`condition-case' itself works)."
       "Byte length of S (reader polyfill for readers whose `string-bytes'
 is a phantom builtin — fboundp t, calling errors).  Strings are raw
 byte arrays there, so `length' already counts bytes."
-      (length s)))
-  (unless (condition-case nil (eql (truncate 2.5) 2) (error nil))
-    (defun truncate (x &optional divisor)
-      "Integer truncation toward zero (reader polyfill)."
-      (when divisor (setq x (/ x divisor)))
-      (if (integerp x)
-          x
-        (let* ((s (number-to-string x))
-               (i 0)
-               (n (length s))
-               (out ""))
-          (while (and (< i n) (/= (aref s i) ?.))
-            (setq out (concat out (char-to-string (aref s i))))
-            (setq i (1+ i)))
-          (string-to-number out))))))
+      (length s))))
 
 (provide 'emacs-network-syscall-shim)
 
