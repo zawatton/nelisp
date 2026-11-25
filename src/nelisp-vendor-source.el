@@ -64,7 +64,8 @@
 
 (defun nelisp-vendor-source--form-name (form)
   "Return the static function name defined or aliased by FORM.
-For `defalias', `autoload' and single-variable `setq', index only a literal symbol name."
+For `defalias', `autoload' and single-variable `setq', index only
+a literal symbol name."
   (pcase (car-safe form)
     ((or 'defun 'defsubst 'defmacro 'defvar 'defconst 'defcustom 'pcase-defmacro
          'define-derived-mode)

@@ -3,5 +3,5 @@
 (calendar t t t (2 29 2000))
 (cvs-dired-noselect t nil t cvs-mode)
 (treesit-install-language-grammar "/round5" round5 "recipe" "revision")
-(treesit-font-lock-rules ((elisp "(node) @sample") t sample nil t elisp))
+(treesit-font-lock-rules ((elisp "(node) @sample" nil) t sample nil t elisp))
 (message t "Scheme output" t)

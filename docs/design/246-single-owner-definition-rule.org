@@ -107,3 +107,25 @@ The project owner reviewed the Round 4 runtime exceptions and classified them.
   definitions work: =replace-buffer-contents=, =subregexp-context-p=,
   =message=, =calendar=, =cvs-dired-noselect=,
   =treesit-install-language-grammar=, =treesit-font-lock-rules=.
+
+** Round 5 follow-up on =message=
+
+GNU 31.1 registers =message= as the C subr =Fmessage= in =src/editfns.c=.
+It returns nil or the original empty string when clearing the echo area.
+For other arguments it calls =Fformat_message= and passes the resulting
+string to =message3= in =src/xdisp.c=.  That routine logs the message before
+checking =inhibit-message=.  The display path writes encoded bytes and a
+newline to stderr for the initial batch frame.  For an interactive
+frame it updates the minibuffer's echo area and runs redisplay against
+the selected frame and terminal.  These are services of the GNU C
+editor, frame and terminal state.
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/editfns.c][GNU editfns.c]]
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/xdisp.c][GNU xdisp.c]]
+
+The proposed NeLisp boundary is the existing standalone core entry
+point in =scripts/nelisp-stdlib-prelude.el=.  Once the editor is loaded it
+delegates to =emacs-special-buffers-message= for the NeLisp message log,
+echo-area state and batch stderr.  Editor bridges use that entry point.
+This identifies where NeLisp must supply the C primitive's behaviour
+and leaves the exception for owner review.  Its output, return value
+and clear and inhibit behaviour remain subject to GNU parity.

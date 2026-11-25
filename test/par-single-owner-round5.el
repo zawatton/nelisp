@@ -86,7 +86,12 @@
        (cl-letf (((symbol-function 'treesit-available-p) (lambda () t))
                  ((symbol-function 'treesit-query-p) #'stringp)
                  ((symbol-function 'treesit-compiled-query-p) #'ignore)
-                 ((symbol-function 'treesit-query-compile) #'list))
+                 ((symbol-function 'treesit-query-compile)
+                  ;; GNU's native compiler can pad calls to this C
+                  ;; primitive with nil.  Record the arguments as received
+                  ;; by the primitive, including its optional EAGER slot.
+                  (lambda (language query &optional eager)
+                    (list language query eager))))
          (treesit-font-lock-rules
           :language 'elisp :feature 'sample :reversed t "(node) @sample")))
    (error (list (car err)))))
