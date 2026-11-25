@@ -10,6 +10,8 @@
 ;; Compile-time hints for runtime-provided names (no-ops when evaluated).
 (declare-function nelisp--rx-exec "ext:nelisp-runtime")
 (declare-function nelisp--string-search-chars "ext:nelisp-runtime")
+(declare-function nelisp--closure-cons "ext:nelisp-runtime")
+(declare-function nelisp--function-epoch "ext:nelisp-runtime")
 (declare-function nelisp-buffer-blen "ext:nelisp-runtime")
 (declare-function nelisp-buffer-len "ext:nelisp-runtime")
 (declare-function nelisp-buffer-narrow-end "ext:nelisp-runtime")
@@ -105,6 +107,9 @@ is folded back into that opcode by the byte optimizer.")
   "Buffer whose case-fold translation `nlre--translate-memo' holds.")
 (defvar nlre--translate-memo-epoch nil
   "`nelisp-casetab--epoch' when `nlre--translate-memo' was read.")
+(defvar nlre--translate-memo-function-epoch nil
+  "Function-cell epoch when the case-table setter was checked.")
+(defvar nlre--have-function-epoch (fboundp 'nelisp--function-epoch))
 (defvar nlre--translate-memo nil
   "The memoized result of `nlre--read-translate-table'.")
 (defvar nlre--compiled-cache-hits 0
@@ -204,30 +209,51 @@ Capture that callable directly instead of autoloading the nadvice substrate."
   (and (boundp 'nelisp-casetab--native-p)
        (funcall nelisp-casetab--native-p table)))
 
+(defun nlre--translate-owner-p ()
+  "Whether the current setter still uses the epoch-aware implementation."
+  (when (boundp 'nelisp-casetab--epoch-owner)
+    (let* ((owner nelisp-casetab--epoch-owner)
+           (current (symbol-function 'set-case-table)))
+      (and current
+           (or (eq current owner)
+               ;; Native publication can replace the function object with
+               ;; a wrapper around the same closure.  Compare its identity,
+               ;; including the environment, rather than its source text.
+               (and (fboundp 'nelisp--closure-cons)
+                    (let ((closure (nelisp--closure-cons owner)))
+                      (and closure (eq closure (nelisp--closure-cons current))))))))))
+
 (defun nlre--current-translate-table ()
   "The case-fold translation of the current buffer's canon.
 GNU's searches read the buffer's case_canon_table slot (search.c:405-410),
 which only `set-case-table' and `set-standard-case-table' change.  Memoize
 the read per buffer and `nelisp-casetab--epoch', which the case-table code
 bumps on every such change and on every extra-slot write.  The memo is used
-only while the epoch-aware `set-case-table' is installed, so an older case
-table package that does not bump the epoch falls back to reading.
-`current-buffer' is reached through `nlre--current-buffer-function' here
-and in `nlre-string-match'."
-  (if (and (eq (funcall nlre--current-buffer-function) nlre--translate-memo-buffer)
-           (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
-           (eq (symbol-function 'set-case-table) nelisp-casetab--epoch-owner))
-      nlre--translate-memo
-    (let ((buffer (funcall nlre--current-buffer-function))
-          (value (nlre--read-translate-table)))
-      ;; Read the epoch after the read: preparing an invalidated table
-      ;; bumps it.
-      (when (and (boundp 'nelisp-casetab--epoch-owner)
-                 (eq (symbol-function 'set-case-table) nelisp-casetab--epoch-owner))
-        (setq nlre--translate-memo-buffer buffer
-              nlre--translate-memo-epoch nelisp-casetab--epoch
-              nlre--translate-memo value))
-      value)))
+only while the epoch-aware `set-case-table' is installed."
+  (let ((buffer (if nlre--have-function-epoch nelisp--current-buffer
+                  (funcall nlre--current-buffer-function)))
+        (function-epoch (and nlre--have-function-epoch (nelisp--function-epoch))))
+    (if (and (eq buffer nlre--translate-memo-buffer)
+             (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
+             function-epoch
+             (eq function-epoch nlre--translate-memo-function-epoch))
+        nlre--translate-memo
+      (nlre--refresh-translate-memo buffer function-epoch))))
+
+(defun nlre--refresh-translate-memo (buffer function-epoch)
+  "Refresh the translation memo for BUFFER and FUNCTION-EPOCH."
+  (let* ((owner (nlre--translate-owner-p))
+         (value (if (and owner (eq buffer nlre--translate-memo-buffer)
+                         (eq nelisp-casetab--epoch nlre--translate-memo-epoch))
+                    nlre--translate-memo
+                  (nlre--read-translate-table))))
+    ;; Preparing an invalidated table can change the case epoch.
+    (setq nlre--translate-memo-buffer (and owner buffer))
+    (when owner
+      (setq nlre--translate-memo-epoch nelisp-casetab--epoch
+            nlre--translate-memo-function-epoch function-epoch
+            nlre--translate-memo value))
+    value))
 
 (defun nlre--read-translate-table ()
   "Read the current canon once, retaining its live owner-specific lookup.
@@ -357,7 +383,9 @@ under the built-in fold and keeps the fast plans the table path cannot
 use.  This holds for any owner's canon, modified or not."
   (let ((table (nlre--current-translate-table)))
     (if (and table (aref table 3) (null search-spaces-regexp)
-             (nlre--ascii-search-string-p text table)
+             (if (aref table 6)
+                 (= (length text) (string-bytes text))
+               (nlre--ascii-search-string-p text table))
              (nlre--ascii-search-regexp-p regexp))
         nil
       table)))
@@ -2433,8 +2461,10 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
 ;; Program words are u32, little endian:
 ;;   [0] total registers  [1] groups  [2] flags (1 anchored at \=`, 2 first-byte
 ;;   map usable, 4 fold, 8 non-ASCII literal (text must be multibyte), 16 uses
-;;   the syntax map)  [3] entry word  [4] 0  [5..36] 128-byte first map
+;;   the syntax map)  [3] entry word  [4] literal probe  [5..36] first map
 ;;   [37..] code.
+;; The probe stores up to three required ASCII bytes (low 24 bits), their
+;; count (bits 24..25), and whether they precede absolute EOS (bit 26).
 ;; Code: 0 MATCH, 1 CHAR c, 2 CHAR2 lc uc, 3 ANY, 4 SET hf m0..m31 (128 bytes),
 ;; 5 BOL, 6 EOL, 7 BOS, 8 EOS, 9 SAVE r, 10 SPLIT a b (try a, fail to b),
 ;; 11 JMP a, 12 LOOPSET k, 13 LOOPCHK k a (jump when no progress since
@@ -2754,6 +2784,25 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
             (setq s (if s (concat s piece) piece) chunk nil k 0))))
       s)))
 
+(defun nlre--nat-literal-probe (nodes fold)
+  "Pack a required literal prefix or an absolute-end suffix of NODES."
+  (let* ((tail (reverse nodes))
+         (suffix (eq (caar tail) :eos))
+         (run (cond (suffix (cdr tail))
+                    ((memq (caar nodes) '(:bos :bol)) (cdr nodes))
+                    (t nodes)))
+         (bytes 0) (count 0) (shift 1))
+    (while (and (< count 3) (eq (caar run) :lit)
+                (< (nth 1 (car run)) 128))
+      (let ((c (nth 1 (car run))))
+        (when (and fold (<= ?A c) (<= c ?Z)) (setq c (+ c 32)))
+        (setq bytes (if suffix (+ bytes (* c shift)) (+ (* 256 bytes) c))
+              count (1+ count) shift (* shift 256) run (cdr run))))
+    ;; The existing first-byte map already checks a one-byte prefix.
+    (if (or (> count 1) (and suffix (> count 0)))
+        (+ bytes (* count 16777216) (if suffix 67108864 0))
+      0)))
+
 (defun nlre--nat-compile (pat fold)
   "Return the native program string for regexp PAT under FOLD, or nil."
   (let ((i 0) (n (length pat)) (ascii t))
@@ -2788,7 +2837,8 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
         (when nlre--nat-needs-cls (setq flags (logior flags 32)))
         (when (eq (car-safe (car top)) :bos) (setq flags (logior flags 1)))
         (let ((words (append (list (+ (* 2 nlre--nat-ng) nlre--nat-nloops)
-                                   nlre--nat-ng flags nlre--nat-header 0)
+                                   nlre--nat-ng flags nlre--nat-header
+                                   (nlre--nat-literal-probe top fold))
                              (nlre--nat-pack fm)
                              (let ((l nil) (j nlre--nat-header))
                                (while (< j nlre--nat-pc)
@@ -2801,11 +2851,11 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
 (defvar nlre--nat-have (fboundp 'nelisp--rx-exec)
   "Non-nil when the native matcher word is linked into this image.")
 (defvar nlre--nat-progs (make-hash-table :test 'equal)
-  "Regexp -> (PROGRAM . GROUPS), or :no when it declined; case-sensitive.")
+  "Case-sensitive regexp cache.  See `nlre--nat-cache-entry'.")
 (defvar nlre--nat-progs-fold (make-hash-table :test 'equal)
   "Like `nlre--nat-progs' for case-folding searches.")
 (defvar nlre--nat-lits (make-hash-table :test 'equal)
-  "Literal search string -> (PROGRAM . GROUPS) or :no, case-sensitive.")
+  "Case-sensitive literal search cache.  See `nlre--nat-cache-entry'.")
 (defvar nlre--nat-lits-fold (make-hash-table :test 'equal)
   "Like `nlre--nat-lits' for case-folding searches.")
 (defvar nlre--nat-scratch nil
@@ -2823,33 +2873,42 @@ vector is shorter (a defvar does not resize it) never runs class programs.")
   "(BUFFER . TICK) of the last buffer search that found no usable text memo.")
 
 (defvar nlre--nat-last nil
-  "(REGEXP FOLD LITERAL . ENTRY): the last answer of `nlre--nat-program',
-REGEXP a private copy.  GNU's `compile_pattern' (search.c) looks first at
-the most recently used compiled pattern (`searchbuf_head', kept in front)
-and compares its text (`string_equal'); a loop searching for one
-pattern then never hashes it.")
+  "Most recently used native program cache entry, shared across search callers.")
+
+(defun nlre--nat-cache-entry (re table fold literal syntax classes)
+  "Return the native cache entry for RE from TABLE.
+TABLE fixes the fold and syntax capabilities of the compiled program.
+Only ordinary (first match) syntax and the built-in translation are
+compiled here.  Syntax instructions consult the live table's maps at run
+time, so switching a syntax table need not recompile the program.
+An entry is [TABLE PRIVATE-PATTERN ANSWER]; a nil ANSWER records a decline."
+  (let ((last nlre--nat-last))
+    (if (and last (eq table (aref last 0)) (equal re (aref last 1)))
+        (aref last 2)
+      (let ((cached (gethash re table)))
+        (unless cached
+          (let* ((src (if literal (regexp-quote re) re))
+                 (nlre--nat-allow-syn syntax)
+                 (nlre--nat-allow-cls classes)
+                 (prog (nlre--nat-compile src fold))
+                 (answer (and prog (or (not classes) (/= 0 (logand (aref prog 8) 32)))
+                              ;; The group count (at most 100) is word 1.
+                              (cons prog (aref prog 4))))
+                 (key (copy-sequence re)))
+            (when (>= (hash-table-count table) 2000) (clrhash table))
+            (setq cached (vector table key answer))
+            (puthash key cached table)))
+        (setq nlre--nat-last cached)
+        (aref cached 2)))))
 
 (defun nlre--nat-program (re fold literal)
   "Return (PROGRAM . GROUPS) for RE (a literal string when LITERAL), or nil."
-  (let ((last nlre--nat-last))
-    (if (and last (eq (car (cdr last)) fold) (eq (car (cdr (cdr last))) literal)
-             ;; `equal' of two strings compares their text, as
-             ;; `string_equal' does; compiled code inlines it (Bequal).
-             (equal re (car last)))
-        (cdr (cdr (cdr last)))
-      (let* ((tbl (if literal (if fold nlre--nat-lits-fold nlre--nat-lits)
-                    (if fold nlre--nat-progs-fold nlre--nat-progs)))
-             (p (gethash re tbl))
-             (entry
-              (if p (if (eq p :no) nil p)
-                (when (> (hash-table-count tbl) 2000) (clrhash tbl))
-                (let* ((src (if literal (regexp-quote re) re))
-                       (prog (nlre--nat-compile src fold))
-                       (e (and prog (cons prog (aref (nlre--compiled-pattern src) 1)))))
-                  (puthash (copy-sequence re) (or e :no) tbl)
-                  e))))
-        (setq nlre--nat-last (cons (copy-sequence re) (cons fold (cons literal entry))))
-        entry))))
+  (let ((table (if literal (if fold nlre--nat-lits-fold nlre--nat-lits)
+                 (if fold nlre--nat-progs-fold nlre--nat-progs)))
+        (last nlre--nat-last))
+    (if (and last (eq table (aref last 0)) (equal re (aref last 1)))
+        (aref last 2)
+      (nlre--nat-cache-entry re table fold literal nil nil))))
 
 ;; Programs with word and symbol assertions read the syntax map, which a caller must
 ;; fill (`nlre--nat-syn-ensure') right before running them.  `nlre--nat-program'
@@ -2861,45 +2920,12 @@ pattern then never hashes it.")
 (defvar nlre--nat-sprogs-fold (make-hash-table :test 'equal)
   "Like `nlre--nat-sprogs' for case-folding searches.")
 
-(defvar nlre--nat-last-syn nil
-  "(REGEXP FOLD . ENTRY): the last answer of `nlre--nat-program-syn', REGEXP a
-private copy -- the buffer routes' most recently used pattern, checked first as
-in `nlre--nat-last'.")
-
 (defun nlre--nat-program-syn (re fold)
   "Like `nlre--nat-program' for a regexp RE, also compiling word and symbol
 assertions."
-  (let ((last nlre--nat-last-syn))
-    (if (and last (eq (car (cdr last)) fold) (equal re (car last)))
-        (cdr (cdr last))
-      (let* ((tbl (if fold nlre--nat-sprogs-fold nlre--nat-sprogs))
-             (p (gethash re tbl))
-             (entry
-              (if p (if (eq p :no) nil p)
-                (when (> (hash-table-count tbl) 2000) (clrhash tbl))
-                (let* ((prog (let ((nlre--nat-allow-syn t)) (nlre--nat-compile re fold)))
-                       (e (and prog (cons prog (aref (nlre--compiled-pattern re) 1)))))
-                  (puthash (copy-sequence re) (or e :no) tbl)
-                  e))))
-        (setq nlre--nat-last-syn (cons (copy-sequence re) (cons fold entry)))
-        entry))))
-
-(defun nlre--nat-fold-default-p ()
-  "Non-nil when the current buffer folds case with the built-in mapping.
-The native matcher's own path (`nlre--nat-have'): the current buffer is
-read where `nlre--nat-bsearch' reads it, as GNU reads `current_buffer'.
-gnu562: a stale memo (another buffer, or an older case-table epoch) is
-refreshed here first.  Only the Lisp matcher refreshed it, and only for a
-pattern whose case translation matters, so a pattern without letters,
-such as a class of blanks, declined to the Lisp matcher on every call in
-a buffer whose memo it never set (re-search-forward 84 us instead of 11)."
-  (unless (and (eq nelisp--current-buffer nlre--translate-memo-buffer)
-               (eq nelisp-casetab--epoch nlre--translate-memo-epoch))
-    (nlre--current-translate-table))
-  (and (eq nelisp--current-buffer nlre--translate-memo-buffer)
-       (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
-       (eq (symbol-function 'set-case-table) nelisp-casetab--epoch-owner)
-       (null nlre--translate-memo)))
+  (or (nlre--nat-program re fold nil)
+      (nlre--nat-cache-entry re (if fold nlre--nat-sprogs-fold nlre--nat-sprogs)
+                             fold nil t nil)))
 
 (defun nlre--nat-syn-ensure ()
   "Fill the syntax map of `nlre--nat-caps' for the current syntax table.
@@ -3034,16 +3060,8 @@ char-table was written, so a raw `aset' on a syntax table is seen.")
 (defun nlre--nat-program-cls (re fold)
   "Return (PROGRAM . GROUPS) for RE when it compiles with class atoms, else nil.
 Programs without a class op answer nil: the plain routes already handled them."
-  (let* ((tbl (if fold nlre--nat-cprogs-fold nlre--nat-cprogs))
-         (p (gethash re tbl)))
-    (if p (if (eq p :no) nil p)
-      (when (> (hash-table-count tbl) 2000) (clrhash tbl))
-      (let* ((prog (let ((nlre--nat-allow-syn t) (nlre--nat-allow-cls t))
-                     (nlre--nat-compile re fold)))
-             (e (and prog (not (= 0 (logand (aref prog 8) 32)))
-                     (cons prog (aref (nlre--compiled-pattern re) 1)))))
-        (puthash (copy-sequence re) (or e :no) tbl)
-        e))))
+  (nlre--nat-cache-entry re (if fold nlre--nat-cprogs-fold nlre--nat-cprogs)
+                         fold nil t t))
 
 (defun nlre--nat-cls-ensure (entry)
   "Ready the syntax maps ENTRY's program reads; nil when it must not run natively."
@@ -3058,7 +3076,7 @@ Programs without a class op answer nil: the plain routes already handled them."
   "`string-match' for class programs.  Return t when declined."
   (let ((fold (and case-fold-search t)))
     (if (or search-spaces-regexp nlre--cap-track
-            (and fold (not (nlre--nat-fold-default-p))))
+            (and fold (nlre--search-translate-table regexp string)))
         t
       (let ((entry (nlre--nat-program-cls regexp fold)))
         (if (or (null entry) (not (nlre--nat-cls-ensure entry))) t
@@ -3099,8 +3117,7 @@ keeps this off the packed result.)"
    (if (or search-spaces-regexp nlre--cap-track
           ;; Like the Lisp matcher, use the built-in fold when the buffer's
           ;; canon gives the same translations for this pattern and subject.
-          (and fold (not (nlre--nat-fold-default-p))
-               (nlre--search-translate-table regexp string)))
+          (and fold (nlre--search-translate-table regexp string)))
       t
     (let ((entry (nlre--nat-program regexp fold nil)))
       (if (null entry) t
@@ -3125,13 +3142,21 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
           (setq nlre--nat-seen (cons b tick))
           nil)))))
 
+(defun nlre--nat-searchable-text (buffer regexp)
+  "Return BUFFER's memoized text when REGEXP can use its built-in fold."
+  (let ((text (nlre--nat-buffer-text buffer)))
+    (and text (or (not case-fold-search)
+                  (null (nlre--search-translate-table regexp text)))
+         text)))
+
 (defun nlre--nat-bsearch (regexp bound noerror literal)
   "Native forward search from point.  Return t when declined."
   (let ((b nelisp--current-buffer))
     (if (or (null b) (not (stringp regexp)) (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
             search-spaces-regexp
-            (and bound (not (integerp bound)))
-            (and case-fold-search (not (nlre--nat-fold-default-p))))
+            ;; GNU checks the bound before compiling even a bad regexp.
+            (and bound (or (not (integerp bound))
+                           (< bound (or (aref b 12) (1+ (aref b 13)))))))
         t
       (let ((entry (and (> (length regexp) 0)
                         (if literal
@@ -3142,7 +3167,7 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
                  (pt (or (aref b 12) (1+ blen)))
                  (pmax (1+ (aref b 14)))
                  (lim (if bound (min bound pmax) pmax))
-                 (text (and (>= lim pt) (nlre--nat-buffer-text b))))
+                 (text (and (>= lim pt) (nlre--nat-searchable-text b regexp))))
             (if (null text) t
               (let ((r (progn
                          (unless (= 0 (logand (aref (car entry) 8) 16)) (nlre--nat-syn-ensure))
@@ -3164,15 +3189,14 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
   "Native `looking-at'.  Return t when declined."
   (let ((b nelisp--current-buffer))
     (if (or (null b) (not (stringp regexp)) (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
-            search-spaces-regexp
-            (and case-fold-search (not (nlre--nat-fold-default-p))))
+            search-spaces-regexp)
         t
       (let ((entry (or (nlre--nat-program-syn regexp (and case-fold-search t))
                        (and nlre--nat-cls-enable
                             (nlre--nat-program-cls regexp (and case-fold-search t))))))
         (if (null entry) t
           (let* ((pt (or (aref b 12) (1+ (aref b 13))))
-                 (text (nlre--nat-buffer-text b)))
+                 (text (nlre--nat-searchable-text b regexp)))
             (if (null text) t
               (let ((r (let ((fl (aref (car entry) 8)))
                          (if (= 0 (logand fl 32))
@@ -3202,8 +3226,8 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
   (let ((b nelisp--current-buffer))
     (if (or (null b) (not (stringp regexp)) (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
             search-spaces-regexp
-            (and bound (not (integerp bound)))
-            (and case-fold-search (not (nlre--nat-fold-default-p))))
+            (and bound (or (not (integerp bound))
+                           (< bound (or (aref b 12) (1+ (aref b 13)))))))
         t
       (let ((entry (and nlre--nat-cls-enable (> (length regexp) 0)
                         (nlre--nat-program-cls regexp (and case-fold-search t)))))
@@ -3212,7 +3236,7 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
                  (pt (or (aref b 12) (1+ blen)))
                  (pmax (1+ (aref b 14)))
                  (lim (if bound (min bound pmax) pmax))
-                 (text (and (>= lim pt) (nlre--nat-buffer-text b))))
+                 (text (and (>= lim pt) (nlre--nat-searchable-text b regexp))))
             (if (null text) t
               (let ((r (nlre--nat-run entry text (1- pt) (1- lim) nil (aref b 14))))
                 (cond
@@ -3236,8 +3260,7 @@ an integer already clamped to the buffer.  Return t when declined."
   (let ((b nelisp--current-buffer))
     (if (or (null b) (not (stringp regexp)) (not (integerp limit))
             (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
-            search-spaces-regexp
-            (and case-fold-search (not (nlre--nat-fold-default-p))))
+            search-spaces-regexp)
         t
       (let* ((fold (and case-fold-search t))
              (entry (and (> (length regexp) 0)
@@ -3247,7 +3270,7 @@ an integer already clamped to the buffer.  Return t when declined."
         (if (or (null entry) (not (nlre--nat-entry-ready entry))) t
           (let* ((blen (aref b 13))
                  (pt (or (aref b 12) (1+ blen)))
-                 (text (and (>= pt limit) (nlre--nat-buffer-text b))))
+                 (text (and (>= pt limit) (nlre--nat-searchable-text b regexp))))
             (if (null text) t
               (let ((p pt) (r nil) (end (1- pt)) (n (aref b 14)))
                 (while (and (>= p limit) (null r))
@@ -3360,17 +3383,7 @@ of STRING.  Sets `nlre--match-data' as usual."
   (setq nlre--syntax-table nil)
   (let* ((nlre--fold case-fold-search)
          (nlre--translate-table
-          (and case-fold-search
-               ;; The common case without a call: the memoized read of
-               ;; `nlre--current-translate-table' says this buffer folds
-               ;; with the built-in mapping.  Same test as there.
-               (not (and (eq (funcall nlre--current-buffer-function)
-                             nlre--translate-memo-buffer)
-                         (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
-                         (eq (symbol-function 'set-case-table)
-                             nelisp-casetab--epoch-owner)
-                         (null nlre--translate-memo)))
-               (nlre--search-translate-table regexp string)))
+          (and case-fold-search (nlre--search-translate-table regexp string)))
          (compiled (nlre--compiled-pattern regexp))
          (n (length string))
          (i (or start 0))

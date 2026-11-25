@@ -131,7 +131,6 @@ nlre--string-match-p-entry
 nlre-string-match
 nlre--nat-sm
 nlre--nat-program
-nlre--nat-fold-default-p
 nlre--nat-run
 nlre--nat-publish
 nlre-match-beginning

@@ -53139,12 +53139,13 @@ caller at once and broke the JIT ledger's S1.3/S3.5/S5.8/S6.16-21/S7.6."
    (nelisp-vendor-source-whole-file "vendor/staged-emacs-lisp/faces.el")))
 
 (defconst nelisp-standalone--vendor-bytecode-defuns
-  '(("vendor/staged-emacs-lisp/subr.el" function-get))
+  '(("vendor/staged-emacs-lisp/subr.el"
+     function-get assoc-default assoc-delete-all assq-delete-all))
   "Embedded genuine vendor definitions compiled with host GNU byte code.
 Each entry is (RELATIVE-FILE NAME...).  A listed definition goes through the
 same `nelisp-prelude-bytecode-transform' gates as a prelude defun (opcode
 allowlist, nested-function check, parity fixture and source-form digest);
-a rejected one stays the interpreted GNU source.  GNU runs these in C.")
+a rejected one stays the interpreted GNU source.")
 
 (defvar nelisp-standalone--vendor-defun-bytecode-report nil
   "Report rows of `nelisp-standalone--vendor-bytecode-defuns', newest first.")
@@ -75905,6 +75906,20 @@ retains the checkout default. Application outputs still go to OUTPUT."
                                   (if (< lb 0) -2
                                     (if (> lb hnb) -2
                                       (m5_rx_scan pp tp hay start sb lb flags capw sc)))))))))))))))))))))
+    ;; Compare the packed literal probe right to left. END is the position
+    ;; after the last byte of the probe. Only byte-indexed subjects use it.
+    (defun m5_rx_probe (tp end count bytes fold)
+      (let* ((pos end) (left count) (want bytes) (same 1))
+        (seq
+         (while (if (= same 1) (> left 0) 0)
+           (let* ((next (- pos 1)) (byte (heap-read-u8 tp next))
+                  (got (if (= fold 1)
+                           (if (if (>= byte 65) (<= byte 90) 0) (+ byte 32) byte)
+                         byte)))
+             (seq
+              (if (/= got (logand want 255)) (setq same 0) 0)
+              (setq pos next) (setq left (- left 1)) (setq want (/ want 256)))))
+         same)))
     (defun m5_rx_scan (pp tp hay start sb lb flags capw sc)
       (let* ((rb sc)
              (hnb (m5_strlen hay))
@@ -75912,11 +75927,21 @@ retains the checkout default. Application outputs still go to OUTPUT."
              (nreg (m5_rx_w pp 0)) (ng (m5_rx_w pp 1)) (pflags (m5_rx_w pp 2))
              (i sb) (done 0) (found -1) (endb 0) (rr 0) (j 0)
              (entry (m5_rx_w pp 3))
+             (probe (if (= huni 1) (m5_rx_w pp 4) 0))
+             (probe-count (logand (/ probe 16777216) 3))
+             (suffix (logand probe 67108864))
+             (prefix-count (if (= suffix 0) probe-count 0))
+             (fold (if (= (logand pflags 4) 0) 0 1))
              (sm (+ (nl_word_payload capw) 1640))
              (usef (if (= (logand pflags 2) 0) 0 1))
              (anch (if (= (- flags (* (/ flags 2) 2)) 1) 1 (logand pflags 1))))
         (seq
-         (while (< j nreg)
+         (if (= suffix 0) 0
+           (if (if (< lb hnb) 1
+                 (if (< (- hnb sb) probe-count) 1
+                   (= (m5_rx_probe tp hnb probe-count probe fold) 0)))
+               (setq done 1) 0))
+         (while (if (= done 0) (< j nreg) 0)
            (seq (ptr-write-u64 (+ rb (* j 8)) 0 -1) (setq j (+ j 1))))
          (if (= (logand pflags 1) 1) (if (> sb 0) (setq done 1) 0) 0)
          (while (= done 0)
@@ -75931,7 +75956,12 @@ retains the checkout default. Application outputs still go to OUTPUT."
                (if (= skip 2) (setq done 1)
                  (if (= skip 1)
                      (if (= anch 1) (setq done 1) (setq i (+ i 1)))
-                   (seq (setq rr (m5_rx_run pp tp hnb lb entry i sc sm))
+                   (seq (setq rr (if (= prefix-count 0)
+                                     (m5_rx_run pp tp hnb lb entry i sc sm)
+                                   (let* ((prefix-end (+ i prefix-count)))
+                                     (if (> prefix-end lb) -1
+                                       (if (= (m5_rx_probe tp prefix-end prefix-count probe fold) 0) -1
+                                         (m5_rx_run pp tp hnb lb entry i sc sm))))))
                         (if (>= rr 0)
                             (seq (setq found i) (setq endb rr) (setq done 1))
                           (if (= rr -2) (seq (setq found -2) (setq done 1))
