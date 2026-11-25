@@ -2589,14 +2589,44 @@ With UNQUOTED, the caller has ruled out a leading `/:' in the names."
         (setq tail (cdr tail)))
       found)))
 
+(defvar nelisp--remote-file-name-handlers nil
+  "Private copy of the last alist containing only anchored remote patterns.")
+
+(defun nelisp--local-path-misses-remote-handlers-p (filename)
+  "Return non-nil if every registered regexp must fail on FILENAME."
+  (and (consp file-name-handler-alist)
+       (let ((slash (nelisp--string-search "/" filename 1))
+             (colon (nelisp--string-search ":" filename 0)))
+         (and slash (> (length filename) 0) (eq (aref filename 0) ?/)
+              (or (null colon) (> colon slash))))
+       (or (equal file-name-handler-alist nelisp--remote-file-name-handlers)
+           (and (fboundp 'emacs-load--classify-handler-regexp)
+                (let ((tail file-name-handler-alist) (budget 8) snapshot)
+                  ;; Bound validation work even if the user made the alist cyclic.
+                  (while (and (> budget 0) (consp tail))
+                    (setq budget (1- budget))
+                    (let ((entry (car tail)))
+                      (if (and (consp entry) (stringp (car entry))
+                               (eq (emacs-load--classify-handler-regexp
+                                    (car entry)) 'remote))
+                          (setq snapshot (cons (cons (copy-sequence (car entry))
+                                                     (cdr entry))
+                                               snapshot)
+                                tail (cdr tail))
+                        (setq budget 0))))
+                  (when (null tail)
+                    (setq nelisp--remote-file-name-handlers
+                          (nreverse snapshot))))))))
+
 (defun nelisp--find-file-name-handler (filename operation)
   "Find FILENAME's handler for OPERATION, preserving match data."
   (unless (stringp filename)
     (signal 'wrong-type-argument (list 'stringp filename)))
-  (if (and nelisp--file-name-handler-local-registrations
-           (equal file-name-handler-alist nelisp--file-name-handler-local-registrations)
-           (not (nelisp--file-name-quoted-posix-p filename))
-           (nelisp--file-name-compression-excluded-p operation))
+  (if (or (nelisp--local-path-misses-remote-handlers-p filename)
+          (and nelisp--file-name-handler-local-registrations
+               (equal file-name-handler-alist nelisp--file-name-handler-local-registrations)
+               (not (nelisp--file-name-quoted-posix-p filename))
+               (nelisp--file-name-compression-excluded-p operation)))
       nil
     (let ((tail file-name-handler-alist)
           (inhibited (and (eq operation inhibit-file-name-operation)
