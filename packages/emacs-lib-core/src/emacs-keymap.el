@@ -410,6 +410,7 @@ legacy =(t . VECTOR)= shape."
 SLOT-VECTOR, when non-nil, is the result of
 `emacs-keymap-direct-slot-vector'.  This keeps concrete event loops from
 duplicating full-keymap mutation details."
+  (setq emacs-keymap--where-is-cache nil)
   (cond
    ((and slot-vector
          (vectorp key)
@@ -502,10 +503,19 @@ A char-table slot holds every character, as in GNU keymap.c (e.g. the
       (emacs-char-table-ref slot k)
     (aref (cdr slot) k)))
 
+(defvar emacs-keymap--where-is-cache nil
+  "Reverse binding index for the last set of maps searched without menus.")
+
+(defvar emacs-keymap--native-runs (make-hash-table :test 'eq)
+  "Cached character runs of expanded native keymap char-tables.")
+
 (defun emacs-keymap--slot-set (slot k def)
   "Set SLOT's binding for character K to DEF (char-table or legacy cons)."
   (if (emacs-char-table-p slot)
-      (emacs-char-table-set slot k def)
+      (progn
+        (when (emacs-char-table--native-p slot)
+          (remhash slot emacs-keymap--native-runs))
+        (emacs-char-table-set slot k def))
     (aset (cdr slot) k def)))
 
 (defun emacs-keymap--key-equal-p (a b)
@@ -535,6 +545,7 @@ sparse binding cons cell whose car matches K, or nil."
 
 (defun emacs-keymap--set-binding (keymap k def)
   "Install K -> DEF in KEYMAP, replacing any existing binding."
+  (setq emacs-keymap--where-is-cache nil)
   (let ((state (emacs-keymap--tail-state keymap k)))
     (let ((slot (car state))
           (existing (cdr state)))
@@ -600,6 +611,7 @@ keep their relative order outside the sparse binding block."
 
 (defun emacs-keymap--define-key-after-1 (keymap keys def after)
   "Recursive helper for `emacs-keymap-define-key-after'."
+  (setq emacs-keymap--where-is-cache nil)
   (let ((k (car keys))
         (rest (cdr keys)))
     (if rest
@@ -746,6 +758,7 @@ without a `keymapp' guard, exactly as it would on real Emacs."
   "Set KEYMAP's parent to PARENT (a keymap, or nil to remove).
 Returns PARENT.  Detects direct cycles (= keymap == parent) and
 signals `emacs-keymap-error'."
+  (setq emacs-keymap--where-is-cache nil)
   (unless (emacs-keymap-keymapp keymap)
     (signal 'emacs-keymap-not-keymap (list keymap)))
   ;; GNU `get_keymap' follows a symbol's function cell, so a prefix command

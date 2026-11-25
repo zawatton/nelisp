@@ -166,15 +166,11 @@ If WITNESS is not found, return nil, otherwise return the root."
                     locate-dominating-stop-dir-regexp))))
       (locate-dominating-file file witness))))
 
-;; vc-git.el
+;; The backend entry points can load their GNU providers on demand.
 (unless (fboundp 'vc-git-root)
-  (defun vc-git-root (file)
-    (vc-find-root file ".git")))
-
-;; vc-hg.el
+  (autoload 'vc-git-root "vc-git"))
 (unless (fboundp 'vc-hg-root)
-  (defun vc-hg-root (file)
-    (vc-find-root file ".hg")))
+  (autoload 'vc-hg-root "vc-hg"))
 
 ;;;; --- coding systems (international/mule*.el) ------------------------
 

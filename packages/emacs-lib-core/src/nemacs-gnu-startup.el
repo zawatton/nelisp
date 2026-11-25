@@ -60,9 +60,6 @@
 (unless (fboundp 'tty-run-terminal-initialization)
   (defun tty-run-terminal-initialization (_frame &optional _type _run-hook) nil))
 
-;; In this image GNU's window-system-specific command line is the tty one.
-(defalias 'handle-args-function #'tty-handle-args)
-
 (defconst nemacs-gnu-startup--delayed-settings
   '(user-mail-address auto-save-list-file-prefix tutorial-directory
     user-lisp-directory user-lisp-ignored-directories

@@ -132,19 +132,28 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
       (let ((parent (emacs-keymap-keymap-parent keymap)))
         (and parent (emacs-keymap-builtins--binding parent event)))))
 
-(defun emacs-keymap-builtins--key-definition (binding)
-  "Extract the definition from old and extended menu item BINDING."
-  (cond
-   ((and (consp binding) (eq (car binding) 'menu-item)) (nth 2 binding))
-   ((and (consp binding) (stringp (car binding)))
-    (setq binding (cdr binding))
-    (if (and (consp binding) (stringp (car binding)))
-        (cdr binding)
-      binding))
-   (t binding)))
+(defun emacs-keymap-builtins--key-definition (binding &optional resolve-filters)
+  "Extract BINDING's menu definition, evaluating filters for actual lookups.
+Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
+  (while (and (consp binding)
+              (or (stringp (car binding))
+                  (and (eq (car binding) 'menu-item) (consp (cdr binding)))))
+    (if (stringp (car binding))
+        (setq binding (cdr binding))
+      (let* ((item (cddr binding))
+             (filter (and resolve-filters (consp item)
+                          (plist-member (cdr item) :filter))))
+        (setq binding (if (consp item) (car item) item))
+        (when filter
+          (setq binding
+                (condition-case nil
+                    (funcall (cadr filter) binding)
+                  (error nil)))))))
+  (unless (eq binding t) binding))
 
 (defun emacs-keymap-builtins--store-binding (keymap event def remove)
   "Store DEF for EVENT in KEYMAP, or delete its own binding for REMOVE."
+  (setq emacs-keymap--where-is-cache nil)
   (let* ((state (emacs-keymap--tail-state keymap event))
          (slot (car state))
          (cell (cdr state)))
@@ -153,7 +162,12 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
       (when cell (setcdr keymap (delq cell (cdr keymap))))
       (when (and slot (emacs-keymap--slot-char-p event slot))
         (emacs-keymap--slot-set slot event nil)))
-     ;; Keep a sparse nil cell: nil in a dense slot means inherit instead.
+     ;; GNU stores t for explicitly undefined character bindings.  A nil
+     ;; char-table entry instead allows the parent binding to be inherited.
+     ((and slot (emacs-char-table-p slot)
+           (emacs-keymap--slot-char-p event slot))
+      (when cell (setcdr keymap (delq cell (cdr keymap))))
+      (emacs-keymap--slot-set slot event (or def t)))
      ((null def)
       (when (and slot (emacs-keymap--slot-char-p event slot))
         (emacs-keymap--slot-set slot event nil))
@@ -202,7 +216,8 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
                         (not (emacs-keymap-keymapp keymap)))
                    keymap
                  (list (emacs-keymap-builtins--require-keymap keymap))))
-         (events (emacs-keymap-builtins--key-events key)))
+         (events (emacs-keymap-builtins--key-events key))
+         missing-prefix)
     (catch 'found
       (dolist (object maps)
         (let ((map (emacs-keymap--get-keymap object))
@@ -215,13 +230,17 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
               (let ((cell (emacs-keymap-builtins--binding map (car keys))))
                 (when (and (not cell) accept-default)
                   (setq cell (emacs-keymap-builtins--binding map t)))
-                (setq binding (emacs-keymap-builtins--key-definition (cdr cell))))
+                (setq binding (emacs-keymap-builtins--key-definition (cdr cell) t)))
               (setq consumed (1+ consumed) keys (cdr keys))
               (when keys
                 (setq map (emacs-keymap--get-keymap binding))
                 (unless map
-                  (setq binding consumed keys nil))))
-            (when binding (throw 'found binding))))))))
+                  (if binding
+                      (setq binding consumed)
+                    (unless missing-prefix (setq missing-prefix consumed)))
+                  (setq keys nil))))
+            (when binding (throw 'found binding)))))
+      missing-prefix)))
 
 (defun emacs-keymap-builtins--describe-event (event)
   "Describe an integer, symbolic, string or composite key EVENT."
@@ -526,33 +545,287 @@ to its legacy spelling.  This handoff is idempotent."
 
 ;;;; --- reverse lookup --------------------------------------------------
 
+(defvar where-is-preferred-modifier nil)
+
+(defun emacs-keymap-builtins--where-is-menu-event-p (event)
+  "Return non-nil for menu and mouse prefixes excluded from shortcuts."
+  (when (symbolp event)
+    (let ((base (event-basic-type event)))
+      (memq base '(menu-bar tab-bar tool-bar tab-line header-line mode-line
+                   mouse-1 mouse-2 mouse-3 mouse-4 mouse-5)))))
+
+(defun emacs-keymap-builtins--where-is-append (prefix event)
+  "Append EVENT to PREFIX, folding an ESC prefix into an integer Meta event."
+  (let ((length (length prefix)))
+    (if (and (integerp event) (> length 0)
+             (eq (aref prefix (1- length)) meta-prefix-char))
+        (let ((keys (copy-sequence prefix)))
+          (aset keys (1- length) (logior event 134217728))
+          keys)
+      (vconcat prefix (vector (if (consp event) (cons (car event) (cdr event))
+                                event))))))
+
+(defun emacs-keymap-builtins--where-is-scan (definition maps noindirect nomenus &optional index)
+  "Gather keys for DEFINITION in MAPS, in prefix breadth-first order.
+NOINDIRECT keeps raw menu definitions.  NOMENUS skips menu and mouse prefixes.
+When INDEX is given, collect all candidates in that reverse binding index."
+  (let (results)
+    (dolist (root maps)
+      (let ((level (list (list [] root (list root)))))
+        (while level
+          (let (next)
+            (dolist (node level)
+              (let ((prefix (car node))
+                    (ancestors (nth 2 node))
+                    (seen (make-hash-table :test 'equal)))
+                (emacs-keymap-builtins--where-is-map
+                 (lambda (event raw)
+                   (let* ((binding (if (consp raw)
+                                       (emacs-keymap-builtins--key-definition raw)
+                                     raw))
+                          (candidate (if noindirect raw binding)))
+                     (cond
+                      (index
+                       (when candidate
+                         (puthash candidate
+                                  (cons (emacs-keymap-builtins--where-is-append prefix event)
+                                        (gethash candidate index))
+                                  index)))
+                      ((or (eq candidate definition)
+                           (and (consp definition) (equal candidate definition)))
+                       (push (emacs-keymap-builtins--where-is-append prefix event)
+                             results)))
+                     (unless (gethash event seen)
+                       (puthash event t seen)
+                       ;; Only conses and function symbols can name prefix maps.
+                       (when (and binding
+                                  (or (consp binding) (symbolp binding)))
+                         (let ((map (emacs-keymap--get-keymap binding)))
+                           (when (and map (not (memq map ancestors))
+                                      (not (and nomenus (= (length prefix) 0)
+                                                (emacs-keymap-builtins--where-is-menu-event-p event))))
+                             (push (list (emacs-keymap-builtins--where-is-append prefix event)
+                                         map (cons map ancestors))
+                                   next)))))))
+                 (cadr node))))
+            (setq level (nreverse next))))))
+    (nreverse results)))
+
+(defun emacs-keymap-builtins--where-is-candidates (definition maps noindirect nomenus)
+  "Return DEFINITION's candidate sequences before checking shadowing."
+  (if (and nomenus (not noindirect) definition)
+      (let ((index (cdr emacs-keymap--where-is-cache)))
+        (unless (and index (equal maps (car emacs-keymap--where-is-cache)))
+          (setq index (make-hash-table :test 'equal))
+          (emacs-keymap-builtins--where-is-scan nil maps nil t index)
+          (setq emacs-keymap--where-is-cache (cons maps index)))
+        (reverse (gethash definition index)))
+    (emacs-keymap-builtins--where-is-scan definition maps noindirect nomenus)))
+
+(defun emacs-keymap-builtins--where-is-map (function keymap)
+  "Call FUNCTION on the bindings in KEYMAP, including inherited entries.
+Character table entries are visited in character order, as in keymap.c."
+  (dolist (entry (cdr keymap))
+    (cond
+     ((consp entry)
+      (cond
+       ((eq (car entry) :emacs-keymap-parent)
+        (emacs-keymap-builtins--where-is-map function (cdr entry)))
+       ((eq (car entry) t)
+        (let ((table (cdr entry)))
+          (dotimes (i (length table))
+            (let ((binding (aref table i)))
+              (when binding (funcall function i binding))))))
+       ((eq (car entry) 'keymap)
+        (emacs-keymap-builtins--where-is-map function entry))
+       (t (funcall function (car entry) (cdr entry)))))
+     ((emacs-char-table-p entry)
+      (emacs-keymap-builtins--where-is-char-table function entry)))))
+
+(defun emacs-keymap-builtins--where-is-char-table (function table)
+  "Visit the character runs of TABLE.
+Boot keymaps can have expanded native char-tables spanning all Unicode.
+Keep their compressed runs across lookups, as GNU caches reverse searches."
+  (if (emacs-char-table--native-p table)
+      (let ((entries (gethash table emacs-keymap--native-runs 'missing)))
+        (when (eq entries 'missing)
+          (let (collected)
+            (map-char-table
+             (lambda (key binding)
+               (push (cons (if (consp key) (cons (car key) (cdr key)) key)
+                           binding)
+                     collected))
+             table)
+            (when (>= (hash-table-count emacs-keymap--native-runs) 32)
+              (clrhash emacs-keymap--native-runs))
+            (setq entries (nreverse collected))
+            (puthash table entries emacs-keymap--native-runs)))
+        (dolist (entry entries)
+          (funcall function (car entry) (cdr entry))))
+    (map-char-table function table)))
+
+(defun emacs-keymap-builtins--where-is-preference (keys preferred)
+  "Return 2 for KEYS with PREFERRED, 1 for plain keys, or 0 otherwise."
+  (let ((rank 1) (i 0))
+    (while (and (> rank 0) (< i (length keys)))
+      (let ((event (aref keys i)))
+        (if (integerp event)
+            (let ((modifiers (logand event 130023424)))
+              (cond ((= modifiers preferred) (setq rank 2))
+                    ((/= modifiers 0) (setq rank 0))))
+          (setq rank 0)))
+      (setq i (1+ i)))
+    rank))
+
+(defun emacs-keymap-builtins--where-is-shadow-lookup (maps keys remapped)
+  "Resolve KEYS in MAPS, with command remapping when REMAPPED is non-nil."
+  (let ((binding (lookup-key maps keys)))
+    (unless (natnump binding)
+      (or (and remapped (command-remapping binding nil maps)) binding))))
+
 (when (emacs-keymap-builtins--install-function-p 'where-is-internal)
   (defun where-is-internal (definition &optional keymap firstonly noindirect no-remap)
-    "Return key sequences invoking DEFINITION, or one vector for FIRSTONLY."
-    (when keymap
-      (setq keymap
-            (if (and (consp keymap)
-                     (emacs-keymap--get-keymap (car keymap)))
-                (mapcar #'emacs-keymap-builtins--require-keymap keymap)
-              (list (emacs-keymap-builtins--require-keymap keymap)
-                    (emacs-keymap-current-global-map)))))
-    (let ((matches (emacs-keymap-where-is-internal
-                    definition keymap nil noindirect no-remap)))
-      (if (or (null firstonly) (eq firstonly 'non-ascii))
-          (if firstonly (car matches) matches)
-        (let (fallback)
-          (catch 'found
-            (dolist (keys matches)
-              (unless (or (memq 'menu-bar (append keys nil))
-                          (memq 'tool-bar (append keys nil)))
-                (unless fallback (setq fallback keys))
-                (let ((ascii t))
-                  (dolist (event (append keys nil))
-                    (unless (and (integerp event)
-                                 (>= event 0) (< event 128))
-                      (setq ascii nil)))
-                  (when ascii (throw 'found keys)))))
-            fallback))))))
+    "Return the active key sequences for DEFINITION.
+KEYMAP may be a list of maps, a keymap to search before the global map,
+or nil to search the active maps.  FIRSTONLY requests one result.
+The value `non-ascii' accepts any first result.  Other non-nil values
+prefer ordinary bindings and exclude menu prefixes.  NOINDIRECT keeps
+menu definitions intact.  NO-REMAP disables command remapping."
+    (let* ((maps (mapcar #'emacs-keymap-builtins--require-keymap
+                         (cond ((and (consp keymap) (keymapp (car keymap))) keymap)
+                               (keymap (list keymap (current-global-map)))
+                               (t (let ((overriding-local-map nil)
+                                        (overriding-terminal-local-map nil)
+                                        (emacs-keymap-overriding-local-map nil)
+                                        (emacs-keymap-overriding-terminal-local-map nil))
+                                    (current-active-maps))))))
+           (nomenus (and firstonly (not (eq firstonly 'non-ascii))))
+           (preferred (or (cdr (assq where-is-preferred-modifier
+                                     '((A . 4194304) (alt . 4194304)
+                                       (s . 8388608) (super . 8388608)
+                                       (H . 16777216) (hyper . 16777216)
+                                       (S . 33554432) (shift . 33554432)
+                                       (C . 67108864) (control . 67108864))))
+                          0))
+           (target (or (and (not no-remap)
+                            (command-remapping definition nil maps))
+                       definition))
+           (advertised (and firstonly (symbolp target)
+                            (get target :advertised-binding)))
+           found ascii remappings)
+      (catch 'binding
+        (when advertised
+          (while (consp advertised)
+            (when (eq target (emacs-keymap-builtins--where-is-shadow-lookup
+                             maps (car advertised) nil))
+              (throw 'binding (car advertised)))
+            (setq advertised (cdr advertised)))
+          (when (and advertised
+                     (eq target (emacs-keymap-builtins--where-is-shadow-lookup
+                                 maps advertised nil)))
+            (throw 'binding advertised)))
+        (let ((keys-list (emacs-keymap-builtins--where-is-candidates
+                          target maps noindirect nomenus))
+              remapped)
+          (while (or keys-list (and (not remapped) remappings))
+            (unless keys-list
+              (setq keys-list remappings remapped t))
+            (let ((keys (pop keys-list)))
+              (when (equal target (emacs-keymap-builtins--where-is-shadow-lookup
+                                   maps keys remapped))
+                (let* ((size (length keys))
+                       (first (aref keys 0)))
+                  (cond
+                   ((and (not no-remap) (not remapped) (= size 2)
+                         (eq first 'remap) (symbolp (aref keys 1)))
+                    (setq remappings
+                          (append (emacs-keymap-builtins--where-is-candidates
+                                   (aref keys 1) maps noindirect nomenus)
+                                  remappings)))
+                   ((not (and (= size 1) (symbolp first) (get first 'non-key-event)))
+                    (when (stringp (aref keys (1- size)))
+                      (setq keys (copy-sequence keys))
+                      (aset keys (1- size) "(any string)"))
+                    (when (eq firstonly 'non-ascii) (throw 'binding keys))
+                    (when nomenus
+                      (let ((rank (emacs-keymap-builtins--where-is-preference keys preferred)))
+                        (when (= rank 2) (throw 'binding keys))
+                        (when (and (> rank 0) (not ascii)) (setq ascii keys))))
+                    (unless (member keys found) (push keys found)))))))))
+        (setq found (nreverse found))
+        (if firstonly (or ascii (car found)) found)))))
+
+(defun emacs-keymap-builtins--substitute-command-keys (original string &optional no-face include-menus)
+  "Substitute ordinary command references without visiting every character in a buffer.
+Use GNU Help's formatter and key lookup.  Full map summaries and
+documentation links use ORIGINAL."
+  (if (or (not (stringp string))
+          (= (length string) 0)
+          (text-properties-at 0 string)
+          (next-property-change 0 string)
+          (and (boundp 'help-buffer-under-preparation) help-buffer-under-preparation)
+          (string-search "\\{" string))
+      (funcall original string no-face include-menus)
+    (save-match-data
+      (let ((style (text-quoting-style))
+            (map overriding-local-map)
+            (length (length string))
+            (start 0) (position 0)
+            chunks)
+        (while (setq position (string-match "[\\`']" string position))
+          (let* ((character (aref string position))
+                 (next (1+ position))
+                 (escape (and (= character ?\\) (< next length) (aref string next)))
+                 (close (cond ((eq escape ?\[) "]")
+                              ((eq escape ?<) ">")
+                              ((eq escape ?\`) "'")))
+                 (end (and close (string-search close string (+ position 2))))
+                 (replacement
+                  (cond
+                   ((and end (eq escape ?\`))
+                   (let ((keys (substring string (+ position 2) end)))
+                     (when (or (key-valid-p keys)
+                               (string-match-p "\\`mouse-[1-9]" keys)
+                               (string-match-p "\\`M-x " keys))
+                       (setq next (1+ end))
+                       (if no-face keys
+                         (propertize keys 'face 'help-key-binding
+                                     'font-lock-face 'help-key-binding)))))
+                  ((and end (eq escape ?<))
+                    (let ((name (intern (substring string (+ position 2) end))))
+                      (setq next (1+ end)
+                            map (and (boundp name) (keymapp (symbol-value name))
+                                     (symbol-value name)))
+                      (if map ""
+                        (concat "\nUses keymap " (substitute-quotes "`")
+                                (symbol-name name) (substitute-quotes "'")
+                                ", which is not currently defined.\n"))))
+                   (end
+                    (let* ((command (intern (substring string (+ position 2) end)))
+                           (keys (or (where-is-internal command (and map (list map)) t)
+                                     (and map (where-is-internal command map t)))))
+                      (setq next (1+ end))
+                      (if keys
+                          (if no-face (key-description keys)
+                            (help--key-description-fontified keys))
+                        (let ((description (concat "M-x " (symbol-name command))))
+                          (if no-face description
+                            (propertize description 'face 'help-key-binding
+                                        'font-lock-face 'help-key-binding))))))
+                   ((and (eq escape ?=) (< (1+ next) length))
+                    (setq next (+ next 2))
+                    (substring string (- next 1) next))
+                   ((eq character ?\`)
+                    (cond ((eq style 'curve) "‘") ((eq style 'straight) "'")))
+                   ((and (eq character ?') (eq style 'curve)) "’"))))
+            (when replacement
+              (push (substring string start position) chunks)
+              (push replacement chunks)
+              (setq start next))
+            (setq position next)))
+        (if chunks
+            (apply #'concat (nreverse (cons (substring string start) chunks)))
+          string)))))
 
 ;;;; --- easymenu batch/keymap substrate --------------------------------
 

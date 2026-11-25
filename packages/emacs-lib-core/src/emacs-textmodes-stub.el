@@ -132,10 +132,6 @@ nil means infer each paragraph's direction from its own content."))
   (defvar align-mode-rules-list nil
     "Mode-specific alignment rules."))
 
-(unless (boundp 'calc-embedded-open-mode)
-  (defvar calc-embedded-open-mode nil
-    "Prefix used by Calc embedded mode when opening formulas."))
-
 (unless (boundp 'buffer-face-mode-face)
   (defvar buffer-face-mode-face nil
     "Face used by `buffer-face-mode'."))
