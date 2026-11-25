@@ -571,12 +571,6 @@ primitive replacements just because they use the same symbol name.")
 	(put symbol 'variable-documentation doc))
       nil)))
 
-;; condition-case variants used by subr.el
-(unless (fboundp 'condition-case-unless-debug)
-  (defmacro condition-case-unless-debug (var bodyform &rest handlers)
-    "Stub: route through plain condition-case (= NeLisp has no debug-on-error toggle)."
-    (cons 'condition-case (cons var (cons bodyform handlers)))))
-
 (unless (fboundp 'with-silent-modifications)
   (defmacro with-silent-modifications (&rest body)
     "Execute BODY, pretending it does not modify the buffer.
@@ -602,10 +596,6 @@ of that nature."
                   (list 'when
                         (list 'memq modified (list 'quote (list nil 'autosaved)))
                         (list 'restore-buffer-modified-p modified)))))))
-
-;; Quoting helpers
-(unless (fboundp 'kbd)
-  (defun kbd (keys) (ignore) keys))
 
 (defun emacs-stub--human-readable-format (size prefix flavor space unit)
   "Format SIZE with PREFIX according to FLAVOR, SPACE, and UNIT."
@@ -2241,9 +2231,6 @@ friends nil so that `org-element-parse-buffer' returned nil."
         (aset marker 2 (or buffer (and (fboundp 'current-buffer) (current-buffer))))))
     marker))
 
-(unless (fboundp 'move-marker)
-  (defalias 'move-marker 'set-marker))
-
 (unless (fboundp 'copy-marker)
   (defun copy-marker (&optional position type)
     "Return a new marker at POSITION (integer or marker; default point)."
@@ -2499,13 +2486,6 @@ CLONE is accepted for API compatibility."
 ;; Emacs stays a no-op.  Reader notes verified by direct --load: the bare
 ;; reader has no `/=' (use `(not (= ...))') and treats POSIX `[[:blank:]]'
 ;; classes literally, so explicit char sets are used where needed.
-
-(unless (fboundp 'xor)
-  (defun xor (cond1 cond2)
-    "Return the boolean exclusive-or of COND1 and COND2.
-If only one of the arguments is non-nil, return it; otherwise return nil."
-    (cond ((not cond1) cond2)
-          ((not cond2) cond1))))
 
 (unless (fboundp 'char-uppercase-p)
   (defun char-uppercase-p (char)
@@ -3872,18 +3852,6 @@ given face attribute."))
 NeLisp currently targets POSIX paths, so no platform-specific rewriting
 is required."
     filename))
-
-(unless (fboundp 'string-to-list)
-  (defun string-to-list (string)
-    "Return a list of character codes in STRING."
-    (unless (stringp string)
-      (signal 'wrong-type-argument (list 'stringp string)))
-    (let ((i (1- (length string)))
-          chars)
-      (while (>= i 0)
-        (setq chars (cons (aref string i) chars))
-        (setq i (1- i)))
-      chars)))
 
 ;; Phase B5 globals — anvil-server.el / vendor cl-* reach for these as
 ;; `defcustom' defaults / load-path participants.  Empty defaults are

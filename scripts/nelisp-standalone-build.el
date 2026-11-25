@@ -52320,6 +52320,8 @@ resolved fine.  Same feature, different answer per entry point."
    ;; GNU Emacs 31.1 preloads this special variable from src/lread.c
    ;; (DEFVAR_LISP, initialized to Qnil); macroexp uses it during expansion.
    "(defvar macroexp--dynvars nil \"List of variables declared dynamic in the current scope. Only valid during macro-expansion. Internal use only.\")\n"
+   (nelisp-vendor-source-form
+    "vendor/staged-emacs-lisp/subr.el" 'condition-case-unless-debug)
    (nelisp-aot-bytecode-macroexp-text)
    (nelisp-aot-bytecode-install-source)
    ;; Other command bootstraps retain their historical eager providers.
@@ -52458,12 +52460,12 @@ resolved fine.  Same feature, different answer per entry point."
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"
     '(string-trim-left string-trim-right string-trim
-      string-prefix-p string-suffix-p))
+      string-prefix-p string-suffix-p string-to-list string-to-vector))
    "\n;; --- GNU Emacs 31.1 subr.el: pure predicates and callbacks ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"
     '(gensym-counter gensym frame-configuration-p apply-partially
-      booleanp fixnump bignump zerop ignore always))
+      booleanp fixnump bignump zerop ignore always xor move-marker))
    ;; ring.el uses GNU cl-deftype during its compile-time load. Stage its
    ;; exact class lookup and derived-type macros without loading all cl-macs.
    "\n;; --- GNU Emacs 31.1 cl-macs.el: derived type macros ---\n"

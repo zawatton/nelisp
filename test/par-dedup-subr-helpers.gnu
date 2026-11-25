@@ -1,0 +1,6 @@
+(string-to-list (65 946) (65 66) nil)
+(string-to-vector [65 946] [65 66])
+(xor right left nil)
+(kbd (24 6) [f8])
+(condition-case-unless-debug arith-error 6)
+(move-marker 2 t)

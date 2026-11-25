@@ -3127,14 +3127,6 @@ Return (FROM . TO).  STR, START, and END are used only for the
 (unless (fboundp 'compare-strings)
   (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
     (nelisp--compare-strings-1 str1 start1 end1 str2 start2 end2 ignore-case)))
-(unless (fboundp 'string-to-list)
-  (defun string-to-list (s)
-    (nelisp--check-seq-list s)
-    (if (listp s)
-        s
-      (let ((l nil) (i (1- (length s))))
-        (while (>= i 0) (setq l (cons (aref s i) l)) (setq i (1- i)))
-        l))))
 (defun nelisp--alist-get-slow (key alist &optional default _remove testfn)
   "Delegate of the native `alist-get' for a TESTFN other than nil, `eq' or `equal'.
 subr.el: (cdr (assq/assoc KEY ALIST [TESTFN])) or DEFAULT; REMOVE is ignored."
@@ -4176,10 +4168,6 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
 (unless (fboundp 'sxhash-eql)
   (defun sxhash-eql (obj)
     (if (numberp obj) (sxhash-equal obj) (sxhash-eq obj))))
-(unless (fboundp 'string-to-vector)
-  (defun string-to-vector (s)
-    (nelisp--check-seq-list s)
-    (apply #'vector (append s nil))))
 ;; Absent, so callers got `void-function' -- which reads as "the runtime
 ;; cannot do this" rather than "nobody has written it yet".  The length
 ;; predicates walk only as far as they must, which is the reason they exist
@@ -8507,15 +8495,6 @@ which is what a caller asking for a range check wants."
     (unless (sequencep sequence)
       (signal 'wrong-type-argument (list 'sequencep sequence)))
     (apply (function nconc) (mapcar func sequence))))
-;; GNU subr.el `xor' (a defsubst there), verbatim body.  GNU ert's equality
-;; explainer calls it, so every failing string `should' needs it.
-(unless (fboundp 'xor)
-  (defun xor (cond1 cond2)
-    "Return the boolean exclusive-or of COND1 and COND2.
-If only one of the arguments is non-nil, return it; otherwise
-return nil."
-    (cond ((not cond1) cond2)
-          ((not cond2) cond1))))
 (unless (fboundp 'memql)
   ;; GNU `memql' is a C loop; here it is the native `memq' (fixnums, symbols and
   ;; other objects are `eql' exactly when `eq') or the native `member' (floats and
@@ -8932,41 +8911,6 @@ FN returns non-nil to stop.  COLLECTION is a list, a hash table or an obarray."
 ;; sequences written as text; a full `read-kbd-macro' (angle-bracket function
 ;; keys, <C-M-return>, kbd macros) is not here, and a token this does not
 ;; know is passed through as its own characters rather than guessed at.
-(unless (fboundp 'kbd)
-  (defun kbd (keys)
-    (let ((words (split-string keys " " t)) (out nil))
-      (dolist (w words)
-        (let ((bits 0) (done nil))
-          (while (not done)
-            (cond
-             ((and (> (length w) 2) (string-prefix-p "C-" w))
-              (setq bits (logior bits 1)) (setq w (substring w 2)))
-             ((and (> (length w) 2) (string-prefix-p "M-" w))
-              (setq bits (logior bits 2)) (setq w (substring w 2)))
-             ((and (> (length w) 2) (string-prefix-p "S-" w))
-              (setq bits (logior bits 4)) (setq w (substring w 2)))
-             (t (setq done t))))
-          (let ((base (cond ((equal w "SPC") 32) ((equal w "RET") 13)
-                            ((equal w "TAB") 9) ((equal w "ESC") 27)
-                            ((equal w "DEL") 127)
-                            ((= (length w) 1) (aref w 0))
-                            (t nil))))
-            (if (null base)
-                (setq out (append out (append w nil)))
-              (when (= 1 (logand bits 1))
-                (setq base (if (and (>= (nelisp--case-up-char base) ?@)
-                                    (<= (nelisp--case-up-char base) ?_))
-                               (logand (nelisp--case-up-char base) 31)
-                             base)))
-              (when (= 4 (logand bits 4)) (setq base (nelisp--case-up-char base)))
-              (when (= 2 (logand bits 2)) (setq base (logior base 134217728)))
-              (setq out (append out (list base)))))))
-      (if (let ((all t))
-            (dolist (k out) (unless (and (integerp k) (>= k 0) (<= k 127))
-                              (setq all nil)))
-            all)
-          (apply #'string out)
-        (apply #'vector out)))))
 (unless (fboundp 'single-key-description)
   (defun single-key-description (key &optional no-angles)
   "Return a readable description of character event KEY.
@@ -18950,11 +18894,6 @@ probed against Emacs 31.1."
         (nelisp-marker-delete marker)))
     marker))
 
-(unless (fboundp 'move-marker)
-  (defalias 'move-marker 'set-marker
-    "Alias: real Emacs's own `subr.el' defines `move-marker' as `set-
-marker' under a second name, not a distinct primitive."))
-
 (unless (fboundp 'make-marker)
   (defun make-marker ()
     "Return a marker that does not point anywhere."
@@ -25571,30 +25510,10 @@ this is equivalent to `display-warning', using
 This is nil during initialization."))
 (unless (fboundp 'daemonp)
   (defun daemonp () nil))
-;; GNU Emacs 31.1 lisp/subr.el, staged verbatim: `condition-case-unless-debug'
-;; (macroexp.el's compiler-macro and warning paths use it) and `lambda' as
-;; the macro GNU defines it to be.  The reader still evaluates `lambda'
+;; GNU's `lambda' is also a macro.  The reader evaluates `lambda'
 ;; natively; the macro is what `macroexpand'/`macroexpand-all' see, so a
 ;; bare `(lambda ...)' expands to `#'(lambda ...)' as in GNU -- bytecomp.el
 ;; rejects an unexpanded one ("`lambda' used as function name is invalid").
-(unless (fboundp 'condition-case-unless-debug)
-  (defmacro condition-case-unless-debug (var bodyform &rest handlers)
-    "Like `condition-case', except that it does not prevent debugging.
-More specifically, if `debug-on-error' is set, then the debugger will
-be invoked even if some handler catches the signal.
-Note that this doesn't prevent the handler from executing, it just
-causes the debugger to be called before running the handler."
-    (declare (debug condition-case) (indent 2))
-    `(condition-case ,var
-         ,bodyform
-       ,@(mapcar (lambda (handler)
-                   (let ((condition (car handler)))
-                     (if (eq condition :success)
-                         handler
-                       `((debug ,@(if (listp condition) condition
-                                    (list condition)))
-                         ,@(cdr handler)))))
-                 handlers))))
 (unless (fboundp 'lambda)
   (defmacro lambda (&rest cdr)
     "Return an anonymous function.

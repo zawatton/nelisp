@@ -371,7 +371,7 @@ space character, and leading/trailing whitespace is removed."
 
 ;;;; --- Doc 16 breadth round 11: string comparison / conversion ---------
 ;; string-distance / string-version-lessp / string-collate-lessp /
-;; string-collate-equalp / string-to-vector were void.  All gated on
+;; string-collate-equalp were void.  All gated on
 ;; `unless (fboundp ...)'.  collate-* fall back to byte order (no locale
 ;; collation in the standalone runtime).
 
@@ -391,11 +391,6 @@ Falls back to `string-equal'; IGNORE-CASE folds with `downcase'."
     (if ignore-case
         (string-equal (downcase s1) (downcase s2))
       (string-equal s1 s2))))
-
-(unless (fboundp 'string-to-vector)
-  (defun string-to-vector (string)
-    "Return a vector of the characters in STRING."
-    (vconcat string)))
 
 ;;;; --- Doc 16 breadth round 12: subr.el string utilities (were void) ---
 ;; subst-char-in-string / combine-and-quote-strings / split-string-and-unquote
