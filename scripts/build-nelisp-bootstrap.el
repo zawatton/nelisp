@@ -1707,7 +1707,18 @@ strings or comments, and calls with any non-literal argument, are kept."
      version-list-< version-list-= version-list-<= version-list-not-zero
      version< version<= version=
      add-to-ordered-list member-ignore-case shell-quote-argument
-     subst-char-in-string combine-and-quote-strings split-string-and-unquote)
+     subst-char-in-string combine-and-quote-strings split-string-and-unquote
+     event--posn-at-point event-start event-end posnp posn-window posn-area
+     posn-point event-click-count
+     add-to-history read-key-empty-map read-key-full-map read-key-delay read-key
+     read-number-history read-number
+     y-or-n-p-history-variable y-or-n-p-map y-or-n-p-insert-y y-or-n-p-insert-n
+     y-or-n-p-insert-other y-or-n-p-use-read-key y-or-n-p
+     define-mail-user-agent buffer-match-p--past-warnings buffer-match-p match-buffers
+     progress-reporter-update-functions progress-reporter-update make-progress-reporter
+     progress-reporter-make progress-reporter-text progress-reporter-context
+     progress-reporter-force-update progress-reporter--pulse-characters
+     progress-reporter-echo-area progress-reporter-do-update progress-reporter-done)
     ;; Publish the Custom metadata needed during bootstrap.  The complete
     ;; generated autoload table remains available through the vendor path.
     ("vendor/emacs-lisp/loaddefs.el"
