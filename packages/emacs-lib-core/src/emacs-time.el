@@ -11,9 +11,7 @@
 ;; `nl-current-unix-time' when present, otherwise the NeLisp
 ;; `nelisp--syscall' bridge for Linux `time(2)'.
 ;;
-;; Real Emacs `current-time' returns a HIGH/LOW/MICRO list — anvil
-;; callsites only pull `(truncate (float-time))' so we expose that
-;; path directly without bothering with the legacy list shape.
+;; Clock and timezone primitives are supplied by the NeLisp core.
 ;;
 ;; `truncate' is included here because its bulk-stub no-op (emitted
 ;; by `emacs-stub-bulk.el') was not real-integer-correct; this file's
@@ -26,9 +24,6 @@
 
 (defconst emacs-time--unix-epoch-absolute-day 719163
   "Emacs calendar absolute day for 1970-01-01.")
-
-(defvar emacs-time--current-time-zone-cache nil
-  "Cached `(SECONDS NAME)' result for `current-time-zone'.")
 
 (defun emacs-time--standalone-runtime-p ()
   "Return non-nil when NeLisp standalone runtime markers are available."
@@ -71,56 +66,6 @@ there; exclude standalone explicitly via
       (error nil)))
    (t nil)))
 
-(defun emacs-time--chomp-trailing-newline (text)
-  "Return TEXT without one trailing newline."
-  (if (and (stringp text)
-           (> (length text) 0)
-           (= (aref text (1- (length text))) ?\n))
-      (substring text 0 (1- (length text)))
-    text))
-
-(defun emacs-time--date-output (format)
-  "Return `date' output for FORMAT, or nil on failure."
-  (when (fboundp 'call-process)
-    (with-temp-buffer
-      (when (eq 0 (call-process "date" nil t nil format))
-        (emacs-time--chomp-trailing-newline (buffer-string))))))
-
-(defun emacs-time--parse-zone-offset (offset)
-  "Convert OFFSET in ±HHMM format to seconds, or nil on invalid input."
-  (when (and (stringp offset)
-             (= (length offset) 5))
-    (let* ((sign-char (aref offset 0))
-           (sign (cond
-                  ((= sign-char ?+) 1)
-                  ((= sign-char ?-) -1)
-                  (t nil)))
-           (h1 (and sign (aref offset 1)))
-           (h2 (and sign (aref offset 2)))
-           (m1 (and sign (aref offset 3)))
-           (m2 (and sign (aref offset 4))))
-      (when (and sign
-                 (>= h1 ?0) (<= h1 ?9)
-                 (>= h2 ?0) (<= h2 ?9)
-                 (>= m1 ?0) (<= m1 ?9)
-                 (>= m2 ?0) (<= m2 ?9))
-        (* sign
-           (+ (* (+ (* (- h1 ?0) 10) (- h2 ?0)) 3600)
-              (* (+ (* (- m1 ?0) 10) (- m2 ?0)) 60)))))))
-
-(defun emacs-time--fallback-current-time-zone ()
-  "Return a standalone `(SECONDS NAME)' timezone tuple."
-  (or emacs-time--current-time-zone-cache
-      (setq emacs-time--current-time-zone-cache
-            (let ((offset (emacs-time--date-output "+%z"))
-                  (name (emacs-time--date-output "+%Z")))
-              (if offset
-                  (let ((seconds (emacs-time--parse-zone-offset offset)))
-                    (if seconds
-                        (list seconds (or name "UTC"))
-                      '(0 "UTC")))
-                '(0 "UTC"))))))
-
 ;; Live-replace gate — same pattern as `truncate' below.  NeLisp v1.2.0's
 ;; native `float-time' ignored its optional argument; current NeLisp (062fa96c7+)
 ;; is GNU-correct (returns floats, honours TIME-VALUE), so the wrapper is now
@@ -154,88 +99,6 @@ there; exclude standalone explicitly via
 
 (when (emacs-time--install-float-time-p)
   (emacs-time--install-float-time))
-
-(unless (and (fboundp 'current-time)
-             (let ((ct (ignore-errors (current-time))))
-               (and (consp ct)
-                    (or (numberp (car ct))
-                        (and (consp (cdr ct)) (numberp (car ct)))))))
-  (defun current-time ()
-    "Return current time as (HIGH LOW USEC PSEC) — Phase 6 simplified
-shape that returns (T 0 0 0) where T is the Unix epoch as a single
-integer.  anvil-memory only ever feeds this back into `truncate' /
-`float-time' so the legacy 3-cell shape is unnecessary here."
-    (list (or (emacs-time--standalone-unix-time) (float-time)) 0 0 0)))
-
-(defvar emacs-time--time-zone-rule-set-p nil
-  "Non-nil once the local timezone has been set explicitly.")
-
-(defun emacs-time--zone-specification (zone)
-  "Validate ZONE and return its POSIX timezone string, or nil for wall time."
-  (cond
-   ((or (null zone) (eq zone 'wall)) nil)
-   ((eq zone t) "GMT0")
-   ((stringp zone) zone)
-   ((or (integerp zone)
-        (and (consp zone) (integerp (car zone)) (consp (cdr zone))))
-    (let* ((offset (if (integerp zone) zone (car zone)))
-           (magnitude (abs offset))
-           (hours (/ magnitude 3600))
-           (minutes (/ (% magnitude 3600) 60))
-           (seconds (% magnitude 60))
-           (name (if (integerp zone)
-                     (if (= offset 0) "GMT"
-                       (concat (if (< offset 0) "-" "+")
-                               (format "%02d" hours)
-                               (if (or (/= minutes 0) (/= seconds 0))
-                                   (format "%02d" minutes) "")
-                               (if (/= seconds 0) (format "%02d" seconds) "")))
-                   (car (cdr zone)))))
-      (unless (stringp name)
-        (signal 'wrong-type-argument (list 'stringp name)))
-      (format "<%s>%s%d:%02d:%02d" name (if (< offset 0) "+" "-")
-              hours minutes seconds)))
-   (t (signal 'error (list "Invalid time zone specification" zone)))))
-
-(defun emacs-time--zone-at (seconds zone)
-  "Return the offset and abbreviation at SECONDS in the POSIX ZONE."
-  (with-temp-buffer
-    (let ((status (if zone
-                      (call-process "env" nil t nil (concat "TZ=" zone)
-                                    "date" (format "--date=@%d" seconds)
-                                    "+%::z\n%Z")
-                    (call-process "env" nil t nil "-u" "TZ" "date"
-                                  (format "--date=@%d" seconds) "+%::z\n%Z"))))
-      (unless (eq status 0)
-        (signal 'error '("Specified time is not representable")))
-      (let* ((output (emacs-time--chomp-trailing-newline (buffer-string)))
-             (lines (split-string output "\n"))
-             (fields (split-string (car lines) ":"))
-             (hours (string-to-number (car fields)))
-             (minutes (string-to-number (nth 1 fields)))
-             (secs (string-to-number (nth 2 fields)))
-             (sign (if (= (aref output 0) ?-) -1 1)))
-        (list (* sign (+ (* (abs hours) 3600) (* minutes 60) secs))
-              (cond ((equal zone "") "Universal")
-                    ((< (length (nth 1 lines)) 3) "+00")
-                    (t (nth 1 lines))))))))
-
-(unless (fboundp 'current-time-zone)
-  (defun current-time-zone (&optional specified-time zone)
-    "Return (OFFSET NAME) at SPECIFIED-TIME in ZONE.
-ZONE accepts local time, t for UTC, wall time, a POSIX timezone string,
-or a fixed offset expressed as seconds or an (OFFSET NAME) list."
-    (if (and (null specified-time) (null zone)
-             (not emacs-time--time-zone-rule-set-p))
-        ;; Plain local-zone query: keep the cached `date' based path.
-        (emacs-time--fallback-current-time-zone)
-    (let* ((seconds (car (emacs-time--unpack specified-time)))
-           (specification
-            (if zone (emacs-time--zone-specification zone)
-              (if emacs-time--time-zone-rule-set-p
-                  (emacs-time--zone-specification emacs-time--time-zone-rule)
-                (getenv "TZ")))))
-      (emacs-time--zone-at seconds specification)))))
 
 (unless (and (fboundp 'truncate)
              ;; If truncate is the no-op bulk stub, override with real impl.
@@ -291,96 +154,6 @@ not route through the standalone `float-time', which ignores its argument."
            (/ psec 1000000000000.0)))))
    (t 0)))
 
-(defun emacs-time--invalid-time ()
-  "Signal the error for a malformed Lisp timestamp."
-  (signal 'error '("Invalid time specification")))
-
-(defun emacs-time--divmod (dividend divisor)
-  "Return (FLOOR-QUOTIENT . REMAINDER) for integers and positive DIVISOR.
-The standalone integer division primitive cannot yet divide bignums.
-Use exact doubling and subtraction for those values; never round a
-binary64 timestamp or its tick frequency through floating point."
-  (if (and (<= (abs dividend) most-positive-fixnum)
-           (<= divisor most-positive-fixnum))
-      (cons (floor dividend divisor) (mod dividend divisor))
-    (let ((remainder (abs dividend)) (quotient 0)
-          (multiple divisor) (weight 1) (powers nil))
-      (while (<= multiple remainder)
-        (push (cons multiple weight) powers)
-        (setq multiple (* multiple 2) weight (* weight 2)))
-      (while powers
-        (when (>= remainder (caar powers))
-          (setq remainder (- remainder (caar powers))
-                quotient (+ quotient (cdar powers))))
-        (setq powers (cdr powers)))
-      (if (< dividend 0)
-          (if (= remainder 0) (cons (- quotient) 0)
-            (cons (- -1 quotient) (- divisor remainder)))
-        (cons quotient remainder)))))
-
-(defun emacs-time--quotient (dividend divisor)
-  "Return the exact floor quotient for a positive DIVISOR."
-  (car (emacs-time--divmod dividend divisor)))
-
-(defun emacs-time--remainder (dividend divisor)
-  "Return the exact nonnegative remainder for a positive DIVISOR."
-  (cdr (emacs-time--divmod dividend divisor)))
-
-(defun emacs-time--float-ticks (time)
-  "Return the exact binary64 tick representation of finite float TIME."
-  (when (isnan time) (emacs-time--invalid-time))
-  (when (or (= time 1.0e+INF) (= time -1.0e+INF))
-    (signal 'error '("Specified time is not representable")))
-  (if (= time 0) (cons 0 1)
-    (let ((mantissa (abs time)) (frequency 1) (multiplier 1))
-      ;; Binary64 has 53 significant bits.  Retain its exact tick rate,
-      ;; rather than round the input to microseconds.  Frequencies beyond
-      ;; the runtime's fixnum range require its bignum division support.
-      (while (< mantissa 4503599627370496.0)
-        (setq mantissa (* mantissa 2) frequency (* frequency 2)))
-      (while (>= mantissa 9007199254740992.0)
-        (setq mantissa (/ mantissa 2) multiplier (* multiplier 2)))
-      (cons (* (if (< time 0) (- (floor mantissa)) (floor mantissa)) multiplier)
-            frequency))))
-
-(defun emacs-time--unpack (time)
-  "Validate TIME and return (SECONDS REMAINDER FREQUENCY).
-The remainder is nonnegative and strictly less than the frequency."
-  (cond
-   ((null time) (emacs-time--unpack (current-time)))
-   ((integerp time) (list time 0 1))
-   ((floatp time)
-    (let ((ticks (emacs-time--float-ticks time)))
-      (if (= (cdr ticks) 1) (list (car ticks) 0 1)
-        (list (emacs-time--quotient (car ticks) (cdr ticks))
-              (emacs-time--remainder (car ticks) (cdr ticks)) (cdr ticks)))))
-   ((and (consp time) (integerp (car time))
-         (integerp (cdr time)) (> (cdr time) 0))
-    (list (emacs-time--quotient (car time) (cdr time))
-          (emacs-time--remainder (car time) (cdr time)) (cdr time)))
-   ((and (consp time) (integerp (car time))
-         (consp (cdr time)) (integerp (car (cdr time))))
-    (let* ((tail (cdr (cdr time)))
-           (micro (cond ((null tail) 0)
-                        ((integerp tail) tail)
-                        ((consp tail) (car tail))
-                        (t (emacs-time--invalid-time))))
-           (rest (and (consp tail) (cdr tail)))
-           (pico (if (consp rest) (car rest) 0))
-           (frequency (cond ((consp rest) 1000000000000)
-                            (tail 1000000) (t 1))))
-      (unless (and (integerp micro) (integerp pico))
-        (emacs-time--invalid-time))
-      ;; Normalize each field before multiplying to avoid large products
-      ;; for ordinary contemporary timestamps.
-      (let* ((fraction (+ (* (emacs-time--remainder micro 1000000)
-                            (if (= frequency 1000000000000) 1000000 1))
-                         pico))
-             (seconds (+ (* (car time) 65536) (car (cdr time))
-                         (emacs-time--quotient micro 1000000) (emacs-time--quotient fraction frequency))))
-        (list seconds (emacs-time--remainder fraction frequency) frequency))))
-   (t (emacs-time--invalid-time))))
-
 (defun emacs-time--seconds-and-days (tv)
   "Return (SECS DAYS REM) for time value TV.
 SECS is the truncated Unix epoch seconds, DAYS is the whole-day offset from
@@ -415,21 +188,6 @@ day 719163."
 (unless (boundp 'display-time-mode)
   (defvar display-time-mode nil
     "Headless no-op compatibility toggle for `display-time-mode'."))
-
-(unless (boundp 'emacs-time--time-zone-rule)
-  (defvar emacs-time--time-zone-rule nil
-    "Stored timezone rule for the standalone time substrate."))
-
-(unless (fboundp 'set-time-zone-rule)
-  (defun set-time-zone-rule (rule)
-    "Set the local time zone to RULE and return nil, like GNU Emacs.
-RULE accepts a POSIX string, t for UTC, nil or wall for system time,
-or a fixed offset in seconds or an (OFFSET NAME) list."
-    (emacs-time--zone-specification rule)
-    (setq emacs-time--time-zone-rule rule
-          emacs-time--time-zone-rule-set-p t
-          emacs-time--current-time-zone-cache nil)
-    nil))
 
 (unless (emacs-time--function-cell-live-p 'display-time-mode)
   (defalias 'display-time-mode #'ignore))
