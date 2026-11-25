@@ -323,18 +323,6 @@ A half is rounded to the even neighbour, as in Emacs."
   "Return t if X is a sequence (= nil, cons, string, or vector)."
   (or (null x) (consp x) (stringp x) (vectorp x)))
 
-;; Doc 86 §86.1.a (Tier 1 predicate / type-of) — `functionp' migrated
-;; from Rust to elisp.  The previous `bi_predicate' dispatch arm
-;; matched `Sexp::Cons(b)' whose `b.car' was the symbol `lambda',
-;; `closure', or `builtin'.  Direct transliteration on top of `consp'
-;; + `car' + `memq' = same semantics, no new primitive needed (= Tier 1
-;; "elisp で直接実装可能" per Doc 86 §2.2.1).
-(defun functionp (x)
-  "Return t if X is a callable function object."
-  (or (and (consp x) (memq (car x) '(lambda closure builtin)) t)
-      (and (fboundp 'byte-code-function-p) (byte-code-function-p x))
-      (and (fboundp 'subrp) (subrp x))))
-
 ;; Doc 126.C (2026-05-18): `macroexpand-1' now lives in elisp.  The
 ;; body keeps the retired Rust contract exactly: non-cons / non-symbol
 ;; head / unbound head / non-macro head all return FORM unchanged;

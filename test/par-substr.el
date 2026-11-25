@@ -1,5 +1,5 @@
 ;;; -*- lexical-binding: t; -*-
-;; Parity rows for `substring' and `copy-sequence' (named wrappers in emacs-buffer.el).
+;; Parity rows for `substring' and `copy-sequence'.
 ;; GNU 31.1 is the spec; see test/par-substr.gnu.
 (defmacro row (name form) `(princ (format "%-28s %S\n" ,name (condition-case e ,form (error (list 'ERR e))))))
 (row "sub plain" (substring "abcdef" 1 3))
@@ -22,7 +22,11 @@
 (row "sub nil seq" (substring nil 0))
 (row "sub symbol" (substring 'abc 0))
 (row "sub int" (substring 5 0))
-(row "sub too many args" (funcall #'substring "abc" 0 1 2))
+;; Eager macroexpansion can turn a constant `funcall' into a direct call.
+;; Cover both forms without depending on when the loader expands it.
+(row "sub too many args" (substring "abc" 0 1 2))
+(row "sub indirect too many args"
+     (let ((fn (symbol-function 'substring))) (funcall fn "abc" 0 1 2)))
 (row "sub no args" (condition-case e (funcall #'substring) (wrong-number-of-arguments (list 'ERR (car e)))))
 (row "sub vector" (substring [1 2 3 4] 1 3))
 (row "sub vector neg" (substring [1 2 3 4] -2))

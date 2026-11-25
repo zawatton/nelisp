@@ -1710,65 +1710,70 @@
              (heap-read-u64 res 0)
            0))))
     
+    (defun nl_aref_flat_string_w (string index)
+      ;; A canonical unibyte or ASCII string has one character per byte.
+      ;; Return 0 for other layouts and indices so the checked route owns
+      ;; decoding and every error.
+      (if (/= (logand index 3) 1) 0
+        (let* ((header (- string 4)) (i (sar index 2))
+               (chars (ptr-read-u64 header 0)) (bytes (ptr-read-u64 header 8)))
+          (if (if (< i 0) 1 (>= i chars)) 0
+            (if (if (>= bytes 0) (/= bytes chars) 0) 0
+              (let* ((ch (ptr-read-u8 (ptr-read-u64 header 24) i)))
+                (if (if (>= bytes 0) (>= ch 128) 0) 0 (+ (shl ch 2) 1))))))))
+
     ;; Primitive ID on the ARGC words ending at STK[SP-1]: 0 with the value
     ;; in RESW, -3 when it declines (a type it leaves to the full builtin).
     (defun m5_fx_primitive_run (id stk sp argc resw env scratch)
       (if (or (= id -14) (= id -15) (= id -16))
-          ;; Only canonical ordinary vectors enter unchecked storage APIs.
-          ;; Seven-element vectors include the nemacs char-table bridge;
-          ;; leave all of them, other representations and errors to APPLY.
+          ;; Plain arrays can use the rooted operand words directly. The
+          ;; character-table bridge, other layouts and errors use APPLY.
           (if (if (= id -16) (= argc 1) (if (= id -14) (= argc 2) (= argc 3)))
-              (let* ((a (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)))
-                (if (if (= (logand a 7) 6) (> a 4096) 0)
-                    (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 12)
-                        ;; corecall: a record (GNU data.c Faref/Faset, RECORDP uses
-                        ;; PVSIZE).  Index 0 is the type word, K > 0 is data slot K-1,
-                        ;; K up to the slot count; `length' of a record and an aset of
-                        ;; its type word stay with the full builtin.
-                        (if (= id -16) -3
-                          (let* ((n (nl_record_length a))
-                                 (b (heap-read-u64 (+ stk (* (+ (- sp argc) 1) 8)) 0)))
-                            (if (= (logand b 3) 1)
-                                (let* ((index (sar b 2)))
-                                  (if (if (>= index 0) (<= index n) 0)
+              (let* ((base (+ stk (* (- sp argc) 8))) (a (heap-read-u64 base 0)))
+                (if (if (= id -14) (= (logand a 7) 4) 0)
+                    (let* ((word (nl_aref_flat_string_w a (heap-read-u64 base 8))))
+                      (if (= word 0) -3 (seq (ptr-write-u64 resw 0 word) 0)))
+                  (if (if (= (logand a 7) 6) (> a 4096) 0)
+                      (let* ((data (- a 6)) (header (ptr-read-u64 data 0))
+                             (kind (logand header 63)) (size (sar header 8)))
+                        (cond
+                         ((= kind 12)
+                          (if (= id -16) -3
+                            (let* ((index (heap-read-u64 base 8)))
+                              (if (/= (logand index 3) 1) -3
+                                (let* ((i (sar index 2)))
+                                  (if (if (< i 0) 1 (> i size)) -3
+                                    (if (= id -14)
+                                        (seq (ptr-write-u64 resw 0
+                                                            (if (= i 0) (nl_record_type_word a)
+                                                              (nl_record_slot_word a (- i 1))))
+                                             0)
+                                      (if (= i 0) -3
+                                        (let* ((value (heap-read-u64 base 16)))
+                                          (seq (wf_dirty)
+                                               (ptr-write-u64 data (+ 16 (* (- i 1) 8))
+                                                              (nl_word_canon value))
+                                               (ptr-write-u64 resw 0 value) 0))))))))))
+                         ((= kind 8)
+                          (if (if (< size 0) 1
+                                (if (= size 7) 1
+                                  (if (if (= size 8) (/= id -16) 0)
+                                      (= (bf_nemacs_char_table_owned_vector_p a) 1) 0))) -3
+                            (if (= id -16)
+                                (seq (ptr-write-u64 resw 0 (+ (shl size 2) 1)) 0)
+                              (let* ((index (heap-read-u64 base 8)))
+                                (if (/= (logand index 3) 1) -3
+                                  (let* ((i (sar index 2)))
+                                    (if (if (< i 0) 1 (>= i size)) -3
                                       (if (= id -14)
-                                          (seq (ptr-write-u64 resw 0
-                                                              (if (= index 0) (nl_record_type_word a)
-                                                                (nl_record_slot_word a (- index 1))))
-                                               0)
-                                        (if (= index 0) -3
-                                          (let* ((value (heap-read-u64 (+ stk (* (+ (- sp argc) 2) 8)) 0)))
-                                            (seq (wf_dirty)
-                                                 (ptr-write-u64 (+ (nl_word_payload a) (+ 16 (* (- index 1) 8))) 0
-                                                                (nl_word_canon value))
-                                                 (ptr-write-u64 resw 0 value) 0))))
-                                    -3))
-                              -3)))
-                    (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 8)
-                        (if (if (or (= id -14) (= id -15))
-                                (= (bf_nemacs_char_table_owned_vector_p a) 1)
-                              0)
-                            -3
-                          (let* ((n (vector-len a)))
-                            (if (if (>= n 0) (/= n 7) 0)
-                                (if (= id -16)
-                                    (seq (ptr-write-u64 resw 0 (+ (shl n 2) 1)) 0)
-                                  (let* ((b (heap-read-u64 (+ stk (* (+ (- sp argc) 1) 8)) 0)))
-                                    (if (= (logand b 3) 1)
-                                        (let* ((index (sar b 2)))
-                                          (if (if (>= index 0) (< index n) 0)
-                                              (if (= id -14)
-                                                  (seq (ptr-write-u64 resw 0 (nl_vector_slot_word a index)) 0)
-                                                (let* ((value (heap-read-u64 (+ stk (* (+ (- sp argc) 2) 8)) 0))
-                                                       (canonical (nl_word_canon value)))
-                                                  (seq (wf_dirty)
-                                                       (vector-slot-set a index canonical)
-                                                       (ptr-write-u64 resw 0 value) 0)))
-                                            -3))
-                                      -3)))
-                              -3)))
-                      -3))
-                  -3))
+                                          (seq (ptr-write-u64 resw 0 (ptr-read-u64 data (+ 8 (* i 8)))) 0)
+                                        (let* ((value (heap-read-u64 base 16))
+                                               (canonical (nl_word_canon value)))
+                                          (seq (wf_dirty)
+                                               (vector-slot-set a i canonical)
+                                               (ptr-write-u64 resw 0 value) 0))))))))))
+                         (t -3)))
+                    -3)))
             -3)
       (let* ((a (if (> argc 0) (heap-read-u64 (+ stk (* (- sp argc) 8)) 0) 3))
              (b (if (> argc 1) (heap-read-u64 (+ stk (* (+ (- sp argc) 1) 8)) 0) 3))
@@ -1794,8 +1799,11 @@
                                 (= (m5_fx_string_argument_p (nl_word_tag64 b)) 1))
                            (if (= (m5_fx_sort_string_lessp a b) 1) 7 3) -1))
              ((or (= id 10) (= id 11))
-              (if (and (= (m5_fx_int_p a) 1) (>= (wf_bytecode_w_int a) 0))
-                  (m5_fx_primitive_nth b (wf_bytecode_w_int a) (if (= id 11) 1 0)) -1))
+              (if (= (logand a 3) 1)
+                  (if (< a 0) -1
+                    (m5_fx_primitive_nth b (sar a 2) (if (= id 11) 1 0)))
+                (if (and (= (m5_fx_int_p a) 1) (>= (wf_bytecode_w_int a) 0))
+                    (m5_fx_primitive_nth b (wf_bytecode_w_int a) (if (= id 11) 1 0)) -1)))
              ;; Tagged arithmetic (native-surface clause 5), not new Lisp
              ;; builtins. Nonfixnums and nonbinary calls keep ordinary APPLY.
              ((= id -17)
@@ -1865,7 +1873,7 @@
     ;; written (the call-out then runs unchanged).  The ids are the leaf bodies that call no
     ;; Lisp, allocate nothing and reach no safepoint; operands and RESW are slots of the
     ;; activation's rooted frame.
-    (defun m5_fx_call_subr (env cache stk sp argc resw)
+    (defun m5_fx_call_subr_any (env cache stk sp argc resw)
       (let* ((sym (if (= (logand cache 7) 6)
                       (if (< cache 4096) 0
                         (if (= (logand (ptr-read-u64 (- cache 6) 0) 63) 8)
@@ -1878,10 +1886,28 @@
                            (ptr-read-u64 (- sym 6) 24)
                          0))
                    0)))
-        (m5_fx_call_subr_fn env fn stk sp argc resw)))
-    ;; gnu562: the primitive-id run of `m5_fx_call_subr' for FN itself, a
-    ;; function cell's value or a function value (`m5_fx_call_subr_obj').
-    (defun m5_fx_call_subr_fn (env fn stk sp argc resw)
+        (if (= (logand fn 7) 2)
+            ;; A saved definition restored by Lisp can be the legacy
+            ;; builtin cons. The reader validates it before direct entry.
+            (m5_fx_subr_direct env sym fn stk sp argc resw)
+          (m5_fx_call_subr_resolved env sym fn stk sp argc resw))))
+    ;; Named calls and function values use the same Subr descriptor and rooted
+    ;; argv as byte-code calls. Only the operator for the backtrace differs.
+    ;; Declines preserve argv for the normal call path.
+    (defun m5_fx_call_subr_resolved (env operator fn stk sp argc resw)
+      (if (if (= (logand fn 7) 6)
+              (if (< fn 4096) 0 (= (logand (ptr-read-u64 (- fn 6) 0) 63) 20))
+            0)
+          (let* ((st (m5_fx_subr_direct env operator fn stk sp argc resw)))
+            (if (/= st -3) st
+              (let* ((pst (m5_fx_subr_prim2 env fn stk sp argc resw)))
+                (if (/= pst -3) pst
+                  (m5_fx_subr_argv env operator fn stk sp argc resw)))))
+        -3))
+    (defun m5_fx_call_subr_obj (env fn stk sp argc resw)
+      (m5_fx_call_subr_resolved env fn fn stk sp argc resw))
+    ;; Link sets without the reader retain their local word-only subset.
+    (defun m5_fx_subr_direct (env _operator fn stk sp argc resw)
         (if (= (logand fn 7) 6)
             (if (< fn 4096) -3
               (let* ((hdr (ptr-read-u64 (- fn 6) 0)))
@@ -1902,52 +1928,6 @@
                               (m5_fx_primitive_run id stk sp argc resw env 0)
                             -3)))))))))
           -3))
-    ;; callpath: GNU funcall_subr for every Subr object, not only the primitive ids: the
-    ;; primitive above, else the argument-array entry the object carries
-    ;; (`m5_fx_subr_argv'), with the operand words as its argv -- no list, no name
-    ;; lookup, no autoload test (a Subr object is never an autoload cell; GNU
-    ;; funcall_general tests SUBRP first).  0 done, -3 not handled (nothing happened:
-    ;; the call-out runs), any other value the call's signal status.
-    (defun m5_fx_call_subr_any (env cache stk sp argc resw)
-      (let* ((st (m5_fx_call_subr env cache stk sp argc resw)))
-        (if (/= st -3) st
-          (let* ((sym (if (= (logand cache 7) 6)
-                          (if (< cache 4096) 0
-                            (if (= (logand (ptr-read-u64 (- cache 6) 0) 63) 8)
-                                (ptr-read-u64 (- cache 6) 8)
-                              cache))
-                        0))
-                 (fn (if (= (logand sym 7) 6)
-                         (if (< sym 4096) 0
-                           (if (= (logand (ptr-read-u64 (- sym 6) 0) 63) 4)
-                               (ptr-read-u64 (- sym 6) 24)
-                             0))
-                       0)))
-            (if (= (logand fn 7) 6)
-                (if (< fn 4096) -3
-                  (if (/= (logand (ptr-read-u64 (- fn 6) 0) 63) 20) -3
-                    (let* ((pst (m5_fx_subr_prim2 env fn stk sp argc resw)))
-                      (if (/= pst -3) pst
-                        (m5_fx_subr_argv env sym fn stk sp argc resw)))))
-              -3)))))
-    ;; gnu562: `m5_fx_call_subr_any' for FN, a Subr object passed as a value
-    ;; (`funcall' of a captured definition, GNU funcall_general's SUBRP arm):
-    ;; the same primitive id, interpreter primitive or argument-array entry
-    ;; on the operand words, the backtrace naming FN as GNU's names args[0].
-    ;; Was: the name compares of `m5_fx_primitive', the covered-closure
-    ;; lookup, then the generic apply with an argument list.  -3: not
-    ;; handled, nothing happened.
-    (defun m5_fx_call_subr_obj (env fn stk sp argc resw)
-      (if (if (= (logand fn 7) 6)
-              (if (< fn 4096) 0
-                (= (logand (ptr-read-u64 (- fn 6) 0) 63) 20))
-            0)
-          (let* ((st (m5_fx_call_subr_fn env fn stk sp argc resw)))
-            (if (/= st -3) st
-              (let* ((pst (m5_fx_subr_prim2 env fn stk sp argc resw)))
-                (if (/= pst -3) pst
-                  (m5_fx_subr_argv env fn fn stk sp argc resw)))))
-        -3))
     ;; callpath2: the interpreter's primitive of a Subr object on the operand words;
     ;; the reader's definition is generated (`nelisp-standalone--argframe-m5-helpers'),
     ;; the link sets without `nl_eic_prim2_run' have none to run.
@@ -1978,13 +1958,19 @@
       (bf_str_lt (bf_str_or_name_w a 0) (bf_str_or_name_w b 0)))
     (defun m5_fx_primitive_nth (items index tail)
       (seq
-       (while (and (> index 0) (= (m5_fx_word_cons_p items 0) 1))
-         (setq items (nl_cons_cdr_word items))
+       (while (if (> index 0)
+                  (if (= (logand items 7) 2) 1 (= (m5_fx_word_cons_p items 0) 1))
+                0)
+         (setq items (if (= (logand items 7) 2)
+                         (ptr-read-u64 (- items 2) 8)
+                       (nl_cons_cdr_word items)))
          (setq index (- index 1)))
-       (if (= (nl_word_tag64 items) 0) 3
-         (if (/= index 0) -1
-           (if (= tail 1) items
-             (if (= (m5_fx_word_cons_p items 0) 1) (nl_cons_car_word items) -1))))))
+       (if (= (logand items 7) 2)
+           (if (= tail 1) items (ptr-read-u64 (- items 2) 0))
+         (if (= (nl_word_tag64 items) 0) 3
+           (if (/= index 0) -1
+             (if (= tail 1) items
+               (if (= (m5_fx_word_cons_p items 0) 1) (nl_cons_car_word items) -1)))))))
     ;; GNU eval.c:3185-3215 Ffuncall -> funcall_general -> funcall_lambda: a
     ;; compiled callee runs on the already evaluated argument words, with
     ;; its activation recorded, and no argument list.  A closure the VM

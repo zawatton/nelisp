@@ -1,0 +1,7 @@
+(captured-pair (1 (2 3)) (4 (5)))
+(live-call (2 3) 1 (2 3))
+(local-pairs ((4 5) (5) (5)) ((1 2 3) 1 1) ((4 5) (5) (5)))
+(predicate t t)
+(signal (t t) (error) (error "Invalid error symbol" par-primitive-undefined))
+(signal-object (error "Invalid error symbol") (t t))
+(selectors (parent catch-all) (parent catch-all))

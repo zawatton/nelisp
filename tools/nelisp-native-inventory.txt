@@ -273,6 +273,7 @@ makunbound	native-must-stay	Minimal native surface clause 2: N3 evaluator entry;
 symbol-value	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 symbol-function	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
 fboundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
+functionp	native-must-stay	Clauses 1 and 2: inspect tagged function objects and resolve live function cells without autoload. GNU comparison in test/par-primitive-dispatch.el.
 boundp	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 featurep	native-must-stay	feature registry read by bootstrap loader
 provide	native-review	No classification row; review against Doc 211 §6.

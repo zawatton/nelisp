@@ -19,6 +19,7 @@ sub nil seq                  (ERR (wrong-type-argument arrayp nil))
 sub symbol                   (ERR (wrong-type-argument arrayp abc))
 sub int                      (ERR (wrong-type-argument arrayp 5))
 sub too many args            (ERR (wrong-number-of-arguments substring 4))
+sub indirect too many args   (ERR (wrong-number-of-arguments #<subr substring> 4))
 sub no args                  (ERR wrong-number-of-arguments)
 sub vector                   [2 3]
 sub vector neg               [3 4]

@@ -1629,7 +1629,9 @@ keeping string property state weakly keyed by string identity."
                               (emacs-buffer--tp-start cell)
                               (emacs-buffer--tp-end cell)
                               (copy-sequence (emacs-buffer--tp-plist cell))))
-                           intervals))))
+                           intervals))
+             (when (fboundp 'nelisp--string-mark-intervals)
+               (nelisp--string-mark-intervals destination 'sidecar))))
          destination))
       ((or 'put 'add 'remove 'set)
        (let ((start (nth 0 args)) (end (nth 1 args))
@@ -1656,8 +1658,10 @@ keeping string property state weakly keyed by string identity."
                              (emacs-buffer--keys-from-arg payload)))
                    ('set (if (null payload)
                              (emacs-buffer--tp-clip intervals start end)
-                           (emacs-buffer--tp-merge intervals start end payload)))))
-         nil)))
+                             (emacs-buffer--tp-merge intervals start end payload)))))
+           (when (fboundp 'nelisp--string-mark-intervals)
+             (nelisp--string-mark-intervals string 'sidecar)))
+         nil))
       (_ (signal 'wrong-type-argument (list 'text-property-operation operation))))))
 
 ;;;###autoload
@@ -2358,21 +2362,24 @@ with sidecar text properties gets them copied to the result."
         (emacs-buffer-string-text-property 'copy sequence result))
       result)))
 
+(defun emacs-buffer--substring-copy-sidecar (result string from to)
+  (when (and (stringp string) (stringp result)
+             (gethash string emacs-buffer--string-state))
+    (let* ((length (length string))
+           (start (or from 0))
+           (lo (if (< start 0) (+ length start) start))
+           (raw-end (or to length))
+           (hi (if (< raw-end 0) (+ length raw-end) raw-end)))
+      (emacs-buffer--copy-runs-to-string
+       result (emacs-buffer-string-text-property 'runs string) lo hi))))
+
 (defun emacs-buffer--substring (string &optional from to &rest more)
   "Native `substring' that keeps STRING's clipped sidecar runs."
   (if more
       (signal 'wrong-number-of-arguments
               (list 'substring (+ 3 (length more))))
     (let ((result (emacs-buffer--native-substring string from to)))
-      (when (and (stringp string) (stringp result)
-                 (gethash string emacs-buffer--string-state))
-        (let* ((length (length string))
-               (start (or from 0))
-               (lo (if (< start 0) (+ length start) start))
-               (raw-end (or to length))
-               (hi (if (< raw-end 0) (+ length raw-end) raw-end)))
-          (emacs-buffer--copy-runs-to-string
-           result (emacs-buffer-string-text-property 'runs string) lo hi)))
+      (emacs-buffer--substring-copy-sidecar result string from to)
       result)))
 
 (defun emacs-buffer--delete-region (start end)
@@ -2552,10 +2559,10 @@ read back after a subsequent insertion.  Failed erasures retain their state."
       (defalias 'emacs-buffer--native-copy-sequence
         (symbol-function 'copy-sequence)))
     (defalias 'copy-sequence (symbol-function 'emacs-buffer--copy-sequence)))
-  (when (fboundp 'substring)
+  (when (and (fboundp 'substring) (boundp 'nelisp--tp-sub-props-hook))
     (unless (fboundp 'emacs-buffer--native-substring)
       (defalias 'emacs-buffer--native-substring (symbol-function 'substring)))
-    (defalias 'substring (symbol-function 'emacs-buffer--substring))))
+    (add-hook 'nelisp--tp-sub-props-hook #'emacs-buffer--substring-copy-sidecar)))
 
 ;;;###autoload
 (defun emacs-buffer-bump-modified-tick (&optional buf)
