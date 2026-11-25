@@ -129,9 +129,6 @@
 (when (fboundp 'nelisp--lface-from-face-name)
   (defvar emacs-cc-xfaces-1--frame-stores (make-hash-table :test 'eq)
     "Frame to (ID/attribute table . public attribute table).")
-  (defvar emacs-cc-xfaces-1--set-attribute
-    (symbol-function 'internal-set-lisp-face-attribute)
-    "Prelude setter retained for its GNU attribute validation.")
   (defvar emacs-cc-xfaces-1--stores-separated nil)
 
   (defun emacs-cc-xfaces-1--empty-vector ()
@@ -261,16 +258,15 @@
           (dolist (target (frame-list))
             (internal-set-lisp-face-attribute face attr value target))
           face)
-      (unless (eq frame t)
-        (setq frame (or frame (selected-frame)))
-        (nelisp--check-live-frame frame)
-        (unless (emacs-cc-xfaces-1--lface face frame nil)
-          (internal-make-lisp-face face frame)))
-      ;; The prelude's lookup and inheritance validator both consult this
-      ;; dynamically bound table.  A local face already exists, so its
-      ;; global-only creation fallback cannot run.
-      (let ((face--new-frame-defaults (emacs-cc-xfaces-1--store frame)))
-        (funcall emacs-cc-xfaces-1--set-attribute face attr value frame))))
+      (let* ((store (emacs-cc-xfaces-1--store frame))
+             (lface (cdr (gethash face store))))
+        (unless lface
+          (if (eq frame t)
+              (signal 'error (list "Invalid face" face))
+            (setq lface (internal-make-lisp-face
+                         face (or frame (selected-frame))))))
+        (let ((face--new-frame-defaults store))
+          (nelisp--set-lface-attribute face lface attr value)))))
 
   (defun internal-copy-lisp-face (from to frame new-frame)
     "Copy FROM on FRAME into TO on NEW-FRAME, preserving independent stores."
