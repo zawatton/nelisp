@@ -221,7 +221,9 @@ and unsupported scalar signatures continue through the original provider."
   ;; environment is authoritative; synchronize libc's lazy-loaded environment
   ;; before XCB performs authentication or consults its default display.
   (dolist (name '("DISPLAY" "XAUTHORITY" "HOME"))
-    (let ((value (getenv name)) (key (nl-ffi-memory-cstring name)))
+    (let ((value (or (and (equal name "DISPLAY") (frame-parameter nil 'display))
+                     (getenv name)))
+          (key (nl-ffi-memory-cstring name)))
       (unwind-protect
           (if value
               (let ((o (nl-ffi-memory-cstring value)))

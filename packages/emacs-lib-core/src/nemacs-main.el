@@ -75,7 +75,9 @@
 this file.  Recognised keys:
 
   :batch       t when running in batch mode (= no TUI, no event loop)
-  :images      a list of legacy `.nli' image paths to restore after bootstrap
+  :command-line ordered startup and action arguments for GNU startup.el
+  :daemon      daemon name, or t to let server.el choose its name
+  :images      a list of legacy `.nli' image paths to restore before startup
   :load-path   a list of directory paths to prepend to `load-path'
   :load        a list of file paths to `load' after bootstrap
   :eval-forms  a list of sexps or source strings to evaluate after `:load'
@@ -303,8 +305,8 @@ fallback path runs nemacs read-eval batch-style)."
               ;; redisplay pass has something to paint.
               (let ((w (and (fboundp 'emacs-window-selected-window)
                             (emacs-window-selected-window)))
-                    (b (and (boundp 'nelisp-ec--buffers)
-                            (cdr (assoc "*scratch*" nelisp-ec--buffers)))))
+                    (b (or (and w (emacs-window-buffer w))
+                           nemacs--initial-buffer)))
                 (when (and w b (fboundp 'emacs-window-set-window-buffer)
                            (boundp 'nelisp-ec--buffers))
                   (emacs-window-set-window-buffer w b))))
@@ -1848,41 +1850,6 @@ pre-set it to t (= early-out before the first poll)."
 
 ;;;; --- option-driven preload ----------------------------------------
 
-(defun nemacs-main--eval-option-form (form)
-  "Evaluate one `--eval' option FORM.
-FORM is usually a sexp under the host driver.  The standalone NeLisp
-launcher passes source strings so it does not need a boot-time `read'
-function before the NeLisp stdlib is fully established."
-  (cond
-   ((stringp form)
-    (cond
-     ((fboundp 'nelisp--eval-source-string)
-      (nelisp--eval-source-string form))
-     ((fboundp 'read)
-      (eval (read form) t))
-     (t
-      (error "cannot evaluate source string without nelisp--eval-source-string or read"))))
-   (t
-    (eval form t))))
-
-(defun nemacs-main--load-option-path (path)
-  "Load one CLI `-l' option PATH with Emacs command-line semantics.
-Library names such as \"ert\" are resolved through `load-path'.  Names
-containing a directory component, such as \"test/foo.el\" or an absolute
-path, are loaded as files relative to `default-directory'."
-  (let ((target
-         (cond
-          ((not (stringp path)) path)
-          ((and (fboundp 'string-match-p)
-                (string-match-p "/" path))
-           (expand-file-name path))
-          ((and (boundp 'load-path)
-                (fboundp 'locate-file))
-           (or (locate-file path load-path (list ".el" ""))
-               path))
-          (t path))))
-    (load target nil 'no-message)))
-
 (defun nemacs-main--load-path-file (filename)
   "Return the first readable FILENAME found under `load-path'."
   (let ((dirs (and (boundp 'load-path) load-path))
@@ -1913,66 +1880,43 @@ options makes `-L src -l test/foo.el' behave like Emacs batch loading."
       (when path
         (load path nil 'no-message))))))
 
-(defun nemacs-main--apply-options ()
-  "Honour `nemacs-main-options' (= -L dirs + -l files + --eval/-f forms)."
-  (dolist (dir (reverse (nemacs-main-option :load-path)))
-    (when (and (stringp dir) (boundp 'load-path))
-      (add-to-list 'load-path dir)))
-  (nemacs-main--refresh-standalone-foundation)
-  (dolist (path (nemacs-main-option :images))
-    (condition-case err
-        (progn
-          (require 'image-loader)
-          (image-loader-load path t))
-      (error
-       (when (fboundp 'message)
-         (message "nemacs: image load %S failed: %S" path err)))))
-  (dolist (path (nemacs-main-option :load))
-    (when (fboundp 'load)
+(defun nemacs-main--startup-arguments ()
+  "Translate options from Lisp callers into GNU command-line arguments."
+  (let ((options nemacs-main-options)
+        (args (nemacs-main-option :command-line)))
+    (if (plist-member options :command-line)
+        args
+      (append (nemacs-main-option :startup-arguments)
+              (when (and (plist-member options :init-file-user)
+                         (null (nemacs-main-option :init-file-user)))
+                '("-q"))
+              (when (nemacs-main-option :inhibit-startup-screen)
+                '("--no-splash"))
+              (mapcan (lambda (dir) (list "-L" dir))
+                      (nemacs-main-option :load-path))
+              (mapcan (lambda (file) (list "-l" file))
+                      (nemacs-main-option :load))
+              (mapcan (lambda (form)
+                        (list "--eval" (if (stringp form) form
+                                         (prin1-to-string form))))
+                      (nemacs-main-option :eval-forms))
+              (mapcan (lambda (fn) (list "-f" (symbol-name fn)))
+                      (nemacs-main-option :funcall))
+              (nemacs-main-option :args)))))
+
+(defun nemacs-main--startup (&optional batch-p)
+  "Prepare the runtime and enter GNU startup once."
+  (unless nemacs-initialized
+    (nemacs-main--refresh-standalone-foundation)
+    (dolist (path (nemacs-main-option :images))
       (condition-case err
-          (nemacs-main--load-option-path path)
-        (error
-         (if (nemacs-main--standalone-batch-p)
-             (progn
-               (when (fboundp 'message)
-                 (message "nemacs: --load failed: %s file=%s"
-                          (error-message-string err) path))
-               ;; Match GNU Emacs's uncaught batch-error status for `-l'/
-               ;; `--load'.  A successful user `(kill-emacs N)' inside the
-               ;; loaded file exits from there and never reaches this
-               ;; handler, so its requested status is preserved.
-               (kill-emacs 255))
-           (when (fboundp 'message)
-             (message "nemacs: load %S failed: %S" path err)))))))
-  (dolist (form (nemacs-main-option :eval-forms))
-    (condition-case err
-        (nemacs-main--eval-option-form form)
-      (error
-       (if (nemacs-main--standalone-batch-p)
-           (progn
-             (when (fboundp 'message)
-               (message "nemacs: --eval failed: %s form=%S"
-                        (error-message-string err) form))
-             ;; Match GNU Emacs's uncaught batch-error status.  A successful
-             ;; user `(kill-emacs N)' exits from the eval itself and never
-             ;; reaches this handler, so its requested status is preserved.
-             (kill-emacs 255))
-         (when (fboundp 'message)
-           (message "nemacs: --eval failed: %S form=%S" err form))))))
-  (dolist (fn (nemacs-main-option :funcall))
-    (condition-case err
-        (funcall fn)
-      (error
-       (when (fboundp 'message)
-         (message "nemacs: -f %S failed: %S" fn err)))))
-  (unless (nemacs-main-option :batch)
-    (dolist (path (nemacs-main-option :args))
-      (when (and (stringp path) (> (length path) 0))
-        (condition-case err
-            (emacs-fileio-visit-file-direct path)
-          (error
-           (when (fboundp 'message)
-             (message "nemacs: visit %S failed: %S" path err))))))))
+          (progn
+            (require 'image-loader)
+            (image-loader-load path t))
+        (error (message "nemacs: image load %S failed: %S" path err))))
+    (setq nemacs-daemon-name (nemacs-main-option :daemon))
+    (nemacs-init batch-p (nemacs-main--startup-arguments)
+                 (nemacs-main-option :frontend))))
 
 (defun nemacs-main-status-banner ()
   "Return a one-line status string suitable for the bottom of the screen."
@@ -1984,73 +1928,11 @@ options makes `-L src -l test/foo.el' behave like Emacs batch loading."
 
 ;;;; --- entry points -------------------------------------------------
 
-(defun nemacs-main--startup-gate-option (key)
-  "Return (VALUE . t) when KEY is explicitly present in `nemacs-main-options'.
-Return nil when KEY is absent.  Distinguishing an explicit nil VALUE from an
-absent key is what lets `nemacs-main--apply-startup-gate' leave the global
-compat variable untouched for callers that never pass these keys, instead of
-clobbering it via `nemacs-main-option''s default-on-missing behaviour (that
-helper cannot tell \"key maps to nil\" apart from \"key is absent\")."
-  (let* ((plist (and (boundp 'nemacs-main-options)
-                     (symbol-value 'nemacs-main-options)))
-         (cell (plist-member plist key)))
-    (when cell (cons (cadr cell) t))))
-
-(defun nemacs-main--apply-startup-gate ()
-  "Reflect `nemacs-main-options' startup-gate keys onto their globals.
-Call before `nemacs-init' so the gate is in effect for the whole bootstrap.
-
-Recognised keys:
-  :init-file-user          Emacs `-q'/`-Q' semantics.  Nil makes
-                            `nemacs-load-user-init-files' skip early-init.el,
-                            package activation, and init.el
-                            (src/nemacs-loadup.el).
-  :startup-arguments      Initial GNU command-line options, before actions.
-  :inhibit-startup-screen  Consulted by the splash-screen owner
-                            (`emacs-startup-screen-use-p'); nil is the
-                            default (show splash), non-nil suppresses it.
-  :args                    CLI file arguments.  Reflected onto
-                            `emacs-startup-screen-file-arguments' so the
-                            splash gate can suppress the splash when the
-                            session starts on visited files.
-
-All keys are optional; a key absent from `nemacs-main-options' leaves the
-corresponding global untouched, so callers that never pass these options
-(most existing tests and direct `nemacs-init' callers) keep today's
-behaviour.  Centralising the reflection here — rather than injecting the
-globals from more than one call site across `bin/nemacs' and
-`nemacs-loadup' — is what avoids a double-injection ordering bug."
-  (let ((init-file-user-cell
-         (nemacs-main--startup-gate-option :init-file-user))
-        (startup-arguments-cell
-         (nemacs-main--startup-gate-option :startup-arguments))
-        (inhibit-startup-screen-cell
-         (nemacs-main--startup-gate-option :inhibit-startup-screen))
-        (args-cell (nemacs-main--startup-gate-option :args)))
-    (when init-file-user-cell
-      (setq init-file-user (car init-file-user-cell)))
-    (when startup-arguments-cell
-      (setq nemacs-startup-arguments (car startup-arguments-cell)))
-    (when (and inhibit-startup-screen-cell (boundp 'inhibit-startup-screen))
-      (setq inhibit-startup-screen (car inhibit-startup-screen-cell)))
-    (when (and args-cell (boundp 'emacs-startup-screen-file-arguments))
-      (setq emacs-startup-screen-file-arguments (car args-cell)))))
-
 (defun nemacs-batch-main ()
-  "--batch entry: bootstrap, run -l / --eval, exit.
-Returns the exit-code symbol (= `ok' on success)."
-  ;; Doc 51 Track M (2026-05-04) — install SIGINT → quit-flag handler
-  ;; so a long batch eval can be interrupted with Ctrl+C without
-  ;; killing the process abruptly.  Idempotent + no-op on non-Unix.
+  "Enter GNU batch startup."
   (when (fboundp 'install-sigint-handler)
     (install-sigint-handler))
-  (unless nemacs-initialized
-    (nemacs-main--apply-startup-gate)
-    (nemacs-init t))
-  (nemacs-main--apply-options)
-  (unless (nemacs-main-option :no-banner)
-    (when (fboundp 'message)
-      (message "%s" (nemacs-main-status-banner))))
+  (nemacs-main--startup t)
   'ok)
 
 (defun nemacs-main ()
@@ -2076,10 +1958,12 @@ takes over and dispatches TUI events directly."
   ;; Doc 51 Track P/Q (2026-05-04) — install SIGWINCH and
   ;; SIGTSTP/SIGCONT handlers.  All three are no-op on non-Unix
   ;; and idempotent.  The event loop polls the resulting flags.
-  (when (fboundp 'install-winsize-handler)
-    (install-winsize-handler))
-  (when (fboundp 'install-jobctrl-handlers)
-    (install-jobctrl-handlers))
+  (condition-case nil
+      (when (fboundp 'install-winsize-handler) (install-winsize-handler))
+    (nelisp-unsupported-primitive nil))
+  (condition-case nil
+      (when (fboundp 'install-jobctrl-handlers) (install-jobctrl-handlers))
+    (nelisp-unsupported-primitive nil))
   (when (and (eq (or (nemacs-main-option :driver) 'host) 'nelisp)
              (not (nemacs-main-option :batch)))
     (require 'emacs-mark-state)
@@ -2087,24 +1971,24 @@ takes over and dispatches TUI events directly."
   (cond
    ((nemacs-main-option :batch)
     (nemacs-batch-main))
+   ((nemacs-main-option :daemon)
+    (nemacs-main--startup)
+    (while t (accept-process-output nil 0 200)))
    ((eq (nemacs-main-option :frontend) 'xcb)
-    (unless nemacs-initialized
-      (nemacs-main--apply-startup-gate)
-      (nemacs-init))
+    (nemacs-main--startup)
     (emacs-init-load-command-features)
-    (nemacs-main--apply-options)
     (nemacs-main--init-keymap)
     ;; Startup functions may already have selected a native editing buffer.
     ;; Preserve that view; use the shared scratch only for an unbound window.
     (nemacs-main--sync-selected-window-buffer
      (emacs-window-buffer (emacs-window-selected-window)))
+    (let ((directory (nemacs-main-option :frontend-directory)))
+      (when (and directory (file-directory-p directory))
+        (add-to-list 'load-path directory)))
     (require nemacs-main-gui-frontend-feature)
     (funcall nemacs-main-gui-frontend-function))
    (t
-    (unless nemacs-initialized
-      (nemacs-main--apply-startup-gate)
-      (nemacs-init))
-    (nemacs-main--apply-options)
+    (nemacs-main--startup)
     (nemacs-main--init-keymap)
     (let ((tui-ok (nemacs-main--realise-tui))
           (driver (or (nemacs-main-option :driver) 'host)))
@@ -2147,10 +2031,7 @@ takes over and dispatches TUI events directly."
               (nemacs-main--event-loop)
               'ok)))
            (t
-            ;; TUI unavailable → fall through to batch semantics.
-            (when (fboundp 'message)
-              (message "nemacs: TUI not available, running batch-style"))
-            (nemacs-batch-main)))
+            (error "nemacs: TUI not available")))
         ;; Clean up only the per-process state that we installed.
         ;; Note: under interactive host driver we do NOT shutdown TUI
         ;; here, because shutdown happens when the user runs C-x C-c
