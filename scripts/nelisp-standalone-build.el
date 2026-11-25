@@ -1417,6 +1417,11 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_lct_brand_cache"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 16)
                               :section 'bss :bind 'global :type 'object))
+    ;; The forwarded gcs-done cell has a distinct slot from the char-table
+    ;; brand cache. Both can be populated later than startup.
+    (list (nelisp-link-symbol "nl_gc_done_cell"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 24)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_conserv_seen"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64)
                               :section 'bss :bind 'global :type 'object))
@@ -9693,8 +9698,14 @@ REPL-facing module it feeds."
         (let* ((kind (logand header 63)) (n (sar header 8)))
           (if (= kind 8) (nl_gc_mark_slots box 1 n)
             (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_slots box 1 (if (if (= kind 23) (= n 2) 0) 2 1))
-              (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22) (= kind 24)) (nl_gc_mark_slots box 1 (+ n 1))
-                (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
+            (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 24)) (nl_gc_mark_slots box 1 (+ n 1))
+              (if (= kind 22)
+                  ;; A restored hash table has the same weak edges as a
+                  ;; heap table. Mark its storage without tracing its pairs.
+                  (if (> (nl_gc_weak_table_mode (+ box 8)) 0)
+                      (nl_gc_weak_note_table (+ box 8))
+                    (nl_gc_mark_slots box 1 2))
+                (if (= kind 9) (nl_gc_mark_char_table_children box) 0))))))))
     (defun nl_gc_mark_slots (owner offset n)
       (let* ((i offset) (end (+ offset n)))
         (seq (while (< i end)
@@ -11145,7 +11156,7 @@ REPL-facing module it feeds."
                       (+ (heap-read-u64 (data-addr nl_gc_stats) 24) 1))
        ;; GNU `gcs_done++' on the `gcs-done' value cell: no allocation; a cell
        ;; that no longer holds a fixnum is left alone.
-       (let* ((gobj (heap-read-u64 (data-addr nl_gc_until_base) 8)))
+       (let* ((gobj (heap-read-u64 (data-addr nl_gc_done_cell) 0)))
          (if (= gobj 0) 0
            (let* ((gcell (+ (- gobj 6) 16)) (gw (heap-read-u64 gcell 0)))
              (if (= (logand gw 3) 1) (ptr-write-u64 gcell 0 (+ gw 4)) 0))))
@@ -39457,7 +39468,7 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; GNU `gcs-done' (DEFVAR_INT, alloc.c): collections completed so far.  The
     ;; symbol is a forwarded integer like `max-lisp-eval-depth', so a Lisp
     ;; `setq' of a non-integer is refused as in GNU.  Its object word is cached in
-    ;; the spare word at +8 of `nl_gc_until_base' (zero-fresh on every start; this
+    ;; the private `nl_gc_done_cell' slot (zero-fresh on every start; this
     ;; init runs on every boot, after a cold image restore too), and
     ;; `nl_gc_debt_rearm' bumps the value cell inline at the end of each completed
     ;; collection (inline and on an exported data symbol, because that function
@@ -39472,7 +39483,7 @@ bytes are written into a fresh 8-byte buffer instead."
            (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
              (seq (nl_ent_set obj 7 (nl_imm_int 1))
                   (nl_ent_set obj 0 (nl_imm_int (heap-read-u64 (data-addr nl_gc_stats) 24)))
-                  (ptr-write-u64 (data-addr nl_gc_until_base) 8 obj)
+                  (ptr-write-u64 (data-addr nl_gc_done_cell) 0 obj)
                   1))))))
     (defun nl_sym_fwd_init (env)
       (let* ((bytes (alloc-bytes 24 1)))
@@ -52522,6 +52533,15 @@ resolved fine.  Same feature, different answer per entry point."
     "vendor/emacs-lisp/emacs-lisp/subr-x.el" 'string-pad)
    (nelisp-standalone--vendor-function-source
     "vendor/emacs-lisp/emacs-lisp/subr-x.el" 'string-chop-newline)
+   ;; Keep the whole GNU mode-hook section together. In particular, compiled
+   ;; major modes make and dynamically bind a permanent buffer-local variable.
+   (let* ((file "vendor/staged-emacs-lisp/subr.el")
+          (source (nelisp-vendor-source-whole-file file))
+          (begin (string-match "^(defvar delay-mode-hooks " source))
+          (macro (string-match "^(defmacro delay-mode-hooks " source)))
+     (unless (and begin macro (< begin macro))
+       (error "Missing GNU mode-hook section"))
+     (concat "\n" (substring source begin (cdr (read-from-string source macro))) "\n"))
    "\n;; --- GNU Emacs 31.1 subr.el: remaining definitions ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el" nelisp-standalone--vendor-subr-extra-names)
@@ -65079,7 +65099,10 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
     (if (= count 2)
         (let* ((name (wf_arg_word args 1)) (sym (wf_word_view name)))
           (if (or (= (nl_val_tag sym) 4) (= (nl_val_tag sym) 16))
-              (nl_n3_globals_toplevel_read_w name env)
+              (if (= (sexp-name-eq op "variable-cell-bound-in-frame-p") 1)
+                  (if (or (/= (nelisp_frame_stack_find_kind (+ env 32) sym 1 0) 0)
+                          (/= (nl_ps_outer_saved env sym) 0)) 7 3)
+                (nl_n3_globals_toplevel_read_w name env))
             (seq (nl_apply_stash_wrong_symbolp env sym) 0)))
       (if (= count 3)
           (let* ((name (wf_arg_word args 1)) (sym (wf_word_view name))
@@ -65152,7 +65175,8 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
   (if (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-watchers") 1)
       (nl_n3_globals_mode_w args env 0)
     (if (or (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-toplevel-value") 1)
-            (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-set-toplevel") 1))
+            (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-set-toplevel") 1)
+            (= (sexp-name-eq (nl_apply_list_nth args 0) "variable-cell-bound-in-frame-p") 1))
         (nl_n3_globals_toplevel_raw_w args env)
       (if (= (sexp-name-eq (nl_apply_list_nth args 0) "backtrace") 1)
           (nl_n4_frame_op_w args env 0)

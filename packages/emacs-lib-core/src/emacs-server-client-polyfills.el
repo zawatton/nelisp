@@ -213,18 +213,7 @@ An explicit environment list returns t for a negative entry."
   (defun get-window-with-predicate (&rest _ignored) nil)
   (defun frame-first-window (&optional frame-or-window)
     "Return the topmost leftmost live window of FRAME-OR-WINDOW's frame."
-    (let* ((frame (cond
-                   ((null frame-or-window) (selected-frame))
-                   ((window-valid-p frame-or-window)
-                    (window-frame frame-or-window))
-                   ((frame-live-p frame-or-window) frame-or-window)
-                   (t (signal 'wrong-type-argument
-                              (list 'frame-live-p frame-or-window)))))
-           (root (emacs-frame-root-window frame)))
-      (unless root
-        ;; The initial frame adopts the window module's implicit tree.
-        (selected-window)
-        (setq root emacs-window--root))
+    (let ((root (frame-root-window frame-or-window)))
       (while (and root (not (window-live-p root)))
         (setq root (car (emacs-window-children root))))
       root))

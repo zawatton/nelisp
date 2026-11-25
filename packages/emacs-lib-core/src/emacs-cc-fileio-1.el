@@ -11,8 +11,8 @@
 
 (unless (fboundp 'clear-buffer-auto-save-failure)
   (defun clear-buffer-auto-save-failure ()
-    "Clear any record of a recent auto-save failure in the current buffer."
-    nil))
+    "Permit a retry of the current buffer's auto-save."
+    (setq emacs-cc-fileio-1--auto-save-failure-time nil)))
 
 (unless (fboundp 'delete-directory-internal)
   (defvar emacs-cc-fileio--delete-directory-primitive
@@ -38,10 +38,60 @@
     (and (> (length name) 0)
          (memq (aref name (1- (length name))) '(?/ ?\\)) t)))
 
+(defvar auto-save-hook)
+(defvar auto-save-include-big-deletions)
+(defvar emacs-cc-fileio-2--auto-saved-tick)
+(defvar-local emacs-cc-fileio-1--auto-save-failure-time nil)
+(put 'emacs-cc-fileio-1--auto-save-failure-time 'permanent-local t)
+
+(defun emacs-cc-fileio-1--auto-save-buffer (no-message)
+  "Auto-save the current buffer if edits have changed it since the last save."
+  (when (and (stringp buffer-auto-save-file-name)
+             (not (buffer-base-buffer))
+             (buffer-modified-p)
+             (not (equal (buffer-modified-tick) emacs-cc-fileio-2--auto-saved-tick))
+             (natnump buffer-saved-size)
+             (or (not emacs-cc-fileio-1--auto-save-failure-time)
+                 (>= (- (float-time) emacs-cc-fileio-1--auto-save-failure-time) 1200)))
+    (if (and buffer-file-name (not no-message)
+             (not (bound-and-true-p auto-save-include-big-deletions))
+             (> buffer-saved-size 5000)
+             (< (* 4 (buffer-size)) (* 3 buffer-saved-size)))
+        (progn
+          (setq buffer-saved-size -1)
+          (message "Buffer %s has shrunk a lot; auto save disabled in that buffer until next real save"
+                   (buffer-name)))
+      (condition-case err
+          (save-restriction
+            (widen)
+            (let ((coding-system-for-write buffer-file-coding-system)
+                  (buffer-file-format buffer-auto-save-file-format))
+              (with-file-modes #o600
+                (write-region nil nil buffer-auto-save-file-name nil 'silent)))
+            (set-buffer-auto-saved)
+            (setq buffer-saved-size (buffer-size)
+                  emacs-cc-fileio-1--auto-save-failure-time nil)
+            t)
+        (file-error
+         (setq emacs-cc-fileio-1--auto-save-failure-time (float-time))
+         (message "Auto-saving %s: %s" (buffer-name) (error-message-string err))
+         nil)))))
+
 (unless (fboundp 'do-auto-save)
   (defun do-auto-save (&optional no-message current-only)
-    "Auto-save all buffers that need it."
-    (ignore no-message current-only)
+    "Auto-save buffers changed since they were last saved or auto-saved.
+NO-MESSAGE suppresses success messages. CURRENT-ONLY limits saving
+to the current buffer."
+    (run-hooks 'auto-save-hook)
+    (let ((buffers (if current-only (list (current-buffer)) (buffer-list)))
+          (saved nil))
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (when (emacs-cc-fileio-1--auto-save-buffer no-message)
+              (setq saved t)))))
+      (when (and saved (not no-message))
+        (message "Auto-saving...done")))
     nil))
 
 (unless (fboundp 'file-acl)

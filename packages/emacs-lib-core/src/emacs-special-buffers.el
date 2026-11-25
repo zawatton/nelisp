@@ -110,6 +110,8 @@ after a successful file write).  See the same per-buffer type check
           (when (boundp 'buffer-read-only)
             (setq buffer-read-only
                   (emacs-special-buffers-read-only-p name)))
+          (when (and (not existing) (equal name messages-buffer-name))
+            (buffer-disable-undo))
           (when (fboundp 'emacs-buffer-set-buffer-modified-p)
             (emacs-buffer-set-buffer-modified-p nil buf)))
         buf)
@@ -122,6 +124,8 @@ after a successful file write).  See the same per-buffer type check
         (when (boundp 'buffer-read-only)
           (setq buffer-read-only
                 (emacs-special-buffers-read-only-p name)))
+        (when (and (not existing) (equal name messages-buffer-name))
+          (setq-local buffer-undo-list t))
         (when (fboundp 'set-buffer-modified-p)
           (set-buffer-modified-p nil)))
       buf))))
@@ -153,12 +157,15 @@ The result contains `:status', `:buffer', `:buffer-name',
 (defun emacs-special-buffers-append-to-buffer (name text)
   "Append TEXT to special buffer NAME."
   (or (emacs-special-buffers--backend-call :append name text)
-      (let ((buf (emacs-special-buffers-ensure-buffer name)))
+      (let ((buf (emacs-special-buffers-ensure-buffer name))
+            (message-log (equal name messages-buffer-name)))
         (if (and (fboundp 'nelisp-ec-buffer-p)
                  (nelisp-ec-buffer-p buf))
             (nelisp-ec-with-current-buffer buf
               (let ((was-read-only (and (boundp 'buffer-read-only)
                                         buffer-read-only)))
+                (when (and message-log (not (eq buffer-undo-list t)))
+                  (buffer-disable-undo))
                 (when (boundp 'buffer-read-only)
                   (setq buffer-read-only nil))
                 (nelisp-ec-goto-char (nelisp-ec-point-max))
@@ -170,6 +177,10 @@ The result contains `:status', `:buffer', `:buffer-name',
           (with-current-buffer buf
             (let ((was-read-only (and (boundp 'buffer-read-only)
                                       buffer-read-only)))
+              ;; GNU message_dolog disables undo on every log write,
+              ;; including in an existing buffer with undo re-enabled.
+              (when (and message-log (not (eq buffer-undo-list t)))
+                (buffer-disable-undo))
               (when (boundp 'buffer-read-only)
                 (setq buffer-read-only nil))
               (goto-char (point-max))
@@ -237,13 +248,29 @@ The result contains `:status', `:buffer', `:buffer-name',
 
 (defun emacs-special-buffers--trim-message-log ()
   "Trim `messages-buffer-name' according to `message-log-max'."
-  (when (integerp message-log-max)
-    (let* ((buffer (emacs-special-buffers-ensure-buffer messages-buffer-name))
-           (text (emacs-special-buffers--buffer-string buffer))
-           (trimmed (emacs-special-buffers--last-n-lines
-                     text message-log-max)))
-      (unless (equal text trimmed)
-        (emacs-special-buffers--replace-buffer-text buffer trimmed)))))
+  (when (natnump message-log-max)
+    (let ((buffer (emacs-special-buffers-ensure-buffer messages-buffer-name))
+          (limit message-log-max))
+      (if (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p buffer))
+          (let* ((text (emacs-special-buffers--buffer-string buffer))
+                 (trimmed (emacs-special-buffers--last-n-lines text limit)))
+            (unless (equal text trimmed)
+              (emacs-special-buffers--replace-buffer-text buffer trimmed)))
+        ;; Delete the prefix in place, preserving markers in the retained
+        ;; lines and avoiding a copy of the log on each message.
+        (with-current-buffer buffer
+          (save-restriction
+            (widen)
+            (when (> (buffer-size) limit)
+              (save-excursion
+                (goto-char (point-max))
+                (unless (= limit 0)
+                  (forward-line (if (bolp) (- limit) (- 1 limit))))
+                (when (> (point) (point-min))
+                  (let ((inhibit-read-only t)
+                        (inhibit-modification-hooks t))
+                    (delete-region (point-min) (point)))
+                  (set-buffer-modified-p nil))))))))))
 
 (defvar emacs-special-buffers-echo-message nil
   "Current interactive echo-area text; nil means the area is clear.")

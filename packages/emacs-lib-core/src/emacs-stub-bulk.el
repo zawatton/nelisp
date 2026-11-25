@@ -389,7 +389,7 @@ Forwarder to `forward-char' with negated count."
     messages-buffer-max-lines minibuffer-auto-raise minibuffer-local-map minibuffer-scroll-window minor-mode-alist minor-mode-map-alist mode-line-mode-menu
     most-negative-fixnum most-positive-fixnum native-comp-deferred-compilation native-comp-enable-subr-trampolines native-comp-jit-compilation needed noninteractive obarray
     operating-system-release output overriding-local-map overriding-terminal-local-map parse-sexp-lookup-properties pending-undo-list post-self-insert-hook print-escape-newlines
-    print-gensym print-quoted print-unreadable-function purify-flag query-replace-map redisplay-dont-pause s set-variable-value-history
+    print-gensym print-quoted print-unreadable-function purify-flag redisplay-dont-pause s set-variable-value-history
     shell-file-name standard-output sym symbols-with-pos-enabled syntax-propertize-function system-type temp-buffer-show-function text-conversion-style
     translation-table-for-input undo-in-progress use-dialog-box values vertical-scroll-bar
     x-gtk-use-window-move yank-transform-functions)))

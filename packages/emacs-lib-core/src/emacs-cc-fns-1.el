@@ -114,28 +114,6 @@ The data in the region is assumed to represent bytes.  Optional third argument N
   (defun hash-table-rehash-threshold (table) "Return the nominal rehash threshold of TABLE." (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table))) 0.8125))
 (unless (fboundp 'hash-table-size)
   (defun hash-table-size (table) "Return the current allocation size of TABLE." (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table))) (+ 5 (hash-table-count table))))
-(defvar emacs-cc-fns-1--hash-table-weaknesses (make-hash-table :test 'eq))
-(defvar emacs-cc-fns-1--make-hash-table-original
-  (and (fboundp 'make-hash-table) (symbol-function 'make-hash-table)))
-(when (and emacs-cc-fns-1--make-hash-table-original
-           (not (get 'make-hash-table 'emacs-cc-fns-1-weakness-wrapper)))
-  ;; gnu562: the original under a name, not a captured variable: a closure
-  ;; over a binding always ran interpreted (`make-hash-table' 13.5 us).
-  (defalias 'emacs-cc-fns-1--make-hash-table-native
-    emacs-cc-fns-1--make-hash-table-original)
-  (defalias 'make-hash-table
-    (lambda (&rest arguments)
-      (let ((table (apply #'emacs-cc-fns-1--make-hash-table-native arguments))
-            (tail arguments) weakness)
-        (while tail
-          (when (eq (car tail) :weakness)
-            (setq weakness (cadr tail) tail nil))
-          (when tail (setq tail (cddr tail))))
-        (when weakness (puthash table weakness emacs-cc-fns-1--hash-table-weaknesses))
-        table)))
-  (put 'make-hash-table 'emacs-cc-fns-1-weakness-wrapper t))
-(unless (fboundp 'hash-table-weakness)
-  (defun hash-table-weakness (table) "Return the weakness of TABLE." (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table))) (gethash table emacs-cc-fns-1--hash-table-weaknesses)))
 (unless (fboundp 'internal--hash-table-buckets)
   (defun internal--hash-table-buckets (hash-table) "Return (KEY . HASH) in HASH-TABLE, grouped by bucket." (unless (hash-table-p hash-table) (signal 'wrong-type-argument (list 'hash-table-p hash-table))) nil))
 (unless (fboundp 'internal--hash-table-histogram)

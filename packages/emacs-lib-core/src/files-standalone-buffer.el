@@ -252,6 +252,14 @@ placeholder must not be captured as \"native\" here either.")
   (setq files--buffer-save-ticks
         (files--live-buffer-cells files--buffer-save-ticks)))
 
+(defun files--forget-buffer-state (buffer)
+  "Remove BUFFER's file and editing state after the buffer dies."
+  (setq files--buffer-file-names (assq-delete-all buffer files--buffer-file-names)
+        files--buffer-strings (assq-delete-all buffer files--buffer-strings)
+        files--buffer-points (assq-delete-all buffer files--buffer-points)
+        files--buffer-modified-flags (assq-delete-all buffer files--buffer-modified-flags)
+        files--buffer-save-ticks (assq-delete-all buffer files--buffer-save-ticks)))
+
 (defun files--set-buffer-state-cell (alist value &optional buffer)
   "Set BUFFER's ALIST cell to VALUE when buffer primitives exist."
   (let* ((key (files--buffer-key buffer))
@@ -617,12 +625,17 @@ overhead, so the fallback is skipped while the native subr is in place.")
     ;; Do not let one buffer's history become another buffer's default.
     (unless (local-variable-p 'buffer-undo-list)
       (make-local-variable 'buffer-undo-list))
-    (when unmodified
-      (setq buffer-undo-list
-            (cons (cons t (if (fboundp 'visited-file-modtime)
-                              (visited-file-modtime)
-                            0))
-                  buffer-undo-list)))
+    (let ((boundary (null (car-safe buffer-undo-list)))
+          (context (bound-and-true-p emacs-command-loop--undo-point)))
+      (when unmodified
+        (setq buffer-undo-list
+              (cons (cons t (if (fboundp 'visited-file-modtime)
+                                (visited-file-modtime)
+                              0))
+                    buffer-undo-list)))
+      (when (and boundary context (eq (car context) (current-buffer))
+                 (/= (cdr context) beg))
+        (push (cdr context) buffer-undo-list)))
     (let ((head (car-safe buffer-undo-list)))
       (if (and (consp head) (integerp (car head))
                (integerp (cdr head)) (= (cdr head) beg))
@@ -673,16 +686,37 @@ overhead, so the fallback is skipped while the native subr is in place.")
     flag)
   (put 'restore-buffer-modified-p 'emacs-stub-bulk nil))
 
-(defun files--read-file-text (filename)
-  "Return FILENAME contents as a string, or nil when no reader exists."
+(defun files--read-file-text (filename &optional raw)
+  "Return FILENAME contents, or nil when no reader exists.
+With RAW, return the on-disk bytes as a unibyte string."
   (cond
    ((fboundp 'nelisp--syscall-read-file)
-    (nelisp--syscall-read-file filename))
+    (nelisp--syscall-read-file filename raw))
    ((and files--native-insert-file-contents files--native-buffer-string)
     (with-temp-buffer
       (funcall files--native-insert-file-contents filename)
       (funcall files--native-buffer-string)))
    (t nil)))
+
+(defun files--coding-converter (coding)
+  "Return the string converter for file coding CODING."
+  (if (memq coding '(emacs-internal utf-8-emacs utf-8-emacs-unix))
+      ;; Both use Emacs's internal UTF-8 byte representation, including
+      ;; the raw-byte characters. Keep CODING itself for the file metadata.
+      'utf-8-unix
+    coding))
+
+(defun files--decode-file-bytes (bytes coding)
+  "Decode BYTES according to the file's CODING."
+  (if (memq coding '(euc-jis-2004 euc-jisx0213))
+      (condition-case err
+          (decode-coding-string bytes coding)
+        (coding-system-error
+         ;; EUC-JIS-2004 keeps ASCII bytes unchanged.
+         (if (string-match-p "[^[:ascii:]]" bytes)
+             (signal (car err) (cdr err))
+           (emacs-cc-coding-3--eol-decode (string-as-multibyte bytes) nil))))
+    (decode-coding-string bytes (files--coding-converter coding))))
 
 (defun files--insert-file-contents-1 (filename visit beg end replace)
   "Insert FILENAME for `insert-file-contents' when no handler applies."
@@ -696,27 +730,35 @@ overhead, so the fallback is skipped while the native subr is in place.")
   (setq filename (files--expand-file-name filename))
   (when (file-directory-p filename)
     (signal 'file-error (list "Read error" "Is a directory" filename)))
-  (let ((text (files--read-file-text filename))
-        (pos (point)))
+  (let* ((coding (and (boundp 'coding-system-for-read) coding-system-for-read))
+         (raw (or coding beg end (not enable-multibyte-characters)))
+         (text (files--read-file-text filename raw))
+         (pos (point)))
     (unless text
       (when visit (set-visited-file-name filename))
       (signal 'file-missing
               (list "Opening input file" "No such file or directory" filename)))
     (when (or beg end)
-      (let* ((bytes (encode-coding-string text 'utf-8-unix))
-             (size (length bytes))
+      (let* ((size (length text))
              (from (min (truncate (or beg 0)) size))
              (to (max from (min (truncate (or end size)) size))))
-        (setq text (decode-coding-string (substring bytes from to)
-                                        'utf-8-unix))))
+        (setq text (substring text from to))))
+    (setq last-coding-system-used (or coding (if raw 'utf-8-unix 'undecided-unix)))
+    (when (and raw enable-multibyte-characters (not (eq coding 'no-conversion)))
+      (setq text (files--decode-file-bytes text (or coding 'utf-8-unix))))
     (when replace
       (delete-region (point-min) (point-max)))
-    (insert text)
-    (goto-char (min pos (point-max)))
-    (when visit
-      (set-visited-file-name filename)
-      (set-buffer-modified-p nil))
-    (list filename (length text))))
+    (let ((start (point)))
+      (insert text)
+      (let ((length (- (point) start)))
+        (goto-char (min pos (point-max)))
+        (when visit
+          (let ((used last-coding-system-used))
+            (set-visited-file-name filename)
+            (when coding
+              (setq buffer-file-coding-system used)))
+          (set-buffer-modified-p nil))
+        (list filename length)))))
 
 (when (files--install-fallback-function-p 'insert-file-contents)
   (defun insert-file-contents (filename &optional visit beg end replace)
@@ -770,6 +812,17 @@ REPLACE replaces the accessible contents; VISIT records the visited file."
       (signal 'wrong-type-argument (list 'stringp filename)))
     (when (and lockname (not (stringp lockname)))
       (signal 'wrong-type-argument (list 'stringp lockname)))
+    (let ((coding (and (boundp 'coding-system-for-write) coding-system-for-write)))
+      (when coding
+        (when (eq (coding-system-base coding) 'undecided)
+          (let ((eol (coding-system-eol-type coding)))
+            (setq coding (if (integerp eol)
+                             (aref (coding-system-eol-type 'utf-8) eol)
+                           'utf-8))))
+        (setq last-coding-system-used coding
+              text (if (eq coding 'no-conversion)
+                       (string-as-unibyte text)
+                     (encode-coding-string text (files--coding-converter coding))))))
     (prog1 (files--write-file-text filename text append visit lockname
                                    mustbenew)
       ;; GNU fileio.c `write_region': a VISIT of t or a file name makes

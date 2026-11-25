@@ -1830,7 +1830,7 @@ Other major modes are defined by comparison with this one.
 ;; 210)") at a much smaller scale: no buffer/interval-splitting engine,
 ;; just the layered "most recent write wins" model direct string
 ;; text-property support actually needs, keyed on string identity.
-(defvar nelisp--tp-string-properties (make-hash-table :test 'eq)
+(defvar nelisp--tp-string-properties (make-hash-table :test 'eq :weakness 'key)
   "STRING (by identity) -> its text-property interval list, 0-based.")
 (defun nelisp--tp-plist-at (pos intervals)
   "Return the merged property list at POS across INTERVALS: for each

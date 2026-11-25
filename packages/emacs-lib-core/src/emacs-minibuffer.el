@@ -313,33 +313,56 @@ of a list is what Emacs prints in the prompt."
    ((and (listp default) (cl-every #'stringp default)) (car default))
    (t (signal 'emacs-minibuffer-bad-default (list default)))))
 
-(defun emacs-minibuffer--push-history (hist value)
-  "Push VALUE onto the history list represented by HIST.
-HIST is a symbol or (SYMBOL . OFFSET) cons; we treat the offset as
-informational.  Empty VALUE strings are NOT added (= matches Emacs)."
-  (let ((sym (cond
-              ((null hist) emacs-minibuffer-default-history-symbol)
-              ((symbolp hist) hist)
-              ((and (consp hist) (symbolp (car hist))) (car hist))
-              (t emacs-minibuffer-default-history-symbol))))
-    ;; HIST = t means "no history" (GNU `read-string', e.g. `read-passwd').
-    (when (and (not (eq hist t)) (stringp value) (not (string-empty-p value)))
-      (unless (boundp sym) (set sym nil))
-      (set sym (cons value (symbol-value sym))))))
+(defun emacs-minibuffer--history-symbol (hist)
+  "Resolve the history variable represented by HIST."
+  (cond
+   ((null hist) emacs-minibuffer-default-history-symbol)
+   ((symbolp hist) hist)
+   ((and (consp hist) (symbolp (car hist))) (car hist))
+   (t emacs-minibuffer-default-history-symbol)))
 
-(defun emacs-minibuffer--read-line-events (prompt initial)
-  "Read a line from the shared command loop's installed event provider."
+(defun emacs-minibuffer--push-history (hist value)
+  "Record VALUE in the history represented by HIST."
+  (let ((symbol (emacs-minibuffer--history-symbol hist)))
+    (unless (eq symbol t)
+      (unless (boundp symbol) (set symbol nil))
+      (add-to-history symbol value))))
+
+(defvar minibuffer-history-variable)
+(defvar minibuffer-history-position)
+(defvar minibuffer-default)
+(defvar minibuffer-text-before-history)
+(defvar minibuffer-history-sexp-flag)
+
+(defun emacs-minibuffer--read-line-events (prompt initial default hist read)
+  "Read a line from the shared command loop, including queued events."
   (let* ((text (cond ((stringp initial) initial)
                      ((consp initial) (car initial)) (t "")))
          (cursor (if (consp initial)
                      (max 0 (min (length text) (1- (cdr initial))))
                    (length text)))
+         (minibuffer-history-variable (emacs-minibuffer--history-symbol hist))
+         (minibuffer-history-position (if (consp hist) (cdr hist) 0))
+         (minibuffer-default default)
+         (minibuffer-history-sexp-flag (and read (minibuffer-depth)))
+         (minibuffer-text-before-history nil)
+         (previous (event-convert-list '(meta ?p)))
+         (next (event-convert-list '(meta ?n)))
          (done nil))
     (when emacs-minibuffer-redisplay-function
       (funcall emacs-minibuffer-redisplay-function))
     (while (not done)
       (let ((event (emacs-command-loop-read-event prompt t)))
         (cond
+         ((and (integerp event) (or (eq event previous) (eq event next)))
+          (condition-case err
+              (progn
+                (funcall (if (eq event previous)
+                             #'previous-history-element #'next-history-element)
+                         1)
+                (setq text (minibuffer-contents-no-properties)
+                      cursor (- (point) (minibuffer-prompt-end))))
+            (user-error (message "%s" (error-message-string err)))))
          ((memq event '(13 10 return)) (setq done t))
          ((eq event 7) (signal 'quit nil))
          ((memq event '(1 home)) (setq cursor 0))
@@ -372,15 +395,16 @@ informational.  Empty VALUE strings are NOT added (= matches Emacs)."
     text))
 
 (defun emacs-minibuffer--read-line-default
-    (prompt initial _default _hist _keymap _read)
+    (prompt initial default hist _keymap read)
   "Built-in line reader — pops one entry from the input queue.
 Returns the line as a string.  Accepts optional `:abort' / `:exit'
 sentinels for control-flow tests."
   (if (and (null emacs-minibuffer--input-queue)
-           (boundp 'emacs-command-loop-input-poll-function)
-           emacs-command-loop-input-poll-function
-           (fboundp 'emacs-command-loop-read-event))
-      (emacs-minibuffer--read-line-events prompt initial)
+           (fboundp 'emacs-command-loop-read-event)
+           (or (and (fboundp 'emacs-command-loop-pending-p)
+                    (emacs-command-loop-pending-p))
+               (bound-and-true-p emacs-command-loop-input-poll-function)))
+      (emacs-minibuffer--read-line-events prompt initial default hist read)
     (when (null emacs-minibuffer--input-queue)
       (signal 'emacs-minibuffer-no-input (list prompt)))
     (let ((next (pop emacs-minibuffer--input-queue)))
