@@ -293,7 +293,6 @@ alias target), otherwise to `customize-customized'."
 (defconst emacs-parity-skk--special-vars
   '(;; ROOT 2 -- the two roots of the skk-* variable cascade.
     ("window-system" . "nil")
-    ("frame-background-mode" . "nil")
     ;; ROOT 3 -- representable charset set consulted by `charsetp'.
     ("charset-list" . "'(ascii eight-bit unicode)")
     ;; ROOT 6 -- vendor `make-face-x-resource-internal' skips X-resource
@@ -303,18 +302,12 @@ alias target), otherwise to `customize-customized'."
     ;; ROOT 5 -- custom/minibuffer/startup vars pulled in via cus-edit /
     ;; wid-edit / cus-start.
     ("custom-file" . "nil")
-    ("custom-raised-buttons" . "nil")
     ("minibuffer-prompt-properties" . "'(read-only t face minibuffer-prompt)")
     ("read-file-name-completion-ignore-case" . "nil")
     ("after-init-time" . "nil")
-    ;; Org (org-persist.el) -- C startup variable, and the epa-hook.el
-    ;; autoloaded default regexp that org-persist reads without requiring epa.
+    ;; Org (org-persist.el) reads this C startup variable.
     ("before-init-time" . "(current-time)")
-    ("epa-file-name-regexp" . "\"\\\\.gpg\\\\(~\\\\|\\\\.~[0-9]+~\\\\)?\\\\'\"")
-    ("dump-mode" . "nil")
-    ("custom-dirlocals-field-map" . "(make-sparse-keymap)")
-    ("custom-field-keymap"
-     . "(if (and (boundp 'widget-field-keymap) (keymapp widget-field-keymap)) (copy-keymap widget-field-keymap) (make-sparse-keymap))"))
+    ("dump-mode" . "nil"))
   "Alist of (VAR-NAME . INIT-STRING) provided as globally-special defvars.
 See the commentary above for why these go through the full evaluator.
 Installed only in the standalone runtime; host Emacs already binds every

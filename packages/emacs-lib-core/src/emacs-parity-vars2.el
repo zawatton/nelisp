@@ -21,7 +21,6 @@
 ;;      Verified from the vendored sources:
 ;;        - c/c++/objc/java/idl/pike -font-lock-keywords-3
 ;;          -> defconst in vendor/emacs-lisp/progmodes/cc-fonts.el
-;;        - transient-font-lock-keywords
 ;;          -> defconst in vendor/transient/lisp/transient.el:5710
 ;;        - treemacs-header-close-button
 ;;          -> defconst in treemacs/src/elisp/treemacs-header-line.el:40
@@ -75,20 +74,6 @@
 (unless (boundp 'java-font-lock-keywords-3) (defvar java-font-lock-keywords-3 nil))
 (unless (boundp 'idl-font-lock-keywords-3)  (defvar idl-font-lock-keywords-3 nil))
 (unless (boundp 'pike-font-lock-keywords-3) (defvar pike-font-lock-keywords-3 nil))
-
-;;;; --- transient font-lock keywords (defconst-owned) -----------------
-;; Faithful reconstruction of transient.el's `transient-font-lock-keywords'
-;; (defconst, override-safe).  The regexp is the pre-computed
-;; `regexp-opt' output for the five `transient-define-*' macro names, so no
-;; run-time dependency on `regexp-opt'.  `\t' in the char class is a literal
-;; TAB, matching the stock source.
-
-(unless (boundp 'transient-font-lock-keywords)
-  (defvar transient-font-lock-keywords
-    '(("(\\(transient-define-\\(?:argument\\|group\\|infix\\|prefix\\|suffix\\)\\)\\_>[ \t'(]*\\(\\(?:\\sw\\|\\s_\\)+\\)?"
-       (1 'font-lock-keyword-face)
-       (2 'font-lock-function-name-face nil t)))
-    "Font-lock keywords for `transient-define-*' forms (parity fallback)."))
 
 ;;;; --- treemacs header close button (defconst-owned) -----------------
 ;; Real value is a propertized glyph carrying a mouse local-map built inside

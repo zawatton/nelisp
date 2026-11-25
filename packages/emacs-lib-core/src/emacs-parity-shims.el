@@ -269,19 +269,6 @@ has no lazy `define-coding-system' registry to trigger."
     "New keymap composed of MAPS (list or single keymap), inheriting PARENT."
     (append (cons 'keymap (if (keymapp maps) (list maps) maps)) parent)))
 
-(unless (fboundp 'bindings--define-key)
-  (defun bindings--define-key (map key item)
-    "Define KEY in MAP from menu ITEM."
-    (define-key map key
-      (cond
-       ((not (consp item)) item)
-       ((keymapp item) item)
-       ((stringp (car item))
-        (if (keymapp (cdr item)) (cons (purecopy (car item)) (cdr item))
-          (purecopy item)))
-       ((eq 'menu-item (car item)) (purecopy item))
-       (t item)))))
-
 ;;;; --- derived modes / completion / navigation -----------------------
 
 (unless (fboundp 'derived-mode--flush)
@@ -418,7 +405,6 @@ BODY."
     (put symbol 'abortfunc (or abortfunc #'kill-buffer))
     (put symbol 'hookvar (or hookvar 'mail-send-hook))))
 
-(defvar skeleton-debug nil "Non-nil enables `define-skeleton' debug storage.")
 (unless (fboundp 'define-skeleton)
   (defmacro define-skeleton (command documentation &rest skeleton)
     "Define user-configurable COMMAND that enters a statement skeleton."
@@ -492,7 +478,6 @@ Unicode, raw bytes, Latin-1 and the JIS Roman subset."
 ;; keymaps (empty sparse maps = safe shape for unloaded third-party pkgs)
 (unless (boundp 'json-mode-map) (defvar json-mode-map (make-sparse-keymap)))
 (unless (boundp 'evil-list-view-mode-map) (defvar evil-list-view-mode-map (make-sparse-keymap)))
-(unless (boundp 'widget-field-keymap) (defvar widget-field-keymap (make-sparse-keymap)))
 (unless (boundp 'widget-text-keymap) (defvar widget-text-keymap (make-sparse-keymap)))
 (unless (boundp 'widget-link-keymap) (defvar widget-link-keymap (make-sparse-keymap)))
 (unless (boundp 'vc-menu-map) (defvar vc-menu-map (make-sparse-keymap)))
@@ -506,21 +491,6 @@ Unicode, raw bytes, Latin-1 and the JIS Roman subset."
 (unless (boundp 'remote-shell-program) (defvar remote-shell-program "ssh"))
 (unless (boundp 'read-extended-command-predicate) (defvar read-extended-command-predicate nil))
 (unless (boundp 'mm-auto-save-coding-system) (defvar mm-auto-save-coding-system 'utf-8-emacs))
-
-;; org timestamp regexps (rx pre-expanded; no rx/org dependency)
-(defconst nemacs-parity--org-ts-internal
-  "[[:digit:]]\\{4\\}-[[:digit:]]\\{2\\}-[[:digit:]]\\{2\\}\\(?: .*?\\)?")
-(unless (boundp 'org-ts-regexp-inactive)
-  (defvar org-ts-regexp-inactive
-    (concat "\\[\\(" nemacs-parity--org-ts-internal "\\)\\]")))
-(unless (boundp 'org-ts-regexp-both)
-  (defvar org-ts-regexp-both
-    (concat "[[<]\\(" nemacs-parity--org-ts-internal "\\)[]>]")))
-
-;; faces
-(unless (boundp 'grep-hit-face)
-  (defvar grep-hit-face
-    (if (boundp 'compilation-info-face) compilation-info-face 'match)))
 
 ;;;; --- parity round 2 additions --------------------------------------
 
@@ -677,13 +647,6 @@ Unicode, raw bytes, Latin-1 and the JIS Roman subset."
       (coding-system-change-eol-conversion
        (if coding coding 'undecided)
        (if (numberp eol-type) (aref [unix dos mac] eol-type))))))
-
-;; GNU Emacs 31.1 files.el: `revert-buffer-in-progress' aliases the `-p' variable.
-(unless (boundp 'revert-buffer-in-progress-p)
-  (defvar revert-buffer-in-progress-p nil
-    "Non-nil if a `revert-buffer' operation is in progress, nil otherwise."))
-(unless (boundp 'revert-buffer-in-progress)
-  (defvaralias 'revert-buffer-in-progress 'revert-buffer-in-progress-p))
 
 ;; Fallback (not GNU): GNU files.el applies directory-local variables to
 ;; non-file buffers here.  Directory-local variables are not implemented in

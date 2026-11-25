@@ -204,20 +204,7 @@ renamed to comply with executable naming restrictions on the system."))
   (defvar user-full-name (or (getenv "USER") "user")))
 (unless (boundp 'enable-multibyte-characters) (defvar enable-multibyte-characters t))
 
-;; --- cc-mode char classes / features (stock cc-defs values; used inside [...]) ---
-(unless (boundp 'c-alpha) (defvar c-alpha "[:alpha:]"))
-(unless (boundp 'c-alnum) (defvar c-alnum "[:alnum:]"))
-(unless (boundp 'c-upper) (defvar c-upper "[:upper:]"))
-(unless (boundp 'c-lower) (defvar c-lower "[:lower:]"))
-(unless (boundp 'c-use-category) (defvar c-use-category nil))
-(unless (boundp 'c-emacs-features)
-  (defvar c-emacs-features '(pps-extended-state category-properties syntax-properties)))
-(unless (boundp 'objc-font-lock-extra-types) (defvar objc-font-lock-extra-types nil))
-(unless (boundp 'cc-imenu-c++-generic-expression) (defvar cc-imenu-c++-generic-expression nil))
-(unless (boundp 'cc-imenu-java-type-spec-regexp) (defvar cc-imenu-java-type-spec-regexp nil))
-
 ;; --- misc core ---
-(unless (boundp 'stipple-pixmap) (defvar stipple-pixmap nil))
 (unless (boundp 'lisp-mode-symbol-regexp)
   (defvar lisp-mode-symbol-regexp "\\(?:\\sw\\|\\s_\\|\\\\.\\)+"))
 (unless (boundp 'completion-ignored-extensions)
@@ -235,9 +222,6 @@ renamed to comply with executable naming restrictions on the system."))
 
 ;; GNU bindings.el's standard construct.  Preserve user/customized values;
 ;; mode-line packages append to this even in a headless library consumer.
-(unless (boundp 'mode-line-misc-info)
-  (defvar mode-line-misc-info '((global-mode-string ("" global-mode-string)))))
-(put 'mode-line-misc-info 'risky-local-variable t)
 
 ;; --- password prompt words (stock international/mule-conf default) ---
 ;; `comint', `eshell' and `tramp' build their password prompt regexps from

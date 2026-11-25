@@ -298,12 +298,23 @@ stderr output independently of `message-log-max'."
 
 (defun emacs-special-buffers-display-warning
     (type message &optional level buffer-name)
-  "Record warning TYPE and MESSAGE in warnings/messages buffers."
+  "Record warning TYPE and MESSAGE in BUFFER-NAME, defaulting to warnings."
   (ignore level)
-  (let ((line (format "Warning [%s]: %s" type message)))
-    (emacs-special-buffers-append-to-buffer
-     (or buffer-name emacs-special-buffers-warnings-name)
-     (concat line "\n"))
+  (let ((line (format "Warning [%s]: %s" type message))
+        (destination (or buffer-name emacs-special-buffers-warnings-name)))
+    (if (emacs-special-buffers-special-buffer-p destination)
+        (emacs-special-buffers-append-to-buffer destination (concat line "\n"))
+      ;; GNU warnings.el creates a normal buffer for an explicit destination,
+      ;; such as *Compile-Log*, and disables undo when it creates the buffer.
+      (let* ((existing (get-buffer destination))
+             (buffer (or existing (get-buffer-create destination))))
+        (with-current-buffer buffer
+          (unless existing
+            (buffer-disable-undo))
+          (save-excursion
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert line "\n"))))))
     (emacs-special-buffers-append-to-buffer
      emacs-special-buffers-messages-name
      (concat line "\n"))

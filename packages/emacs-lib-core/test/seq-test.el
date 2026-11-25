@@ -1,4 +1,4 @@
-;;; seq-test.el --- ERT for lightweight seq facade  -*- lexical-binding: t; -*-
+;;; seq-test.el --- ERT for the GNU seq loader  -*- lexical-binding: t; -*-
 
 ;;; Code:
 
@@ -7,11 +7,6 @@
                            (file-name-directory (or load-file-name buffer-file-name))))
 
 (require 'ert)
-
-;; The shim defers to native definitions, and a host Emacs defines
-;; `seq-group-by' (with a different group order) before this file loads.
-;; Drop it so this test exercises the package's own definition.
-(when (fboundp 'seq-group-by) (fmakunbound 'seq-group-by))
 
 (load (expand-file-name
        "../src/seq.el"
@@ -83,10 +78,8 @@
   (should (= (seq-max '(3 1 2)) 3))
   (should (= (seq-min '(3 1 2)) 1))
   (should (equal (seq-group-by #'car '((a . 1) (b . 2) (a . 3)))
-                 ;; The package's own `seq-group-by' (host definition dropped
-                 ;; above) returns groups in first-seen order.
-                 '((a (a . 1) (a . 3))
-                   (b (b . 2))))))
+                 '((b (b . 2))
+                   (a (a . 1) (a . 3))))))
 
 (ert-deftest seq-test/doc16-round2-set-and-partition ()
   "Doc 16 breadth round 2: seq-partition / seq-mapcat / seq-keep /
