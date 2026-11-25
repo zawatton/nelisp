@@ -8,6 +8,10 @@
 
 ;;; Code:
 
+;; The preload entry point binds this before the late-loaded GNU Custom
+;; declarations can affect the standalone evaluator's lexical decisions.
+(internal--define-uninitialized-variable 'custom-delayed-init-variables)
+
 ;; Source-v1 runtime image replay preserves top-level `setq' more reliably
 ;; than `defconst', while functions below need these variables after boot.
 (setq nemacs-runtime-image-preload--script-directory
@@ -233,10 +237,6 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   (custom-reevaluate-setting 'comment-column)
   (advice-add 'substitute-command-keys :around
               #'emacs-keymap-builtins--substitute-command-keys)
-  ;; Avoid walking the expanded native Unicode keymap on the first Help lookup.
-  (let ((slot (emacs-keymap-full-slot (current-global-map))))
-    (when slot
-      (emacs-keymap-builtins--where-is-char-table #'ignore slot)))
   (nemacs-runtime-image-preload--reassert-process-bridge)
   (nemacs-runtime-image-preload--retry-stale-fx)
   ;; The reconvert compiles can record a fresh `none' behind them; one more

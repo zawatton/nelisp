@@ -94,43 +94,104 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
 
 (defun emacs-keymap-builtins--require-keymap (object)
   "Resolve OBJECT as a keymap, signaling GNU's argument error otherwise."
-  (or (emacs-keymap--get-keymap object)
-      (signal 'wrong-type-argument (list 'keymapp object))))
+  (if (and (consp object) (eq (car object) 'keymap))
+      object
+    (or (emacs-keymap--get-keymap object)
+        (signal 'wrong-type-argument (list 'keymapp object)))))
 
-(defun emacs-keymap-builtins--key-events (key)
+(defun emacs-keymap-builtins--key-events (key &optional allow-range)
   "Validate KEY and expand meta characters into ESC prefix events."
   (unless (or (stringp key) (vectorp key))
     (signal 'wrong-type-argument (list 'arrayp key)))
-  (let (events)
-    (dolist (event (emacs-keymap-builtins--description-events key))
-      ;; keymap.c: a (MODIFIERS... BASE) list event goes through
-      ;; `event-convert-list' (lucid_event_type_list_p); other conses
-      ;; keep the old car fallback.
-      (when (consp event)
-        (setq event (if (and (fboundp 'nelisp--event-lucid-list-p)
-                             (nelisp--event-lucid-list-p event))
-                        (event-convert-list event)
-                      (car event))))
-      (unless (or (integerp event) (symbolp event) (stringp event))
-        (signal 'wrong-type-argument (list 'stringp event)))
-      (push event events))
-    (emacs-keymap-expand-meta-events (nreverse events))))
+  (let ((size (length key))
+        (unibyte (and (stringp key) (not (multibyte-string-p key))))
+        (meta (if (and (integerp meta-prefix-char)
+                       (/= 0 (logand meta-prefix-char #x8000000)))
+                  27
+                meta-prefix-char))
+        events)
+    (when (and (= size 1) (vectorp key) (stringp (aref key 0)))
+      (let ((description (aref key 0)))
+        (unless (fboundp 'key-valid-p)
+          (error "`key-valid-p' is not defined, so this syntax can't be used: %s"
+                 key))
+        (when (key-valid-p description)
+          (setq key (key-parse description) size (length key)
+                unibyte (and (stringp key) (not (multibyte-string-p key))))
+          (when (= size 0)
+            (error "Invalid `key-parse' syntax: %S" description)))))
+    (dotimes (i size)
+      (let ((event (aref key i)))
+        (cond
+         ((and unibyte (>= event 128))
+          (setq event (logior (- event 128) #x8000000)))
+         ((consp event)
+          (cond
+           ((and allow-range (characterp (car event)))
+            (unless (characterp (cdr event))
+              (signal 'wrong-type-argument (list 'characterp (cdr event)))))
+           ((and (fboundp 'nelisp--event-lucid-list-p)
+                 (nelisp--event-lucid-list-p event))
+            (setq event (event-convert-list event)))
+           (t (setq event (car event))))))
+        (unless (or (integerp event) (symbolp event) (stringp event)
+                    (and allow-range (consp event)))
+          (signal 'wrong-type-argument (list 'stringp event)))
+        (when (and (integerp event) (/= 0 (logand event #x8000000)))
+          (push meta events)
+          (setq event (logand event (lognot #x8000000))))
+        (push event events)))
+    (nreverse events)))
+
+(defun emacs-keymap-builtins--single-event (key)
+  "Return KEY's event if it is a one-element vector needing no decoding."
+  (when (and (vectorp key) (= (length key) 1))
+    (let ((event (aref key 0)))
+      (when (or (symbolp event)
+                (and (integerp event) (= 0 (logand event 134217728))))
+        event))))
 
 (defun emacs-keymap-builtins--own-binding (keymap event)
   "Return KEYMAP's own binding cell for EVENT, preserving explicit nil."
-  (let* ((state (emacs-keymap--tail-state keymap event))
-         (slot (car state))
-         (cell (cdr state)))
-    (or cell
-        (and slot (emacs-keymap--slot-char-p event slot)
-             (let ((value (emacs-keymap--slot-ref slot event)))
-               (and value (cons event value)))))))
+  (let* ((tail (cdr keymap))
+         (first (and (consp tail) (car tail))))
+    (or (and (consp first) (eq (car first) event)
+             (not (memq event '(keymap :emacs-keymap-parent t)))
+             first)
+        (let ((value (and (characterp event) (not (consp first))
+                          (emacs-char-table-p first)
+                          (emacs-char-table-ref first event))))
+          (and value (cons event value)))
+        (let* ((state (emacs-keymap--tail-state keymap event))
+               (slot (car state))
+               (cell (cdr state)))
+          (or cell
+              (and slot (emacs-keymap--slot-char-p event slot)
+                   (let ((value (emacs-keymap--slot-ref slot event)))
+                     (and (or value (and (vectorp slot)
+                                         (not (emacs-char-table-p slot))))
+                          (cons event value)))))))))
 
 (defun emacs-keymap-builtins--binding (keymap event)
   "Return a binding cell for EVENT, including an explicitly nil binding."
   (or (emacs-keymap-builtins--own-binding keymap event)
       (let ((parent (emacs-keymap-keymap-parent keymap)))
         (and parent (emacs-keymap-builtins--binding parent event)))))
+
+(defun emacs-keymap-builtins--symbol-binding (keymap event)
+  "Find the binding cell for ordinary symbolic EVENT in KEYMAP.
+Symbols skip char-table slots. Spliced parents are on the same spine."
+  (condition-case nil
+      (let ((map keymap) cell)
+        (while (and map (not cell))
+          (let ((tail (cdr map)))
+            (setq cell (assq event tail)
+                  map (and (not cell)
+                           (emacs-keymap--get-keymap
+                            (cdr (assq :emacs-keymap-parent tail)))))))
+        cell)
+    ;; An improper tail can name a prefix map through its function cell.
+    (wrong-type-argument (emacs-keymap-builtins--binding keymap event))))
 
 (defun emacs-keymap-builtins--key-definition (binding &optional resolve-filters)
   "Extract BINDING's menu definition, evaluating filters for actual lookups.
@@ -154,39 +215,102 @@ Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
 (defun emacs-keymap-builtins--store-binding (keymap event def remove)
   "Store DEF for EVENT in KEYMAP, or delete its own binding for REMOVE."
   (setq emacs-keymap--where-is-cache nil)
-  (let* ((state (emacs-keymap--tail-state keymap event))
-         (slot (car state))
-         (cell (cdr state)))
+  (let* ((tail (cdr keymap))
+         (first (and (consp tail) (car tail))))
     (cond
-     (remove
-      (when cell (setcdr keymap (delq cell (cdr keymap))))
-      (when (and slot (emacs-keymap--slot-char-p event slot))
-        (emacs-keymap--slot-set slot event nil)))
-     ;; GNU stores t for explicitly undefined character bindings.  A nil
-     ;; char-table entry instead allows the parent binding to be inherited.
-     ((and slot (emacs-char-table-p slot)
-           (emacs-keymap--slot-char-p event slot))
-      (when cell (setcdr keymap (delq cell (cdr keymap))))
-      (emacs-keymap--slot-set slot event (or def t)))
-     ((null def)
-      (when (and slot (emacs-keymap--slot-char-p event slot))
-        (emacs-keymap--slot-set slot event nil))
-      (if cell (setcdr cell nil)
-        (setcdr keymap (cons (cons event nil) (cdr keymap)))))
-     (cell (setcdr cell def))
+     ((consp event)
+      (emacs-keymap-builtins--store-range keymap event def remove))
+     ((and (consp first) (eq (car first) event)
+           (not (memq event '(keymap :emacs-keymap-parent t))))
+      (if remove (setcdr keymap (cdr tail))
+        (setcdr first def)))
+     ((and (characterp event) (not (consp first)) (emacs-char-table-p first))
+      (emacs-keymap--slot-set first event (unless remove (or def t))))
      (t
-      (emacs-keymap--set-binding keymap event def)))))
+      (let* ((state (emacs-keymap--tail-state keymap event))
+             (slot (car state))
+             (cell (cdr state))
+             (slot-event (and slot (emacs-keymap--slot-char-p event slot)))
+             (char-table (and slot-event (emacs-char-table-p slot))))
+        (when (and cell (or remove char-table))
+          (setcdr keymap (delq cell (cdr keymap))))
+        (cond
+         ;; A nil char-table entry permits inheritance.  An explicit
+         ;; undefined character is recorded as t.
+         (char-table
+          (emacs-keymap--slot-set slot event
+                                   (unless remove (or def t))))
+         ((and slot-event (vectorp slot))
+          (emacs-keymap--slot-set slot event def))
+         ((and slot-event (or remove (and def (not cell))))
+          (emacs-keymap--slot-set slot event (unless remove def)))
+         ((not remove)
+          (when (and slot-event (not def))
+            (emacs-keymap--slot-set slot event nil))
+          (if cell (setcdr cell def)
+            (let ((anchor (if slot (memq slot (cdr keymap)) keymap)))
+              (setcdr anchor (cons (cons event def) (cdr anchor))))))))))))
+
+(defun emacs-keymap-builtins--store-range (keymap range def remove)
+  "Set or remove RANGE in KEYMAP."
+  (let ((tail (cdr keymap))
+        (previous keymap)
+        (anchor keymap)
+        (from (car range))
+        (to (cdr range)))
+    (catch 'stored
+      (while (consp tail)
+        (let ((entry (car tail)))
+          (cond
+           ((or (eq entry 'keymap) (eq (car-safe entry) :emacs-keymap-parent))
+            (setq tail nil))
+           ((emacs-char-table-p entry)
+            (remhash entry emacs-keymap--native-runs)
+            (set-char-table-range entry range (unless remove (or def t)))
+            (throw 'stored def))
+           ((or (vectorp entry) (and (eq (car-safe entry) t) (vectorp (cdr entry))))
+            (let* ((vector (if (vectorp entry) entry (cdr entry)))
+                   (last (min to (1- (length vector))))
+                   (character from))
+              (while (<= character last)
+                (aset vector character (if remove nil def))
+                (setq character (1+ character)))
+              (when (= last to) (throw 'stored def)))
+            (setq anchor tail previous tail tail (cdr tail)))
+           ((consp entry)
+            (cond
+             ((and (characterp (car entry)) (<= from (car entry) to))
+              (if remove
+                  (setcdr previous (cdr tail))
+                (setcdr entry def)
+                (setq previous tail))
+              (when (= from to) (throw 'stored def)))
+             (t (setq previous tail)))
+            (setq tail (cdr tail)))
+           (t (setq previous tail tail (cdr tail))))))
+      (unless remove
+        (let ((table (emacs-char-table-make 'keymap)))
+          (set-char-table-range table range (or def t))
+          (setcdr anchor (cons table (cdr anchor))))))))
 
 (defun emacs-keymap-builtins--define-key (keymap key def &optional remove)
   "Define KEY as DEF in KEYMAP, or remove its own binding for REMOVE."
   (setq keymap (emacs-keymap-builtins--require-keymap keymap))
-  (let ((keys (emacs-keymap-builtins--key-events key))
-        prefix)
+  (let ((event (emacs-keymap-builtins--single-event key)))
+    (if event
+        (progn (emacs-keymap-builtins--store-binding keymap event def remove) def)
+      (emacs-keymap-builtins--define-events
+       keymap key (emacs-keymap-builtins--key-events key t) def remove))))
+
+(defun emacs-keymap-builtins--define-events (keymap key keys def remove)
+  "Install decoded KEYS from KEY in KEYMAP."
+  (let (prefix)
     (when keys
       (while (cdr keys)
         (let* ((event (car keys))
                (own (emacs-keymap-builtins--own-binding keymap event))
-               (cell (or own (emacs-keymap-builtins--binding keymap event)))
+               (parent (unless own (emacs-keymap-keymap-parent keymap)))
+               (cell (or own (and parent (emacs-keymap-builtins--binding parent event))))
                (binding (emacs-keymap-builtins--key-definition (cdr cell)))
                (submap (emacs-keymap--get-keymap binding)))
           (push event prefix)
@@ -196,14 +320,10 @@ Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
             (error "Key sequence %s starts with non-prefix key %s"
                    (key-description key)
                    (key-description (vconcat (reverse prefix)))))
-          (unless submap
-            (setq submap (emacs-keymap-make-sparse-keymap))
-            (emacs-keymap-builtins--store-binding keymap event submap nil))
-          ;; An inherited prefix must not be mutated in the parent map.
-          (when (and cell submap
-                     (not (emacs-keymap-builtins--own-binding keymap event)))
+          (when (or (not submap) (not own))
             (let ((child (emacs-keymap-make-sparse-keymap)))
-              (emacs-keymap-set-keymap-parent child submap)
+              ;; An inherited prefix belongs to the parent.
+              (when submap (emacs-keymap-set-keymap-parent child submap))
               (emacs-keymap-builtins--store-binding keymap event child nil)
               (setq submap child)))
           (setq keymap submap keys (cdr keys))))
@@ -212,6 +332,37 @@ Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
 
 (defun emacs-keymap-builtins--lookup-key (keymap key &optional accept-default)
   "Look up KEY in KEYMAP, returning the consumed length for non-prefixes."
+  (let ((event (emacs-keymap-builtins--single-event key)))
+    (if (and event (consp keymap) (eq (car keymap) 'keymap))
+        (let ((cell (or (emacs-keymap-builtins--binding keymap event)
+                        (and accept-default
+                             (emacs-keymap-builtins--binding keymap t)))))
+          (emacs-keymap-builtins--key-definition (cdr cell) t))
+      (emacs-keymap-builtins--lookup-events keymap key accept-default))))
+
+(defun emacs-keymap-builtins--lookup-remapping (keymap command)
+  "Look up COMMAND's remapping in KEYMAP as the sequence [remap COMMAND]."
+  (let* ((cell (emacs-keymap-builtins--symbol-binding keymap 'remap))
+         (map (and cell (emacs-keymap--get-keymap
+                         (emacs-keymap-builtins--key-definition (cdr cell) t)))))
+    (if map
+        (emacs-keymap-builtins--key-definition
+         (cdr (if (and command (not (memq command '(keymap :emacs-keymap-parent t))))
+                  (emacs-keymap-builtins--symbol-binding map command)
+                (emacs-keymap-builtins--binding map command)))
+         t)
+      1)))
+
+(defun emacs-keymap-builtins--lookup-events (keymap key accept-default)
+  "Decode KEY and search KEYMAP or a list of maps."
+  (if (and (not accept-default) (consp keymap) (eq (car keymap) 'keymap)
+           (vectorp key) (= (length key) 2) (eq (aref key 0) 'remap)
+           (symbolp (aref key 1)))
+      (emacs-keymap-builtins--lookup-remapping keymap (aref key 1))
+    (emacs-keymap-builtins--lookup-sequence keymap key accept-default)))
+
+(defun emacs-keymap-builtins--lookup-sequence (keymap key accept-default)
+  "Decode and look up a general KEY sequence in KEYMAP."
   (let* ((maps (if (and (listp keymap)
                         (not (emacs-keymap-keymapp keymap)))
                    keymap
@@ -227,7 +378,12 @@ Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
           (when map
             (setq binding map)
             (while keys
-              (let ((cell (emacs-keymap-builtins--binding map (car keys))))
+              (let* ((event (car keys))
+                     (cell
+                      (if (and event (symbolp event)
+                               (not (memq event '(keymap :emacs-keymap-parent t))))
+                          (emacs-keymap-builtins--symbol-binding map event)
+                        (emacs-keymap-builtins--binding map event))))
                 (when (and (not cell) accept-default)
                   (setq cell (emacs-keymap-builtins--binding map t)))
                 (setq binding (emacs-keymap-builtins--key-definition (cdr cell) t)))
@@ -244,39 +400,50 @@ Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
 
 (defun emacs-keymap-builtins--describe-event (event)
   "Describe an integer, symbolic, string or composite key EVENT."
-  (when (consp event) (setq event (car event)))
   (cond
+   ((consp event)
+    (cond
+     ((and (integerp (car event)) (integerp (cdr event)))
+      (concat (emacs-keymap-builtins--describe-event (car event)) ".."
+              (emacs-keymap-builtins--describe-event (cdr event))))
+     ((and (fboundp 'nelisp--event-lucid-list-p)
+           (nelisp--event-lucid-list-p event))
+      (emacs-keymap-builtins--describe-event (event-convert-list event)))
+     (t (emacs-keymap-builtins--describe-event (car event)))))
    ((symbolp event)
     (let* ((name (symbol-name event))
            (index 0)
            (size (length name)))
-      (while (and (< (+ index 1) size)
+      (while (and (< (+ index 3) size)
                   (= (aref name (1+ index)) ?-)
                   (memq (aref name index) '(?A ?C ?H ?M ?S ?s)))
         (setq index (+ index 2)))
-      (concat (substring name 0 index) "<" (substring name index) ">")))
+      (if (= index 0)
+          (concat "<" name ">")
+        (concat (substring name 0 index) "<" (substring name index) ">"))))
    ((stringp event) event)
    ((integerp event)
-    (let ((base (logand event 4194303))
-          (prefix ""))
+    (let ((base (logand event #x3fffff))
+          (modifiers (logand event #xfc00000)))
       ;; Control characters imply the control modifier, except named keys.
-      (when (and (< base 32) (not (memq base '(9 13 27))))
-        (setq event (logior event 67108864)
-              base (if (= base 0) ?@ (+ base 64)))
-        (when (and (>= base ?A) (<= base ?Z))
-          (setq base (+ base 32))))
-      (dolist (modifier '((4194304 . "A-") (67108864 . "C-")
-                          (16777216 . "H-") (134217728 . "M-")
-                          (33554432 . "S-") (8388608 . "s-")))
-        (when (/= 0 (logand event (car modifier)))
-          (setq prefix (concat prefix (cdr modifier)))))
-      (concat prefix
-              (cond ((= base 32) "SPC")
-                    ((= base 9) "TAB")
-                    ((= base 13) "RET")
-                    ((= base 27) "ESC")
-                    ((= base 127) "DEL")
-                    (t (char-to-string base))))))
+      (when (and (< base 32) (not (memq base '(13 27)))
+                 (or (/= base 9) (/= 0 (logand modifiers #x8000000))))
+        (setq modifiers (logior modifiers #x4000000)
+              base (+ base (if (<= 1 base 26) 96 64))))
+      (let ((name (cond ((= base 32) "SPC")
+                        ((= base 9) "TAB")
+                        ((= base 13) "RET")
+                        ((= base 27) "ESC")
+                        ((= base 127) "DEL")
+                        (t (char-to-string base)))))
+        (if (= modifiers 0) name
+          (concat (unless (= 0 (logand modifiers #x0400000)) "A-")
+                  (unless (= 0 (logand modifiers #x4000000)) "C-")
+                  (unless (= 0 (logand modifiers #x1000000)) "H-")
+                  (unless (= 0 (logand modifiers #x8000000)) "M-")
+                  (unless (= 0 (logand modifiers #x2000000)) "S-")
+                  (unless (= 0 (logand modifiers #x0800000)) "s-")
+                  name)))))
    (t (error "KEY must be an integer, cons, symbol, or string"))))
 
 (defun emacs-keymap-builtins--description-events (keys)
@@ -311,9 +478,7 @@ Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
 ;;;; --- mutation --------------------------------------------------------
 
 (when (emacs-keymap-builtins--install-function-p 'define-key)
-  (defun define-key (keymap key def &optional remove)
-    "Define KEY as DEF in KEYMAP; REMOVE non-nil removes the binding."
-    (emacs-keymap-builtins--define-key keymap key def remove)))
+  (defalias 'define-key #'emacs-keymap-builtins--define-key))
 
 (when (emacs-keymap-builtins--install-function-p 'define-key-after)
   (defalias 'define-key-after #'emacs-keymap-define-key-after))
@@ -397,20 +562,28 @@ followed as in GNU."
 (when (emacs-keymap-builtins--install-function-p 'key-description)
   (defun key-description (keys &optional prefix)
     "Return a pretty description of KEYS, preceded by PREFIX."
-    (let ((events (append (emacs-keymap-builtins--description-events prefix)
-                          (emacs-keymap-builtins--description-events keys)))
-          parts)
-      (while events
-        (let ((event (car events)))
-          ;; ESC followed by an integer event is the meta form of that event.
-          (when (and (eq event 27) (integerp (cadr events))
-                     (not (eq (cadr events) 27))
-                     (= 0 (logand (cadr events) 134217728)))
-            (setq events (cdr events)
-                  event (logior (car events) 134217728)))
-          (push (emacs-keymap-builtins--describe-event event) parts))
-        (setq events (cdr events)))
-      (mapconcat #'identity (nreverse parts) " "))))
+    (if (and (not prefix) (vectorp keys) (= (length keys) 1))
+        (copy-sequence (emacs-keymap-builtins--describe-event (aref keys 0)))
+      (let ((events (append (emacs-keymap-builtins--description-events prefix)
+                            (emacs-keymap-builtins--description-events keys)))
+            pending parts)
+        (dolist (event events)
+          (cond
+           ((eq event meta-prefix-char)
+            (when pending
+              (push (emacs-keymap-builtins--describe-event event) parts))
+            (setq pending t))
+           (t
+            (when pending
+              (if (and (integerp event) (= 0 (logand event #x8000000)))
+                  (setq event (logior event #x8000000))
+                (push (emacs-keymap-builtins--describe-event meta-prefix-char)
+                      parts))
+              (setq pending nil))
+            (push (emacs-keymap-builtins--describe-event event) parts))))
+        (when pending
+          (push (emacs-keymap-builtins--describe-event meta-prefix-char) parts))
+        (mapconcat #'identity (nreverse parts) " ")))))
 
 ;; GNU keymap.el's `kbd', `key-parse', `key-valid-p', `keymap-set',
 ;; `keymap-lookup', `keymap-unset' and the global/local set/unset commands
@@ -640,7 +813,11 @@ Character table entries are visited in character order, as in keymap.c."
         (emacs-keymap-builtins--where-is-map function entry))
        (t (funcall function (car entry) (cdr entry)))))
      ((emacs-char-table-p entry)
-      (emacs-keymap-builtins--where-is-char-table function entry)))))
+      (emacs-keymap-builtins--where-is-char-table function entry))
+     ((vectorp entry)
+      (dotimes (i (length entry))
+        (let ((binding (aref entry i)))
+          (when binding (funcall function i binding))))))))
 
 (defun emacs-keymap-builtins--where-is-char-table (function table)
   "Visit the character runs of TABLE.
@@ -679,7 +856,7 @@ Keep their compressed runs across lookups, as GNU caches reverse searches."
 
 (defun emacs-keymap-builtins--where-is-shadow-lookup (maps keys remapped)
   "Resolve KEYS in MAPS, with command remapping when REMAPPED is non-nil."
-  (let ((binding (lookup-key maps keys)))
+  (let ((binding (lookup-key (if (cdr maps) maps (car maps)) keys)))
     (unless (natnump binding)
       (or (and remapped (command-remapping binding nil maps)) binding))))
 
@@ -841,8 +1018,73 @@ old load-only stubs because Org mutates menu keymaps during mode setup."
 (when (emacs-keymap-builtins--install-function-p 'keymap-prompt)
   (defalias 'keymap-prompt #'emacs-keymap-keymap-prompt))
 
-;; `map-keymap' is the prelude's GNU keymap.c port (char-table slots
-;; and keymap parents included); it is not replaced here.
+(defun emacs-keymap-builtins--map-direct (function tail)
+  "Visit direct bindings in TAIL and return the remaining parent spine."
+  (catch 'parent
+    (while (consp tail)
+      (let ((entry (car tail)))
+        (cond
+         ((eq entry 'keymap) (throw 'parent tail))
+         ((consp entry)
+          (let ((event (car entry)) (binding (cdr entry)))
+            (cond
+             ((memq event '(keymap :emacs-keymap-parent)) (throw 'parent tail))
+             ((and (eq event t) (vectorp binding))
+              (dotimes (i (length binding))
+                (let ((value (aref binding i)))
+                  (when value (funcall function i (unless (eq value t) value))))))
+             (t (funcall function event (unless (eq binding t) binding))))))
+         ((and (symbolp entry) (emacs-keymap--get-keymap entry))
+          (throw 'parent tail))
+         ((emacs-char-table-p entry)
+          (map-char-table
+           (lambda (event value)
+             ;; The char-table walker reuses its range cons.
+             (funcall function
+                      (if (consp event) (cons (car event) (cdr event)) event)
+                      (unless (eq value t) value)))
+           entry))
+         ((vectorp entry)
+          (dotimes (i (length entry))
+            (let ((value (aref entry i)))
+              (funcall function i (unless (eq value t) value)))))))
+      (setq tail (cdr tail)))
+    tail))
+
+(defun emacs-keymap-builtins--map-keymap-internal (function keymap)
+  "Visit KEYMAP's direct bindings and return its unprocessed parent."
+  (let ((tail (emacs-keymap-builtins--map-direct
+               function (cdr (emacs-keymap-builtins--require-keymap keymap)))))
+    (if (eq (car-safe (car-safe tail)) :emacs-keymap-parent)
+        (cdar tail)
+      tail)))
+
+(defun emacs-keymap-builtins--map-keymap (function keymap &optional sort-first)
+  "Call FUNCTION on the event bindings in KEYMAP, including its parents.
+SORT-FIRST delegates event ordering to `map-keymap-sorted'."
+  (if sort-first
+      (map-keymap-sorted function keymap)
+    (let ((tail (emacs-keymap-builtins--map-direct
+                 function (cdr (emacs-keymap-builtins--require-keymap keymap)))))
+      (while tail
+        (if (consp tail)
+            (let ((entry (car tail)))
+              (cond
+               ((eq entry 'keymap)
+                (setq tail (emacs-keymap-builtins--map-direct function (cdr tail))))
+               ((eq (car-safe entry) :emacs-keymap-parent)
+                (setq tail (cdr entry)))
+               (t
+                (emacs-keymap-builtins--map-keymap function entry)
+                (setq tail (emacs-keymap-builtins--map-direct function (cdr tail))))))
+          (setq tail (emacs-keymap--get-keymap tail)))))
+    nil))
+
+(when (emacs-keymap-builtins--install-function-p 'map-keymap)
+  (defalias 'map-keymap #'emacs-keymap-builtins--map-keymap))
+
+(when (emacs-keymap-builtins--install-function-p 'map-keymap-internal)
+  (defalias 'map-keymap-internal #'emacs-keymap-builtins--map-keymap-internal))
 
 (when (emacs-keymap-builtins--install-function-p 'current-active-maps)
   (defun current-active-maps (&optional _olp position)

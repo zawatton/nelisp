@@ -85,8 +85,6 @@ dynamic flag approximates call-stack inspection."
                            executing-kbd-macro))))))
   (defun minibuffer-depth () 0)
   (defun command-line-normalize-file-name (file) file)
-  (unless (fboundp 'substitute-key-definition)
-    (defun substitute-key-definition (&rest _ignored) nil))
   (defun format-network-address (address &optional omit-port)
     "Convert an IPv4, IPv6, local, or unknown-family ADDRESS to text.
 Return nil for an invalid address.  OMIT-PORT suppresses port formatting."

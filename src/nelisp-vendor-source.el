@@ -165,6 +165,14 @@ Use FILE as the source path when supplied, with RELATIVE-FILE as its pin."
          (ordered (sort forms (lambda (a b) (< (car a) (car b))))))
     (mapconcat #'cdr ordered "\n")))
 
+(defun nelisp-vendor-source-subr-keymap (&optional file)
+  "Return the exact GNU subr.el keymap forms from FILE or the pinned source."
+  (nelisp-vendor-source-forms
+   "vendor/staged-emacs-lisp/subr.el"
+   '(map-keymap-sorted key-substitution-in-progress
+     substitute-key-definition substitute-key-definition-key)
+   file))
+
 (defun nelisp-vendor-source-form-position (relative-file symbol)
   "Return SYMBOL's source position in RELATIVE-FILE."
   (car (car (gethash symbol

@@ -1106,6 +1106,13 @@ rather than materialised."
       (emacs-char-table--owned-set-range ct range value)
     (progn
   (cond
+   ((and (emacs-char-table--native-p ct)
+         (eq (emacs-char-table-subtype ct) 'keymap)
+         (fboundp 'nelisp--chartab-set-char-table-range))
+    ;; GNU's bootstrap global map binds nearly all Unicode characters to
+    ;; self-insert-command.  Write covered subtrees rather than allocating
+    ;; a slot for every character and making keymap walks scan each slot.
+    (nelisp--chartab-set-char-table-range ct range value))
    ((emacs-char-table--native-p ct)
     ;; Native tables are written element-wise; only single characters and
     ;; bounded ranges are supported (the default slot is not reachable).
