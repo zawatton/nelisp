@@ -113,16 +113,6 @@ installed as one family rather than mixed with unrelated partial fallbacks."
     "Return a deterministic integer hash for OBJECT."
     (emacs-buffer-builtins--sxhash-object object)))
 
-(when (emacs-buffer-builtins--install-function-p 'sxhash-equal)
-  (defun sxhash-equal (object)
-    "Return a deterministic integer hash for OBJECT using equal semantics."
-    (emacs-buffer-builtins--sxhash-object object)))
-
-(when (emacs-buffer-builtins--install-function-p 'sxhash-eq)
-  (defun sxhash-eq (object)
-    "Return a deterministic integer hash for OBJECT using eq-style identity."
-    (emacs-buffer-builtins--sxhash-object object)))
-
 (defun emacs-buffer-builtins--sticky-member-p (property specification)
   "Return whether PROPERTY is selected by sticky SPECIFICATION."
   (and specification

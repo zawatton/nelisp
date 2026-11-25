@@ -421,38 +421,6 @@ same value and rounding as negating it first, without a negation call."
     "Return the cosine of ARG (radians).  Pure-Elisp fallback."
     (emacs-numeric--trig arg t)))
 
-(defvar emacs-numeric--random-state 2463534242
-  "Internal LCG state for the standalone `random' polyfill.")
-
-(unless (and (fboundp 'random) (not (get 'random 'emacs-stub-bulk)))
-  (defun random (&optional limit)
-    "Return a pseudo-random integer (standalone LCG polyfill).
-With no LIMIT return a non-negative 30-bit integer; with a positive integer
-LIMIT return an integer in [0, LIMIT).  LIMIT t reseeds from the clock and a
-string LIMIT seeds from its characters (both then return a value).  This is a
-deterministic linear-congruential generator, not a cryptographic RNG."
-    (when (eq limit t)
-      (setq emacs-numeric--random-state
-            (logand (if (fboundp 'float-time)
-                        (truncate (* 1000.0 (float-time)))
-                      (1+ emacs-numeric--random-state))
-                    #x3FFFFFFF)
-            limit nil))
-    (when (stringp limit)
-      (let ((s 5381) (i 0) (n (length limit)))
-        (while (< i n)
-          (setq s (logand (+ (* s 33) (aref limit i)) #x3FFFFFFF)
-                i (1+ i)))
-        (setq emacs-numeric--random-state s
-              limit nil)))
-    (setq emacs-numeric--random-state
-          (logand (+ (* emacs-numeric--random-state 1103515245) 12345)
-                  #x3FFFFFFF))
-    (if (and (integerp limit) (> limit 0))
-        (mod emacs-numeric--random-state limit)
-      emacs-numeric--random-state))
-  (put 'random 'emacs-stub-bulk nil))
-
 (provide 'emacs-numeric)
 
 ;;; emacs-numeric.el ends here
