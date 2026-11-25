@@ -214,6 +214,10 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   "Preload the batch nemacs entry into the current NeLisp image."
   (nemacs-runtime-image-setup-paths repo-root)
   (nemacs-runtime-image-load-bootstrap repo-root bootstrap-file)
+  (nemacs-runtime-image-finish-batch-preload repo-root))
+
+(defun nemacs-runtime-image-finish-batch-preload (repo-root)
+  "Install the batch libraries and bridges after the bootstrap has loaded."
   ;; A frozen reader can retain its early cl-pushnew after bundle replay.
   ;; Use the resolved source loader to publish cl-lib in that case.
   (let ((source (concat repo-root "/vendor/emacs-lisp/emacs-lisp/cl-lib.el")))

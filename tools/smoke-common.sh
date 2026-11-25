@@ -4,11 +4,11 @@
 smoke_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 smoke_suite=$smoke_root/test/smoke
 smoke_cases=(org magit evil dired eat skk files search completion)
-smoke_nelisp=$smoke_root/target/nelisp
+smoke_nelisp=${SMOKE_NELISP:-$smoke_root/target/nelisp}
 smoke_emacs=${SMOKE_EMACS:-/usr/local/bin/emacs-31.1}
 smoke_dump=${SMOKE_DUMP:-$smoke_root/../batch/rt-smoke.dump}
 smoke_mirror=${SMOKE_MIRROR:-$smoke_root/../elcx/emacsd}
-smoke_cpus=11,13
+smoke_cpus=${SMOKE_CPUS:-11,13}
 
 smoke_prepare() {
     local label=$1 package directory
