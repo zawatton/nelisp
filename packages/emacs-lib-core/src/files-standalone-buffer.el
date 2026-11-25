@@ -16,6 +16,8 @@
 
 (require 'files-runtime)
 
+(defvar file-name-handler-alist nil)
+
 (defvar files--buffer-string ""
   "Fallback current-buffer contents for the lightweight files shim.")
 
@@ -160,62 +162,28 @@ placeholder must not be captured as \"native\" here either.")
   (when (symbol-value (car entry))
     (defalias (cdr entry) (symbol-value (car entry)))))
 
-(defun files--absolute-clean-p (path)
-  "Return non-nil when PATH is an absolute POSIX path with no `//', `/./',
-or `/../' component and does not end in a bare `.'/`..' component -- i.e.
-`expand-file-name' is guaranteed to return PATH unchanged.  A single
-linear scan using only `aref'/`eq' (no `substring'/`concat' allocation),
-so it is cheap enough to run before every syscall-backed predicate below."
-  (and (stringp path)
-       (> (length path) 0)
-       (eq (aref path 0) ?/)
-       (let ((len (length path))
-             (i 0)
-             (ok t))
-         (while (and ok (< i len))
-           (when (eq (aref path i) ?/)
-             (let ((c1 (and (< (1+ i) len) (aref path (1+ i))))
-                   (c2 (and (< (+ i 2) len) (aref path (+ i 2)))))
-               (cond
-                ((eq c1 ?/) (setq ok nil))
-                ((and (eq c1 ?.) (or (null c2) (eq c2 ?/)))
-                 (setq ok nil))
-                ((and (eq c1 ?.) (eq c2 ?.)
-                      (let ((c3 (and (< (+ i 3) len) (aref path (+ i 3)))))
-                        (or (null c3) (eq c3 ?/))))
-                 (setq ok nil)))))
-           (setq i (1+ i)))
-         ok)))
-
 (defun files--file-name-handler-alist-active-p (&optional operation)
-  "Return non-nil when `file-name-handler-alist' has any entry to match.
-With OPERATION, ignore entries whose handler can never be chosen for
-OPERATION (see `emacs-fnh-handler-possible-p')."
+  "Return non-nil when a file name handler could apply to OPERATION."
   (and (boundp 'file-name-handler-alist)
        file-name-handler-alist
        (or (null operation)
-           (not (fboundp 'emacs-fnh-handler-possible-p))
-           (emacs-fnh-handler-possible-p operation))))
+           (not (fboundp 'nelisp--file-name-handler-possible-p))
+           (nelisp--file-name-handler-possible-p operation))))
 
 (defun files--expand-file-name (filename)
-  "Expand FILENAME when the runtime supplies `expand-file-name'.
-T47: skips the full (handler-dispatching) `expand-file-name' round-trip
-when no `file-name-handler-alist' entry can handle `expand-file-name'
--- so there is nothing a magic file name could match (jka-compr's
-handler, for one, lists only other operations) -- and FILENAME is already
-an absolute,
-normalized path.  This was the dominant per-call cost of every predicate
-below (`file-exists-p', `file-readable-p', `file-directory-p',
-`file-truename', ...), all of which call this helper at least once.
-Falls through to the real `expand-file-name' (still handler-dispatched)
-whenever a handler could plausibly apply, or FILENAME needs real work
-done (relative, `~', or containing `.'/`..'/`//')."
-  (if (and (not (files--file-name-handler-alist-active-p 'expand-file-name))
-           (files--absolute-clean-p filename))
-      filename
-    (if (fboundp 'expand-file-name)
-        (expand-file-name filename)
-      filename)))
+  "Expand FILENAME with the runtime's file name expander."
+  (expand-file-name filename))
+
+(defun files--expanded-directory-file-name (filename)
+  "Expand FILENAME and convert directory syntax as in GNU fileio.c."
+  (let* ((path (expand-file-name filename))
+         (end (1- (length path))))
+    (if (and (> end 0) (eq (aref path end) ?/))
+        (let ((handler (and file-name-handler-alist
+                            (find-file-name-handler path 'directory-file-name))))
+          (if handler (funcall handler 'directory-file-name path)
+            (directory-file-name path)))
+      path)))
 
 (defun files--buffer-key (&optional buffer)
   "Return BUFFER or the current buffer when buffer primitives exist."
@@ -1049,14 +1017,24 @@ Falls back to a read-based existence check when the reader exposes no
   "Return non-nil when access(2) on FILENAME with MODE succeeds."
   (files--access-ok-p filename mode))
 
+(defun files--file-access-p (filename operation mode)
+  (let* ((path (expand-file-name filename))
+         (handler (and file-name-handler-alist
+                       (find-file-name-handler path operation))))
+    (if handler (funcall handler operation path)
+      (if (fboundp 'nelisp--syscall-path-int)
+          (= 0 (nelisp--syscall-path-int files--syscall-access path mode))
+        (or (files--native-access-ok-p path mode)
+            (files--rdf-nonempty-p path))))))
+
 (when (files--install-fallback-function-p 'file-exists-p)
   (defun file-exists-p (filename)
     "Return non-nil if FILENAME exists, via access(2) F_OK when available."
-    (files--access-ok-p filename files--ok-exist)))
+    (files--file-access-p filename 'file-exists-p files--ok-exist)))
 (when (files--install-fallback-function-p 'file-readable-p)
   (defun file-readable-p (filename)
     "Return non-nil if FILENAME is readable, via access(2) R_OK."
-    (files--access-ok-p filename files--ok-read)))
+    (files--file-access-p filename 'file-readable-p files--ok-read)))
 (when (files--install-fallback-function-p 'file-writable-p)
   (defun file-writable-p (filename)
     "Return non-nil if FILENAME is writable, via access(2) W_OK.
@@ -1081,8 +1059,15 @@ its directory exists and is writable, so a new file can be created."
     (and (file-directory-p filename) (file-executable-p filename))))
 (when (files--install-fallback-function-p 'file-regular-p)
   (defun file-regular-p (filename)
-    "Return non-nil if FILENAME exists and is not a directory."
-    (and (file-exists-p filename) (not (file-directory-p filename)))))
+    "Return non-nil if FILENAME names a regular file, following symlinks."
+    (let* ((path (files--expanded-directory-file-name filename))
+           (handler (and file-name-handler-alist
+                         (find-file-name-handler path 'file-regular-p))))
+      (if handler (funcall handler 'file-regular-p path)
+        (if (fboundp 'nelisp--syscall-stat-field)
+            (= (logand (nelisp--syscall-stat-field path 24) #o170000)
+               #o100000)
+          (and (file-exists-p path) (not (file-directory-p path))))))))
 
 ;; --- stat(2) metadata: file-modes / file-attributes -------------------------
 ;; Built on the reader's generic stat primitives (stat(2) + read struct stat
@@ -1317,28 +1302,34 @@ a single stat via `nelisp--syscall-lstat-buf' + `ptr-read-u64'.  Times are
 birth (creation) time as a (TICKS . HZ) timestamp via statx(2), or nil when
 unavailable.  Degraded: the MODES string omits setuid/setgid/sticky display.
 ID-FORMAT is ignored."
-    (if files--native-file-attributes
-        (funcall files--native-file-attributes filename _id-format)
-    (let ((buf (or (files--lstat-buf filename) (files--stat-buf filename))))
-      (when buf
-        (let* ((mode (ptr-read-u64 buf files--stat-off-mode))
-               (ifmt (logand mode #o170000)))
-          (list
-           (cond ((= ifmt #o120000) (or (files--readlink filename) t))
-                 ((= ifmt #o040000) t)
-                 (t nil))
-           (ptr-read-u64 buf files--stat-off-nlink)
-           (logand (ptr-read-u64 buf files--stat-off-uid) #xFFFFFFFF)
-           (logand (ptr-read-u64 buf files--stat-off-gid) #xFFFFFFFF)
-           (files--stat-time buf files--stat-off-atime files--stat-off-atime-nsec)
-           (files--stat-time buf files--stat-off-mtime files--stat-off-mtime-nsec)
-           (files--stat-time buf files--stat-off-ctime files--stat-off-ctime-nsec)
-           (ptr-read-u64 buf files--stat-off-size)
-           (files--mode-string (logand mode #xFFFF))
-           nil
-           (ptr-read-u64 buf files--stat-off-ino)
-           (ptr-read-u64 buf files--stat-off-dev)
-           (files--statx-btime filename))))))))
+    (setq filename (expand-file-name filename))
+    (let ((handler (and file-name-handler-alist
+                        (find-file-name-handler filename 'file-attributes))))
+      (cond
+       (handler (funcall handler 'file-attributes filename _id-format))
+       (files--native-file-attributes
+        (funcall files--native-file-attributes filename _id-format))
+       (t
+        (let ((buf (or (files--lstat-buf filename) (files--stat-buf filename))))
+          (when buf
+            (let* ((mode (ptr-read-u64 buf files--stat-off-mode))
+                   (ifmt (logand mode #o170000)))
+              (list
+               (cond ((= ifmt #o120000) (or (files--readlink filename) t))
+                     ((= ifmt #o040000) t)
+                     (t nil))
+               (ptr-read-u64 buf files--stat-off-nlink)
+               (logand (ptr-read-u64 buf files--stat-off-uid) #xFFFFFFFF)
+               (logand (ptr-read-u64 buf files--stat-off-gid) #xFFFFFFFF)
+               (files--stat-time buf files--stat-off-atime files--stat-off-atime-nsec)
+               (files--stat-time buf files--stat-off-mtime files--stat-off-mtime-nsec)
+               (files--stat-time buf files--stat-off-ctime files--stat-off-ctime-nsec)
+               (ptr-read-u64 buf files--stat-off-size)
+               (files--mode-string (logand mode #xFFFF))
+               nil
+               (ptr-read-u64 buf files--stat-off-ino)
+               (ptr-read-u64 buf files--stat-off-dev)
+               (files--statx-btime filename))))))))))
 
 (defun files--time-to-seconds (time)
   "Convert a Lisp TIME value to integer seconds since the epoch.
@@ -1558,24 +1549,21 @@ Use tabs before spaces when `indent-tabs-mode' is non-nil, like GNU
 
 (when (files--install-fallback-function-p 'file-directory-p)
   (defun file-directory-p (filename)
-    "Return non-nil if FILENAME is an existing directory.
-Detected with access(2) on FILENAME with a `.' component appended -- only a
-directory has a `.' entry -- and falls back to the trailing-slash heuristic
-when access(2) is unavailable."
-    (unless (stringp filename)
-      (signal 'wrong-type-argument (list 'stringp filename)))
-    (cond
-     (files--native-file-directory-p
-      ;; GNU fileio.c expands FILENAME first, so "~/dir" works.
-      (funcall files--native-file-directory-p
-               (files--expand-file-name filename)))
-     ((fboundp 'nelisp--syscall-path-int)
-      (let* ((d (files--expand-file-name filename))
-             (n (length d))
-             (probe (concat d (if (and (> n 0) (eq (aref d (1- n)) ?/)) "." "/."))))
-        (= 0 (nelisp--syscall-path-int files--syscall-access probe files--ok-exist))))
-     ((let ((n (length filename))) (and (> n 0) (eq (aref filename (1- n)) ?/))) t)
-     (t nil))))
+    "Return non-nil if FILENAME names a directory, following symlinks."
+    (let* ((path (files--expanded-directory-file-name filename))
+           (handler (and file-name-handler-alist
+                         (find-file-name-handler path 'file-directory-p))))
+      (cond
+       (handler (funcall handler 'file-directory-p path))
+       ((and (eq system-type 'gnu/linux) (fboundp 'nelisp--syscall-stat-field))
+        (= (logand (nelisp--syscall-stat-field path 24) #o170000) #o040000))
+       (files--native-file-directory-p
+        (funcall files--native-file-directory-p path))
+       ((fboundp 'nelisp--syscall-path-int)
+        (= 0 (nelisp--syscall-path-int files--syscall-access
+                                       (concat path "/.") files--ok-exist)))
+       (t (let ((length (length filename)))
+            (and (> length 0) (eq (aref filename (1- length)) ?/))))))))
 ;; Only fill when the runtime has no `make-directory': current NeLisp ships a
 ;; real one, and the old no-op broke `make-directory' with PARENTS and
 ;; `make-temp-file' DIR-FLAG (audit 2026-09-29).
