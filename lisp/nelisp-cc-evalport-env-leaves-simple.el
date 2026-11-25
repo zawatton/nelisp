@@ -120,9 +120,15 @@
     ;; W is the looked-up value WORD (or 0 / 2 from the lookup); answers 2
     ;; when it is the env+64 unbound marker.
     (defun nl_env_lookup_val_done_w (w env _pad _pad1)
-      (if (= (logand w 1) 1) w
-        (if (< w 8) w
-          (if (= (extern-call nl_uninterned_symbol_equal w (+ env 64)) 1) 2 w))))
+      ;; Only an uninterned symbol can be the marker. Direct words for
+      ;; other values already have the type available without a view.
+      (if (if (< w 8) 0
+            (let* ((tag (logand w 7)))
+              (if (= tag 0) 1
+                (if (= tag 6)
+                    (= (logand (ptr-read-u64 (- w 6) 0) 63) 16) 0))))
+          (if (= (extern-call nl_uninterned_symbol_equal w (+ env 64)) 1) 2 w)
+        w))
     ;; An entry can exist solely for its function cell.  Its value is still
     ;; unbound; never expose that internal marker as a successful lookup.
     ;; Consume the lookup result as a helper argument so it cannot be lost

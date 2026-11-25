@@ -1628,62 +1628,23 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                      forms))))))
 
 (ert-deftest nelisp-standalone-target-unwind-cleanup-errors-propagate ()
-  "Cleanup uses stashing eval; body nonlocal exits preserve the M6 kind flag."
-  (cl-labels ((tree-member-p
-               (needle tree)
-               (cond
-                ((equal needle tree) t)
-                ((consp tree)
-                 (or (tree-member-p needle (car tree))
-                     (tree-member-p needle (cdr tree)))))))
-    (let ((forms nelisp-cc-sf-unwind-protect--source))
-      (should (tree-member-p
-               '(defun nl_sf_uw_do_cleanup (car cdr body-rc env vslot _pad6)
-                 (if (= body-rc 0)
-                     (let* ((scratch (alloc-bytes 32 8)))
-                       (nl_sf_uw_do_cleanup_preserve scratch car cdr body-rc env vslot))
-                   (let* ((flag-save (heap-read-u64 268435472 0))
-                          (mark (extern-call nl_root_mark env))
-                          (frame (extern-call nl_exit_save env)))
-                     (if (= frame 0)
-                         (seq (extern-call nl_root_release env mark)
-                              (extern-call wf_bytecode_root_exhausted))
-                       (nl_sf_uw_do_cleanup_body_exit
-                        flag-save frame mark car cdr body-rc env vslot)))))
-               forms))
-      (should (tree-member-p
-               '(defun nl_sf_uw_do_cleanup_preserve (scratch car cdr body-rc env vslot)
-                 (nl_sf_uw_cleanup_evaled
-                  (extern-call nelisp_eval_call car env scratch)
-                  cdr body-rc env vslot 0))
-               forms))
-      (should (tree-member-p
-               '(defun nl_sf_uw_cleanup_evaled (cleanup-rc cdr body-rc env vslot _pad6)
-                 (if (= cleanup-rc 0)
-                     (nl_sf_uw_cleanup cdr body-rc env vslot 0 0)
-                   cleanup-rc))
-               forms))
-      (should (tree-member-p
-               '(defun nl_sf_uw_cleanup_after_body_exit
-                 (cleanup-rc flag-save frame mark cdr body-rc env vslot)
-                 (if (= cleanup-rc 0)
-                   (seq
-                    (extern-call nl_exit_restore frame)
-                    (ptr-write-u64 268435472 0 flag-save)
-                    (extern-call nl_root_release env mark)
-                    (nl_sf_uw_cleanup cdr body-rc env vslot 0 0))
-                 (seq
-                  (extern-call nl_root_release env mark)
-                  cleanup-rc)))
-               forms))
-      (should (tree-member-p
-               '(defun nl_sf_uw_do_cleanup_body_exit
-                 (flag-save frame mark car cdr body-rc env vslot)
-                 (let* ((scratch (alloc-bytes 32 8)))
-                 (nl_sf_uw_cleanup_after_body_exit
-                  (extern-call nelisp_eval_call car env scratch)
-                  flag-save frame mark cdr body-rc env vslot)))
-               forms)))))
+  "The generated cleanup uses words and restores only a surviving exit."
+  (let* ((source (cdr nelisp-cc-sf-unwind-protect--source))
+         (cleanup (assq 'nl_sf_uw_cleanup_w (mapcar #'cdr source)))
+         (pending (assq 'nl_sf_uw_cleanup_pending_w (mapcar #'cdr source))))
+    (cl-labels ((has-form (needle tree)
+                  (or (equal needle tree)
+                      (and (consp tree)
+                           (or (has-form needle (car tree))
+                               (has-form needle (cdr tree)))))))
+      (should (has-form '(setq w (nelisp_eval_call_w form env 0)) cleanup))
+      (should (has-form '(ptr-write-u64 cursor 0 cleanup) cleanup))
+      (should-not (has-form 'alloc-bytes cleanup))
+      (should (has-form '(saved (nl_exit_save env)) pending))
+      (should (has-form '(if (= (nl_sf_uw_cleanup_w cleanup env cursor 1) 0) 0
+                             (seq (nl_exit_restore saved)
+                                  (ptr-write-u64 268435472 0 flag)))
+                        pending)))))
 
 (ert-deftest nelisp-standalone-target-reader-boundary-reclaim-is-conservative ()
   "Doc 140 Stage 5 reclaims only safe immediate non-mutating boundaries."
