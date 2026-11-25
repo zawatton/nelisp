@@ -280,8 +280,8 @@ This is a consistency check, not an independent semantic or native proof."
 
 ;; These bind complete executable trees, not a list of asserted properties.
 ;; They must be re-reviewed when the guarded compiler template changes.
-(defconst nelisp-cc-fxir-facts--add-baseline-sha256 "17ac7d32bfc9fccd61ba847c28f8a5582692c421d41fc2fca9d3589d5c2fbb12")
-(defconst nelisp-cc-fxir-facts--add-candidate-sha256 "1376d0d9dfaee90c78ed4a18b4d0c387d363ee521d6afc0c827f9788d25c24bd")
+(defconst nelisp-cc-fxir-facts--add-baseline-sha256 "bc5989132fa6199bbbcbe2124c28c3a6df41200519329e8cd696af69775ec66e")
+(defconst nelisp-cc-fxir-facts--add-candidate-sha256 "7bf3cc8ca76630afade68eada12344d1d3476c0395285d7fd4c5e3cf8498c423")
 (defconst nelisp-cc-fxir-facts--add-site-path '(cdr car cdr car cdr car))
 (defconst nelisp-cc-fxir-facts--add-id-paths
   '((cdr cdr car cdr cdr car cdr car cdr cdr cdr cdr car cdr cdr car)))

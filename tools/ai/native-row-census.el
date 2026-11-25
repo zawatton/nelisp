@@ -89,7 +89,7 @@ NAME keeps its image definition afterwards."
          (reason reason)
          ((not (eq (car-safe fn) 'closure)) (format "no-closure %S" (type-of fn)))
          ((not (vectorp rec)) (format "record=%S" rec))
-         ((or (null c) (null (nth 2 c)) (not (nelisp-fxir-code-same-p (car c) (aref rec 0))))
+         ((or (null c) (null (nth 2 c)) (not (nelisp-nc--code-same-p (car c) (aref rec 0))))
           "recompile-differs")
          (t (let ((new (list name id (max 0 (nth 1 c)) (nelisp-fxir-callees (nth 2 c) (car c)) (nth 2 c)
                              (list (aref rec 2) (aref rec 5) (aref rec 6)))))

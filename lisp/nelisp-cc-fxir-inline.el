@@ -80,7 +80,7 @@ the canonical wrapper protocol remain mandatory at every selected site."
                     (ptr-write-u64 wout 0 ,result))
                  `(ptr-write-u64 wout 0 ,result)))
          (form (nelisp-cc-fxir-inline--replace-once form
-                 '(if (> nb 0) (wf_bytecode_unbind (+ env 32) nb) 0) 0)))
+                 '(if (> nb 0) (nc_unbind_n env nb) 0) 0)))
     ;; Read CODE again after the complete push, preserving the original
     ;; fallback and all non-nil ENTRY behavior for noncompact values.
     (nelisp-cc-fxir-inline--replace-once form entry

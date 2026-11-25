@@ -31680,7 +31680,7 @@ the variables a closure and the compiled code must share."
     ;; declare variables special. VARBIND can run variable watchers.
     (when (memq op '(4 5 6 7 13 14 15 16 20 21 29 30 31 32 34 35 36))
       (setq nelisp--fxc-callouts (1+ nelisp--fxc-callouts)))
-    (setq nelisp--fxc-depth (+ nelisp--fxc-depth (cond ((memq op '(1 2 12 18 19 28 30 31 33)) 1)
+    (setq nelisp--fxc-depth (+ nelisp--fxc-depth (cond ((memq op '(1 2 12 18 19 28 30 31 33 37)) 1)
                                                        ((memq op '(3 9 11 4 5 6 13 14 20 0 22 27 32)) -1)
                                                        ((memq op '(16 29)) (- 1 (nth 2 items)))
                                                        (t 0))))
@@ -31710,14 +31710,42 @@ the variables a closure and the compiled code must share."
 (defun nelisp--fxc-unsupported (x)
   (throw 'nelisp--fx-unsupported x))
 
-(defun nelisp--fxc-late-bind-p (name slot form)
+(defun nelisp--fxc-late-bind-p (slot)
   ;; The entry check covers declarations before this activation. Calls and
   ;; loop backedges can reenter Lisp, so decide these bindings at runtime.
   (when (or nelisp--fxc-in-loop (> nelisp--fxc-callouts 0))
-    (when (memq name nelisp--fxc-boxed)
-      (nelisp--fxc-unsupported form))
     (push slot nelisp--fxc-late-slots)
     t))
+
+(defun nelisp--fxc-late-ir (kind opcode name slot &rest operands)
+  "Emit a late binding operation, using negative slot encoding for cells."
+  (let* ((boxed (memq name nelisp--fxc-boxed))
+         (pc (nelisp--fxc-emit opcode name (if boxed (- -1 slot) slot))))
+    (nconc (list kind slot) operands (list pc) (and boxed (list t)))))
+
+(defun nelisp--fxc-capture-cell (name slot)
+  "Emit the environment entry for NAME at SLOT."
+  (let ((late (memq slot nelisp--fxc-late-slots))
+        (lexical (nelisp--fxc-label))
+        (end (nelisp--fxc-label))
+        (dynamic nil)
+        (cell nil))
+    (when late
+      (nelisp--fxc-emit 37 slot)
+      (nelisp--fxc-jump 9 lexical)
+      (setq dynamic (list :const (nelisp--fxc-emit 1 name)))
+      (nelisp--fxc-jump 8 end)
+      (nelisp--fxc-place lexical))
+    (if (memq name nelisp--fxc-boxed)
+        (progn (nelisp--fxc-emit 2 slot) (setq cell (list :slot slot)))
+      (let ((k (nelisp--fxc-emit 1 name)))
+        (nelisp--fxc-emit 2 slot)
+        (setq cell (nelisp--fxc-box-call 'cons 2 (list :const k) (list :slot slot)))))
+    (if late
+        (progn (nelisp--fxc-place end)
+               ;; A symbol is a dynamic declaration marker in the env.
+               (list :if (list :late-special-p slot) dynamic cell))
+      cell)))
 
 (defun nelisp--fxc-body (forms)
   (if (null forms) (nelisp--fxc-irk :const (nelisp--fxc-emit 1 nil))
@@ -31736,8 +31764,7 @@ the variables a closure and the compiled code must share."
           (let ((slot (cdr c)))
             (cond
              ((memq slot nelisp--fxc-late-slots)
-              (nelisp--fxc-emit 33 x slot)
-              (list :slot slot))
+              (nelisp--fxc-late-ir :late-ref 33 x slot))
              ((and nelisp--fx-cap-names (< slot (length nelisp--fx-cap-names)))
               (nelisp--fxc-irk :capture-value (nelisp--fxc-emit 28 slot)))
              (t
@@ -31809,17 +31836,18 @@ the variables a closure and the compiled code must share."
                   (cond
                    (parallel
                     (nelisp--fxc-emit 3 slot)
-                    (push (list name slot dyn) pending))
-                   ((nelisp--fxc-late-bind-p name slot x)
-                    (nelisp--fxc-emit 32 name slot)
+                    (push (list name slot dyn) pending)
+                    (push (list :store slot val) items))
+                   ((nelisp--fxc-late-bind-p slot)
+                    (push (nelisp--fxc-late-ir :late-bind 32 name slot val) items)
                     (push slot late)
                     (push (cons name slot) nelisp--fxc-vars))
                    (t
                     (nelisp--fxc-emit 3 slot)
                     (unless (memq name nelisp--fxc-lexlets)
                       (push name nelisp--fxc-lexlets))
-                    (push (cons name slot) nelisp--fxc-vars)))
-                  (push (list :store slot val) items)))))
+                    (push (cons name slot) nelisp--fxc-vars)
+                    (push (list :store slot val) items)))))))
           ;; GNU's parallel let binds from left to right after evaluating all
           ;; initializers. A watcher of one binding can affect a later one.
           (dolist (binding (nreverse pending))
@@ -31829,8 +31857,10 @@ the variables a closure and the compiled code must share."
                     (nelisp--fxc-emit 2 slot)
                     (push (list :varbind (nelisp--fxc-emit 20 name) (list :slot slot)) items)
                     (setq nspec (1+ nspec)))
-                (if (nelisp--fxc-late-bind-p name slot x)
-                    (progn (nelisp--fxc-emit 36 name slot) (push slot late))
+                (if (nelisp--fxc-late-bind-p slot)
+                    (progn
+                      (push (nelisp--fxc-late-ir :late-bind 36 name slot (list :slot slot)) items)
+                      (push slot late))
                   (unless (memq name nelisp--fxc-lexlets)
                     (push name nelisp--fxc-lexlets)))
                 (push (cons name slot) nelisp--fxc-vars))))
@@ -31856,8 +31886,7 @@ the variables a closure and the compiled code must share."
                           (cond
                            ((memq slot nelisp--fxc-late-slots)
                             (let ((v (nelisp--fxc-comp val)))
-                              (nelisp--fxc-emit 34 sym slot)
-                              (push (list :setslot slot v) items)))
+                              (push (nelisp--fxc-late-ir :late-set 34 sym slot v) items)))
                            ((memq sym nelisp--fxc-boxed)
                             (nelisp--fxc-emit 2 slot)
                             (let ((v (nelisp--fxc-comp val)))
@@ -31981,9 +32010,8 @@ the variables a closure and the compiled code must share."
               (unless (memq (car v) seen)
                 (push (car v) seen)
                 (when (nelisp--fx-mentions-p lam (car v))
-                  (when (or (memq (cdr v) nelisp--fxc-late-slots)
-                            (and (memq (car v) nelisp--fxc-mutated)
-                                 (not (memq (car v) nelisp--fxc-boxed))))
+                  (when (and (memq (car v) nelisp--fxc-mutated)
+                             (not (memq (car v) nelisp--fxc-boxed)))
                     (nelisp--fxc-unsupported x))
                   (push v cells)))))
           (setq cells (nreverse cells))
@@ -31999,14 +32027,7 @@ the variables a closure and the compiled code must share."
                  (ke (nelisp--fxc-emit 1 (reverse nelisp--fx-outer-env)))
                  (args (list (list :const ke) (list :const kf))))
             (dolist (v cells)
-              (if (memq (car v) nelisp--fxc-boxed)
-                  (progn (nelisp--fxc-emit 2 (cdr v)) (push (list :slot (cdr v)) args))
-                (let ((ks (nelisp--fxc-emit 1 (car v))))
-                  (nelisp--fxc-emit 2 (cdr v))
-                  (push 'cons nelisp--fx-called)
-                  (push (list :call (nelisp--fxc-emit 16 (vector 'cons nil nil nil nil) 2) 2
-                              (list :const ks) (list :slot (cdr v)))
-                        args))))
+              (push (nelisp--fxc-capture-cell (car v) (cdr v)) args))
             (setq args (nreverse args))
             (cons :call (cons (nelisp--fxc-emit 16 (vector 'nelisp--fx-lambda nil nil nil nil)
                                                 (+ 2 (length cells)))
@@ -32616,9 +32637,7 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
           (aset code (car p) (cdr (assq (cdr p) nelisp--fxc-labels))))
         (when nelisp--fxc-lexlets
           (aset code 1 (vconcat (list nelisp--fx-special-gen -1) nelisp--fxc-lexlets)))
-        ;; The native lowering does not model a slot whose binding kind can
-        ;; change between executions. Use this record on the VM in that case.
-        (when (and nelisp--fx-want-ir (null nelisp--fxc-late-slots))
+        (when nelisp--fx-want-ir
           (puthash code (list :fn nelisp--fxc-ir) nelisp--fx-ir-table))
         (cons code nelisp--fxc-nloc)))))
 

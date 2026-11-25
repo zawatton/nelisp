@@ -113,7 +113,7 @@
                  (nfi--write 600064 56 4445)
                  (nfi--write 600000 0 1)
                  (cl-incf nfi--push-count) 600064))
-              ((symbol-function 'm5_fx_entry_check)
+              ((symbol-function 'nc_entry_check)
                (lambda (_entry _env) (cl-incf nfi--entry-count) 1))
               ((symbol-function 'nc_enter) (lambda (_env n) (should (= n 7)) 810000))
               ((symbol-function 'nc_arith) (lambda (&rest _) (ert-fail "Unexpected arithmetic fallback")))
@@ -215,7 +215,7 @@
     (let ((original-count (symbol-function 'nelisp-cc-fxir-inline--count-form)))
       (dolist (spec '((l0 (setq l0 (heap-read-u64 (+ argw (* 0 8)) 0)) l0)
                       (l1 (setq l1 (heap-read-u64 (+ argw (* 1 8)) 0)) l1)
-                      (nb (if (> nb 0) (wf_bytecode_unbind (+ env 32) nb) 0)
+                      (nb (if (> nb 0) (nc_unbind_n env nb) 0)
                           (setq nb 1))))
         (let* ((old (nth 1 spec))
                (mutant (cl-subst `(seq ,old ,(nth 2 spec)) old activation :test #'equal))
@@ -228,7 +228,7 @@
                          (funcall original-count form target)))))
             (should (nelisp-cc-fxir-inline--checked-activation mutant))))))
     (should-error (nelisp-cc-fxir-inline--checked-activation
-                   (cl-subst '(setq nb 1) '(if (> nb 0) (wf_bytecode_unbind (+ env 32) nb) 0)
+                   (cl-subst '(setq nb 1) '(if (> nb 0) (nc_unbind_n env nb) 0)
                              activation :test #'equal)))))
 
 (defun nfi--enter-run (form top registry)

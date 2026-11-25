@@ -144,7 +144,7 @@ inline arithmetic, mutable reads and fixed parameters charge window sites."
                      (setf (alist-get 'maxargc metrics) (max argc (or (alist-get 'maxargc metrics) 0)))
                      (charge 'staged-args argc) (charge 'windows 1)
                      (when (eq (car item) :call) (charge 'calls 1))))
-                  ((or :varref :alias)
+                  ((or :varref :alias :late-ref)
                    ;; Conservative allowance for current/adjacent callout shapes.
                    (setf (alist-get 'maxargc metrics) (max 2 (or (alist-get 'maxargc metrics) 0)))
                    (charge 'windows 1))
@@ -152,7 +152,7 @@ inline arithmetic, mutable reads and fixed parameters charge window sites."
                    (charge 'handlers 1) (charge 'windows 1)
                    (when (eq (car item) :condition-case)
                      (charge 'handlers (length (nthcdr 4 item)))))
-                  (:varbind (charge 'bindings 1)))
+                  ((or :varbind :late-bind) (charge 'bindings 1)))
                 (dolist (child item) (when (or (consp child) (integerp child)) (push child todo)))))))
           (when (> nfixed 0) (charge 'windows 1))
           (charge 'fsize-upper (+ 3 nfixed (or (alist-get 'maxargc metrics) 0)

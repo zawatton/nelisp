@@ -42,15 +42,26 @@
           (when c (list (car c) (cdr c) (gethash (car c) nelisp--fx-ir-table))))))))
 
 (defun nelisp-nc--code-same-p (a b)
-  "Non-nil when code vectors A and B hold the same code (call sites by name)."
+  "Non-nil when A and B have the same code and call-site names.
+Fresh symbols of the same name must correspond one-to-one. In particular,
+late let instructions embed the names of macro-generated locals. Native
+code reads the live symbol operands from its record at execution time."
   (and (= (length a) (length b))
-       (let ((i 0) (ok t))
+       (let ((i 0) (ok t) (fresh nil))
          (while (and ok (< i (length a)))
            (let ((x (aref a i)) (y (aref b i)))
-             (unless (if (and (vectorp x) (vectorp y) (> (length x) 0) (> (length y) 0))
-                         (eq (aref x 0) (aref y 0))
-                       (equal x y))
-               (setq ok nil)))
+             (setq ok
+                   (cond
+                    ((and (vectorp x) (vectorp y) (> (length x) 0) (> (length y) 0))
+                     (equal (aref x 0) (aref y 0)))
+                    ((and (symbolp x) (symbolp y)
+                          (string= (symbol-name x) (symbol-name y))
+                          (not (memq (intern-soft (symbol-name x)) (list x y))))
+                     (let ((known (assq x fresh)))
+                       (if (or known (rassq y fresh))
+                           (and known (eq (cdr known) y))
+                         (push (cons x y) fresh))))
+                    (t (equal x y)))))
            (setq i (1+ i)))
          ok)))
 
@@ -67,8 +78,8 @@
                           ((eq (car n) :let)
                            (dolist (it (nth 1 n)) (walk (nth 2 it)))
                            (walk (nth 2 n)))
-                          ((memq (car n) '(:const :slot :varref :alias)) nil)
-                          ((eq (car n) :setslot) (walk (nth 2 n)))
+                          ((memq (car n) '(:const :slot :varref :alias :late-ref :late-special-p)) nil)
+                          ((memq (car n) '(:setslot :late-set)) (walk (nth 2 n)))
                           (t (mapc #'walk (cdr n)))))))
       (walk (nth 1 ir)))
     (nreverse out)))
