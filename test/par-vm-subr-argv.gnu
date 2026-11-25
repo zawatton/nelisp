@@ -1,0 +1,5 @@
+(calls t nil t ("dog" "cat"))
+(errors (wrong-type-argument stringp [dog]) (wrong-number-of-arguments string-lessp 1))
+(unwind ((one inner (t mapcar par-vm-subr-callback (one two))) (two inner (t mapcar par-vm-subr-callback (one two)))) (inner) outer)
+(direct "B" nil)
+(caught (error one inner (t mapcar par-vm-subr-raising-callback (one))) (inner) outer)

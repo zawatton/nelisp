@@ -1306,14 +1306,19 @@ See `wf_aot_swp' and `wf_aot_fb'."
        (defun wf_aot_find_in (v func)
          ;; No VM arm.  1 + the installed id of FUNC in table vector V, else 0
          ;; (linear scan of the at most 16 installed object slots).
-         (let* ((n (- (/ (vector-len v) 2) %HL2%)) (i 0) (r 0) (p (nl_word_payload func)))
-           (seq (while (if (= r 0) (< i n) 0)
-                  (let* ((w (nl_vector_slot_word v i)))
-                    (seq (if (= (logand w 7) 6)
-                             (if (= (nl_word_payload w) p) (setq r (+ i 1)) 0)
-                           0)
-                         (setq i (+ i 1)))))
-                r)))
+         (let* ((p (nl_word_payload v))
+                (n (- (/ (vector-len v) 2) %HL2%))
+                (key (+ (nl_word_payload func) 6))
+                (i 0) (r 0))
+           (seq
+            (while (if (= r 0) (< i n) 0)
+              (seq
+               ;; All admitted table entries are canonical vectorlike words.
+               ;; Compare the whole word against a canonicalized callee.
+               (if (= (ptr-read-u64 (+ p 8) (* i 8)) key)
+                   (setq r (+ i 1)) 0)
+               (setq i (+ i 1))))
+            r)))
        (defun wf_aot_maybe (p)
          ;; No VM arm.  Inline miss filter on the callee's payload address P: 0 =
          ;; certainly not installed (a 64-bit bloom word, state +16).  Valid only
