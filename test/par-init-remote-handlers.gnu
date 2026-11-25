@@ -1,0 +1,7 @@
+(warm nil nil par-init-remote nil)
+(inhibited nil)
+(match-data (1 2 1 2))
+(mutated-pattern par-init-remote)
+(changed-alist par-init-remote par-init-second)
+(invalid invalid-regexp)
+(gnu-tramp nil nil tramp-completion-file-name-handler tramp-file-name-handler tramp-file-name-handler)
