@@ -289,10 +289,6 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
     (nemacs-runtime-image-preload--retry-stale-fx))
   (when (fboundp 'nelisp--aot-refresh-expander-rows)
     (nelisp--aot-refresh-expander-rows))
-  ;; Build GNU's Unicode name cache once per image.  A named reader escape
-  ;; in an ordinary library would otherwise walk both name tables on the
-  ;; first load in every restored process.
-  (ucs-names)
   t)
 
 (defun nemacs-runtime-image-preload--retry-stale-fx-pass ()
