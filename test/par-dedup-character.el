@@ -27,3 +27,11 @@
   (prin1 (list 'display-table-parent (char-width ?A) (char-width ?あ)
                (string-width "Aあ")))
   (terpri))
+
+(let ((standard-display-table (make-char-table 'display-table)))
+  (aset standard-display-table ?A (vector nil 'ignored (cons ?あ 1)
+                                          (+ (ash 1 22) ?x)))
+  (prin1 (list 'display-table-glyph-codes (char-width ?A)
+               (condition-case err (string-width "A")
+                 (error (car err)))))
+  (terpri))

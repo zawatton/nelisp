@@ -10,3 +10,4 @@
 (char-width 8 0 1 0 2)
 (display-table 3 3)
 (display-table-parent 1 3 4)
+(display-table-glyph-codes 3 3)
