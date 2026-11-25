@@ -2,3 +2,4 @@
 (version< "Version must be a string")
 (version<= "Version must be a string")
 (version= "Version must be a string")
+(definition-files "subr" "subr" "subr" "subr" "subr" "subr" "subr" "subr")

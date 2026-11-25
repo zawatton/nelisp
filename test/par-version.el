@@ -15,3 +15,14 @@
                    (funcall compare 1 "2")
                  (error (error-message-string err)))))
   (terpri))
+
+(prin1 (cons 'definition-files
+             (mapcar (lambda (name)
+                       (let ((file (symbol-file name 'defun)))
+                         (and file
+                              (file-name-sans-extension
+                               (file-name-nondirectory file)))))
+                     '(version-to-list version-list-< version-list-=
+                       version-list-<= version-list-not-zero
+                       version< version<= version=))))
+(terpri)
