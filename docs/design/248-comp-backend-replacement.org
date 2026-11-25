@@ -1,0 +1,244 @@
+#+TITLE: Replace comp.c with a NeLisp LIMPLE backend
+#+STATUS: draft
+
+* Boundary
+
+Keep the GNU 31.1 byte compiler, LAP-to-LIMPLE conversion, SSA, constraint
+propagation and inference, dead-code elimination, tail-call optimization,
+compiler driver and cache policy in the verbatim copies under
+=vendor/emacs-lisp/emacs-lisp/=. Lower the finalized context supplied by
+=comp--final1=. Use the instruction encoders and object-writing machinery
+under the AOT/FX compiler and =nelisp-eln-emitter.el=. The artifact is a
+genuine GNU native compilation unit as specified in Doc 206. Its ABI is
+specific to the GNU build and target, even within Emacs 31.1.
+
+=emacs-cc-comp-1.el= and =emacs-cc-comp-2.el= already own compatibility
+entry points, and =emacs-cc-census-files-w101.el= owns the relative
+filename function. Replace those definitions in place or transfer ownership
+atomically under Doc 246. Keep the code generator and ABI machinery under
+NeLisp-private names. Check the guarded prelude definition of
+=native-comp-available-p= and the census bootstrap selection before changing
+availability. Advertise support when a normal compile and load can complete.
+
+* Lisp interface
+
+The source links below point to the GNU =emacs-31.1= tag. Inputs to
+registration use the Lisp calling convention even when generated code
+makes the call via a native import slot.
+
+| Function | Contract | GNU source |
+|----------+----------+------------|
+| =comp--init-ctxt ()= | Acquire backend context, initialize types, helpers and dispatch, return t on success (nil on unavailable delayed load). | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4492-L4637][4492–4637]] |
+| =comp--release-ctxt ()= | Release backend state and return t. The caller uses unwind-protect. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4639-L4654][4639–4654]] |
+| =comp--compile-ctxt-to-file0 (filename)= | Consume dynamically bound, finalized =comp-ctxt=. Declare all functions before their bodies. Write a temporary shared object beside the target, clean stale cache entries, replace through =comp-delete-or-replace-file=, and return filename. Propagate compiler failure with context. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4764-L4914][4764–4914]] |
+| =comp-el-to-eln-rel-filename (filename)= | Resolve absolute path and symlinks, hash the resolved Lisp pathname with GNU installation-prefix normalization, hash source contents (decompress eligible .gz input), and produce basename-pathhash-contenthash.eln with eight hex digits per MD5. Preserve missing/read-error behavior. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L721-L759][721–759]], [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4292-L4381][4292–4381]] |
+| =comp-el-to-eln-filename (filename &optional base-dir)= | Use explicit base or first writable/creatable cache root, resolve relative base against invocation directory, append ABI version directory and optional preloaded directory, then the relative filename. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4383-L4456][4383–4456]] |
+| =comp--install-trampoline (subr-name trampoline)= | Validate the original and replacement subrs, reject installation during dump, replace the original primitive's import address in its existing slot, retain the trampoline in the installed table, return t. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4458-L4490][4458–4490]] |
+| =comp-native-driver-options-effective-p ()=, =comp-native-compiler-options-effective-p ()= | Report availability of the respective option interface. Return nil for GCC option interfaces the replacement does not implement. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4658-L4687][4658–4687]] |
+| =comp-libgccjit-version ()= | Report a (major minor patch) list when available, otherwise nil. The replacement has no libgccjit version. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4918-L4936][4918–4936]] |
+| =comp--subr-signature (subr)= | Format the primitive name and arity as NAME(MIN . MAX) for ABI hashing. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L767-L797][767–797]] |
+| =native-elisp-load (filename &optional late-load)= | Open a fresh compilation unit as needed, check and patch ABI relocations, choose =top_level_run= or =late_top_level_run=, and return that function's Lisp result. Preserve native load conditions and recursive-load behavior. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5207-L5337][5207–5337]], [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5506-L5548][5506–5548]] |
+| =comp--register-lambda (reloc-idx c-name minarg maxarg type rest comp-u)= | On first load create and root anonymous native subr, patch persistent relocation cell and track c-name/index for dump rehydration, return the subr. Subsequent registration returns nil. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5423-L5454][5423–5454]] |
+| =comp--register-subr (name c-name minarg maxarg type rest comp-u)= | Create native subr from the unit export and install by defalias, returning the subr. Both registration forms unpack REST as (doc-index interactive-spec command-modes). For dynamic code MINARG is the arity pair and MAXARG carries the lambda list. For lexical code a non-fixnum max selects MANY. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5373-L5475][5373–5475]] |
+| =comp--late-register-subr (name c-name minarg maxarg type rest comp-u)= | Install only if the current function equals the saved deferred candidate, remove the pending entry and return nil. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5477-L5490][5477–5490]] |
+| =native-comp-available-p ()= | Report usable built-in native compiler support. | [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5552-L5562][5552–5562]] |
+
+Initialize the compiler-side primitive list and arity table, ABI hash,
+version directory, ELN search path, pending-definition and trampoline
+tables, ELN/source and loaded-unit tables, preloaded flag, no-native-file
+table, sanitizer flag and compilation scratch symbols with their GNU
+roles. Keep the GNU import list distinct from the set of primitives that
+the NeLisp runtime can currently service. Bind the front end's contract
+with the actual live implementation of each callable primitive. See
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5567-L5825][comp.c initialization]].
+
+* Finalized data and lowering
+
+Use the generated struct accessors. The finalized context provides speed,
+debug, driver/compiler options, =funcs-h=, persistent and ephemeral
+=comp-data-container= objects (=idx= object-to-index map and =l= index-order
+objects), finalized =function-docs= vector, =non-materializable-objs-h= and
+=byte-func-to-func-h=. The latter two identify constants that require
+special handling, notably byte-function placeholders for registered
+lambdas. The front end already finalizes the relocation arrays and patches
+lambda indexes before entering the backend. See
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L1958-L1997][mvar constants]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2854-L2895][data containers]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2973-L2983][function docs]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4804-L4869][context readers]] and
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/lisp/emacs-lisp/comp.el#L3250-L3334][front-end finalization]].
+
+Each =comp-func= supplies =c-name=, =l-p=, =l-args= (fixed
+=comp-args-max= or =comp-nargs-p= for =(ptrdiff_t nargs, Lisp_Object *args)=),
+=frame-size=, =blocks=, =has-non-local=, =speed=, =safety= and diagnostic
+=name=. Dynamic functions have a zero-parameter machine entry, with Lisp
+arguments bound at invocation. Emit every
+block by hash key, with =entry= first, reading =comp-block-insns= in order.
+Use =comp-mvar-slot= for physical location (including the symbolic
+=scratch= slot) and =comp-cstr-imm-vld-p= and =comp-cstr-imm= for source
+values. SSA identity and constraints serve analysis. GNU can use a tagged
+immediate fixnum for a known value, otherwise load from data relocation
+storage when materializable. Preserve source values across aliased
+locations and honor =comp-mvar-type-hint-match-p= if selecting an inline
+specialization. See [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L877-L926][slot access]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2528-L2555][type hints]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L4096-L4269][function and block readers]].
+
+Give the LIMPLE adapter explicit basic blocks, label edges, tagged-word
+locations and typed call sites. Reuse the AOT/FX register, spill, branch,
+call and ELF relocation emitters where they implement the required target
+convention. Extend the ELN writer to take a unit of lowered functions,
+metadata and relocations. The current =nelisp-eln-emitter-write-ir= is a
+single exported AOT leaf writer, with fixed top-level templates. Keep it
+as an existing caller of shared ELF writing code when generalizing it.
+
+| LIMPLE instruction | Machine lowering |
+|--------------------+------------------|
+| =(set dst src)= | Resolve an mvar or one of the four nested call forms below, move result to frame slot or scratch. |
+| =(setimm dst obj)= | Load the finalized data relocation cell for obj, then store into dst. |
+| =(call callee args...)= | Marshal individual Lisp words and dispatch to the imported primitive/helper via its typed =freloc= slot. Honor special helper signatures (e.g. =set_internal=), void results, and optional inliners. Standalone calls discard the result. |
+| =(callref callee args...)= | Pass count and contiguous argument-word address to an imported MANY callee. Preserve argument order and values. Match GNU's zero-argument handling. |
+| =(direct-call callee args...)= | Call the predeclared same-unit function entry with individual Lisp words. Emit symbol/label fixup. |
+| =(direct-callref callee args...)= | Call the predeclared same-unit MANY entry with count and argument address. |
+| =(cond-jump a b yes no)= | Branch on GNU EQ, including symbol-with-position handling. Use raw BASE_EQ when either operand is known nil as in GNU. |
+| =(cond-jump-narg-leq n yes no)= | Signed ptrdiff_t compare of the original nargs against n, branch to yes for <=. |
+| =(jump target)= | Emit branch to the declared label. |
+| =(return value)= | Place tagged word in the ABI return register and emit the epilogue. |
+| =(unreachable)= | Match GNU's fallback return of Lisp nil through the epilogue. |
+| =(phi ...)= | Emit no instructions. GNU's physical frame slots already coalesce the incoming values. Preserve that property if changing allocation, or introduce edge copies. |
+| =(assume ...)= | Emit no instructions. Any surviving analysis facts may guide code selection. |
+| =(comment text)= | Keep text for optional listing output, emit no machine bytes. |
+| =(set-par-to-local dst n)= | Move fixed ABI argument n from incoming register or stack to dst. |
+| =(set-args-to-local dst)= | Load the word pointed to by the current argument cursor. |
+| =(set-rest-args-to-local dst)= | Import-call =list= with original nargs minus dst's slot index and the current argument cursor, store the resulting list. |
+| =(inc-args)= | Advance cursor by one Lisp word, keeping original nargs unchanged. |
+| =(push-handler kind tag handler guarded)= | Call GNU-compatible push helper with catcher/condition-case enum, save the handler pointer, call setjmp on its buffer, branch to handler on nonzero resumption and guarded on initial return. |
+| =(pop-handler)= | Replace the current thread's handlerlist with its head's next field. |
+| =(fetch-handler dst)= | Save the head, unlink it and load its value into dst. |
+
+Sources for the dispatch and operand order are
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2008-L2132][call lowering]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2195-L2220][handler push]] and
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2223-L2519][complete instruction dispatch]].
+Reject unsupported input before publication with a =native-ice= diagnostic
+that identifies the function, block and instruction.
+
+* Shared-object imports, lifetimes and load
+
+Emit the ABI globals =freloc_link_table=, =d_reloc=, =d_reloc_eph=,
+=current_thread_reloc=, =f_symbols_with_pos_enabled_reloc= and
+=comp_unit=. Resolve ordinary intra-unit references through ELF
+relocations. Primitive calls are indirect through the GNU link table
+pointer patched at load time. The slot order is helpers first followed
+by =comp-subr-list=, with callable signatures accounted for. Include
+=freloc_hash=, =text_data_reloc=, =text_data_reloc_eph=,
+=text_data_fdoc= and =text_optim_qly= as GNU static objects. GNU reads the
+length-prefixed =_blob= exports or corresponding accessor functions.
+The current emitter pins Linux x86-64 and =ba35c031=, including
+registration slot 1030. A producer profile needs the matching ordered
+imports, tags, structure layout and hash. GNU hashes the ABI revision,
+version, configuration, configuration options and primitive signatures.
+Validate both ABI identity and supported runtime imports before entering
+machine code. See
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L470-L489][export names]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L687-L716][helper order]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L780-L845][hash and slot fill]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2660-L2713][static objects]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L2854-L3048][declarations and metadata]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5150-L5198][static-object reader]] and
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5250-L5337][loader fixups]].
+
+Keep persistent relocation objects, registered anonymous functions and
+their code owner live with the native unit. Keep ephemeral data live
+through the full top-level call, including allocations during
+registration. Preserve shared and circular objects through print/read.
+Generate both top-level entries when present in LIMPLE. Preserve their
+return value, load-time side effects, and late registration semantics.
+Reuse the admission and lifetime paths in =nelisp-eln-registration.el=,
+=nelisp-eln-native-subr.el= and related modules. Expand admission with
+each emitted code family and retain owner handles through active calls.
+
+Use Doc 210 and the handler substrate/frame/port as the starting point
+for the x86-64 GNU nonlocal ABI. Spill live Lisp words and restore the
+continuation state on the handler edge. Preserve stack alignment and
+callee-saved state across the returns-twice call, specpdl unwind and
+landing. Support both CONDITION_CASE and CATCHER before enabling generic
+handler lowering. The current condition-case port explicitly scopes
+admission and matching. AOT spills alone do not establish NeLisp roots.
+Use the AOT stack-map analyses as a reference for Lisp-value liveness.
+At every allocating/import/GC safepoint and across suspended handler
+frames, either prove a live tagged word already has a live owner or root
+it using a NeLisp-traced frame. Keep GNU artifacts on the GNU ABI and
+supply any NeLisp-only root bookkeeping on the NeLisp runtime side.
+Stress collection across nested native/Lisp calls, argument vectors,
+registration and nonlocal exit.
+
+* Worker and cache integration
+
+=comp-run.el= constructs a temporary Lisp script and uses =make-process=
+to invoke the executable at =invocation-directory/invocation-name= with
+=-no-comp-spawn -Q --batch --eval ... -l TEMP=. Its sentinel runs the
+completion hook, consumes diagnostics, removes the script, conditionally
+loads the cache artifact with the late bit, then schedules more work.
+=comp.el= also uses =call-process= with the same executable and flags for
+interactive finalization, serializing the context to a script with
+circularity enabled. Batch and async workers execute =comp--final1=
+in-process. See
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/lisp/emacs-lisp/comp-run.el#L270-L380][worker]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/lisp/emacs-lisp/comp.el#L3330-L3397][synchronous finalization]].
+
+Publish the actual =target/nelisp= invocation path. Support the driver
+argv through NeLisp startup, including ordered eval/load, isolated batch
+startup, recursion prevention and nonzero error exit. Select and reinit
+the correct bootstrap image in that startup path. Exercise serialized
+records, hashes, gensyms and circular structures. Use the existing
+process API so the GNU queue, concurrency limits, sentinel, cache
+cleanup and JIT scheduling run unchanged. Parent and child must agree
+on ABI profile, source hashing, cache roots and output replacement.
+
+* Stages
+
+The acceptance criteria are tracked as S11 in
+[[file:../../tools/ai/eln-progress.org][the ELN ledger]]. Start with unchanged
+front-end admission. Then emit and load one named fixed-arity definition
+with an explicit output path in batch mode. Add primitive calls and
+anonymous functions, followed by the general CFG/argument ABI, data
+relocation and GC cases, handlers, and finally workers/cache/trampolines.
+For behavioral fixes, use a =test/par-*.el= row and GNU 31.1 =.gnu=
+golden, with a pre-fix run that differs. Also require native-function
+identity and execution of the same artifact on both runtimes, with no
+bytecode fallback. Reject unsupported shapes until their stage passes.
+
+* First-slice evidence and blockers
+
+The checked-in backend entry point is a compatibility stub. For a normal
+output filename it signals =args-out-of-range= and never writes code.
+The current =native-elisp-load= owner rejects existing regular files as
+too short. The private loader admits selected machine-code and metadata
+families, and its contract still needs integration with the public load
+result and late-load flag. The emitter accepts a fixed-arity constant,
+identity, or restricted expression-tree leaf with canned named
+registration. It needs a finalized LIMPLE input path, actual export
+names and top-level code, and typed primitive imports for =1+=. An
+anonymous result additionally needs persistent lambda relocation and
+ownership. An increment-only tagged add would miss bignum, float and
+wrong-type behavior.
+
+On the pre-existing =target/nelisp.artifact.cold= image, explicitly loading
+the unchanged =comp.el= succeeds and makes =bytecomp=, =comp-common= and
+=comp-cstr= available. The normal lambda compile stops at the missing
+=native-compile= feature. In a disposable diagnostic process, providing
+the feature and overriding the availability predicate exposed missing
+=documentation= and then =command-modes=. Loading the existing census
+definitions let the compiler enter =comp--limplify=, where it failed on
+unbound =comp-subr-arities-h= in =comp--func-arity=. No backend entry was
+reached. The generated bootstrap bundle also failed to bake a runtime
+dump at =lookup-key= during =substitute-key-definition= with
+=(wrong-type-argument stringp [f1])=. The artifact image did not provide
+=nemacs-runtime-dump-reinit= and was used for the focused diagnostic only.
+
+The installed GNU 31.1 reference reports nil from
+=native-comp-available-p= and rejects =native-compile= because it was
+built without native compilation. Verify native publication and
+execution with a native-enabled GNU 31.1 build matching the producer
+profile. Keep all S11 criteria open until those runs exist.
