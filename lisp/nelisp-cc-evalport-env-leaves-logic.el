@@ -11,5 +11,16 @@
               0)
             1
           (nl_cc_has_success_p (nl_cons_cdr_word clauses) 0)))
-    0)) (defun nl_cc_match_and_bind (clauses err_inout var env) (let* ((err_tag (sexp-tag err_inout))) (if (= err_tag 7) (let* ((actual_tag_ptr (nl_cons_car_ptr err_inout))) (if (= (sexp-tag actual_tag_ptr) 4) (let* ((err_clone (alloc-bytes 32 8))) (seq (nl_sexp_clone_into err_inout err_clone) (nl_cc_clause_walk clauses err_clone actual_tag_ptr var env err_inout))) 1)) 1))))))
+    0))
+    (defun nl_cc_match_and_bind (clauses err_inout var env)
+      (if (= (sexp-tag err_inout) 7)
+          (let* ((actual_tag_ptr (nl_cons_car_ptr err_inout))
+                 (tag (sexp-tag actual_tag_ptr)))
+            ;; A public signal can carry an uninterned condition symbol.
+            (if (or (= tag 4) (= tag 16) (= tag 1))
+                (let* ((err_clone (alloc-bytes 32 8)))
+                  (seq (nl_sexp_clone_into err_inout err_clone)
+                       (nl_cc_clause_walk clauses err_clone actual_tag_ptr var env err_inout)))
+              1))
+        1)))))
 (provide (quote nelisp-cc-evalport-env-leaves-logic))

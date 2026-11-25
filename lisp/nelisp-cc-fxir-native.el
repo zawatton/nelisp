@@ -1316,31 +1316,29 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
       (let* ((sym (nc_site_sym site))
              (fn (if (= sym 0) 0 (ptr-read-u64 (- sym 6) 24))))
         (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
-             ;; hash4: gethash (static id 101, Subr header byte 118) skips the
-             ;; `nl_directcall_invoke'/`nl_directcall_id' layers with the same
-             ;; checks they make for a leaf id: a Subr header re-read now, its
-             ;; arity, the debug-policy bits and the backtrace depth limit.
-             ;; Anything else (or any failed check) takes the unchanged entry.
+             ;; Re-read the header and check arity, debug policy and depth.
+             ;; The checked leaves can use the existing rooted arguments.
              (let* ((hdr (if (= (logand fn 7) 6)
                              (if (< fn 4096) 0 (ptr-read-u64 (- fn 6) 0))
                            0))
                     (desc (sar hdr 8))
-                    (st (heap-read-u64 env 176))
-                    (d (if (if (= (logand hdr 63) 20)
-                               (if (= (logand desc 255) 118)
-                                   (if (>= argc (logand (sar desc 8) 255))
-                                       (if (if (= (logand (sar desc 16) 255) 127) 1
-                                             (<= argc (logand (sar desc 16) 255)))
-                                           (if (= (logand (heap-read-u64 env 112) 3145728) 0)
-                                               (if (= st 0) 0 (< (heap-read-u64 st 0) 32768))
-                                             0)
-                                         0)
-                                     0)
-                                 0)
-                             0)
-                           (let* ((r (nl_directcall_hash_get stk argc resw env)))
-                             (if (= r 0) 0 (if (= r -3) 2 1)))
-                         (nl_directcall_invoke fn sym stk argc env resw))))
+                    (id (- (logand desc 255) 17))
+                    (max (logand (sar desc 16) 255))
+                    (valid (if (= (logand hdr 63) 20)
+                               (if (>= argc (logand (sar desc 8) 255))
+                                   (if (if (= max 127) 1 (<= argc max))
+                                       (m5_fx_leaf_allowed env) 0) 0) 0))
+                    (leaf (if (= valid 1)
+                              (if (if (> argc 0) (<= argc 2) 0)
+                                  (nl_directcall_leaf_value id (heap-read-u64 stk 0)
+                                    (if (= argc 2) (heap-read-u64 stk 8) 3) env) 0)
+                            0))
+                    (d (cond
+                        ((/= leaf 0) (seq (ptr-write-u64 resw 0 leaf) 0))
+                        ((if (= valid 1) (= id 101) 0)
+                         (let* ((r (nl_directcall_hash_get stk argc resw env)))
+                           (if (= r 0) 0 (if (= r -3) 2 1))))
+                        (t (nl_directcall_invoke fn sym stk argc env resw)))))
                (if (/= d 2) d (nc_call env site stk argc resw oslot))))))
     ;; A Subr object with no directcall entry for this call: its interpreter
     ;; descriptor's primitive (`nl_eic_prim_frame_w''s dispatch), funcall (13)
@@ -1361,7 +1359,7 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
                            (if (if (= id 0) 1 (if (= id 14) 1 (= id 28))) -3
                              (if (<= id 12) (m5_fx_primitive_run id stk argc argc resw env (+ resw 8))
                                (if (= id 27) (m5_fx_primitive_run -14 stk argc argc resw env (+ resw 8))
-                                 (nl_eic_prim2_run id stk argc resw)))))))
+                                 (nl_eic_prim2_run id stk argc resw env)))))))
                 (if (= st -3) (nc_list_call env sym legacy stk argc resw oslot) st)))))))
     ;; The legacy (builtin NAME) cell FN: the call-out's kind arms on the site's
     ;; cached kind, then the list apply; -5 when FN is no builtin list.  KNOWN 1:
@@ -1587,26 +1585,8 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
                     (setq n (+ n 1))
                     (if (> n 65536) (setq res 1) 0)))))
          (if (= res 1) 0 (if (/= res 0) res (if (= cur 3) 3 0))))))
-    ;; Bassq: the first element that is a cons whose car is `eq' to KEY; other
-    ;; elements are skipped (GNU Fassq); a legacy element or tail goes out.
-    (defun nc_assq_fast (key l)
-      (let* ((cur l) (res 0) (n 0))
-        (seq
-         (while (if (= res 0) (= (logand cur 7) 2) 0)
-           (let* ((e (ptr-read-u64 (- cur 2) 0)))
-             (if (= (logand e 7) 0) (setq res 1)
-               (seq
-                (if (= (logand e 7) 2)
-                    (let* ((k (ptr-read-u64 (- e 2) 0)))
-                      (if (if (= k key) 1 (if (= (logand (logand k key) 1) 1) 0 (wf_bytecode_w_eqw k key)))
-                          (setq res e) 0))
-                  0)
-                (if (= res 0)
-                    (seq (setq cur (ptr-read-u64 (- cur 2) 8))
-                         (setq n (+ n 1))
-                         (if (> n 65536) (setq res 1) 0))
-                  0)))))
-         (if (= res 1) 0 (if (/= res 0) res (if (= cur 3) 3 0))))))
+    (defun nc_assq_fast (key list)
+      (wf_bytecode_w_assq_fast key list))
     ;; Bnthcdr (MODE 1) / Bnth (MODE 0): a fixnum count 0..65536 over direct
     ;; conses; a tail that is neither a cons nor nil before the count is used
     ;; up (the wrong-type error) goes out.

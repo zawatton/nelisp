@@ -192,7 +192,7 @@ Return (replacement selected unsupported); unsupported forms retain source."
                       (cond
                        ((and (eq (car form) 'defun)
                              (or (string-prefix-p "nelisp--prn-" (symbol-name (cadr form)))
-                                 (memq (cadr form) '(equal nelisp--equal-recursive copy-sequence hash-table-p functionp interpreted-function-p proper-list-p plist-put mapc reverse vconcat nelisp--check-seq-list nelisp-bytecode-jit--runtime-dispatch base64-encode-string))))
+                                 (memq (cadr form) '(equal nelisp--equal-recursive copy-sequence hash-table-p interpreted-function-p proper-list-p plist-put mapc reverse vconcat nelisp--check-seq-list nelisp-bytecode-jit--runtime-dispatch base64-encode-string))))
                         (push (cons (cadr form) (cons 'lambda (cddr form))) definitions))
                        ((and (eq (car form) 'fset) (equal (cadr form) '(quote nelisp--syscall-stat))
                              (eq (car-safe (caddr form)) 'lambda))
@@ -231,7 +231,7 @@ Return (replacement selected unsupported); unsupported forms retain source."
             (unless (and ops (not (cl-set-difference ops nelisp-prelude-bytecode--opcodes))
                          (not (nelisp-prelude-bytecode--nested-unsupported compiled)))
               (error "Prelude helper uses unsupported bytecode: %s" name)))
-          (if (memq name '(equal nelisp--equal-recursive copy-sequence hash-table-p functionp interpreted-function-p proper-list-p plist-put mapc reverse vconcat nelisp--check-seq-list nelisp-bytecode-jit--runtime-dispatch copy-tree))
+          (if (memq name '(equal nelisp--equal-recursive copy-sequence hash-table-p interpreted-function-p proper-list-p plist-put mapc reverse vconcat nelisp--check-seq-list nelisp-bytecode-jit--runtime-dispatch copy-tree))
               (with-temp-buffer
                 (let ((print-length nil) (print-level nil) (print-gensym t) (print-circle t) (print-escape-newlines t))
                   (prin1 `(when (and (fboundp ',name)

@@ -18693,10 +18693,13 @@ conditional jump around the update, with no join jump."
    (unless (or (and
                 ;; A deferred-loop latch owns its existing nonlocal then edge.
                 (not (eq node (car-safe nelisp-aot-compiler--x86-hot-latch-edge)))
-                (let ((plan (nelisp-aot-compiler--x86-ordered-if-plan node)))
+                (let* ((equality
+                        (and (eq nelisp-aot-compiler--emitting-defun-name 'm5_fx_run_body)
+                             (nelisp-aot-compiler--x86-dense-if-plan node)))
+                       (plan (or equality (nelisp-aot-compiler--x86-ordered-if-plan node))))
                   (when plan
                     (nelisp-aot-compiler--emit-if-table-x86
-                     node buf plan t #'nelisp-aot-compiler--emit-effect))))
+                     node buf plan (not equality) #'nelisp-aot-compiler--emit-effect))))
                (nelisp-aot-compiler--emit-ifcvt-x86 node buf))
     (let ((cold (and nelisp-aot-compiler--cold-guards
                      (nelisp-aot-compiler--cold-site-ok-p)
