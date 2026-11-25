@@ -50776,7 +50776,9 @@ listing it would make the load-path lie about what is reachable."
    "\n;; --- GNU Emacs 31.1 subr.el: list utilities ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"
-    '(last butlast nbutlast copy-tree delete-dups))
+    '(last butlast nbutlast copy-tree delete-dups remove remq))
+   (nelisp-vendor-source-forms
+    "vendor/staged-emacs-lisp/subr.el" '(int-to-string))
    "\n;; --- GNU Emacs 31.1 subr.el: sequence and tree helpers ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"

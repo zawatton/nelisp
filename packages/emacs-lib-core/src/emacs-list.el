@@ -222,13 +222,6 @@ org-element-ast's node-property handling (`nbutlast props 2')."
 
 ;;;; --- removal ------------------------------------------------------------
 
-(unless (fboundp 'remq)
-  (defalias 'remq 'delq))
-
-(unless (fboundp 'remove)
-  (defalias 'remove 'delete))
-
-
 ;;;; --- length helpers -----------------------------------------------------
 
 

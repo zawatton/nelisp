@@ -49,12 +49,6 @@
 (unless (fboundp 'minusp)
   (defun minusp (n) (< n 0)))
 
-(unless (fboundp 'oddp)
-  (defun oddp (n) (= 1 (mod n 2))))
-
-(unless (fboundp 'evenp)
-  (defun evenp (n) (= 0 (mod n 2))))
-
 (unless (fboundp '%)
   (defun % (dividend divisor)
     "Polyfill: return the integer remainder of DIVIDEND divided by DIVISOR.

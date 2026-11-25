@@ -1584,12 +1584,6 @@ machine-readable stdout.  Nil and empty messages emit a blank line unless
 (unless (fboundp 'minusp)
   (defun minusp (n) (< n 0)))
 
-(unless (fboundp 'oddp)
-  (defun oddp (n) (= 1 (mod n 2))))
-
-(unless (fboundp 'evenp)
-  (defun evenp (n) (= 0 (mod n 2))))
-
 
 ;;;; --- bitwise ops --------------------------------------------------------
 
