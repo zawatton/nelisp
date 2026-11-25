@@ -1290,28 +1290,37 @@ Built with `concat'/`char-to-string' since reader strings are immutable."
       (setq i (1+ i)))
     found))
 
+(defun files--probe-case-insensitivity (path)
+  "Probe case sensitivity at PATH or its nearest existing ancestor."
+  (let ((path (directory-file-name path))
+        (depth 0))
+    (catch 'done
+      (while (and (stringp path) (> (length path) 1) (< depth 64))
+        (let ((base (file-name-nondirectory path)))
+          (when (and (files--has-letter-p base) (file-exists-p path))
+            (let* ((dir (file-name-directory path))
+                   (toggled (concat dir (files--toggle-case base)))
+                   (ino1 (files--stat-field path files--stat-off-ino))
+                   (ino2 (and (file-exists-p toggled)
+                              (files--stat-field toggled files--stat-off-ino))))
+              (throw 'done (and ino1 ino2 (= ino1 ino2))))))
+        (setq path (directory-file-name (file-name-directory path))
+              depth (1+ depth)))
+      nil)))
+
 (when (files--install-fallback-function-p 'file-name-case-insensitive-p)
   (defun file-name-case-insensitive-p (filename)
-    "Return t if FILENAME is on a case-insensitive filesystem.
-Probe: toggle the case of an existing path component and check whether the
-toggled name refers to the same file (same inode).  Returns nil on a
-case-sensitive filesystem (the Linux default).  FILENAME need not exist; the
-nearest existing ancestor with a letter in its name is probed."
-    (let ((path (directory-file-name (files--expand-file-name filename)))
-          (depth 0))
-      (catch 'done
-        (while (and (stringp path) (> (length path) 1) (< depth 64))
-          (let ((base (file-name-nondirectory path)))
-            (when (and (files--has-letter-p base) (file-exists-p path))
-              (let* ((dir (file-name-directory path))
-                     (toggled (concat dir (files--toggle-case base)))
-                     (ino1 (files--stat-field path files--stat-off-ino))
-                     (ino2 (and (file-exists-p toggled)
-                                (files--stat-field toggled files--stat-off-ino))))
-                (throw 'done (and ino1 ino2 (= ino1 ino2))))))
-          (setq path (directory-file-name (file-name-directory path))
-                depth (1+ depth)))
-        nil))))
+    "Return non-nil if FILENAME is on a case-insensitive filesystem."
+    (let* ((path (expand-file-name filename))
+           (handler (and file-name-handler-alist
+                         (find-file-name-handler
+                          path 'file-name-case-insensitive-p))))
+      (cond
+       (handler (funcall handler 'file-name-case-insensitive-p path))
+       ;; GNU 31.1's file_name_case_insensitive_err returns zero on
+       ;; Linux, where there is no case-sensitivity pathconf selector.
+       ((eq system-type 'gnu/linux) nil)
+       (t (files--probe-case-insensitivity path))))))
 
 (defun files--mode-rwx (bits)
   "Return the 3-char rwx string for the low 3 BITS."
