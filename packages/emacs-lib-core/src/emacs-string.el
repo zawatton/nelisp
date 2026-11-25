@@ -161,13 +161,6 @@ is non-nil, each returned line keeps its trailing newline when present."
       (emacs-string--string-width string))
     (put 'string-width 'emacs-stub-bulk nil)))
 
-(unless (and (fboundp 'int-to-string)
-             (not (get 'int-to-string 'emacs-stub-bulk)))
-  (defun int-to-string (integer)
-    "Return decimal printed representation of INTEGER."
-    (format "%d" integer))
-  (put 'int-to-string 'emacs-stub-bulk nil))
-
 (when (fboundp 'nl-ffi-call)
   (unless (and (fboundp 'assoc-string)
                (not (get 'assoc-string 'emacs-stub-bulk)))

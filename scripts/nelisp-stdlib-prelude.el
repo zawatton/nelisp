@@ -1767,7 +1767,6 @@ GNU subr.el: `defvar' followed by `make-variable-buffer-local'.
 
 ;; Doc 143 (pure, no-helper primitives): high-frequency, dependency-free.
 (defun natnump (x) (and (integerp x) (>= x 0)))
-(defun int-to-string (n) (number-to-string (nelisp--check-number n)))
 (defun prefix-numeric-value (arg)
   ;; Emacs answers 1 for anything it does not recognise as a prefix -- a
   ;; STRING included -- rather than handing the argument back.
@@ -4615,18 +4614,6 @@ still differs, by one ULP."
 (unless (fboundp 'isqrt)
   (defun isqrt (n)
     (if (< n 2) n (let ((x n) (y (/ (+ n 2) 2))) (while (< y x) (setq x y y (/ (+ x (/ n x)) 2))) x))))
-(unless (fboundp 'remove)
-  (defun remove (item seq)
-    "Return a copy of SEQ without members `equal' to ITEM.
-Type-preserving: a string answers a string and a vector a vector, as in
-Emacs.  Answering a list of character codes for a string is a different
-TYPE flowing into whatever the caller does next."
-    (let ((kept (let (acc)
-                  (dolist (x (nelisp-seq--to-list seq) (nreverse acc))
-                    (unless (equal x item) (push x acc))))))
-      (cond ((stringp seq) (apply #'string kept))
-            ((vectorp seq) (apply #'vector kept))
-            (t kept)))))
 (unless (and (fboundp 'ffloor) (condition-case nil (progn (ffloor 1.0) t) (error nil)))
   (defun ffloor (x)
     ;; A FLOAT, not any number: (ffloor 65) signals in Emacs while
@@ -8529,21 +8516,6 @@ If only one of the arguments is non-nil, return it; otherwise
 return nil."
     (cond ((not cond1) cond2)
           ((not cond2) cond1))))
-(unless (fboundp 'remq)
-  (defun remq (elt list)
-    "Return LIST with all `eq' occurrences of ELT removed.
-As in GNU subr.el, leading occurrences are skipped without copying and
-LIST (or that tail) itself is returned when ELT does not occur; only
-otherwise is the result a fresh copy.  The byte optimizer relies on
-this: `byte-optimize-cond' returns `(remq nil form)' and
-`byte-optimize-form' repeats until the result is `eq' to its input."
-    (unless (listp list) (signal 'wrong-type-argument (list 'listp list)))
-    (unless (proper-list-p list)
-      (signal 'wrong-type-argument (list 'listp list)))
-    (while (and (eq elt (car list)) (setq list (cdr list))))
-    (if (memq elt list)
-        (delq elt (copy-sequence list))
-      list)))
 (unless (fboundp 'memql)
   ;; GNU `memql' is a C loop; here it is the native `memq' (fixnums, symbols and
   ;; other objects are `eql' exactly when `eq') or the native `member' (floats and
@@ -29056,19 +29028,6 @@ satisfies PRED, or nil if none do."
                      oclosure-lambda oclosure--lambda))
   (unless (fboundp nelisp--m)
     (autoload nelisp--m "nelisp-nadvice-substrate" nil nil 'macro)))
-;; GNU 31 `oddp'/`evenp' are C subrs (gv.el's `setf' calls `oddp').
-(unless (fboundp 'oddp)
-  (defun oddp (integer)
-    "Return t if INTEGER is odd."
-    (if (integerp integer)
-        (/= (% integer 2) 0)
-      (signal 'wrong-type-argument (list 'integerp integer)))))
-(unless (fboundp 'evenp)
-  (defun evenp (integer)
-    "Return t if INTEGER is even."
-    (if (integerp integer)
-        (= (% integer 2) 0)
-      (signal 'wrong-type-argument (list 'integerp integer)))))
 (unless (fboundp 'all)
   (defun all (pred list)
     "Non-nil if PRED is true for every element of LIST (t for nil), else nil.
@@ -34063,19 +34022,7 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
   "The epoch-aware `set-case-table' function object.")
 (setq nelisp-casetab--epoch-owner (symbol-function 'set-case-table))
 
-(provide 'nelisp-stdlib-casetab)
-;;; nelisp-stdlib-casetab.el ends here
-;; END GENERATED CASETAB SOURCES
-
-;;; case-table.el --- GNU case-table Lisp layer for NeLisp -*- lexical-binding: t; -*-
-
-;; GNU Emacs 31.1 lisp/case-table.el:36-181 supplies the public Lisp layer.
-;; Standard Unicode data remains generated from the same reference version.
-;; Native char-tables are used directly; the optional foundation adapter is
-;; handled by the C-equivalent layer's primitive-access wrappers.
-
-;;; Code:
-
+;; Unicode runs extracted from GNU Emacs 31.1's standard case tables.
 (defconst nelisp-casetab--standard-ranges
   '(
     (0 64 0) (65 90 32) (91 127 0) (160 161 0) (166 167 0) (169 169 0)
@@ -34900,6 +34847,10 @@ local values but still allow the table's default or parent fallback."
     (dolist (pair pairs)
       (nelisp-casetab--shuffle table (car pair) (cdr pair)))
     table))
+
+(provide 'nelisp-stdlib-casetab)
+;;; nelisp-stdlib-casetab.el ends here
+;; END GENERATED CASETAB SOURCES
 
 (defun describe-buffer-case-table ()
   "Describe the case table of the current buffer."

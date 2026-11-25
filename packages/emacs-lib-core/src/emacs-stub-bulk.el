@@ -9,11 +9,6 @@
 ;; bulk below — a nil-returning `identity' silently breaks every
 ;; `(mapconcat 'identity ...)' pipeline (s.el's s-join returned
 ;; "nil-nil-..." on the standalone reader, found 2026-06-11).
-(unless (fboundp 'int-to-string)
-  (defun int-to-string (n)
-    "Alias of `number-to-string' (same nil no-op hazard as `identity')."
-    (number-to-string n)))
-
 ;; `subr-arity' (T51, 2026-09-05): real Emacs requires SUBR to be a true
 ;; built-in (a C primitive) and signals `wrong-type-argument' otherwise;
 ;; this runtime never represents any function as a true subr (`subrp' is

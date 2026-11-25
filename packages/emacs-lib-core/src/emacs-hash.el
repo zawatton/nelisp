@@ -20,26 +20,10 @@
 
 ;;; Code:
 
-(defun emacs-hash--make (test)
-  "Internal: build a tagged hash-table polyfill object."
-  (cons 'emacs-hash-table (cons test nil)))
-
 (defun emacs-hash--test (table)  (car (cdr table)))
 (defun emacs-hash--alist (table) (cdr (cdr table)))
 (defun emacs-hash--set-alist (table alist)
   (setcdr (cdr table) alist))
-
-(unless (fboundp 'make-hash-table)
-  (defun make-hash-table (&rest args)
-    "Polyfill: create an empty hash-table-like object backed by an alist.
-Accepts &rest keyword args; only `:test' is honoured."
-    (let ((test 'eql)
-          (rest args))
-      (while rest
-        (when (eq (car rest) :test)
-          (setq test (car (cdr rest))))
-        (setq rest (cdr (cdr rest))))
-      (emacs-hash--make test))))
 
 (defun emacs-hash--cmp (test a b)
   (cond
