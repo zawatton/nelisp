@@ -1346,7 +1346,8 @@ of following the link."
 
 (when (files--install-fallback-function-p 'file-attributes)
   (defun file-attributes (filename &optional _id-format)
-    "Return the stat(2) attribute list of FILENAME, or nil when it is absent.
+    "Return the stat(2) attribute list of FILENAME.
+Return nil when it is absent or cannot be expanded.
 Order matches Emacs: (TYPE NLINK UID GID ATIME MTIME CTIME SIZE MODES
 GID-CHANGE INODE DEVICE).  TYPE is the link target string for a symbolic
 link, t for a directory, nil otherwise.  Uses lstat(2) (the link itself) with
@@ -1355,34 +1356,38 @@ a single stat via `nelisp--syscall-lstat-buf' + `ptr-read-u64'.  Times are
 birth (creation) time as a (TICKS . HZ) timestamp via statx(2), or nil when
 unavailable.  Degraded: the MODES string omits setuid/setgid/sticky display.
 ID-FORMAT is ignored."
-    (setq filename (expand-file-name filename))
-    (let ((handler (and file-name-handler-alist
-                        (find-file-name-handler filename 'file-attributes))))
-      (cond
-       (handler (funcall handler 'file-attributes filename _id-format))
-       (files--native-file-attributes
-        (funcall files--native-file-attributes filename _id-format))
-       (t
-        (let ((buf (or (files--lstat-buf filename) (files--stat-buf filename))))
-          (when buf
-            (let* ((mode (ptr-read-u64 buf files--stat-off-mode))
-                   (ifmt (logand mode #o170000)))
-              (list
-               (cond ((= ifmt #o120000) (or (files--readlink filename) t))
-                     ((= ifmt #o040000) t)
-                     (t nil))
-               (ptr-read-u64 buf files--stat-off-nlink)
-               (logand (ptr-read-u64 buf files--stat-off-uid) #xFFFFFFFF)
-               (logand (ptr-read-u64 buf files--stat-off-gid) #xFFFFFFFF)
-               (files--stat-time buf files--stat-off-atime files--stat-off-atime-nsec)
-               (files--stat-time buf files--stat-off-mtime files--stat-off-mtime-nsec)
-               (files--stat-time buf files--stat-off-ctime files--stat-off-ctime-nsec)
-               (ptr-read-u64 buf files--stat-off-size)
-               (files--mode-string (logand mode #xFFFF))
-               nil
-               (ptr-read-u64 buf files--stat-off-ino)
-               (ptr-read-u64 buf files--stat-off-dev)
-               (files--statx-btime filename))))))))))
+    ;; GNU dired.c suppresses conditions from expansion alone.
+    (setq filename (condition-case nil
+                       (expand-file-name filename)
+                     (t nil)))
+    (when (stringp filename)
+      (let ((handler (and file-name-handler-alist
+                          (find-file-name-handler filename 'file-attributes))))
+        (cond
+         (handler (funcall handler 'file-attributes filename _id-format))
+         (files--native-file-attributes
+          (funcall files--native-file-attributes filename _id-format))
+         (t
+          (let ((buf (or (files--lstat-buf filename) (files--stat-buf filename))))
+            (when buf
+              (let* ((mode (ptr-read-u64 buf files--stat-off-mode))
+                     (ifmt (logand mode #o170000)))
+                (list
+                 (cond ((= ifmt #o120000) (or (files--readlink filename) t))
+                       ((= ifmt #o040000) t)
+                       (t nil))
+                 (ptr-read-u64 buf files--stat-off-nlink)
+                 (logand (ptr-read-u64 buf files--stat-off-uid) #xFFFFFFFF)
+                 (logand (ptr-read-u64 buf files--stat-off-gid) #xFFFFFFFF)
+                 (files--stat-time buf files--stat-off-atime files--stat-off-atime-nsec)
+                 (files--stat-time buf files--stat-off-mtime files--stat-off-mtime-nsec)
+                 (files--stat-time buf files--stat-off-ctime files--stat-off-ctime-nsec)
+                 (ptr-read-u64 buf files--stat-off-size)
+                 (files--mode-string (logand mode #xFFFF))
+                 nil
+                 (ptr-read-u64 buf files--stat-off-ino)
+                 (ptr-read-u64 buf files--stat-off-dev)
+                 (files--statx-btime filename)))))))))))
 
 (defun files--time-to-seconds (time)
   "Convert a Lisp TIME value to integer seconds since the epoch.
