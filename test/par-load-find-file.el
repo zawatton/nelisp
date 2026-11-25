@@ -94,6 +94,9 @@
         (par-load-find-file-row 'literal-absolute
                                (par-load-find-file-name
                                 root (locate-file (concat a "../here.el") nil)))
+        (let ((file-name-handler-alist '(("\\`/:" . file-name-non-special)))
+              (load-path (list (concat "/:" b) a)))
+          (par-load-find-file-row 'quoted-load-path (par-load-find-file-load "foo")))
         (par-load-find-file-write (concat a "org/item.el") 'nested)
         (par-load-find-file-row 'names
                                (mapcar (lambda (name)

@@ -191,6 +191,13 @@ def valid_controls(out: Path) -> tuple[str, list[str], list[dict]]:
     add('nelisp--syscall-readdir-names', folder + ' t', 't', '(stringp $CALL)')
     add('nelisp--read-all-from-string-native', '"7 9"', '(7 9)')
     add('nelisp--read-all-from-string-native', '"7 9" 0 3', '(7 . 1)')
+    add('nelisp--read-all-from-string-native', '(unibyte-string 55 32 57) 0 3 t',
+        '(7 . 1)')
+    add('nelisp--read-all-from-string-native', '(unibyte-string 255) 0 1 t', 't')
+    add('nelisp--read-all-from-string-native', '(unibyte-string 34 193 191 34) 0 4 1',
+        '((255) 4)', '(let ((read $CALL)) (list (string-to-list (car read)) (cdr read)))')
+    add('nelisp--load-external-utf8-p', '(unibyte-string 65 195 169)', 't')
+    add('nelisp--load-external-utf8-p', '(unibyte-string 193 191)', 'nil')
     add('nelisp--debug-switch', '0', 't', '(consp $CALL)')
     add('nelisp--debug-switch', '0 0', 't', '(consp $CALL)')
     add('nelisp--gc-diag', '0', 't', '(consp $CALL)')

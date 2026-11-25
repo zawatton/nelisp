@@ -353,15 +353,19 @@ standalone reader; handler dispatch remains in `emacs-fnh-wrap'."
 
 (defun emacs-fileio--substitution-shadow (name)
   "Discard prefixes shadowed by `//' or a bare tilde component in NAME."
-  (let ((i 0) (len (length name)) (start 0))
-    (while (< (1+ i) len)
-      (when (and (eq (aref name i) ?/)
-                 (or (eq (aref name (1+ i)) ?/)
-                     (and (eq (aref name (1+ i)) ?~)
-                          (or (= (+ i 2) len)
-                              (memq (aref name (+ i 2)) '(?/ 0))))))
-        (setq start (1+ i)))
-      (setq i (1+ i)))
+  (let ((slash (string-search "//" name))
+        (tilde (string-search "/~" name))
+        (len (length name))
+        (start 0))
+    (while slash
+      (setq start (1+ slash)
+            slash (string-search "//" name start)))
+    (while tilde
+      (let ((next (+ tilde 2)))
+        (when (and (>= tilde start)
+                   (or (= next len) (memq (aref name next) '(?/ 0))))
+          (setq start (1+ tilde))))
+      (setq tilde (string-search "/~" name (1+ tilde))))
     (if (= start 0) name (substring-no-properties name start))))
 
 (defun emacs-fileio--environment-name-char-p (char)
@@ -384,49 +388,46 @@ literal dollar sign; substituted values are never expanded recursively."
       filename
     (let* ((name (emacs-fileio--substitution-shadow filename))
            (len (length name)) (i 0) (start 0) pieces)
-      (while (< i len)
-        (if (not (eq (aref name i) ?$))
-            (setq i (1+ i))
-          (let ((end (1+ i)) variable value)
-            (cond
-             ((and (< end len) (eq (aref name end) ?$))
-              (setq end (1+ end) value "$"))
-             ((and (< end len) (eq (aref name end) ?{))
-              (let ((beg (1+ end)))
-                (setq end beg)
-                (while (and (< end len)
-                            (not (memq (aref name end) '(?{ ?}))))
-                  (setq end (1+ end)))
-                (if (and (< end len) (eq (aref name end) ?}))
-                    (setq variable (substring name beg end)
-                          end (1+ end))
-                  (setq end (1+ i)))))
-             (t
+      (while (setq i (string-search "$" name i))
+        (let ((end (1+ i)) variable value)
+          (cond
+           ((and (< end len) (eq (aref name end) ?$))
+            (setq end (1+ end) value "$"))
+           ((and (< end len) (eq (aref name end) ?{))
+            (let ((beg (1+ end)))
+              (setq end beg)
               (while (and (< end len)
-                          (emacs-fileio--environment-name-char-p
-                           (aref name end)))
+                          (not (memq (aref name end) '(?{ ?}))))
                 (setq end (1+ end)))
-              (when (> end (1+ i))
-                (setq variable (substring name (1+ i) end)))))
-            (when (and variable (> (length variable) 0))
-              (setq value (getenv variable)))
-            (when value
-              (push (substring name start i) pieces)
-              (push value pieces)
-              (setq start end))
-            (setq i end))))
-      (let* ((expanded
-              (if pieces
-                  (apply #'concat
-                         (nreverse (cons (substring name start) pieces)))
-                name))
-             (shadowed (emacs-fileio--substitution-shadow expanded)))
-        ;; Shadow removal retains the original filename's byte encoding,
-        ;; even when the discarded prefix included a multibyte value.
-        (if (and (not (eq expanded shadowed))
-                 (not (multibyte-string-p name)))
-            (string-as-unibyte shadowed)
-          shadowed)))))
+              (if (and (< end len) (eq (aref name end) ?}))
+                  (setq variable (substring name beg end)
+                        end (1+ end))
+                (setq end (1+ i)))))
+           (t
+            (while (and (< end len)
+                        (emacs-fileio--environment-name-char-p
+                         (aref name end)))
+              (setq end (1+ end)))
+            (when (> end (1+ i))
+              (setq variable (substring name (1+ i) end)))))
+          (when (and variable (> (length variable) 0))
+            (setq value (getenv variable)))
+          (when value
+            (push (substring name start i) pieces)
+            (push value pieces)
+            (setq start end))
+          (setq i end)))
+      (if (null pieces)
+          name
+        (let* ((expanded (apply #'concat
+                                (nreverse (cons (substring name start) pieces))))
+               (shadowed (emacs-fileio--substitution-shadow expanded)))
+          ;; Shadow removal retains the original filename's byte encoding,
+          ;; even when the discarded prefix included a multibyte value.
+          (if (and (not (eq expanded shadowed))
+                   (not (multibyte-string-p name)))
+              (string-as-unibyte shadowed)
+            shadowed))))))
 
 (dolist (--name-- emacs-fileio-builtins--handler-passthrough-ops)
   (when (and (emacs-fileio-builtins--install-function-p --name--)
