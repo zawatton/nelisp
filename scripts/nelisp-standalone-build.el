@@ -32423,16 +32423,16 @@ bytes are written into a fresh 8-byte buffer instead."
            (m5_push_str ms (nl_cons_car_ptr (nl_cons_cdr_word vptr)))
            (mut-str-push-byte ms 62) 1))
     ;; GNU Emacs 31 interpreted-function slots over this runtime's
-    ;; `(closure ENV ARGS . BODY)' list.  GNU's `function' (eval.c
-    ;; Ffunction) splits BODY into a docstring (a leading string that is
+    ;; `(closure ENV ARGS . BODY)' layout.  Older images can also contain
+    ;; dynamic objects wrapping `(lambda ARGS . BODY)'.  GNU's Ffunction
+    ;; (eval.c) splits BODY into a docstring (a leading string that is
     ;; not also the last form), an `(interactive ...)' form, and the
     ;; remaining forms, and `make-interpreted-closure' sizes the object
     ;; 6 with an iform, else 5 with a docstring, else 3.  Slot 0 is ARGS,
-    ;; 1 the forms (`(nil)' when empty), 2 the lexical environment (`(t)'
-    ;; when empty -- every closure here is lexical), 3 nil, 4 the
-    ;; docstring, 5 the interactive spec.  These helpers compute that
-    ;; view without changing the representation; `aref'/`length' (bf
-    ;; block) and the printer below share them.
+    ;; 1 the forms (`(nil)' when empty), 2 the environment (nil for
+    ;; dynamic binding, `(t)' for an empty lexical capture), 3 nil, 4 the
+    ;; docstring, 5 the interactive spec.  The printer and the slot
+    ;; accessors share the layout and body helpers.
     (defun nl_closure_shape_p (c)
       (if (= (heap-sexp-tag-word c) 7)
           (let* ((h (nl_cons_car_ptr c)))
@@ -32445,6 +32445,16 @@ bytes are written into a fresh 8-byte buffer instead."
                   0)
               0))
         0))
+    (defun nl_closure_formals_tail (c)
+      (let* ((head (nl_cons_car_ptr c))
+             (tail (nl_cons_cdr_word c)))
+        (if (and (= (sexp-tag head) 4) (= (symbol-name-eq head "lambda") 1))
+            tail
+          (nl_cons_cdr_word tail))))
+    (defun nl_closure_env_word (c formals-tail)
+      (let* ((tail (nl_cons_cdr_word c)))
+        ;; A legacy dynamic closure has no environment cell before ARGS.
+        (if (= tail formals-tail) 3 (nl_cons_car_word tail))))
     ;; 1 when P is a leading `(:documentation ARG)' body form whose ARG is
     ;; `(quote VALUE)' or a self-evaluating constant.  GNU `function'
     ;; evaluates that form at closure creation and stores the value as
@@ -32508,19 +32518,12 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; BODY with a leading docstring skipped.
     (defun nl_closure_after_doc (body)
       (if (= (nl_closure_doc_p body) 1) (nl_cons_cdr_ptr body) body))
-    ;; The closure's BODY list (cdr of ARGS' cons).
-    (defun nl_closure_body (c)
-      (nl_cons_cdr_ptr (nl_cons_cdr_word (nl_cons_cdr_word c))))
+    (defun nl_closure_slot_count (body)
+      (if (= (nl_closure_iform_p (nl_closure_after_doc body)) 1)
+          6
+        (if (= (nl_closure_doc_p body) 1) 5 3)))
     (defun nl_closure_length (c)
-      (let* ((b0 (nl_closure_body c)))
-        (if (= (nl_closure_iform_p (nl_closure_after_doc b0)) 1)
-            6
-          (if (= (nl_closure_doc_p b0) 1) 5 3))))
-    ;; Push "(nil)" or "(t)".
-    (defun m5_push_singleton (ms elt-t)
-      (seq (mut-str-push-byte ms 40)
-           (if (= elt-t 1) (m5_push_lit_t ms) (m5_push_lit_nil ms))
-           (mut-str-push-byte ms 41) 1))
+      (nl_closure_slot_count (nl_cons_cdr_ptr (nl_closure_formals_tail c))))
     ;; A Lisp primitive prints like a GNU subr: #<subr NAME>, the name raw.
     (defun m5_prin1_lisp_primitive (ms name)
       (seq (mut-str-push-byte ms 35) (mut-str-push-byte ms 60)
@@ -32530,9 +32533,8 @@ bytes are written into a fresh 8-byte buffer instead."
            (m5_push_str ms name)
            (mut-str-push-byte ms 62) 1))
     (defun m5_prin1_closure (ms vptr)
-      (let* ((d1 (nl_cons_cdr_word vptr))
-             (env (nl_cons_car_ptr d1))
-             (d2 (nl_cons_cdr_word d1))
+      (let* ((d2 (nl_closure_formals_tail vptr))
+             (env (nl_closure_env_word vptr d2))
              (argl (nl_cons_car_ptr d2))
              (b0 (nl_cons_cdr_ptr d2))
              (dp (nl_closure_doc_p b0))
@@ -32542,12 +32544,11 @@ bytes are written into a fresh 8-byte buffer instead."
         (seq (mut-str-push-byte ms 35) (mut-str-push-byte ms 91)
              (m5_prin1 ms argl) (mut-str-push-byte ms 32)
              (if (= (heap-sexp-tag-word forms) 0)
-                 (m5_push_singleton ms 0)
+                 (seq (mut-str-push-byte ms 40)
+                      (m5_push_lit_nil ms) (mut-str-push-byte ms 41))
                (m5_prin1 ms forms))
              (mut-str-push-byte ms 32)
-             (if (= (heap-sexp-tag-word env) 0)
-                 (m5_push_singleton ms 1)
-               (m5_prin1 ms env))
+             (m5_prin1 ms env)
              (if (= (+ dp ip) 0)
                  1
                (seq (mut-str-push-byte ms 32) (m5_push_lit_nil ms)
@@ -36700,8 +36701,8 @@ bytes are written into a fresh 8-byte buffer instead."
                                 (nl_abi_fail (bf_args_out_of_range arr (wf_arg_word args 1)) 0)
                               (if (= (nl_bv_bit_get (heap-read-u64 box 8) idx) 0) 3 7)))
                         ;; Not an array; an interpreted closure indexes as its slots (GNU Emacs 31).
-                        (if (= (nl_closure_shape_p (nl_cl_unwrap arr)) 1)
-                            (bf_aref_closure_w (nl_cl_unwrap arr) (wf_arg_ptr args 1) 0)
+                        (if (or (= tg 23) (= (nl_closure_shape_p arr) 1))
+                            (bf_aref_closure_w arr (wf_arg_ptr args 1) 0)
                           (nl_abi_fail (bf_wrong_type_arrayp arr) 0))))))))))))
     (defun bf_aref_checked (args out)
       (nl_abi_word_to_rc (bf_aref_checked_w args 0) out))
@@ -36709,25 +36710,29 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; `nl_closure_shape_p' in the m5 helpers), range-checked against the
     ;; same 3/5/6 size `length' reports.
     ;; Doc 215 builtin word ABI: bf_aref_closure_w returns the result WORD (0 = signal stashed).
-    (defun bf_aref_closure_w (c idxp _pad)
-      (let* ((idx (heap-read-u64 idxp 8))
-             (n (nl_closure_length c)))
+    (defun bf_aref_closure_w (object idxp _pad)
+      (let* ((c (nl_cl_unwrap object))
+             (idx (heap-read-u64 idxp 8))
+             (d2 (nl_closure_formals_tail c))
+             (b0 (nl_cons_cdr_ptr d2))
+             (n (nl_closure_slot_count b0)))
         (if (if (< idx 0) 1 (if (< idx n) 0 1))
-            (nl_abi_fail (bf_args_out_of_range c idxp) 0)
-          (let* ((d1 (nl_cons_cdr_word c))
-                 (d2 (nl_cons_cdr_word d1))
-                 (b0 (nl_cons_cdr_ptr d2))
-                 (b1 (nl_closure_after_doc b0)))
+            (nl_abi_fail (bf_args_out_of_range object idxp) 0)
+          (let* ((b1 (nl_closure_after_doc b0)))
             (cond
              ((= idx 0) (nl_cons_car_word d2))
              ((= idx 1)
-              (bf_closure_slot_or_singleton_w (if (= (nl_closure_iform_p b1) 1) (nl_cons_cdr_word b1) (if (= (nl_closure_doc_p b0) 1) (nl_cons_cdr_word b0) (nl_cons_cdr_word d2))) 0 0))
+              (let* ((forms (if (= (nl_closure_iform_p b1) 1) (nl_cons_cdr_word b1)
+                              (if (= (nl_closure_doc_p b0) 1) (nl_cons_cdr_word b0)
+                                (nl_cons_cdr_word d2)))))
+                (if (= (nl_val_tag forms) 0) (nelisp_cons_construct_w 3 3 0) forms)))
              ((= idx 2)
-              (if (= (nl_val_tag (nl_cons_car_word d1)) 7)
-                  (if (= (bf_closure_typed_p b0) 1)
-                      (bf_closure_env_view_fwd_w (nl_cons_car_ptr d1) 0)
-                    (bf_closure_env_view_w (nl_cons_car_ptr d1) 0))
-                (bf_closure_slot_or_singleton_w (nl_cons_car_word d1) 1 0)))
+              (let* ((env (nl_closure_env_word c d2)))
+                (if (= (nl_val_tag env) 7)
+                    (if (= (bf_closure_typed_p b0) 1)
+                        (bf_closure_env_view_fwd_w env 0)
+                      (bf_closure_env_view_w env 0))
+                  env)))
              ((= idx 3) 3)
              ((= idx 4)
               (if (= (nl_closure_doc_p b0) 1)
@@ -36810,12 +36815,6 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= (nl_closure_doc_p b0) 1)
           (nl_closure_docmark_p (nl_cons_car_ptr b0))
         0))
-    ;; P itself when non-nil, else a fresh one-element list: `(nil)' for an
-    ;; empty body (GNU never stores an empty body), `(t)' for an empty
-    ;; lexical environment (GNU's marker for lexical binding).
-    ;; Doc 215 builtin word ABI: bf_closure_slot_or_singleton_w returns the result WORD (0 = signal stashed).
-    (defun bf_closure_slot_or_singleton_w (word elt-t _pad)
-  (if (= (nl_val_tag word) 0) (nelisp_cons_construct_w (if (= elt-t 1) 7 3) 3 0) word))
     ;; Slot 5 from IFCDR = (cdr (interactive ...)): the lone spec, or
     ;; [SPEC MODES] when modes follow, as `make-interpreted-closure' does.
     ;; Doc 215 builtin word ABI: bf_closure_iform_value_w returns the result WORD (0 = signal stashed).
@@ -39989,13 +39988,11 @@ bytes are written into a fresh 8-byte buffer instead."
         (ptr-write-u64 268436448 0 prevcap)
         word)))))
     (defun nl_sf_decl_strip_body_word (body)
-  (if (= (nl_word_tag64 body) 7)
-      (let* ((head (nl_cons_car_word body)) (rest (nl_cons_cdr_word body)))
-        (if (or (= (nl_word_tag64 head) 5) (= (nl_word_tag64 head) 14))
-            (if (= (nl_word_tag64 rest) 7) (nl_sf_decl_strip_body_word rest) body)
-          (if (= (nl_sf_decl_is_declare_form (wf_word_view head)) 1)
-              (nl_sf_decl_strip_body_word rest) body)))
-    body))
+      (if (= (nl_word_tag64 body) 7)
+          (if (= (nl_sf_decl_is_declare_form (nl_cons_car_ptr body)) 1)
+              (nl_sf_decl_strip_body_word (nl_cons_cdr_word body))
+            body)
+        body))
     (defun bf_load_with_lfn (args env out)
   (nl_abi_word_to_rc (bf_load_with_lfn_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
@@ -46834,43 +46831,23 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
       (if (= (sexp-tag form_ptr) 7)
           (nl_sp_eq_lit (nl_cons_car_ptr form_ptr) 7 28554735403623780 0)
         0))
-    ;; A leading string is a docstring only when something follows it.  When
-    ;; it is the whole body it IS the body: `(defun f () "hello")' answers
-    ;; "hello" in Emacs and answered nil here, because this stripped every
-    ;; leading Str and left `nl_sf_defun' building a closure with an empty
-    ;; body.  Measured 2026-08-19 against Emacs 30.1, which also pins the
-    ;; three neighbouring edges: `(defun f () "doc" "body")' returns "body",
-    ;; so the first of two strings still goes; `(defun f () (declare ...))'
-    ;; returns nil, so a `declare' goes even alone; and `documentation' of a
-    ;; string-only function is nil, i.e. the string never was a docstring.
-    ;;
-    ;; The prelude's `nelisp--strip-body-declarations' had the same bug and
-    ;; is fixed with it, but this is the copy that runs: the evaluator
-    ;; dispatches `defun' here before consulting the symbol's function cell,
-    ;; so the prelude's `defun' macro never sees the form.  Proved rather
-    ;; than assumed -- `(macroexpand '(defun zz () "only"))' already yielded
-    ;; a lambda with the string body, and `(funcall (lambda () "only"))'
-    ;; already answered "only", while `(defun a () "only") (a)' still gave
-    ;; nil and `(symbol-function 'a)' showed `(closure nil nil)'.
-    (defun nl_sf_decl_strip_body (body_ptr)
-      (if (= (sexp-tag body_ptr) 7)
-          (let* ((head_ptr (nl_cons_car_word body_ptr))
-                 (rest_ptr (nl_cons_cdr_ptr body_ptr)))
-            (if (or (= (sexp-tag head_ptr) 5)
-                    (= (sexp-tag head_ptr) 14))
-                (if (= (sexp-tag rest_ptr) 7)
-                    (nl_sf_decl_strip_body rest_ptr)
-                  body_ptr)
-              (if (= (nl_sf_decl_is_declare_form head_ptr) 1)
-                  (nl_sf_decl_strip_body rest_ptr)
-                body_ptr)))
-        body_ptr))
-    ;; Answers the normalized tail WORD; the second parameter is unused.
+    ;; Strip declarations, keeping the leading string for the closure's
+    ;; docstring slot. A lone string remains the function's return value.
     (defun nl_sf_decl_normalize_tail (tail _pad)
-  (if (= (nl_word_tag64 tail) 7)
-      (nelisp_cons_construct_w (nl_cons_car_word tail)
-        (nl_sf_decl_strip_body_word (nl_cons_cdr_word tail)) 0)
-    tail))
+      (if (= (nl_word_tag64 tail) 7)
+          (let* ((body (nl_cons_cdr_word tail))
+                 (clean (if (= (nl_word_tag64 body) 7)
+                            (let* ((head (nl_cons_car_word body))
+                                   (rest (nl_cons_cdr_word body)))
+                              (if (and (= (m5_string_tag_p (nl_val_tag head)) 1)
+                                       (= (nl_word_tag64 rest) 7))
+                                  (let* ((after-doc (nl_sf_decl_strip_body_word rest)))
+                                    (if (= rest after-doc) body
+                                      (nelisp_cons_construct_w head after-doc 0)))
+                                (nl_sf_decl_strip_body_word body)))
+                          body)))
+            (nelisp_cons_construct_w (nl_cons_car_word tail) clean 0))
+        tail))
     ;; GNU semantics for `declare' and for a redefined definer.  The native
     ;; `defun' / `defmacro' arms below run before the evaluator consults the
     ;; function cell, and used to strip every `declare' clause.  So a
@@ -63759,12 +63736,8 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
             '(if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
                  (nl_sf_lambda_captured_w
                   (nl_env_capture_lexical_filtered_w env args 0 0) args roots)
-               (let* ((sym (alloc-bytes 32 8)) (buf (alloc-bytes 8 1)))
-                 ;; ROOTS is nl_sf_lambda_w's WORD frame (Doc 216 S6.2).
-                 (seq (ptr-write-u64 roots 16 sym)
-                      (ptr-write-u64 buf 0 107083775959404)
-                      (nl_alloc_symbol buf 6 sym)
-                      (nelisp_cons_construct_w sym args 0))))
+               ;; Nil capture selects dynamic argument binding on apply.
+               (nl_sf_lambda_with_tail_w (nelisp_cons_construct_w 3 args 0) roots))
             '(nl_sf_lambda_captured_w
               (nl_env_capture_lexical_filtered_w env args 0 0) args roots)
             form :test #'equal) out))

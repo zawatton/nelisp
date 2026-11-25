@@ -1,0 +1,23 @@
+dynamic call (6 3 (4 5 6))
+dynamic slots (t t 3 (x) ((* x 2)) nil)
+dynamic bounds (t 3)
+dynamic arity (1 . 2)
+dynamic arglist (x &optional y)
+dynamic doc and interactive (6 nil "Return the sum." "p" "Return the sum." (interactive "p"))
+dynamic modes (6 ["p" (text-mode)] (interactive "p"))
+dynamic empty body ((nil) nil)
+dynamic copies (t nil nil sequencep)
+legacy advice 16
+nadvice and oclosure (8 (advice oclosure) advice (interactive "p") (x &optional y))
+nadvice removed (7 nil t)
+lexical slots (t t 3 (x) ((* x 2)) (t))
+lexical print "#[(x) ((* x 2)) (t)]"
+lexical round trip (t nil 6)
+capture round trip ("#[(x) ((+ x y)) ((y . 4))]" (t nil 7))
+constructor nil (nil "#[(x) (x) nil]" 3)
+constructor t (t "#[(x) (x) t]" 3 invalid-read-syntax)
+constructor alist (((y . 4) (z . 2) t) "#[(x) ((+ x y z)) ((y . 4) (z . 2) t)]" (t nil 9))
+constructor shared binding (1 2 2 2)
+constructor metadata (6 "Add one." "p" (t nil 4))
+dynamic print "#[(x) ((* x 2)) nil]"
+dynamic round trip (t nil 6)

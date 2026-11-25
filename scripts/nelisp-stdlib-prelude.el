@@ -9477,11 +9477,8 @@ See that variable's own docstring."
   (defun load-file (file)
     (load file nil nil t t)))
 (unless (fboundp 'closurep)
-  ;; The reader represents an interpreted closure as a
-  ;; `(closure ENV ARGS . BODY)' list.  GNU Emacs 31.1 (data.c
-  ;; `Fclosurep') answers t for both kinds of PVEC_CLOSURE: interpreted
-  ;; closures and byte-code functions (verified on host:
-  ;; `(closurep (byte-compile (lambda (x) x)))' => t).
+  ;; GNU Emacs 31.1's Fclosurep answers t for both interpreted closures
+  ;; and byte-code functions.
   (defun closurep (object)
     (if (or (and (nelisp--closure-p object)
                  (not (nelisp--lisp-primitive-p object)))
@@ -9591,15 +9588,13 @@ replacing the elements in the beginning of the constant-vector."
   (defun :documentation (&rest _form)
     "Ignore a leading `(:documentation FORM)' of a lambda body (see `function')."
     nil))
-;; GNU Emacs 31.1 eval.c `Fmake_interpreted_closure', over this runtime's
-;; `(closure ENV ARGS . BODY)' representation: DOCSTRING and IFORM go back
+;; GNU Emacs 31.1 eval.c `Fmake_interpreted_closure', over the evaluator's
+;; closure representation: DOCSTRING and IFORM go back
 ;; in front of BODY exactly where `function' found them, so `aref'/`length'
 ;; (which recover GNU's slot view natively) read them back as slots 4/5.
-;; A non-nil ENV is evaluated by the existing lexical function constructor,
-;; which captures the runtime's mutable binding cells.  Copying raw alist
-;; values into a closure would reset assignments on every call.  That path
-;; also adapts GNU's innermost-first bindings to runtime capture order.
-;; Nil ENV keeps the dynamic closure representation and does not capture.
+;; Nil ENV uses the evaluator's dynamic layout and t is kept verbatim.
+;; An alist uses the runtime's outermost-first capture order, retaining
+;; the binding pairs so assignment can update them across calls.
 ;; A DOCSTRING that is not a string (an OClosure type symbol, a DOC-file
 ;; offset) rides in front of BODY as the form (:documentation 'VALUE) -- the
 ;; very form GNU `function' evaluates for the same purpose -- which the
@@ -9607,16 +9602,20 @@ replacing the elements in the beginning of the constant-vector."
 ;; answers nil for when the body runs.
 (unless (fboundp 'make-interpreted-closure)
   (defun make-interpreted-closure (args body env &optional docstring iform)
-  "Make a closure with ARGS, BODY, ENV, DOCSTRING and interactive IFORM."
-  (unless (consp body) (signal 'wrong-type-argument (list 'consp body)))
-  (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
-  (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
-  (let ((forms (append (cond ((stringp docstring) (list docstring))
-                             (docstring (list (list :documentation (list 'quote docstring)))))
-                       (and iform (list iform)) body)))
-    (if env
-        (eval (list 'function (cons 'lambda (cons args forms))) env)
-      (nelisp--closure-make (cons 'closure (cons nil (cons args forms))))))))
+    "Make a closure with ARGS, BODY, ENV, DOCSTRING and interactive IFORM."
+    (unless (consp body) (signal 'wrong-type-argument (list 'consp body)))
+    (unless (listp args) (signal 'wrong-type-argument (list 'listp args)))
+    (unless (listp iform) (signal 'wrong-type-argument (list 'listp iform)))
+    (let ((forms (append (cond ((stringp docstring) (list docstring))
+                               (docstring (list (list :documentation (list 'quote docstring)))))
+                         (and iform (list iform)) body)))
+      ;; OClosure slot access uses capture order, which its existing
+      ;; constructor obtains by evaluating the typed lambda.
+      (if (and (consp env) docstring (not (stringp docstring)))
+          (eval (list 'function (cons 'lambda (cons args forms))) env)
+        (nelisp--closure-make
+         (cons 'closure (cons (if (consp env) (reverse env) env)
+                              (cons args forms))))))))
 ;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
 ;; `interactive-form' property along a symbol chain first, then the
 ;; function object itself.  An interpreted closure's slot 5 (see
@@ -27867,7 +27866,7 @@ unlisted OS-specific entry point."
        ((and (consp fn) (eq (car fn) 'builtin))
         (nelisp--func-arity-builtin (car (cdr fn))))
        ((nelisp--closure-p fn)
-        (nelisp--func-arity-formals (car (cdr (cdr (nelisp--closure-cons fn))))))
+        (nelisp--func-arity-formals (aref fn 0)))
        ((and (consp fn) (eq (car fn) 'closure))
         (nelisp--func-arity-formals (car (cdr (cdr fn)))))
        ((and (consp fn) (eq (car fn) 'lambda))
