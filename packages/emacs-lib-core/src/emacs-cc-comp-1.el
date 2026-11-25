@@ -1,10 +1,16 @@
 ;;; emacs-cc-comp-1.el --- Native compilation primitives -*- lexical-binding: t; -*-
 
+(defvar comp-ctxt)
+
 (unless (fboundp 'comp--compile-ctxt-to-file0)
   (defun comp--compile-ctxt-to-file0 (filename)
     "Compile the current context as native code to file FILENAME."
-    (unless (stringp filename) (signal 'wrong-type-argument (list 'stringp filename)))
-    (signal 'args-out-of-range (list filename nil -4))))
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    ;; GNU checks the filename before consulting the context.
+    (substring filename nil -4)
+    (require 'nelisp-comp-backend)
+    (nelisp-comp-backend-write comp-ctxt filename)))
 
 (unless (fboundp 'comp-el-to-eln-filename)
   (defun comp-el-to-eln-filename (filename &optional base-dir)

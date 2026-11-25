@@ -401,9 +401,13 @@ cmd: ${EMACS_BIN:-emacs} --batch -Q -l tools/nelisp-eln-s610-evidence.el -f neli
 pending
 #+NOTE: Load the vendor dependency chain on the reinitialized runtime and capture the finalized context for a one-defun file through the public native-compile entry point. Compare block instructions, arity and relocation metadata against native-enabled GNU 31.1, normalizing generated names and paths. Check that disabling the runtime bridge reproduces the pre-fix failure.
 
+#+NOTE: First slice: =test/par-comp-limple.el= reaches finalized LIMPLE for =(lambda (x) (1+ x))= through =native-compile=. GNU 31.1 and NeLisp agree on fixed arity, the call and return instructions, top-level registration instructions, and the sampled finalized relocations. The reference build has no native compiler, so the test supplies its C-side arity table and context hooks for this comparison. Unbinding the NeLisp bridge table yields =(void-variable comp-subr-arities-h)=. The pre-fix symbol-macro walker yields =(void-variable instruction)= on the isolated macro row. The reinitialized Nemacs dump also needs its generalized-place expander to see local macros. Its pre-fix expansion calls an undefined =(setf operand)= function. Reloading the changed Lisp makes the local-place row and full front-end row agree with GNU.
+
 ** S11.2 A one-defun file emits a genuine .eln and executes on both runtimes
 pending
 #+NOTE: Compile a fixed-arity identity or constant through vendor comp.el with an explicit output path. Load the same file on GNU and NeLisp, assert native function identity, check the result, and verify malformed or unsupported IR leaves the previous output intact. Record the behavioral par row and its differing pre-fix transcript.
+
+#+NOTE: First slice: the dynamic reader emits and loads a named nullary fixnum constant via =native-compile= with an explicit output path. =test/nelisp-comp-backend-smoke.el= checks native subr identity, result after collection, and preservation of the output when the backend rejects =1+=. Before isolated admission, publication rejected the existing source definition. Before the signed descriptor sentinel fix, registration rejected the unibyte name descriptor. The source-file driver and same-artifact execution on a native-enabled GNU 31.1 with ABI =ba35c031= remain unverified.
 
 ** S11.3 Primitive calls and anonymous native compilation work end to end
 pending

@@ -63,11 +63,6 @@ access modes; functional predicates may return `dir-ok' for directories."
         (setq directories (cdr directories)))
       result)))
 
-(unless (fboundp 'native-comp-available-p)
-  (defun native-comp-available-p ()
-    "Return whether GNU native compilation support is present."
-    (featurep 'native-compile)))
-
 (unless (fboundp 'native-comp-unit-file)
   (defun native-comp-unit-file (comp-unit)
     "Return COMP-UNIT's file, requiring a GNU native compilation unit.

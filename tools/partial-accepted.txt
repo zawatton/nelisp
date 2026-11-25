@@ -59,7 +59,6 @@ make-string|lisp/nelisp-stdlib-plist-str.el|_multibyte|not yet reviewed
 map-keymap|scripts/nelisp-stdlib-prelude.el|_sort-first|SORT-FIRST ignored: bindings are visited in storage order, not sorted by event
 md5|scripts/nelisp-stdlib-prelude.el|_coding-system _noerror|CODING-SYSTEM and NOERROR ignored: the object is hashed through secure-hash with no recoding step
 move-to-column|scripts/nelisp-stdlib-prelude.el|_force|FORCE ignored: the point stops at end of line if COLUMN is not reached; no spaces or tabs are inserted to reach it and a tab is not converted to spaces
-native-comp-function-p|scripts/nelisp-stdlib-prelude.el|_object|OBJECT ignored: there is no native compiler, so always nil
 other-buffer|scripts/nelisp-stdlib-prelude.el|_frame _visible-ok|VISIBLE-OK and FRAME ignored: there are no windows or frames, so no buffer counts as visible and no frame's buffer list is consulted
 pop-to-buffer|lisp/nelisp-stdlib-misc.el|_action _norecord|ACTION and NORECORD ignored: no window is displayed or split; it only makes the buffer current (set-buffer) and the buffer list order is not recorded
 pop-to-buffer|scripts/nelisp-stdlib-prelude.el|_action _norecord|ACTION and NORECORD ignored: no window is displayed or split; it only makes the buffer current (set-buffer) and the buffer list order is not recorded

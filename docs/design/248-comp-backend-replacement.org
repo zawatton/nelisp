@@ -221,11 +221,31 @@ golden, with a pre-fix run that differs. Also require native-function
 identity and execution of the same artifact on both runtimes, with no
 bytecode fallback. Reject unsupported shapes until their stage passes.
 
-* First-slice evidence and blockers
+* First-slice implementation
 
-The checked-in backend entry point is a compatibility stub. For a normal
-output filename it signals =args-out-of-range= and never writes code.
-The current =native-elisp-load= owner rejects existing regular files as
+On the Linux x86-64 dynamic reader, =(require 'nelisp-comp)= loads the
+unmodified GNU front end with NeLisp's runtime primitive arities and
+compiler state. Compilation in a =comp-running-batch-compilation= binding
+uses the in-process backend. The adapter validates the finalized
+registration and leaf instructions and uses the existing ELF writer for
+one lexical zero-argument function returning a nonnegative 29-bit fixnum.
+The output is built next to the destination and installed through GNU's
+replacement helper. The native loader admits the artifact in an isolated
+namespace before replacing the source definition.
+
+=test/par-comp-limple.el= checks the finalized increment LIMPLE against
+GNU 31.1. =test/nelisp-comp-backend-smoke.el= checks native identity and
+execution of a named constant on NeLisp, including a call after GC and
+a rejected compilation that preserves the output. Primitive imports,
+general identity arguments, deferred loading and worker startup remain
+open. Cross-runtime load verification requires a native-enabled GNU
+31.1 build with the pinned =ba35c031= profile.
+
+* Pre-implementation evidence and blockers
+
+The original backend entry point was a compatibility stub. For a short
+output filename it signaled =args-out-of-range=. It never wrote code.
+The original =native-elisp-load= implementation rejected existing regular files as
 too short. The private loader admits selected machine-code and metadata
 families, and its contract still needs integration with the public load
 result and late-load flag. The emitter accepts a fixed-arity constant,
