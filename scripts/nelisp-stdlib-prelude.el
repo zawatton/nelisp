@@ -18629,18 +18629,20 @@ is line 2)."
 
 (unless (fboundp 'line-number-at-pos)
   (defun line-number-at-pos (&optional pos absolute)
-  "Return the line number at POS, counting from the buffer start if ABSOLUTE."
-  (let* ((buf nelisp--current-buffer)
-         (position (if pos (nelisp--w201-position pos 'fixnump)
-                     (nelisp-point buf)))
-         (end (1+ (nelisp-buffer-size buf)))
-         (start (if absolute 1 (nelisp-point-min buf))))
-    (unless (and (>= position 1) (<= position end))
-      (signal 'args-out-of-range (list position 1 end)))
-    (if (<= position start)
-        1
-      (let ((text (nelisp-buffer-substring start position buf)))
-        (1+ (str-count-nl text (string-bytes text))))))))
+    "Return the line number at POS, counting from the buffer start if ABSOLUTE."
+    (let* ((buf nelisp--current-buffer)
+           (position (if pos (nelisp--w201-position pos 'fixnump)
+                       (nelisp-point buf)))
+           (end (1+ (nelisp-buffer-size buf)))
+           (start (if absolute 1 (nelisp-point-min buf))))
+      (unless (and (>= position 1) (<= position end))
+        (signal 'args-out-of-range (list position 1 end)))
+      (when (and pos (not absolute))
+        (setq position (min position (nelisp-point-max buf))))
+      (if (<= position start)
+          1
+        (let ((text (nelisp-buffer-substring start position buf)))
+          (1+ (str-count-nl text (string-bytes text))))))))
 
 ;; A FIFTH name, not in Doc 204 §3 P5's own table: found the same way
 ;; that table's own four were found -- running `nl-parens-check-file'

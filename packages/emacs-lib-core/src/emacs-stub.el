@@ -1245,10 +1245,6 @@ nadvice, etc.; the runtime previously left it void."
   (defun line-end-position (&optional n) (ignore n) 1)
   (put 'line-end-position 'emacs-stub-bulk t))
 
-(unless (fboundp 'line-number-at-pos)
-  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1)
-  (put 'line-number-at-pos 'emacs-stub-bulk t))
-
 (unless (fboundp 'line-number-display-width)
   (defun line-number-display-width (&optional pixelwise)
     "Return the line-number width of the headless selected window.
@@ -2033,44 +2029,6 @@ friends nil so that `org-element-parse-buffer' returned nil."
   (defun debug (&rest args)
     "Stub: no debugger in standalone; no-op."
     (ignore args) nil))
-
-;;;; --- markers (vendor-coverage 2026-06-06 batch) --------------------------
-;; A marker is the vector [marker POSITION BUFFER INSERTION-TYPE].  Standalone
-;; has no gap buffer, so markers do NOT auto-adjust when text is inserted or
-;; deleted; they hold a position+buffer that code can create / set / read /
-;; compare.  `current-buffer' returns a fresh sentinel each call, so
-;; `marker-buffer' is only meaningful as a non-nil "is this marker set" flag.
-
-(unless (fboundp 'marker-position)
-  (defun marker-position (marker)
-    "Return the position MARKER points to, or nil."
-    (and (markerp marker) (aref marker 1))))
-
-(unless (fboundp 'marker-buffer)
-  (defun marker-buffer (marker)
-    "Return the buffer MARKER points into, or nil."
-    (and (markerp marker) (aref marker 2))))
-
-(unless (fboundp 'marker-insertion-type)
-  (defun marker-insertion-type (marker)
-    "Return MARKER's insertion type."
-    (and (markerp marker) (aref marker 3))))
-
-(unless (fboundp 'set-marker-insertion-type)
-  (defun set-marker-insertion-type (marker type)
-    "Set MARKER's insertion type to TYPE."
-    (when (markerp marker) (aset marker 3 type))
-    type))
-
-(unless (fboundp 'set-marker)
-  (defun set-marker (marker position &optional buffer)
-    "Point MARKER at POSITION in BUFFER (default current).  nil POSITION detaches."
-    (when (markerp marker)
-      (if (null position)
-          (progn (aset marker 1 nil) (aset marker 2 nil))
-        (aset marker 1 (if (markerp position) (marker-position position) position))
-        (aset marker 2 (or buffer (and (fboundp 'current-buffer) (current-buffer))))))
-    marker))
 
 (unless (fboundp 'copy-marker)
   (defun copy-marker (&optional position type)
@@ -3111,26 +3069,6 @@ Returns FILENAME unchanged when no extension is present."
           filename))))))
 
 
-
-(unless (and (fboundp 'truncate)
-             ;; If truncate is the no-op bulk stub, override with real impl.
-             (not (get 'truncate 'emacs-stub-bulk)))
-  (defun truncate (number &optional divisor)
-    "Phase 6 polyfill: integer truncation toward zero.
-NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
-    (cond
-     ((null number) 0)
-     (divisor
-      (truncate (/ number divisor)))
-     ((integerp number) number)
-     ((< number 0)
-      (- (truncate (- number))))
-     ((>= number 1)
-      ;; Avoid float literals and `while' in this early bootstrap body:
-      ;; standalone-reader currently segfaults while installing that shape.
-      (+ 1 (truncate (- number 1))))
-     (t 0)))
-  (put 'truncate 'emacs-stub-bulk nil))
 
 ;;;; --- terminal/IO no-op stubs (= avoid void-function during process load) ---
 

@@ -47,7 +47,7 @@
 `(not (boundp \\='emacs-version))' alone is not a reliable standalone
 signal (the NeLisp reader binds `emacs-version' too), and `(get symbol
 \\='emacs-stub-bulk)' only catches names `emacs-stub-bulk.el''s own
-dolist tagged -- it misses names such as `eolp'/`line-number-at-pos'
+dolist tagged -- it misses names such as `eolp'
 that `emacs-stub.el' defines individually and untagged, which load
 first and would otherwise permanently win over this bridge.  Force
 install unconditionally on standalone via a NeLisp-only primitive,
@@ -237,28 +237,6 @@ counts as 1 line consumed."
                   count
                 (funcall original n)))))
     (put 'forward-line 'emacs-line-builtins-eob-corrected t)))
-
-;;;; --- line-number-at-pos ---------------------------------------------
-
-(when (emacs-line-builtins--install-function-p 'line-number-at-pos)
-  (defun line-number-at-pos (&optional pos absolute)
-    "Phase J polyfill: 1-based line number of POS (default = point).
-ABSOLUTE is accepted for API parity but ignored — the substrate has
-no narrowing-aware absolute-vs-relative distinction."
-    (ignore absolute)
-    (let* ((p (or pos (nelisp-ec-point)))
-           (bm (nelisp-ec-point-min)))
-      (if (<= p bm)
-          1
-        (let* ((s (nelisp-ec-buffer-substring bm p))
-               (n (length s))
-               (i 0)
-               (count 1))
-          (while (< i n)
-            (when (eq (aref s i) ?\n)
-              (setq count (+ count 1)))
-            (setq i (+ i 1)))
-          count)))))
 
 ;;;; --- next-line / previous-line (Doc 51 Track B) ---------------------------
 

@@ -100,26 +100,6 @@ there; exclude standalone explicitly via
 (when (emacs-time--install-float-time-p)
   (emacs-time--install-float-time))
 
-(unless (and (fboundp 'truncate)
-             ;; If truncate is the no-op bulk stub, override with real impl.
-             (not (get 'truncate 'emacs-stub-bulk)))
-  (defun truncate (number &optional divisor)
-    "Phase 10 (= ex-Phase 6) polyfill: integer truncation toward zero.
-NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
-    (cond
-     ((null number) 0)
-     (divisor
-      (truncate (/ number divisor)))
-     ((integerp number) number)
-     ((< number 0)
-      (- (truncate (- number))))
-     ((>= number 1)
-      ;; Avoid float literals and `while' in this early bootstrap body:
-      ;; standalone-reader currently segfaults while installing that shape.
-      (+ 1 (truncate (- number 1))))
-     (t 0)))
-  (put 'truncate 'emacs-stub-bulk nil))
-
 (defun emacs-time--to-number (tv)
   "Convert an Emacs time value TV to a comparable number of seconds.
 Handles an integer / float (seconds), a (TICKS . HZ) pair, and the
