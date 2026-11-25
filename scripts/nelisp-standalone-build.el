@@ -39374,8 +39374,7 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (or (= w 0) (= w 2)) 3 w))))
     (defun bf_load_path_get (env out)
       (nl_abi_word_to_rc (bf_load_path_get_w env 0) out))
-    ;; Copy N bytes of SRC into DST at DSTI.  `nl_bi_cpath_loop' is the same
-    ;; shape but always writes from 0 and NUL-terminates, so it cannot append.
+    ;; Copy N bytes of SRC into DST at DSTI.
     (defun bf_rq_copy (src to dsti i n)
       (if (= i n)
           (+ dsti n)
@@ -45365,14 +45364,13 @@ the shared implementations preserve all handlers within the metadata bound."
         (if (or (= tag 6) (= tag 15))
             (heap-read-u64 (heap-sexp-payload sx) 16)
           (heap-sexp-length sx))))
-    (defun nl_bi_cpath_loop (src to i n)
-      (if (= i n)
-          (nl_seq2 (ptr-write-u8 to n 0) to)
-        (nl_seq2 (ptr-write-u8 to i (heap-read-u8 src i))
-                 (nl_bi_cpath_loop src to (+ i 1) n))))
     (defun nl_bi_make_cpath (sx)
-      (nl_bi_cpath_loop (nl_bi_strptr sx) (alloc-bytes (+ (nl_bi_strlen sx) 1) 1)
-                        0 (nl_bi_strlen sx)))
+      (let* ((n (nl_bi_strlen sx))
+             (path (alloc-bytes (+ n 1) 1)))
+        (seq
+         (nl_string_copy_bytes (nl_bi_strptr sx) path n)
+         (ptr-write-u8 path n 0)
+         path)))
     (defun nl_bi_wf_withfd (fd ptr len)
       (if (< fd 0) fd
         (let* ((wr (nl_os_write_file_handle fd ptr len)))
@@ -46989,7 +46987,7 @@ Other targets return nil, preserving their generated process source exactly."
     ;; callers and is NUL for directory operations that opt into the
     ;; collision-free form.
     ;; dirent64 layout: d_ino@0 d_off@8 d_reclen(u16)@16 d_type(u8)@18
-    ;; d_name@19 (NUL-terminated).  Output is clipped at 65535 bytes.
+    ;; d_name@19 (NUL-terminated).
     ;; Pure elisp, no new Rust.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_bi_syscall_readdir_buffer_w (path_sx sep _pad)
@@ -46998,14 +46996,17 @@ Other targets return nil, preserving their generated process source exactly."
              (fd (nl_os_open_dir cpath)))
         (if (< fd 0)
             3
-          (let* ((dbuf (alloc-bytes 32768 8))
-                 (sbuf (alloc-bytes 65536 1))
+          ;; Most directories fit in one small read. Keep the input buffer
+          ;; separate from the result, which grows only as names arrive.
+          (let* ((dbuf (alloc-bytes 8192 8))
+                 (capacity 4096)
+                 (sbuf (alloc-bytes capacity 1))
                  (slen 0)
                  (n 1))
             (seq
              (while (> n 0)
                (seq
-                (setq n (nl_os_getdents64 fd dbuf 32768))
+                (setq n (nl_os_getdents64 fd dbuf 8192))
                 (if (> n 0)
                     (let* ((pos 0))
                       (while (< pos n)
@@ -47013,20 +47014,26 @@ Other targets return nil, preserving their generated process source exactly."
                                           (* 256 (heap-read-u8 dbuf (+ pos 17))))))
                           (if (= reclen 0)
                               (setq pos n)
-                            (let* ((np (+ pos 19)))
+                            (let* ((start (+ pos 19))
+                                   (np start)
+                                   (end (+ pos reclen)))
                               (seq
-                               (while (and (< np (+ pos reclen))
-                                           (> (heap-read-u8 dbuf np) 0)
-                                           (< slen 65535))
-                                 (seq
-                                  (ptr-write-u8 sbuf slen (heap-read-u8 dbuf np))
-                                  (setq slen (+ slen 1))
-                                  (setq np (+ np 1))))
-                               (if (< slen 65536)
-                                   (seq
-                                    (ptr-write-u8 sbuf slen sep)
-                                    (setq slen (+ slen 1)))
+                               (while (and (< np end) (> (heap-read-u8 dbuf np) 0))
+                                 (setq np (+ np 1)))
+                               (if (> (+ slen (+ (- np start) 1)) capacity)
+                                   (let* ((needed (+ slen (+ (- np start) 1)))
+                                          (doubled (* capacity 2))
+                                          (new-capacity (if (> needed doubled) needed doubled))
+                                          (new-buffer (alloc-bytes new-capacity 1)))
+                                     (seq
+                                      (nl_string_copy_bytes sbuf new-buffer slen)
+                                      (setq sbuf new-buffer)
+                                      (setq capacity new-capacity)))
                                  0)
+                               (nl_string_copy_bytes (+ dbuf start) (+ sbuf slen) (- np start))
+                               (setq slen (+ slen (- np start)))
+                               (ptr-write-u8 sbuf slen sep)
+                               (setq slen (+ slen 1))
                                (setq pos (+ pos reclen))))))))
                   0)))
              (nl_os_close_dir fd)
