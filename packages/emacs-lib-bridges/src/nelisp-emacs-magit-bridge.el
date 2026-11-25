@@ -67,9 +67,6 @@ When nil, resolved as build/nelisp-emacs-magit-bridge-bundle.el under
 (defvar nelisp-emacs-magit-bridge-loaded nil
   "Non-nil once `nelisp-emacs-magit-bridge-load' has run in this session.")
 
-(defvar nelisp-emacs-magit-bridge--current-message nil
-  "Last echo-area style message observed through the bridge facade.")
-
 (defvar nelisp-emacs-magit-bridge--magit-section-forward-orig nil
   "Saved original `magit-section-forward' function.")
 
@@ -699,29 +696,6 @@ so nil/ordinary defaults are the honest baseline."
                   (transient-history . nil)))
     (unless (boundp (car spec))
       (eval (list 'defvar (car spec) (list 'quote (cdr spec))) t))))
-
-(defun nelisp-emacs-magit-bridge--ensure-message-runtime ()
-  "Ensure message/current-message behave like a minimal echo-area facade."
-  (unless (fboundp 'message)
-    (defun message (format-string &rest args)
-      "Standalone fallback for `message'."
-      (let ((s (apply #'format format-string args)))
-        (setq nelisp-emacs-magit-bridge--current-message s)
-        (princ s)
-        (princ "\n")
-        s)))
-  (unless (fboundp 'current-message)
-    (defun current-message ()
-      "Return the most recent bridge message, or nil."
-      nelisp-emacs-magit-bridge--current-message))
-  ;; If a native/stub `message' already exists, wrap it so
-  ;; `current-message' still reflects what callers last displayed.
-  (unless (advice-member-p #'nelisp-emacs-magit-bridge--message-capture 'message)
-    (defun nelisp-emacs-magit-bridge--message-capture (orig format-string &rest args)
-      (let ((s (apply #'format format-string args)))
-        (setq nelisp-emacs-magit-bridge--current-message s)
-        (apply orig format-string args)))
-    (advice-add 'message :around #'nelisp-emacs-magit-bridge--message-capture)))
 
 (defun nelisp-emacs-magit-bridge--ensure-transient-init-scope-safe ()
   "Replace generic `transient-init-scope' dispatch with a safe plain function."
@@ -5003,8 +4977,6 @@ substrate's signal fixes, so this cannot regress into a silent stop."
   (nelisp-emacs-magit-bridge--ensure-macroexp-runtime)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 21 advice-runtime\n")
   (nelisp-emacs-magit-bridge--ensure-advice-runtime)
-  (nelisp-emacs-magit-bridge--precond-trace "PRECOND 22 message-runtime\n")
-  (nelisp-emacs-magit-bridge--ensure-message-runtime)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 23 transient-globals\n")
   (nelisp-emacs-magit-bridge--ensure-transient-globals)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 24 cl-generic-runtime-shims\n")
