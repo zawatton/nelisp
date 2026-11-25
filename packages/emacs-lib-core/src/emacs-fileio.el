@@ -633,11 +633,8 @@ FILES-ONLY limits rows to buffers visiting files."
 ;; `find-file', `save-buffer' and `write-file' and their C-x bindings come
 ;; from GNU files.el (emacs-files-gnu.el).
 
-;; Stock `files.el' surface.  The only other copy in this tree lives in
-;; `src/package.el', which the bootstrap bundle does not carry, so the
-;; standalone image had no `locate-user-emacs-file' at all -- magit-git.el
-;; and transient.el both call it during load.  `user-emacs-directory' is
-;; already provided elsewhere in the bundle, so only the function is added.
+;; Bootstrap callers need `locate-user-emacs-file' before GNU files.el
+;; owns it.  The bootstrap has already bound `user-emacs-directory'.
 (unless (fboundp 'locate-user-emacs-file)
   (defun locate-user-emacs-file (new-name &optional old-name)
     "Return an absolute per-user Emacs-specific file name for NEW-NAME.

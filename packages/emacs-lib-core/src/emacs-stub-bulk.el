@@ -245,7 +245,7 @@ Forwarder to `forward-char' with negated count."
     pcase--make-docstring plist-get plist-member plist-put point point-at-bol point-at-eol
     point-marker point-max point-min prefix-numeric-value prin1
     prin1-to-string princ print process-file process-filter process-plist process-query-on-exit-flag
-    process-send-region process-sentinel progress-reporter-make propertize purecopy put puthash
+    process-send-region process-sentinel propertize purecopy put puthash
     put-text-property raise-frame random rassq read read-from-minibuffer read-from-string read-kbd-macro
     read-library-name read-string recenter recenter-top-bottom record recordp regexp-opt
     regexp-quote remember rename-buffer repeat replace-match re-search-backward re-search-forward

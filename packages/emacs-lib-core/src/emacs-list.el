@@ -265,7 +265,7 @@ TEST defaults to `equal'."
 (defvar history-delete-duplicates nil
   "Non-nil means adding a history element removes its older duplicates.")
 
-;; `add-to-history' is GNU subr.el's definition (emacs-files-gnu.el).
+;; `add-to-history' is staged from GNU subr.el by the bootstrap.
 
 (provide 'emacs-list)
 

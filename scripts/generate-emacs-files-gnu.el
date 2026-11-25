@@ -152,25 +152,10 @@ subsystem, which the standalone lacks (project.el calls
   '(parse-colon-path cd-absolute cd file-local-copy)
   "GNU files.el definitions that replace standalone partial providers.")
 
-;; Progress-reporter definitions from GNU subr.el that Dired's file
-;; operations call (`dired-create-files').  Appended after the files.el forms.
-(defconst gen-dl--subr-names
-  '(make-progress-reporter progress-reporter-text progress-reporter-context
-    progress-reporter-force-update progress-reporter-echo-area
-    progress-reporter-do-update progress-reporter-update progress-reporter-done
-    ;; Event/position accessors `choose-completion' (GNU simple.el) calls.
-    event--posn-at-point event-start event-end posnp posn-window posn-area
-    posn-point event-click-count
-    ;; Minibuffer input helpers (GNU subr.el) that were in-house copies.
-    add-to-history read-key-empty-map read-key-full-map read-key-delay read-key
-    read-number-history read-number
-    y-or-n-p-history-variable y-or-n-p-map y-or-n-p-insert-y y-or-n-p-insert-n
-    y-or-n-p-insert-other y-or-n-p-use-read-key y-or-n-p))
-
 ;; Preloaded GNU loaddefs.el entries for PCL-CVS: GNU's default
 ;; `find-directory-functions' starts with `cvs-dired-noselect', which
 ;; loaddefs.el defines in full; the commands it calls autoload from the
-;; vendored pcvs.el.  Appended after the subr.el forms.
+;; vendored pcvs.el.  Appended after the files.el forms.
 (defconst gen-dl--loaddefs-names
   '(cvs-examine cvs-status cvs-quickdir
     cvs-dired-action cvs-dired-use-hook cvs-dired-noselect))
@@ -179,12 +164,10 @@ subsystem, which the standalone lacks (project.el calls
               (directory-file-name
                (file-name-directory (or load-file-name buffer-file-name)))))
        (src (expand-file-name "vendor/staged-emacs-lisp/files.el" root))
-       (subr-src (expand-file-name "vendor/staged-emacs-lisp/subr.el" root))
        (loaddefs-src (expand-file-name "vendor/emacs-lisp/loaddefs.el" root))
        (out (expand-file-name "packages/emacs-lib-core/src/emacs-files-gnu.el" root))
        chunks)
   (dolist (spec (list (cons src (cons 0 gen-dl--names))
-                      (cons subr-src (cons 10000000 gen-dl--subr-names))
                       (cons loaddefs-src (cons 20000000 gen-dl--loaddefs-names))))
   (with-temp-buffer
     (insert-file-contents (car spec))
