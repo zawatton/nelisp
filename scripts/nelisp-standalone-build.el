@@ -1787,10 +1787,21 @@ cross-unit call) before the freed payload is poisoned."
         (if (= gate 0)
             (if (> want 472) (nl_alloc_large_fast size align want)
               (nl_alloc_bytes_slow size align))
-          (if (= (heap-read-u64 (+ 268435696 (- want 16)) 0) 0)
-              (nl_alloc_bytes_run size align want)
-            (let* ((popped (nl_alloc_pop_fast want)))
-              (if (= popped 0) (nl_alloc_bytes_slow size align) popped))))))
+          ;; The sweep's cumulative dead-block count is zero until any
+          ;; allocator free list can contain a block.  Skip the bucket and
+          ;; run probes in that case, but use the same atomic bump and debt.
+          (if (= (heap-read-u64 268435632 0) 0)
+              (let* ((chunk (heap-read-u64 268436168 0))
+                     (obj (if (= chunk 0) 0 (nl_chunk_try_alloc chunk want))))
+                (if (= obj 0) (nl_alloc_bytes_slow size align)
+                  (seq
+                   (ptr-write-u64 (data-addr nl_gc_until) 0
+                                  (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
+                   obj)))
+            (if (= (heap-read-u64 (+ 268435696 (- want 16)) 0) 0)
+                (nl_alloc_bytes_run size align want)
+              (let* ((popped (nl_alloc_pop_fast want)))
+                (if (= popped 0) (nl_alloc_bytes_slow size align) popped)))))))
     (defun nl_alloc_bytes_slow (size align)
       (nl_alloc_check_stamp
        (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))
@@ -7131,19 +7142,31 @@ it shares with cons and symbol blocks.")
              (cursor_addr (nl_chunk_cursor_addr chunk))
              (obj 0)
              (done 0))
-        (seq
-         (while (= done 0)
-           (let* ((old (heap-read-u64 cursor_addr 0))
-                  (new (+ old want)))
-             (if (> new size)
-                 (setq done 1)
-               (if (= (atomic-compare-exchange cursor_addr old new) 1)
-                   (seq
-                    (setq obj (+ base (+ old 8)))
-                    (ptr-write-u64 (- obj 8) 0 want)  ; BT @ hdr; low bits 0 = mark 0
-                    (setq done 1))
-                 0))))
-         obj)))
+        ;; Workers are registered before launch and stay registered until
+        ;; retirement.  The single mutator can advance the same cursor
+        ;; without acquiring the cache line through a locked instruction.
+        (if (and (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                 (= (heap-read-u64 (data-addr nl_thread_parallel_ctx) 16) 0))
+            (let* ((old (heap-read-u64 cursor_addr 0))
+                   (new (+ old want)))
+              (if (> new size) 0
+                (seq
+                 (ptr-write-u64 cursor_addr 0 new)
+                 (ptr-write-u64 (+ base old) 0 want)
+                 (+ base (+ old 8)))))
+          (seq
+           (while (= done 0)
+             (let* ((old (heap-read-u64 cursor_addr 0))
+                    (new (+ old want)))
+               (if (> new size)
+                   (setq done 1)
+                 (if (= (atomic-compare-exchange cursor_addr old new) 1)
+                     (seq
+                      (setq obj (+ base (+ old 8)))
+                      (ptr-write-u64 (- obj 8) 0 want) ; BT @ hdr; low bits 0 = mark 0
+                      (setq done 1))
+                   0))))
+           obj))))
     ;; Doc 170 Stage 2: renamed from `nl_alloc_bytes' — the public
     ;; symbol is now the checked-allocator wrapper appended at the end
     ;; of this unit (`nelisp-standalone--alloc-check-arena-forms').
@@ -29485,14 +29508,42 @@ bytes are written into a fresh 8-byte buffer instead."
                                  (if (< raw 66)
                                      (if (<= sp 0) (setq go 0)
                                        (let* ((top (+ mem (* (- sp 1) 8)))
-                                              (w (heap-read-u64 top 0))
-                                              (offset (if (= raw 64) 0 8)))
-                                         (cond
-                                          ((= (logand w 7) 2)
-                                           (seq (ptr-write-u64 top 0 (ptr-read-u64 (- w 2) offset))
-                                                (setq pc (+ pc 1))))
-                                          ((= w 3) (setq pc (+ pc 1)))
-                                          (t (setq go 0)))))
+                                              (input (heap-read-u64 top 0))
+                                              (word 0)
+                                              (next (+ pc 1))
+                                              (op (if (< next length)
+                                                      (heap-read-u8 data next) 0)))
+                                         (if (if (= (logand input 7) 2) 1 (= input 3))
+                                             (seq
+                                              (setq word (if (= input 3) 3
+                                                           (ptr-read-u64 (- input 2)
+                                                                         (if (= raw 64) 0 8))))
+                                              ;; Combine the two tagged cons reads without
+                                              ;; publishing the intermediate stack word.
+                                              ;; A type error in the second read re-enters
+                                              ;; at that opcode with the first result.
+                                              (if (or (= op 64) (= op 65))
+                                                  (if (= (logand word 7) 2)
+                                                      (seq
+                                                       (setq word (ptr-read-u64 (- word 2)
+                                                                                 (if (= op 64) 0 8)))
+                                                       (setq next (+ next 1)))
+                                                    (if (= word 3) (setq next (+ next 1)) 0))
+                                                ;; Backward jumps keep the normal quit check.
+                                                (if (and (or (= op 131) (= op 132))
+                                                         (/= word 0) (< (+ next 3) length))
+                                                    (let* ((dst (heap-read-u16 data (+ next 1)))
+                                                           (fallthrough (+ next 3)))
+                                                      (if (and (>= dst fallthrough) (< dst length))
+                                                          (seq
+                                                           (setq sp (- sp 1))
+                                                           (setq next (if (= op 131)
+                                                                          (if (= word 3) dst fallthrough)
+                                                                        (if (= word 3) fallthrough dst))))
+                                                        0)) 0))
+                                              (if (/= input 3) (ptr-write-u64 top 0 word) 0)
+                                              (setq pc next))
+                                           (setq go 0))))
                                    (if (= raw 71)
                                        ;; vmfast: GNU Blength on a list in line (wf_bytecode_w_length_fast);
                                        ;; anything it does not cover takes the original arm below.
@@ -45620,8 +45671,8 @@ the shared implementations preserve all handlers within the metadata bound."
     ;; insert-file-contents takes the size from fstat, reads until `read'
     ;; answers 0, and grows when the file is longer than reported (it
     ;; reports 0 for /proc and may change while read).  The same here: the
-    ;; caller passes the st_size hint, the buffer is that size plus slack, and
-    ;; a full buffer is probed with a one-byte read -- 0 is end of file, any
+    ;; initial buffer starts at the stat size plus room for EOF, and a full
+    ;; buffer is probed with a one-byte read -- 0 is end of file, any
     ;; byte means more data, so the buffer doubles and the read continues.
     ;; Doc 215 word ABI: the string WORD read so far.  The tail call stays a tail call.
     (defun nl_bi_rf_read_loop_w (fd buf pos cap _pad)
@@ -45648,54 +45699,22 @@ the shared implementations preserve all handlers within the metadata bound."
                (nl_bi_rf_copy4k buf nbuf pos)
                (ptr-write-u8 nbuf pos (heap-read-u8 probe 0))
                (nl_bi_rf_read_loop_w fd nbuf (+ pos 1) cap2 0)))))))
-    ;; HINT is st_size (0 when unknown or reported as 0): the buffer is sized
-    ;; to the file plus 64 KiB of slack, or the legacy 8 MiB when there is no
-    ;; hint, instead of 8 MiB for every file past 4 KiB.
-    (defun nl_bi_rf_read_rest_w (fd head n0 hint)
-      (let* ((want (if (< hint 1) 8388608 (+ hint 65536)))
-             (cap (if (< want (+ n0 1)) (+ n0 1) want))
-             (buf (alloc-bytes cap 1)))
-        (if (= buf 0)
-            (seq (wf_bytecode_root_exhausted) 0)
-          (seq
-           (nl_bi_rf_copy4k head buf n0)
-           (nl_bi_rf_read_loop_w fd buf n0 cap 0)))))
-    ;; A file that could not be opened answers nil, NOT the empty string.
-    ;; `rdf' handing back "" made a missing file indistinguishable from an
-    ;; empty one: `bf_load' reported success for a path that does not exist
-    ;; (fixed there by probing first, see its comment), and Layer 2's
-    ;; `emacs-fileio-rdf-file-exists-p' -- which asks exactly
-    ;; `(stringp (rdf F))' -- answered t for every name, so `require' took
-    ;; its literal-path branch and every feature after it failed with
-    ;; file-missing (measured 2026-09-04, v1.2.0 parity gap 5).
-    ;; Doc 215 word ABI: the file contents WORD; a missing file answers nil (3),
-    ;; never 0, exactly as the legacy form answered rc 0 with a nil OUT.
-    (defun nl_bi_rf_withfd_w (fd buf hint)
-      (if (< fd 0)
-          3
-        (let* ((n (nl_os_read_file_handle fd buf 4096))
-               (w (if (< n 1)
-                      ;; Only n < 1 ends it here: 0 is EOF, negative is an error. A
-                      ;; short-but-positive first read continues into the loop, because
-                      ;; short does not mean finished -- see `nl_bi_rf_read_loop'.
-                      (nl_alloc_str_w buf 0 0)
-                    (nl_bi_rf_read_rest_w fd buf n hint))))
-          (seq (nl_os_close_handle fd) w))))
-    (defun nl_bi_rf_withfd (fd buf out)
-      (nl_abi_word_to_rc (nl_bi_rf_withfd_w fd buf 0) out))
-    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; The stat buffer only supplies a size hint.  Read directly into the
+    ;; sized buffer, leaving a byte for EOF.  A missing or stale size is
+    ;; handled by the same read-to-EOF loop and grow path.
     (defun nl_bi_read_file_w (args _pad)
-      (seq
-      (let* ((path_sx (wf_arg_ptr args 0)))
-        (let* ((cpath (nl_bi_make_cpath path_sx))
-               (buf (alloc-bytes 4096 1))
-               (fd (nl_os_open_read cpath))
-               ;; st_size (x86_64 offset 48) into BUF, which the first read
-               ;; overwrites; unknown or absurd sizes mean no hint.
-               (rc (if (< fd 0) -1 (nl_os_stat_path cpath buf)))
-               (size (if (< rc 0) 0 (heap-read-u64 buf 48))))
-          (nl_bi_rf_withfd_w fd buf (if (> size 17179869184) 0 size))))
-        ))
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (fd (nl_os_open_read cpath)))
+        (if (< fd 0) 3
+          (let* ((stat (alloc-bytes 144 8))
+                 (rc (if (= stat 0) -1 (nl_os_stat_path cpath stat)))
+                 (size (if (< rc 0) 0 (heap-read-u64 stat 48)))
+                 (cap (if (or (< size 4096) (> size 17179869184)) 4096 (+ size 1)))
+                 (buf (alloc-bytes cap 1)))
+            (if (= buf 0)
+                (seq (nl_os_close_handle fd) (wf_bytecode_root_exhausted) 0)
+              (let ((word (nl_bi_rf_read_loop_w fd buf 0 cap 0)))
+                (seq (nl_os_close_handle fd) word)))))))
     (defun nl_bi_read_file (args out)
       (nl_abi_word_to_rc (nl_bi_read_file_w args 0) out))
     ;; Optional RAW tags the unchanged OS bytes as unibyte.  Both public
@@ -57385,7 +57404,12 @@ boundary (Doc 151 Phase B):
      `(;; Process termination uses exit_group; worker entries keep SYS_exit.
        (defun nl_os_exit_process (code) (syscall-direct 231 code 0 0 0 0 0))
        (defun nl_os_syscall_path (nr cpath) (syscall-direct nr cpath 0 0 0 0 0))
-       (defun nl_os_syscall_path_int (nr cpath iarg) (syscall-direct nr cpath iarg 0 0 0 0))
+       (defun nl_os_syscall_path_int (nr cpath iarg)
+         (if (= nr 21)
+             ;; GNU's file access predicates test effective credentials.
+             (let ((rc (syscall-direct 439 -100 cpath iarg 512 0 0)))
+               (if (= rc -38) (syscall-direct 21 cpath iarg 0 0 0 0) rc))
+           (syscall-direct nr cpath iarg 0 0 0 0)))
        (defun nl_os_syscall_path2 (nr c1 c2) (syscall-direct nr c1 c2 0 0 0 0))
        (defun nl_os_stat_path (cpath buf) (syscall-direct 4 cpath buf 0 0 0 0))
        (defun nl_os_lstat_path (cpath buf) (syscall-direct 6 cpath buf 0 0 0 0))
