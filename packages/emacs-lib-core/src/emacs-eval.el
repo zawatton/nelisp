@@ -64,15 +64,6 @@ effect."
     (ignore fn file arglist fileonly)
     nil))
 
-(unless (and (fboundp 'format-message)
-             (not (get 'format-message 'emacs-stub-bulk)))
-  (defun format-message (string &rest objects)
-    "Standalone polyfill for `format-message'.
-Routes through `format' and intentionally omits Emacs's text-quoting
-substitution."
-    (apply #'format string objects))
-  (put 'format-message 'emacs-stub-bulk nil))
-
 (when (fboundp 'nl-ffi-call)
   (unless (and (fboundp 'with-local-quit)
                (not (get 'with-local-quit 'emacs-stub-bulk)))

@@ -255,7 +255,7 @@ SPANS contains (START . END) pairs for each element after the list head."
                 "7a446243362c27d43becd834dd9ab1cfe3a5290e8f8f19eedd568836877b6b1e" "-")
                (regexp-quote "" "" "pass"
                 "standalone-byte-opcode-parity" "bytecode"
-                "1c263589f0769e7d2c925cd7f2bad037b6338a1a149995db7aa29a77f937d820" "-")
+                "55a745032b8833d3402ccaefa1201a6281fe398f148c30091069c05eade3533c" "-")
                (file-name-as-directory "" "" "pass"
                 "standalone-byte-opcode-parity" "bytecode"
                 "e64ec629e62104e67a39b8957ac456a5d0500b2d7160ede619061dfd5a7ac200" "-")

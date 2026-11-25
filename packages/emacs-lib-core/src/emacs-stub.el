@@ -1387,11 +1387,6 @@ returns a float, while pixels and face columns return an integer."
 
 ;;;; --- format / message helpers ----------------------------------------
 
-(unless (fboundp 'format-message)
-  (defun format-message (string &rest objects)
-    "Stub: route through plain `format' (= no curly-quote substitution)."
-    (apply #'format string objects)))
-
 (defun emacs-stub--standalone-batch-message-p ()
   "Return non-nil when `message' should use standalone batch stdio."
   (and (boundp 'noninteractive)
@@ -1692,19 +1687,6 @@ resolved to its canonical (obsolete-alias aware) variable first."
       (and (boundp list-var) (symbol-value list-var)))))
 
 ;;;; --- regex/menu load-time helpers --------------------------------------
-
-(unless (fboundp 'regexp-quote)
-  (defun regexp-quote (string)
-    "Minimal regexp quote for standalone load-time keyword tables."
-    (let ((i 0)
-          (out ""))
-      (while (< i (length string))
-        (let ((ch (aref string i)))
-          (when (memq ch '(?\\ ?. ?* ?+ ?? ?^ ?$ ?\[ ?\] ?\( ?\) ?{ ?} ?|))
-            (setq out (concat out "\\")))
-          (setq out (concat out (string ch))))
-        (setq i (1+ i)))
-      out)))
 
 ;; Unconditional: an earlier no-op bulk stub may claim `regexp-opt' first
 ;; (closure (&rest _) nil), so always install the real implementation.
@@ -2058,16 +2040,6 @@ friends nil so that `org-element-parse-buffer' returned nil."
 ;; deleted; they hold a position+buffer that code can create / set / read /
 ;; compare.  `current-buffer' returns a fresh sentinel each call, so
 ;; `marker-buffer' is only meaningful as a non-nil "is this marker set" flag.
-
-(unless (fboundp 'make-marker)
-  (defun make-marker ()
-    "Return a new marker that points nowhere."
-    (vector 'marker nil nil nil)))
-
-(unless (fboundp 'markerp)
-  (defun markerp (object)
-    "Return non-nil if OBJECT is a marker created by this substrate."
-    (and (vectorp object) (= (length object) 4) (eq (aref object 0) 'marker))))
 
 (unless (fboundp 'marker-position)
   (defun marker-position (marker)
