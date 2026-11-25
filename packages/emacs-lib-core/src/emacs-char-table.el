@@ -62,17 +62,6 @@
   "Legacy extra-slot capacity.
 New tables allocate the count specified by their subtype property.")
 
-(defconst emacs-char-table--category-set-size 128
-  "Number of category slots in a character's category set.")
-
-(defvar emacs-char-table--standard-category-table nil
-  "Standalone standard category table.")
-
-(defvar emacs-char-table--current-category-table nil
-  "Standalone current-buffer category table.
-The lightweight runtime has no native per-buffer category-table slot yet;
-the shared table still gives vendor libraries real mutation semantics.")
-
 ;; Count of Lisp-path char-table writes; owned by the prelude.  Every writer below
 ;; bumps it so a cache keyed on it sees a raw write.  Declaration plus a
 ;; host-load fallback only, so the name has a single definition site.
@@ -1066,142 +1055,6 @@ Answers nil for every other representation, so the caller keeps its per-char
            (emacs-char-table--raw-ref ct emacs-char-table--i-ranges))))))
   value)
 
-;;;; --- category-table integration ------------------------------------
-
-(defun emacs-char-table-make-category-table ()
-  "Construct an empty standalone category table.
-Each character maps to a 128-slot category set, matching the index space
-of host Emacs's bool-vector returned by `char-category-set'."
-  (let ((table (emacs-char-table-make
-                'category-table
-                (make-vector emacs-char-table--category-set-size nil))))
-    ;; Extra slot 0 holds the 95 category docstrings (` ' through `~'), as
-    ;; category.c does; the category primitives index it directly.
-    (emacs-char-table-set-extra-slot table 0 (make-vector 95 nil))
-    table))
-
-(defun emacs-char-table-category-table-p (object)
-  "Return non-nil when OBJECT is a standalone category table."
-  (and (emacs-char-table-p object)
-       (eq (emacs-char-table-subtype object) 'category-table)))
-
-(defun emacs-char-table-standard-category-table ()
-  "Return the standalone standard category table."
-  (or emacs-char-table--standard-category-table
-      (setq emacs-char-table--standard-category-table
-            (emacs-char-table-make-category-table))))
-
-(defun emacs-char-table-category-table ()
-  "Return the standalone current category table."
-  (or emacs-char-table--current-category-table
-      (setq emacs-char-table--current-category-table
-            (emacs-char-table-standard-category-table))))
-
-(defun emacs-char-table-set-category-table (table)
-  "Use category TABLE for the standalone current buffer and return TABLE."
-  (unless (emacs-char-table-category-table-p table)
-    (signal 'wrong-type-argument (list 'category-table-p table)))
-  (setq emacs-char-table--current-category-table table))
-
-(defun emacs-char-table-copy-category-table (&optional table)
-  "Return a copy of category TABLE, defaulting to the standard table."
-  (let* ((source (or table (emacs-char-table-standard-category-table)))
-         (_ (unless (emacs-char-table-category-table-p source)
-              (signal 'wrong-type-argument (list 'category-table-p source))))
-         (copy (if (emacs-char-table--owned-p source)
-                   (emacs-char-table--copy-storage source)
-                 (emacs-char-table-copy
-                  source
-                  (lambda (value)
-                    (if value (copy-sequence value) value)))))
-         )
-    ;; The default value is not visited by `emacs-char-table-copy's VALFN.
-    ;; Copy it separately so direct `char-category-set' mutation in the copy
-    ;; cannot alter the source table's default set.
-    (let ((default (emacs-char-table--raw-ref copy emacs-char-table--i-default)))
-      (when default
-        (emacs-char-table--raw-set
-         copy emacs-char-table--i-default (copy-sequence default))))
-    ;; char-table copying duplicates the extra-slot vector but not values
-    ;; stored inside it.  Category docstrings live in slot 0 and must remain
-    ;; independent in the copied table.
-    (let ((docs (emacs-char-table-extra-slot source 0)))
-      (when docs
-        (emacs-char-table-set-extra-slot copy 0 (copy-sequence docs))))
-    (when (emacs-char-table--owned-p copy)
-      (emacs-char-table-map
-       (lambda (key value)
-         (when value
-           (let ((copied-value (copy-sequence value)))
-             (cond
-              ((integerp key)
-               (emacs-char-table--owner-set-char copy key copied-value))
-              ((consp key)
-               (emacs-char-table--owner-set-range
-                copy (car key) (cdr key) copied-value))
-              (t
-               (error "Invalid category-table map key: %S" key))))))
-       copy))
-    copy))
-
-(defun emacs-char-table--category-set (table character)
-  "Return TABLE's category set for CHARACTER, creating a valid default."
-  (unless (and (integerp character)
-               (>= character 0)
-               (<= character emacs-char-table--max-char))
-    (signal 'wrong-type-argument (list 'characterp character)))
-  (let ((set (emacs-char-table-ref table character)))
-    (if (and (vectorp set)
-             (= (length set) emacs-char-table--category-set-size))
-        set
-      (let ((new (make-vector emacs-char-table--category-set-size nil)))
-        (emacs-char-table-set table character new)
-        new))))
-
-(defun emacs-char-table-char-category-set (character)
-  "Return CHARACTER's 128-slot standalone category set."
-  (emacs-char-table--category-set (emacs-char-table-category-table) character))
-
-(defun emacs-char-table-modify-category-entry
-    (character category &optional table reset)
-  "Add CATEGORY to CHARACTER's category set in TABLE.
-CHARACTER may be one character or an inclusive (FROM . TO) range;
-RESET removes CATEGORY.  CATEGORY must be defined in TABLE."
-  (let (from to)
-    (if (integerp character)
-        (setq from character to character)
-      (unless (consp character)
-        (signal 'wrong-type-argument (list 'consp character)))
-      (setq from (car character) to (cdr character)))
-    (dolist (c (list from to))
-      (unless (and (integerp c) (<= 0 c) (<= c emacs-char-table--max-char))
-        (signal 'wrong-type-argument (list 'characterp c))))
-    (unless (and (integerp category) (>= category #x20) (<= category #x7e))
-      (signal 'wrong-type-argument (list 'categoryp category)))
-    (let ((table (or table (emacs-char-table-category-table))))
-      (unless (emacs-char-table-category-table-p table)
-        (signal 'wrong-type-argument (list 'category-table-p table)))
-      ;; Read the library's own docstring store when it is loaded: a host
-      ;; Emacs `category-docstring' rejects this char-table representation.
-      ;; Otherwise the host builtin only understands host category tables;
-      ;; a standalone table carries no registered docstrings to validate.
-      (unless (if (fboundp 'emacs-cc-category-1--docs-for)
-                  (or (aref (emacs-cc-category-1--docs-for table)
-                            (- category #x20))
-                      (= category ?A))
-                (or (not (fboundp 'category-docstring))
-                    (not (category-table-p table))
-                    (category-docstring category table)))
-        (error "Undefined category: %c" category))
-      (while (<= from to)
-        ;; Copy the shared default before modifying an individual character.
-        (let ((set (copy-sequence
-                    (emacs-char-table--category-set table from))))
-          (aset set category (not reset))
-          (emacs-char-table-set table from set))
-        (setq from (1+ from))))
-    nil))
-
 ;;;; --- range access ---------------------------------------------------
 
 (defun emacs-char-table--fill-ascii (ct from to value)
@@ -1607,15 +1460,7 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (fset 'char-table-extra-slot #'emacs-char-table-extra-slot)
   (fset 'set-char-table-extra-slot #'emacs-char-table-set-extra-slot)
   (fset 'map-char-table #'emacs-char-table-map)
-  (fset 'max-char #'emacs-char-table-max-char)
-  (fset 'make-category-table #'emacs-char-table-make-category-table)
-  (fset 'category-table-p #'emacs-char-table-category-table-p)
-  (fset 'category-table #'emacs-char-table-category-table)
-  (fset 'standard-category-table #'emacs-char-table-standard-category-table)
-  (fset 'set-category-table #'emacs-char-table-set-category-table)
-  (fset 'copy-category-table #'emacs-char-table-copy-category-table)
-  (fset 'char-category-set #'emacs-char-table-char-category-set)
-  (fset 'modify-category-entry #'emacs-char-table-modify-category-entry))
+  (fset 'max-char #'emacs-char-table-max-char))
 
 (when (emacs-char-table--install-function-p 'char-table-p)
   (defalias 'char-table-p #'emacs-char-table-p))
@@ -1639,22 +1484,6 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (defalias 'map-char-table #'emacs-char-table-map))
 (when (emacs-char-table--install-function-p 'max-char)
   (defalias 'max-char #'emacs-char-table-max-char))
-(when (emacs-char-table--install-function-p 'make-category-table)
-  (defalias 'make-category-table #'emacs-char-table-make-category-table))
-(when (emacs-char-table--install-function-p 'category-table-p)
-  (defalias 'category-table-p #'emacs-char-table-category-table-p))
-(when (emacs-char-table--install-function-p 'category-table)
-  (defalias 'category-table #'emacs-char-table-category-table))
-(when (emacs-char-table--install-function-p 'standard-category-table)
-  (defalias 'standard-category-table #'emacs-char-table-standard-category-table))
-(when (emacs-char-table--install-function-p 'set-category-table)
-  (defalias 'set-category-table #'emacs-char-table-set-category-table))
-(when (emacs-char-table--install-function-p 'copy-category-table)
-  (defalias 'copy-category-table #'emacs-char-table-copy-category-table))
-(when (emacs-char-table--install-function-p 'char-category-set)
-  (defalias 'char-category-set #'emacs-char-table-char-category-set))
-(when (emacs-char-table--install-function-p 'modify-category-entry)
-  (defalias 'modify-category-entry #'emacs-char-table-modify-category-entry))
 
 ;;;; --- equal ---------------------------------------------------------
 
@@ -1710,6 +1539,83 @@ compared; they are functions of the contents."
        ((and tagged-a tagged-b) (emacs-char-table--tagged-equal a b))
        ((or tagged-a tagged-b) nil)
        (t (emacs-char-table--native-char-table-equal a b))))))
+
+;;;; --- chartab.c run access for the prelude's category.c port ---------
+
+(defun emacs-char-table--owner-leaf-region (root c)
+  "Return (VALUE LO . HI): ROOT's stored value at C and the extent of the
+uniform topology slot that holds it."
+  (let* ((s1 (* emacs-char-table--topology-level-1-size
+                emacs-char-table--topology-level-2-size
+                emacs-char-table--topology-level-3-size))
+         (s2 (* emacs-char-table--topology-level-2-size
+                emacs-char-table--topology-level-3-size))
+         (s3 emacs-char-table--topology-level-3-size)
+         (lo (* (/ c s1) s1))
+         (link (aref root (/ c s1))))
+    (if (not (emacs-char-table--topology-node-p link))
+        (cons link (cons lo (+ lo s1 -1)))
+      (setq lo (+ lo (* (/ (- c lo) s2) s2))
+            link (aref (aref link 1) (/ (% c s1) s2)))
+      (if (not (emacs-char-table--topology-node-p link))
+          (cons link (cons lo (+ lo s2 -1)))
+        (setq lo (+ lo (* (/ (- c lo) s3) s3))
+              link (aref (aref link 1) (/ (% c s2) s3)))
+        (if (not (emacs-char-table--topology-node-p link))
+            (cons link (cons lo (+ lo s3 -1)))
+          (cons (aref (aref link 1) (% c s3)) (cons c c)))))))
+
+(defun emacs-char-table--owner-ref-and-range (table c from-to)
+  "chartab.c char_table_ref_and_range for owned TABLE.
+Return C's value, nil answering the default but not the parent, and
+narrow the cons FROM-TO to the run around C with an `eq' value."
+  (let* ((root (emacs-char-table--owner-root table))
+         (defalt (emacs-char-table--raw-ref table emacs-char-table--i-default))
+         (region (emacs-char-table--owner-leaf-region root c))
+         (val (or (car region) defalt))
+         (lo (cadr region)) (hi (cddr region)))
+    (when (< (car from-to) 0) (setcar from-to 0))
+    (when (< (cdr from-to) 0) (setcdr from-to emacs-char-table--max-char))
+    (while (and (> lo (car from-to))
+                (let ((r (emacs-char-table--owner-leaf-region root (1- lo))))
+                  (and (eq (or (car r) defalt) val)
+                       (setq lo (cadr r)))))
+      nil)
+    (while (and (< hi (cdr from-to))
+                (let ((r (emacs-char-table--owner-leaf-region root (1+ hi))))
+                  (and (eq (or (car r) defalt) val)
+                       (setq hi (cddr r)))))
+      nil)
+    (when (> lo (car from-to)) (setcar from-to lo))
+    (when (< hi (cdr from-to)) (setcdr from-to hi))
+    val))
+
+(when (fboundp 'nelisp--char-table-ref-and-range)
+  (unless (fboundp 'emacs-char-table--native-ref-and-range)
+    (defalias 'emacs-char-table--native-ref-and-range
+      (symbol-function 'nelisp--char-table-ref-and-range))
+    (defalias 'emacs-char-table--native-char-table-set
+      (symbol-function 'nelisp--char-table-set))
+    (defalias 'emacs-char-table--native-char-table-set-range
+      (symbol-function 'nelisp--char-table-set-range)))
+  (defun nelisp--char-table-ref-and-range (table c from-to)
+    "chartab.c char_table_ref_and_range, for native and owned tables."
+    (if (emacs-char-table--owned-p table)
+        (emacs-char-table--owner-ref-and-range table c from-to)
+      (emacs-char-table--native-ref-and-range table c from-to)))
+  (defun nelisp--char-table-set (table c val)
+    "chartab.c char_table_set, for native and tagged tables."
+    (if (emacs-char-table--tagged-p table)
+        (emacs-char-table-set table c val)
+      (emacs-char-table--native-char-table-set table c val)))
+  (defun nelisp--char-table-set-range (table from to val)
+    "chartab.c char_table_set_range, for native and tagged tables."
+    (cond
+     ((emacs-char-table--owned-p table)
+      (emacs-char-table--owner-set-range table from to val))
+     ((emacs-char-table--tagged-p table)
+      (emacs-char-table-set-range table (cons from to) val))
+     (t (emacs-char-table--native-char-table-set-range table from to val)))))
 
 (provide 'emacs-char-table)
 

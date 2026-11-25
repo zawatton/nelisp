@@ -43,7 +43,6 @@
 (defvar emacs-cc-charset--mule-list nil)
 (defvar emacs-cc-charset--tick 0)
 (defvar emacs-cc-charset--unify-table nil)
-(defvar emacs-cc-charset--bounds nil "Alist (TABLE . (MIN . MAX)) of loaded maps.")
 (defvar emacs-cc-charset--work nil "State of temp_charset_work.")
 (defvar emacs-cc-charset--id-ascii -1)
 (defvar emacs-cc-charset--id-eight-bit -1)
@@ -256,9 +255,7 @@
         (emacs-cc-charset--cs-set cs max-char max-char))
        ((= control-flag 4)
         (aset emacs-cc-charset--work 5 min-char)
-        (aset emacs-cc-charset--work 6 max-char)))
-      (when (and table (memq control-flag '(2)))
-        (push (cons table (cons min-char max-char)) emacs-cc-charset--bounds)))))
+        (aset emacs-cc-charset--work 6 max-char))))))
 
 (defvar emacs-cc-charset--map-loaded nil)
 

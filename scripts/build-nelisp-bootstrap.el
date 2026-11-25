@@ -500,8 +500,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; GNU C-core coverage (tools/ai/c-core-progress.org): every
     ;; src/emacs-cc-*.el unit, in name order.
     ,@(nelisp-bootstrap--c-core-unit-files)
-    ;; GNU fill.el reads the script table while it loads.
-    "charscript.el"
     ;; GNU files.el definitions (generated, verbatim): directory-local
     ;; variables, file visiting, saving and backups.  After the C core, as
     ;; in GNU loadup (some defcustom defaults call C primitives such as
@@ -588,7 +586,12 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/international/mule-cmds.el"
     ;; loadup.el's order after mule-cmds: characters, composite, then the
     ;; language environments (cp51932 and eucjp-ms just before japanese).
+    ;; characters.el loads charscript after defining the symbol category.
     "emacs-lisp/international/characters.el"
+    ;; GNU autoloads easy-mmode.el on composite.el's first define-minor-mode.
+    ;; Use its place-form :variable support for composite, then restore the
+    ;; early mode definers needed until the image's usual easy-mmode load.
+    "emacs-lisp/emacs-lisp/easy-mmode.el"
     "emacs-lisp/composite.el"
     "emacs-lisp/language/chinese.el"
     "emacs-lisp/language/cyrillic.el"
@@ -1538,25 +1541,36 @@ overrides them for workflow tests."
                         (setq tail (cdr tail)))
                       (nreverse kept)))))))
 
+(defconst nelisp-bootstrap--characters-prologue
+  '((require 'charprop)
+    (nelisp--category-install)
+    ;; The bare runtime can already have category data from its generated
+    ;; snapshot.  loadup starts with init_category_once's empty standard table.
+    (setq nelisp--category-standard-table (nelisp--category-empty-table)))
+  "Initialize the Unicode registry and standard table for characters.el.")
+
+(defun nelisp-bootstrap--post-file-forms (file)
+  "Return extra forms that should follow FILE in either bundle."
+  (pcase (nelisp-bootstrap--logical-name file)
+    ("src/emacs-stub.el" '((provide 'custom)))
+    ("vendor/emacs-lisp/international/mule-cmds.el"
+     nelisp-bootstrap--characters-prologue)
+    ("vendor/emacs-lisp/international/characters.el"
+     '((setq nelisp-bootstrap--saved-mode-definers
+             (list (symbol-function 'define-minor-mode)
+                   (symbol-function 'define-globalized-minor-mode)))))
+    ("vendor/emacs-lisp/composite.el"
+     '((fset 'define-minor-mode (car nelisp-bootstrap--saved-mode-definers))
+       (fset 'define-globalized-minor-mode
+             (cadr nelisp-bootstrap--saved-mode-definers))
+       (makunbound 'nelisp-bootstrap--saved-mode-definers)))
+    ("src/nemacs-main.el"
+     (nelisp-bootstrap--runtime-load-path-prologue-forms))))
+
 (defun nelisp-bootstrap--emit-post-file-bundle-forms (file)
   "Return extra bundle forms that should follow FILE."
-  (let ((rel (nelisp-bootstrap--logical-name file)))
-    (cond
-     ((string= rel "src/emacs-stub.el")
-      '("(provide 'custom)\n"))
-     ((string= rel "src/nemacs-main.el")
-      (mapcar (lambda (form)
-                (concat (prin1-to-string form) "\n"))
-              (nelisp-bootstrap--runtime-load-path-prologue-forms))))))
-
-(defun nelisp-bootstrap--emit-post-file-repl-forms (file)
-  "Return extra REPL forms that should follow FILE."
-  (let ((rel (nelisp-bootstrap--logical-name file)))
-    (cond
-     ((string= rel "src/emacs-stub.el")
-      '((provide 'custom)))
-     ((string= rel "src/nemacs-main.el")
-      (nelisp-bootstrap--runtime-load-path-prologue-forms)))))
+  (mapcar (lambda (form) (concat (prin1-to-string form) "\n"))
+          (nelisp-bootstrap--post-file-forms file)))
 
 (defvar nelisp-bootstrap-normalized-bundle-files
   '("vendor/emacs-lisp/vc/vc-hooks.el"
@@ -1920,7 +1934,7 @@ Nested source-string evaluation is reserved for explicit diagnostics."
         (dolist (feature (nelisp-bootstrap--file-features file))
           (nelisp-bootstrap--insert-direct-repl-form
            `(provide ',feature)))
-        (dolist (form (nelisp-bootstrap--emit-post-file-repl-forms file))
+        (dolist (form (nelisp-bootstrap--post-file-forms file))
           (nelisp-bootstrap--insert-direct-repl-form form))
         (insert ";;; <<< " rel "\n")))
     (let ((coding-system-for-write 'utf-8-emacs-unix))

@@ -16747,11 +16747,11 @@ This is the one used for new buffers."
   (setq table (copy-sequence table))
   (let ((defalt (char-table-range table nil)))
     (when defalt
-      (set-char-table-range table nil (copy-sequence defalt))))
+      (set-char-table-range table nil (bool-vector-union defalt defalt))))
   (set-char-table-extra-slot table 0 (copy-sequence (char-table-extra-slot table 0)))
   (map-char-table
    (lambda (range val)
-     (setq val (copy-sequence val))
+     (setq val (bool-vector-union val val))
      (if (consp range)
          (nelisp--char-table-set-range table (car range) (cdr range) val)
        (nelisp--char-table-set table range val)))
@@ -16770,15 +16770,14 @@ It is a copy of the TABLE, which defaults to the standard category table.
 
 (defun nelisp--category-make-category-table ()
   "Construct a new and empty category table and return it."
-  ;; category.c:246-260: 64 empty sets in the contents, `ascii' left nil.
-  (let* ((table (make-char-table 'category-table nil))
-         (slots (nelisp--char-table-vector table))
-         (i 1))
-    (set-char-table-range table nil (make-bool-vector 128 nil))
-    (while (<= i 64)
-      (aset slots i (make-bool-vector 128 nil))
-      (setq i (1+ i)))
-    (set-char-table-extra-slot table 0 (make-vector 95 nil))
+  ;; category.c:246-260: distinct empty sets per top-level block.
+  ;; Leave ASCII on the default set, as GNU's initial nil ASCII slot does.
+  (let ((table (nelisp--category-empty-table))
+        (from 0))
+    (while (< from #x400000)
+      (nelisp--char-table-set-range
+       table (max from 128) (+ from #xffff) (make-bool-vector 128 nil))
+      (setq from (+ from #x10000)))
     table))
 
 (defun nelisp--category-set-category-table (table)
@@ -16842,7 +16841,7 @@ then delete CATEGORY from the category set instead of adding it.
              (category-set (nelisp--char-table-ref-and-range table start from-to)))
         ;; GNU modifies when membership equals RESET's non-nilness.
         (when (eq (and (aref category-set category) t) (and reset t))
-          (setq category-set (copy-sequence category-set))
+          (setq category-set (bool-vector-union category-set category-set))
           (aset category-set category (null reset))
           (setq category-set (nelisp--category-hash-get table category-set))
           (nelisp--char-table-set-range table start (cdr from-to) category-set))
@@ -16862,6 +16861,7 @@ then delete CATEGORY from the category set instead of adding it.
                   (make-category-table . nelisp--category-make-category-table)
                   (set-category-table . nelisp--category-set-category-table)
                   (char-category-set . nelisp--category-char-category-set)
+                  (categorysetp . nelisp--category-set-p)
                   (category-set-mnemonics . nelisp--category-category-set-mnemonics)
                   (modify-category-entry . nelisp--category-modify-category-entry)))
     (fset (car pair) (cdr pair)))
@@ -27573,11 +27573,15 @@ final multibyte promotion."
 (unless (fboundp 'char-width)
   (defun char-width (char)
     "Return the number of columns CHAR occupies when displayed."
-    (or (and (integerp char) (nelisp--string-width-fast char nelisp--format-width-ranges))
-        (progn
-          (unless (characterp char)
-            (signal 'wrong-type-argument (list 'characterp char)))
-          (nelisp--char-width-ref char)))))
+    (unless (characterp char)
+      (signal 'wrong-type-argument (list 'characterp char)))
+    (or (and (>= char 128)
+             ;; characters.el installs the active table, including CJK
+             ;; locale overrides.  The bare runtime uses default widths.
+             (boundp 'cjk-char-width-table-list)
+             (aref char-width-table char))
+        (nelisp--string-width-fast char nelisp--format-width-ranges)
+        (nelisp--char-width-ref char))))
 
 (unless (fboundp 'string-width)
   (defun string-width (string &optional from to)
