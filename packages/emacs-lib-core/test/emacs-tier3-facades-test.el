@@ -98,7 +98,8 @@
         (should (fboundp 'gnus))
         (should (fboundp 'treesit-available-p))
         (should (fboundp 'nxml-mode))
-        (should (fboundp 'url-retrieve))))))
+        (should-not (fboundp 'url-retrieve))
+        (should-not (fboundp 'url-retrieve-synchronously))))))
 
 (ert-deftest emacs-tier3-facades-test/does-not-claim-widget-or-url-features ()
   (with-temp-buffer
@@ -116,7 +117,9 @@
 (ert-deftest emacs-tier3-facades-test/principal-entrypoints-are-fboundp ()
   (emacs-tier3-facades-test--with-clean-facade
     (dolist (symbol emacs-tier3-facades-test--entrypoints)
-      (should (fboundp symbol)))))
+      (if (memq symbol '(url-retrieve url-retrieve-synchronously))
+          (should-not (fboundp symbol))
+        (should (fboundp symbol))))))
 
 (ert-deftest emacs-tier3-facades-test/noop-predicates-return-nil ()
   (emacs-tier3-facades-test--with-clean-facade
@@ -146,8 +149,7 @@
                     (gnus)
                     (treesit-parser-create 'python)
                     (treesit-query-compile 'python "(_) @node")
-                    (nxml-validate)
-                    (url-retrieve "https://example.invalid" #'ignore)))
+                    (nxml-validate)))
       (should-error (eval call t)
                     :type 'emacs-tier3-facade-unsupported))))
 
