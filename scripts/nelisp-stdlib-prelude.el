@@ -2590,39 +2590,52 @@ With UNQUOTED, the caller has ruled out a leading `/:' in the names."
       found)))
 
 (defvar nelisp--remote-file-name-handlers nil
-  "Private copy of the last alist containing only anchored remote patterns.")
+  "Private copy of the last alist with remote, quoting and compression patterns.")
 
-(defun nelisp--local-path-misses-remote-handlers-p (filename)
-  "Return non-nil if every registered regexp must fail on FILENAME."
+(defvar nelisp--remote-file-name-compression nil
+  "Validated compression regexp in `nelisp--remote-file-name-handlers', if any.")
+
+(defun nelisp--local-path-misses-remote-handlers-p (filename operation)
+  "Return non-nil if no registered handler can handle FILENAME for OPERATION."
   (and (consp file-name-handler-alist)
-       (let ((slash (nelisp--string-search "/" filename 1))
-             (colon (nelisp--string-search ":" filename 0)))
-         (and slash (> (length filename) 0) (eq (aref filename 0) ?/)
-              (or (null colon) (> colon slash))))
+       (> (length filename) 0)
+       (eq (aref filename 0) ?/)
+       (let ((colon (nelisp--string-search ":" filename 1))
+             (slash (nelisp--string-search "/" filename 1)))
+         (and slash (or (null colon) (> colon slash))))
        (or (equal file-name-handler-alist nelisp--remote-file-name-handlers)
            (and (fboundp 'emacs-load--classify-handler-regexp)
-                (let ((tail file-name-handler-alist) (budget 8) snapshot)
-                  ;; Bound validation work even if the user made the alist cyclic.
+                (let ((tail file-name-handler-alist) (budget 8) snapshot compression)
+                  ;; Keep private copies so destructive registration changes
+                  ;; invalidate the proof even when identities stay put.
                   (while (and (> budget 0) (consp tail))
                     (setq budget (1- budget))
-                    (let ((entry (car tail)))
-                      (if (and (consp entry) (stringp (car entry))
-                               (eq (emacs-load--classify-handler-regexp
-                                    (car entry)) 'remote))
-                          (setq snapshot (cons (cons (copy-sequence (car entry))
-                                                     (cdr entry))
-                                               snapshot)
+                    (let* ((entry (car tail))
+                           (pattern (car-safe entry))
+                           (handler (cdr-safe entry)))
+                      (if (and (stringp pattern)
+                               (or (equal pattern "\\`/:")
+                                   (and (eq handler 'jka-compr-handler)
+                                        (equal pattern nelisp--file-name-handler-compression-regexp)
+                                        (setq compression pattern))
+                                   (eq (emacs-load--classify-handler-regexp pattern) 'remote)))
+                          (setq snapshot (cons (cons (copy-sequence pattern) handler) snapshot)
                                 tail (cdr tail))
                         (setq budget 0))))
                   (when (null tail)
-                    (setq nelisp--remote-file-name-handlers
-                          (nreverse snapshot))))))))
+                    (setq nelisp--remote-file-name-compression
+                          (and compression (copy-sequence compression)))
+                    (setq nelisp--remote-file-name-handlers (nreverse snapshot))))))
+       (or (null nelisp--remote-file-name-compression)
+           (and (equal nelisp--remote-file-name-compression
+                       nelisp--file-name-handler-compression-regexp)
+                (nelisp--file-name-compression-excluded-p operation)))))
 
 (defun nelisp--find-file-name-handler (filename operation)
   "Find FILENAME's handler for OPERATION, preserving match data."
   (unless (stringp filename)
     (signal 'wrong-type-argument (list 'stringp filename)))
-  (if (or (nelisp--local-path-misses-remote-handlers-p filename)
+  (if (or (nelisp--local-path-misses-remote-handlers-p filename operation)
           (and nelisp--file-name-handler-local-registrations
                (equal file-name-handler-alist nelisp--file-name-handler-local-registrations)
                (not (nelisp--file-name-quoted-posix-p filename))
@@ -24804,6 +24817,9 @@ Keep the original precision rather than reducing a timestamp's frequency."
     (defun nelisp--directory-files-candidates (raw match)
       "Return the names in RAW, in order, that MATCH could match."
       (let ((head (and (fboundp 'nelisp--string-search)
+                       ;; Raw search yields byte offsets, while substring
+                       ;; indexes by character on decoded multibyte names.
+                       (= (length raw) (string-bytes raw))
                        (nelisp--directory-files-literal-head match))))
         (if (not head)
             (nelisp--readdir-scan-raw raw nil t)
