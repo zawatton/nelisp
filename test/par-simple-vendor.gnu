@@ -1,0 +1,5 @@
+(owners t t t t t t t)
+(motion (1 7) (15 1))
+(goto-line-narrowed 9 1 1 15 6)
+(exchange-mark 1 4 nil)
+(transpose ("two one three" 8) (("two" "one" "three" "") 9))
