@@ -200,6 +200,10 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      "emacs-lisp/eshell/eshell.el"
                      "emacs-lisp/eshell/em-basic.el"
                      "emacs-lisp/progmodes/cc-fonts.elc"
+                     ;; Org can reach treesit through built-in major modes.
+                     ;; Bake the GNU Lisp library once; parser availability
+                     ;; remains a decision of the optional primitive backend.
+                     "emacs-lisp/treesit.el"
                      "emacs-lisp/calc/calc.el"))
     (when (and (equal library "emacs-lisp/menu-bar.el")
                (not (featurep 'menu-bar)))

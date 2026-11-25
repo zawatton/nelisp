@@ -20,20 +20,6 @@
   (defconst regexp-unmatchable "\\`a\\`"
     "Standard regexp guaranteed not to match any string at all."))
 
-(unless (fboundp 'subregexp-context-p)
-  (defun subregexp-context-p (regexp pos &optional start)
-    "Return non-nil if POS is in a normal subregexp context in REGEXP.
-A subregexp context is one where a sub-regexp can appear.  START, when
-non-nil, is an earlier position known to be in a subregexp context."
-    (condition-case err
-        (progn
-          (string-match (substring regexp (or start 0) pos) "")
-          t)
-      (invalid-regexp
-       (not (member (cadr err) '("Unmatched [ or [^"
-                                 "Unmatched \\{"
-                                 "Trailing backslash")))))))
-
 (require 'emacs-char-table)
 
 (unless (fboundp 'string-empty-p)

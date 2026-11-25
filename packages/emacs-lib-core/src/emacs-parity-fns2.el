@@ -17,8 +17,7 @@
 ;; host, keeping `Host Emacs should remain safe to load' -- CLAUDE.md).
 ;;
 ;; These are REAL implementations, never no-op stubs:
-;;   * `newline-and-indent', `set-file-name-coding-system',
-;;     `replace-buffer-contents' are verbatim/behavioral ports of the stock
+;;   * `newline-and-indent' and `set-file-name-coding-system' are ports of the stock
 ;;     Emacs 30.1 definitions.
 ;;   * `coding-system-list' and `defined-colors' honor the real algorithm when
 ;;     the underlying registry/backend is present, and otherwise return the
@@ -167,29 +166,6 @@ rather than a fabricated value."
 (unless (featurep 'vc-hooks)
   (load (expand-file-name "vendor/emacs-lisp/vc/vc-hooks.el" default-directory)
         nil 'no-message t t))
-
-;;;; --- editfns.c: replace-buffer-contents (behavioral port) ----------
-;; The C primitive minimizes the edit set; a headless substrate has no such
-;; optimizer, so this port produces the identical RESULT (SOURCE's contents
-;; become the current buffer's) via delete+insert.  Faithful in effect;
-;; returns t (the diff always "completes" here).
-
-(unless (fboundp 'replace-buffer-contents)
-  (defun replace-buffer-contents (source &optional _max-secs _max-costs)
-    "Replace current buffer's text with the text of SOURCE.
-SOURCE is a buffer or buffer name.  MAX-SECS and MAX-COSTS are accepted
-for API parity but ignored -- this substrate has no minimal-diff optimizer,
-so the whole buffer is replaced.  Returns t."
-    (let* ((src (get-buffer source))
-           (str (and src (with-current-buffer src
-                           (buffer-substring-no-properties
-                            (point-min) (point-max))))))
-      (unless src
-        (signal 'error (list "replace-buffer-contents: no such buffer" source)))
-      (let ((inhibit-read-only t))
-        (delete-region (point-min) (point-max))
-        (insert str))
-      t)))
 
 ;;;; --- window.c: set-window-margins / window-margins (side table) ----
 ;; The substrate's `emacs-window' struct has no margin slots and no renderer,

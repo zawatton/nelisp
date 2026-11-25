@@ -192,8 +192,6 @@ Restore the original host bindings afterwards."
                   emacs-bzr-get-version
                   gui-set-selection x-set-selection
                   gui-get-selection x-get-selection
-                  emacs-stub--standalone-batch-message-p
-                  emacs-stub--message
                   make-help-screen help--help-screen))
     (should (fboundp sym)))
   (should (featurep 'help-macro))
@@ -212,25 +210,13 @@ Restore the original host bindings afterwards."
   (should (boundp 'three-step-help))
   (should (boundp 'help-for-help-use-variable-pitch)))
 
-(ert-deftest emacs-stub-residuals-test/message-routes-to-standalone-stderr ()
-  "A simulated standalone reload makes `message' write one stderr line."
+(ert-deftest emacs-stub-residuals-test/message-keeps-core-binding ()
+  "Loading the compatibility layer preserves the core message binding."
   (let ((source (emacs-stub-residuals-test--source-file "emacs-stub"))
         (saved-message (symbol-function 'message))
-        (noninteractive t)
-        (stdout nil)
-        (stderr nil))
-    (unwind-protect
-        (cl-letf (((symbol-function 'nelisp--write-stdout-bytes)
-                   (lambda (text) (setq stdout (concat stdout text))))
-                  ((symbol-function 'nelisp--write-stderr-line)
-                   (lambda (text) (setq stderr (concat stderr text "\n")))))
-          (load source nil 'no-message)
-          (setq stdout nil
-                stderr nil)
-          (should (equal "PROBE-MSG 1" (message "PROBE-MSG %d" 1)))
-          (should (null stdout))
-          (should (equal "PROBE-MSG 1\n" stderr)))
-      (fset 'message saved-message))))
+        (noninteractive t))
+    (load source nil 'no-message)
+    (should (eq saved-message (symbol-function 'message)))))
 
 (ert-deftest emacs-stub-residuals-test/custom-current-group-alist-and-fn-availability ()
   (should (boundp 'custom-current-group-alist))

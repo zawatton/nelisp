@@ -4763,8 +4763,7 @@ still differs, by one ULP."
 ;; `text-quoting-style' curves it for a real terminal; the result is
 ;; written to stderr followed by a newline (added by the
 ;; `nelisp--write-stderr-line' builtin itself) and returned.
-;; `message-log-max' / the `*Messages*' buffer have no meaning in batch
-;; and are intentionally not implemented.
+;; When the editor substrate is loaded, it supplies echo and log delivery.
 (defvar inhibit-message nil
   "Non-nil means `message' computes and returns its value but does not
 write anything to stderr.  Batch/noninteractive only: there is no echo
@@ -4772,15 +4771,18 @@ area to suppress here, so this affects only the stderr write (text and/or
 trailing newline) that `message' would otherwise do.")
 (unless (fboundp 'message)
   (defun message (fmt &rest args)
-    (if (null fmt)
-        (progn
-          (unless inhibit-message
-            (nelisp--write-stderr-line ""))
-          nil)
+    (cond
+     ((fboundp 'emacs-special-buffers-message)
+      (apply #'emacs-special-buffers-message fmt args))
+     ((null fmt)
+      (unless inhibit-message
+        (nelisp--write-stderr-line ""))
+      nil)
+     (t
       (let ((str (apply #'format-message fmt args)))
         (unless inhibit-message
           (nelisp--write-stderr-line str))
-        str))))
+        str)))))
 ;; `make-hash-table' took ANY argument list: (make-hash-table nil \='(1 2 . 3))
 ;; answered a table, and a caller who misspelled a keyword got a table with
 ;; none of the properties it asked for -- silently.  Emacs signals, and the

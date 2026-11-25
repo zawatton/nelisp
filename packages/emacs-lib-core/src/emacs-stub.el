@@ -1383,46 +1383,6 @@ returns a float, while pixels and face columns return an integer."
 
 ;;;; --- format / message helpers ----------------------------------------
 
-(defun emacs-stub--standalone-batch-message-p ()
-  "Return non-nil when `message' should use standalone batch stdio."
-  (and (boundp 'noninteractive)
-       noninteractive
-       (fboundp 'nelisp--write-stdout-bytes)))
-
-(defun emacs-stub--message (format-string &rest args)
-  "Format and emit a compatibility message, returning the formatted text.
-In standalone batch mode write to stderr with
-`nelisp--write-stderr-line'.  The stdout fallback is for runtimes that expose
-only `nelisp--write-stdout-bytes'; its prefix keeps diagnostics distinct from
-machine-readable stdout.  Nil and empty messages emit a blank line unless
-`inhibit-message' is non-nil.  Use the message-log owner when available."
-  (if (fboundp 'emacs-special-buffers-message)
-      (apply #'emacs-special-buffers-message format-string args)
-    (let ((text (and format-string
-                     (apply #'format-message format-string args))))
-      (unless (and (boundp 'inhibit-message) inhibit-message)
-        (cond
-         ((and (emacs-stub--standalone-batch-message-p)
-               (fboundp 'nelisp--write-stderr-line))
-          (when (and (boundp 'emacs-batch-stdio-pending-newline)
-                     emacs-batch-stdio-pending-newline)
-            (setq emacs-batch-stdio-pending-newline nil)
-            (nelisp--write-stderr-line ""))
-          (nelisp--write-stderr-line (or text "")))
-         ((emacs-stub--standalone-batch-message-p)
-          (nelisp--write-stdout-bytes (concat "nemacs: " (or text "") "\n")))
-         (t
-          (princ (or text ""))
-          (princ "\n"))))
-      text)))
-
-;; The standalone runtime may already expose a silent `message' binding.
-;; Replace that binding in noninteractive standalone sessions; host Emacs keeps
-;; its native echo-area/batch-stderr implementation.
-(when (or (emacs-stub--standalone-batch-message-p)
-          (not (fboundp 'message)))
-  (defalias 'message #'emacs-stub--message))
-
 (unless (fboundp 'error)
   (defun error (format-string &rest args)
     "Stub: signal `error' with formatted message."

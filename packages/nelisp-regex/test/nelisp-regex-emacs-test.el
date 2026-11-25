@@ -121,34 +121,14 @@ START is passed through to both implementations."
        (invalid-regexp t)))))
 
 (ert-deftest nelisp-regex-test/subregexp-context-catches-standalone-syntax-errors ()
-  "The standalone context probe catches only incomplete-prefix errors."
-  (require 'emacs-string)
-  (let* ((context-function (and (fboundp 'subregexp-context-p)
-                                (symbol-function 'subregexp-context-p)))
-         (match-function (and (fboundp 'string-match)
-                              (symbol-function 'string-match)))
-         (parity-file (locate-library "emacs-parity-regex-charclass")))
-    (unwind-protect
-        (progn
-          (when (and parity-file (string-suffix-p ".elc" parity-file))
-            (setq parity-file (substring parity-file 0 -1)))
-          (load-file parity-file)
-          (fset 'string-match
-                (lambda (&rest _args)
-                  (signal 'nelisp-rx-syntax-error
-                          '("unterminated class"))))
-          (should-not (subregexp-context-p "[abc" 4))
-          (fset 'string-match
-                (lambda (&rest _args)
-                  (signal 'nelisp-rx-syntax-error
-                          '("unexpected char"))))
-          (should (subregexp-context-p "[abc" 4)))
-      (if context-function
-          (fset 'subregexp-context-p context-function)
-        (fmakunbound 'subregexp-context-p))
-      (if match-function
-          (fset 'string-match match-function)
-        (fmakunbound 'string-match)))))
+  "GNU's context check recognizes syntax errors from the standalone parser."
+  (require 'nelisp-stdlib-regexp)
+  (cl-letf (((symbol-function 'string-match)
+             (lambda (regexp &rest _) (nlre--parse regexp) nil)))
+    (dolist (regexp '("[abc" "a\\" "a\\{2," "a\\{2\\"))
+      (should-not (subregexp-context-p regexp (length regexp))))
+    (dolist (regexp '("[a-" "a\\{x" "\\(" "a\\{2\\}"))
+      (should (subregexp-context-p regexp (length regexp))))))
 
 (ert-deftest nelisp-regex-test/wbs-matches-at-start-of-line ()
   "`\\\\<foo' matches at BOS when followed by a word char."

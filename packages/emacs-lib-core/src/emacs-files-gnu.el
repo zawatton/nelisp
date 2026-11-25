@@ -7573,52 +7573,6 @@ inode-number, device-number and file-number."
 
 (define-key ctl-x-5-map "\C-o" 'display-buffer-other-frame)
 
-(autoload 'cvs-quickdir "pcvs"
-"Open a *cvs* buffer on DIR without running cvs.
-With a prefix argument, prompt for a directory to use.
-A prefix arg >8 (ex: \\[universal-argument] \\[universal-argument]),
-  prevents reuse of an existing *cvs* buffer.
-Optional argument NOSHOW if non-nil means not to display the buffer.
-FLAGS is ignored.
-
-(fn DIR &optional FLAGS NOSHOW)" t)
-
-(autoload 'cvs-examine "pcvs"
-"Run a `cvs -n update' in the specified DIRECTORY.
-That is, check what needs to be done, but don't change the disc.
-Feed the output to a *cvs* buffer and run `cvs-mode' on it.
-With a prefix argument, prompt for a directory and cvs FLAGS to use.
-A prefix arg >8 (ex: \\[universal-argument] \\[universal-argument]),
-  prevents reuse of an existing *cvs* buffer.
-Optional argument NOSHOW if non-nil means not to display the buffer.
-
-(fn DIRECTORY FLAGS &optional NOSHOW)" t)
-
-(autoload 'cvs-status "pcvs"
-"Run a `cvs status' in the current working DIRECTORY.
-Feed the output to a *cvs* buffer and run `cvs-mode' on it.
-With a prefix argument, prompt for a directory and cvs FLAGS to use.
-A prefix arg >8 (ex: \\[universal-argument] \\[universal-argument]),
-  prevents reuse of an existing *cvs* buffer.
-Optional argument NOSHOW if non-nil means not to display the buffer.
-
-(fn DIRECTORY FLAGS &optional NOSHOW)" t)
-
-(defvar cvs-dired-action 'cvs-quickdir
-"The action to be performed when opening a CVS directory.
-Sensible values are `cvs-examine', `cvs-status' and `cvs-quickdir'.")
-
-(defvar cvs-dired-use-hook '(4)
-"Whether or not opening a CVS directory should run PCL-CVS.
-A value of nil means never do it.
-`always' means to always do it unless a prefix argument is given to the
-  command that prompted the opening of the directory.
-Anything else means to do it only if the prefix arg is equal to this value.")
-
-(defun cvs-dired-noselect (dir)
-"Run `cvs-examine' if DIR is a CVS administrative directory.
-The exact behavior is determined also by `cvs-dired-use-hook'." (when (stringp dir) (setq dir (directory-file-name dir)) (when (and (string= "CVS" (file-name-nondirectory dir)) (file-readable-p (expand-file-name "Entries" dir)) cvs-dired-use-hook (if (eq cvs-dired-use-hook 'always) (not current-prefix-arg) (equal current-prefix-arg cvs-dired-use-hook))) (save-excursion (funcall cvs-dired-action (file-name-directory dir) t t)))))
-
 ;;; Generated autoloads from progmodes/bat-mode.el
 
 (add-to-list 'auto-mode-alist '("\\.\\(bat\\|cmd\\)\\'" . bat-mode))
