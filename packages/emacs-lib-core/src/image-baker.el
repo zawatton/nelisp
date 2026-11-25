@@ -35,7 +35,7 @@
 
 ;;;###autoload
 (defun image-baker-bake (&optional output extra-buffer-names)
-  "Run `nemacs-init' in batch mode and write a lisp-image to OUTPUT.
+  "Prepare the runtime and write a lisp-image to OUTPUT.
 OUTPUT defaults to `image-baker-output-file'.  EXTRA-BUFFER-NAMES
 temporarily extends `emacs-dump-extra-buffer-names'.  Returns the
 image plist written by `emacs-dump-save'."
@@ -44,7 +44,7 @@ image plist written by `emacs-dump-save'."
          (append extra-buffer-names image-baker-extra-buffer-names
                  emacs-dump-extra-buffer-names)))
     (unless nemacs-initialized
-      (nemacs-init t))
+      (nemacs-prepare-runtime))
     (image-baker--ensure-output-directory path)
     (emacs-dump-save path)))
 

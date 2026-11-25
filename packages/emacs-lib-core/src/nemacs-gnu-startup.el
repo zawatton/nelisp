@@ -45,14 +45,10 @@
 (unless (fboundp 'set-locale-environment)
   (defun set-locale-environment (&optional _locale) nil))
 
-;; GNU batch startup has no display connection or initial frame to realize.
-;; Interactive NeLisp frontends realize their own frame after this phase.
-(unless (fboundp 'frame-initialize)
-  (defun frame-initialize () nil))
+;; The frontend and the runtime have already initialized their editor
+;; substrate.  The physical window/terminal is managed by the frontend.
 (unless (fboundp 'window-system-initialization)
   (defun window-system-initialization (&optional _display) nil))
-(unless (fboundp 'frame-notice-user-settings)
-  (defun frame-notice-user-settings () nil))
 
 ;; The TUI frontend supplies its own palette and terminal initialization.
 (unless (fboundp 'tty-register-default-colors)
@@ -65,78 +61,103 @@
     user-lisp-directory user-lisp-ignored-directories
     abbrev-file-name package-user-dir package-quickstart-file package-directory-list))
 
-;; The legacy loadup supplies a fallback before GNU startup.el is loaded.
-;; Use GNU's default for scratch buffers once its Custom declaration exists.
-(custom-reevaluate-setting 'initial-scratch-message)
+(defvar nemacs-daemon-name nil
+  "Name requested by the launcher, or t for the default daemon.")
+(defvar nemacs-gnu-startup--frontend nil)
 
-(defun nemacs-gnu-startup--before-init ()
-  "Publish the chosen init directory and run the legacy package-slot hook."
-  (setq nemacs-user-emacs-directory (expand-file-name user-emacs-directory))
-  (when init-file-user
-    (run-hooks 'nemacs-package-activation-hook)))
+;; These are normally supplied by C before Lisp startup.  The terminal
+;; and server backends are selected by the launcher.
+(defun nemacs-gnu-startup-daemon-p ()
+  nemacs-daemon-name)
 
-(defun nemacs-gnu-startup--finish (_args)
-  "Return control to the NeLisp frontend for action options and display."
-  (throw 'nemacs-gnu-startup-finished t))
+(defun nemacs-gnu-startup--server-start ()
+  "Start the NeLisp listener at the GNU daemon startup slot."
+  (unless (and server-process (process-live-p server-process))
+    (unless (file-directory-p server-socket-dir)
+      (make-directory server-socket-dir t)
+      (set-file-modes server-socket-dir #o700))
+    (emacs-server-client-polyfills-install)
+    (nemacs-server-start)))
 
-(defun nemacs-gnu-startup-run (batch-p arguments init-user)
-  "Use GNU startup with startup ARGUMENTS and the frontend's INIT-USER gate.
-BATCH-P follows GNU batch behavior.  An explicit -u in ARGUMENTS can
-opt into loading init even in batch.  The frontend owns action options."
+(defun nemacs-gnu-startup--display-splash (&optional _displayable-buffers)
+  "Display the NeLisp splash in the frame selected by GNU startup."
+  (when-let* ((buffer (emacs-startup-screen-create)))
+    (switch-to-buffer buffer)))
+
+(defun nemacs-gnu-startup--prepare-frame ()
+  "Expose the initial editor frame before processing user init."
+  (when (eq nemacs-gnu-startup--frontend 'xcb)
+    (setq frame-initial-frame (selected-frame)
+          emacs-display-system 'x)
+    (modify-frame-parameters
+     frame-initial-frame
+     (list '(window-system . x) (cons 'display (getenv "DISPLAY"))))))
+
+(defun nemacs-gnu-startup--apply-frame-settings ()
+  "Apply user frame parameters to NeLisp's initial GUI frame."
+  (when frame-initial-frame
+    (modify-frame-parameters frame-initial-frame default-frame-alist)
+    (modify-frame-parameters frame-initial-frame initial-frame-alist)))
+
+(defun nemacs-gnu-startup-run (batch-p arguments &optional frontend)
+  "Run GNU startup with ARGUMENTS and a NeLisp FRONTEND.
+BATCH-P is the noninteractive bit normally set by emacs.c."
   (let* ((override (getenv "NEMACS_USER_EMACS_DIRECTORY"))
-         (override (and override (not (equal override "")) override))
-         (noninteractive batch-p)
-         (initial-window-system nil)
-         (internal--text-quoting-flag internal--text-quoting-flag)
-         (command-line-processed nil)
-         (command-line-args
+         (default-path (delete-dups (copy-sequence load-path)))
+         (search-path (getenv "EMACSLOADPATH"))
+         (nemacs-gnu-startup--frontend frontend))
+    (setq user-real-login-name (or (user-login-name (user-real-uid)) "unknown")
+          user-login-name (or (getenv "LOGNAME") (getenv "USER")
+                              (user-login-name (user-uid)) "unknown")
+          noninteractive batch-p
+          initial-window-system (and (not batch-p) (eq frontend 'xcb) 'x)
+          command-line-args
           (append (list (or invocation-name "nemacs"))
-                  (when (and (not batch-p) (null init-user)) '("-q"))
-                  (when (and (not batch-p) init-user) (list "-u" init-user))
-                  (when override (list "--init-directory" override))
-                  arguments nil))
-         (inhibit-startup-hooks (or batch-p inhibit-startup-hooks))
-         (custom-delayed-init-variables
-          (reverse nemacs-gnu-startup--delayed-settings))
-         (original-command-line-1 (symbol-function 'command-line-1))
-         (original-init-loader (symbol-function 'startup--load-user-init-file))
-         (original-quote-setup (symbol-function 'startup--setup-quote-display)))
-    ;; GNU captures the environment before Lisp startup.  The reader has
-    ;; already reconstructed it for this process, including image starts.
-    (setq initial-environment (copy-sequence process-environment)
+                  (when (and override (not (equal override "")))
+                    (list "--init-directory" override))
+                  arguments)
+          initial-environment (copy-sequence process-environment)
           charset-map-path (list (expand-file-name "charsets" data-directory))
-          user-init-file nil
-          early-init-file nil
-          init-file-had-error nil)
-    ;; The reader has populated the default load path.  Apply the caller's
-    ;; environment before GNU startup looks for site-start.el and default.el.
-    (when-let* ((search-path (getenv "EMACSLOADPATH")))
-      (setq load-path
-            (apply #'append
-                   (mapcar (lambda (entry) (if entry (list entry) load-path))
-                           (parse-colon-path search-path)))))
-    (add-hook 'before-init-hook #'nemacs-gnu-startup--before-init)
-    (unwind-protect
-        (progn
-          (fset 'command-line-1 #'nemacs-gnu-startup--finish)
-          ;; No frontend is realized yet.  Keep NeLisp's own startup
-          ;; encoding instead of inspecting a GNU terminal glyph table.
-          (unless batch-p (fset 'startup--setup-quote-display #'ignore))
-          ;; The frontend fixture override confines init loads to its
-          ;; directory.  The normal GNU path may fall back to ~/.emacs.
-          (when override
-            (fset 'startup--load-user-init-file
-                  (lambda (filename &optional alternate defaults)
-                    (funcall original-init-loader
-                             (if defaults #'ignore filename)
-                             alternate defaults))))
-          (catch 'nemacs-gnu-startup-finished
-            (normal-top-level)))
-      (fset 'command-line-1 original-command-line-1)
-      (unless batch-p (fset 'startup--setup-quote-display original-quote-setup))
-      (when override (fset 'startup--load-user-init-file original-init-loader))
-      (remove-hook 'before-init-hook #'nemacs-gnu-startup--before-init))
-    (setq nemacs-user-emacs-directory (expand-file-name user-emacs-directory))))
+          custom-delayed-init-variables
+          (delete-dups (append (reverse nemacs-gnu-startup--delayed-settings)
+                               (and (listp custom-delayed-init-variables)
+                                    custom-delayed-init-variables))))
+    (setq load-path
+          (if search-path
+              (apply #'append
+                     (mapcar (lambda (dir) (if dir (list dir) default-path))
+                             (parse-colon-path search-path)))
+            default-path))
+    (when nemacs-daemon-name
+      (require 'emacs-server-client-polyfills)
+      (require 'server)
+      (setq server-use-tcp nil
+            server-socket-dir
+            (or (getenv "NEMACS_SERVER_SOCKET_DIR") server-socket-dir
+                (expand-file-name (format "emacs%d" (user-uid))
+                                  (or (getenv "TMPDIR") "/tmp"))))
+      (defalias 'server-start #'nemacs-gnu-startup--server-start))
+    (defalias 'daemonp #'nemacs-gnu-startup-daemon-p)
+    ;; GNU applies these operations to the frame it creates.  NeLisp's
+    ;; platform frontend owns the corresponding terminal and display work.
+    (when initial-window-system
+      (load "term/common-win" nil t)
+      (cl-defmethod handle-args-function (args &context (window-system x))
+        (x-handle-args args))
+      (provide 'x-win))
+    (defalias 'frame-initialize #'nemacs-gnu-startup--prepare-frame)
+    (when initial-window-system
+      (defalias 'frame-notice-user-settings
+        #'nemacs-gnu-startup--apply-frame-settings))
+    (defalias 'startup--setup-quote-display #'ignore)
+    (defalias 'display-startup-screen #'nemacs-gnu-startup--display-splash)
+    (if noninteractive
+        (condition-case-unless-debug err
+            (normal-top-level)
+          (error
+           (message "%s" (error-message-string err))
+           (kill-emacs 255)))
+      (normal-top-level))))
 
 (provide 'nemacs-gnu-startup)
 ;;; nemacs-gnu-startup.el ends here

@@ -11,7 +11,12 @@
 #   nemacs -Q|--quick               skip user init and package startup
 #   nemacs --batch -l FILE          batch + load FILE
 #   nemacs --batch -L DIR           batch + prepend DIR to load-path
-#   nemacs --batch -f FUNCTION      batch + call FUNCTION after load/eval
+#   nemacs --batch -f FUNCTION      batch + call FUNCTION
+#   nemacs --script FILE [ARGS]    run FILE as a batch script
+#   nemacs -nw                     use the terminal frontend
+#   nemacs --frontend=xcb          use the graphical frontend
+#   nemacs --fg-daemon[=NAME]       start a foreground daemon
+#   nemacs --runtime-dump FILE      start from an existing flat heap
 #   nemacs --batch --runtime-image FILE load a NeLisp .nlri runtime image first
 #   nemacs --runtime-image auto       choose build/*.nlri by batch/interactive mode
 #   nemacs --cold-image FILE --cold-artifact FILE
@@ -131,7 +136,7 @@ nelisp_default_bin() {
     printf '%s\n' "$root/target/nelisp-standalone-reader"
   fi
 }
-NELISP_HOME="${NELISP_HOME:-$DEFAULT_NELISP_ROOT}"
+export NELISP_HOME="${NELISP_HOME:-$DEFAULT_NELISP_ROOT}"
 NEMACS_DRIVER="${NEMACS_DRIVER:-host}"
 NEMACS_EMACS="${NEMACS_EMACS:-emacs}"
 NEMACS_NELISP="${NEMACS_NELISP:-$(nelisp_default_bin "$NELISP_HOME")}"
@@ -663,84 +668,86 @@ run_doctor() {
 
 BATCH=0
 NO_BANNER=0
-NO_INIT=0
-NO_SPLASH=0
 DOCTOR=0
-LOAD_FILES=()
-LOAD_PATHS=()
-IMAGE_FILES=()
-EVAL_FORMS=()
-FUNCALLS=()
-EXTRA_ARGS=()
+FRONTEND=""
+DAEMON=""
 HOST_EARLY_ARGS=()
-STARTUP_ARGS=()
-STARTUP_USER_ARGS=()
-
+IMAGE_FILES=()
+ACTION_ARGS=()
+# GNU emacs.c sorts startup options ahead of action arguments.  Within
+# each priority, preserve command-line order, including every operand.
+declare -A priority_at
 while (( $# > 0 )); do
+  priority=0
+  operands=0
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --version)
       echo "nemacs $NEMACS_VERSION (driver=$NEMACS_DRIVER)"
       exit 0 ;;
     --print-paths) print_paths; exit 0 ;;
-    --doctor) DOCTOR=1; shift ;;
-    -q|--no-init-file) NO_INIT=1; STARTUP_ARGS+=("$1"); shift ;;
-    -Q|--quick) NO_INIT=1; NO_SPLASH=1; STARTUP_ARGS+=("$1"); shift ;;
-    --no-splash) NO_SPLASH=1; shift ;;
-    --no-site-file) STARTUP_ARGS+=("$1"); shift ;;
-    --init-directory)
-      [[ $# -ge 2 ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
-      STARTUP_ARGS+=("$1" "$2"); shift 2 ;;
-    --init-directory=*) STARTUP_ARGS+=("$1"); shift ;;
-    --user|-u)
-      [[ $# -ge 2 ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
-      STARTUP_USER_ARGS+=("$1" "$2"); shift 2 ;;
-    --user=*) STARTUP_USER_ARGS+=("$1"); shift ;;
-    -nw|--no-window-system)
-      HOST_EARLY_ARGS+=("$1"); shift ;;
-    --batch) BATCH=1; shift ;;
-    --no-banner) NO_BANNER=1; shift ;;
-    --driver=*) NEMACS_DRIVER="${1#--driver=}"; shift ;;
-    --driver) NEMACS_DRIVER="$2"; shift 2 ;;
-    -L|--directory)
-      [[ -n "${2-}" ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
-      LOAD_PATHS+=("$2"); shift 2 ;;
-    -L*) LOAD_PATHS+=("${1#-L}"); shift ;;
-    --directory=*) LOAD_PATHS+=("${1#--directory=}"); shift ;;
-    -l)
-      [[ -n "${2-}" ]] || { echo "nemacs: -l requires an argument" >&2; exit 2; }
-      LOAD_FILES+=("$2"); shift 2 ;;
-    --load)
-      [[ -n "${2-}" ]] || { echo "nemacs: --load requires an argument" >&2; exit 2; }
-      LOAD_FILES+=("$2"); shift 2 ;;
-    --load=*) LOAD_FILES+=("${1#--load=}"); shift ;;
+    --doctor) DOCTOR=1; shift; continue ;;
+    --no-banner) NO_BANNER=1; shift; continue ;;
+    --driver=*) NEMACS_DRIVER="${1#*=}"; shift; continue ;;
+    --driver) NEMACS_DRIVER="${2:?--driver requires an argument}"; shift 2; continue ;;
+    --frontend=xcb) FRONTEND=xcb; shift; continue ;;
+    -nw|--no-window-system|--no-windows)
+      FRONTEND=tty; HOST_EARLY_ARGS+=("-nw"); shift; continue ;;
+    -batch|--batch) BATCH=1; shift; continue ;;
+    -script|--script)
+      ACTION_ARGS+=("-scriptload" "${2:?--script requires an argument}")
+      BATCH=1; shift 2; continue ;;
+    --script=*)
+      ACTION_ARGS+=("-scriptload" "${1#*=}")
+      BATCH=1; shift; continue ;;
+    -fg-daemon|--fg-daemon|--daemon)
+      DAEMON=t; HOST_EARLY_ARGS+=("--fg-daemon"); shift; continue ;;
+    --fg-daemon=*|--daemon=*)
+      DAEMON="${1#*=}"; HOST_EARLY_ARGS+=("--fg-daemon=$DAEMON"); shift; continue ;;
     --load-image|--image)
-      [[ -n "${2-}" ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
-      IMAGE_FILES+=("$2"); shift 2 ;;
-    --load-image=*|--image=*) IMAGE_FILES+=("${1#*=}"); shift ;;
+      IMAGE_FILES+=("${2:?$1 requires an argument}"); shift 2; continue ;;
+    --load-image=*|--image=*) IMAGE_FILES+=("${1#*=}"); shift; continue ;;
     --runtime-image)
-      [[ -n "${2-}" ]] || { echo "nemacs: --runtime-image requires an argument" >&2; exit 2; }
-      NEMACS_RUNTIME_IMAGE="$2"; shift 2 ;;
-    --runtime-image=*) NEMACS_RUNTIME_IMAGE="${1#*=}"; shift ;;
+      NEMACS_RUNTIME_IMAGE="${2:?$1 requires an argument}"; shift 2; continue ;;
+    --runtime-image=*) NEMACS_RUNTIME_IMAGE="${1#*=}"; shift; continue ;;
+    --runtime-dump|--cold-load-from)
+      NEMACS_RUNTIME_DUMP="${2:?$1 requires an argument}"; shift 2; continue ;;
+    --runtime-dump=*|--cold-load-from=*) NEMACS_RUNTIME_DUMP="${1#*=}"; shift; continue ;;
     --cold-image)
-      [[ -n "${2-}" ]] || { echo "nemacs: --cold-image requires an argument" >&2; exit 2; }
-      NEMACS_COLD_IMAGE="$2"; shift 2 ;;
-    --cold-image=*) NEMACS_COLD_IMAGE="${1#*=}"; shift ;;
+      NEMACS_COLD_IMAGE="${2:?$1 requires an argument}"; shift 2; continue ;;
+    --cold-image=*) NEMACS_COLD_IMAGE="${1#*=}"; shift; continue ;;
     --cold-artifact)
-      [[ -n "${2-}" ]] || { echo "nemacs: --cold-artifact requires an argument" >&2; exit 2; }
-      NEMACS_COLD_ARTIFACT="$2"; shift 2 ;;
-    --cold-artifact=*) NEMACS_COLD_ARTIFACT="${1#*=}"; shift ;;
-    --eval)
-      [[ -n "${2-}" ]] || { echo "nemacs: --eval requires an argument" >&2; exit 2; }
-      EVAL_FORMS+=("$2"); shift 2 ;;
-    --eval=*) EVAL_FORMS+=("${1#--eval=}"); shift ;;
-    -f|--funcall)
-      [[ -n "${2-}" ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
-      FUNCALLS+=("$2"); shift 2 ;;
-    --funcall=*) FUNCALLS+=("${1#--funcall=}"); shift ;;
-    --) shift; while (($#>0)); do EXTRA_ARGS+=("$1"); shift; done ;;
-    *) EXTRA_ARGS+=("$1"); shift ;;
+      NEMACS_COLD_ARTIFACT="${2:?$1 requires an argument}"; shift 2; continue ;;
+    --cold-artifact=*) NEMACS_COLD_ARTIFACT="${1#*=}"; shift; continue ;;
+    --) ACTION_ARGS+=("$@"); break ;;
+    -Q|--quick|-quick) priority=55 ;;
+    -q|--no-init-file|-no-init-file) priority=50 ;;
+    --no-comp-spawn|-no-comp-spawn) priority=60 ;;
+    --no-x-resources|-no-x-resources|--no-site-file|-no-site-file) priority=40 ;;
+    --init-directory|-init-directory|--user|-user|-u) priority=30; operands=1 ;;
+    --init-directory=*|--user=*) priority=30 ;;
+    --debug-init|-debug-init) priority=20 ;;
+    --iconic|-iconic) priority=15 ;;
+    --basic-display|-basic-display|-D|--no-blinking-cursor|-nbc) priority=12 ;;
+    --no-splash|-no-splash|--no-desktop|-no-desktop) priority=3 ;;
+    -L|-directory|--directory|-l|-load|--load|-eval|--eval|-execute|--execute|\
+    -f|-e|-funcall|--funcall|-file|--file|-find-file|--find-file|-visit|--visit|\
+    -insert|--insert) operands=1 ;;
+    -d|-display|--display)
+      if [[ "$FRONTEND" != tty ]]; then FRONTEND=xcb; fi
+      export DISPLAY="${2:?$1 requires an argument}"
+      priority=60; operands=1 ;;
+    -L?*) ACTION_ARGS+=("-L" "${1#-L}"); shift; continue ;;
   esac
+  if (( $# <= operands )); then
+    echo "nemacs: $1 requires an argument" >&2
+    exit 2
+  fi
+  for ((i=0; i<=operands; i++)); do
+    priority_at[${#ACTION_ARGS[@]}]=$priority
+    ACTION_ARGS+=("${@:i+1:1}")
+  done
+  shift "$((operands+1))"
 done
 
 if (( DOCTOR )); then
@@ -775,80 +782,25 @@ one_line_form() {
   printf '%s' "$1" | perl -0777 -pe 's/\r?\n/ /g'
 }
 
-resolve_repl_load_path() {
-  case "$1" in
-    /*)
-      printf '%s\n' "$1"
-      return
-      ;;
-    */*)
-      printf '%s\n' "$PWD/$1"
-      return
-      ;;
-  esac
-  local dir
-  for dir in "${LOAD_PATHS[@]+"${LOAD_PATHS[@]}"}" \
-             "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}" \
-             "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}"; do
-    if [[ -r "$dir/$1" ]]; then
-      printf '%s\n' "$dir/$1"
-      return
-    fi
-    if [[ -r "$dir/$1.el" ]]; then
-      printf '%s\n' "$dir/$1.el"
-      return
+CLI_ARGS=()
+for priority in 60 55 50 40 30 20 15 12 3 0; do
+  for ((i=0; i<${#ACTION_ARGS[@]}; i++)); do
+    if [[ ${priority_at[$i]:-0} == "$priority" ]]; then
+      CLI_ARGS+=("${ACTION_ARGS[i]}")
     fi
   done
-  printf '%s\n' "$1"
-}
-
-LOAD_LIST=""
-for f in "${LOAD_FILES[@]+"${LOAD_FILES[@]}"}"; do
-  LOAD_LIST+=" \"$(shell_quote "$f")\""
 done
-
-LOAD_PATH_LIST=""
-for f in "${LOAD_PATHS[@]+"${LOAD_PATHS[@]}"}"; do
-  LOAD_PATH_LIST+=" \"$(shell_quote "$f")\""
-done
-
-IMAGE_LIST=""
-for f in "${IMAGE_FILES[@]+"${IMAGE_FILES[@]}"}"; do
-  IMAGE_LIST+=" \"$(shell_quote "$f")\""
-done
-
-EVAL_LIST=""
-for f in "${EVAL_FORMS[@]+"${EVAL_FORMS[@]}"}"; do
-  # Each --eval is itself elisp source.  Host Emacs can parse it inside
-  # the boot form; standalone NeLisp does not require `read' at boot time
-  # and evaluates string forms through `nelisp--eval-source-string'.
-  if [[ "$NEMACS_DRIVER" == "nelisp" ]]; then
-    EVAL_LIST+=" \"$(shell_quote "$f")\""
-  else
-    EVAL_LIST+=" (read \"$(shell_quote "$f")\")"
-  fi
-done
-
-FUNCALL_LIST=""
-for f in "${FUNCALLS[@]+"${FUNCALLS[@]}"}"; do
-  FUNCALL_LIST+=" '$(shell_quote "$f")"
-done
-
-ARG_LIST=""
-for f in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
-  ARG_LIST+=" \"$(shell_quote "$f")\""
-done
-STARTUP_ARG_LIST=""
-# GNU emacs.c processes user selection after the no-init/site options.
-for f in "${STARTUP_ARGS[@]+"${STARTUP_ARGS[@]}"}" \
-         "${STARTUP_USER_ARGS[@]+"${STARTUP_USER_ARGS[@]}"}"; do
-  STARTUP_ARG_LIST+=" \"$(shell_quote "$f")\""
-done
-
-if (( BATCH )); then
-  ENTRY_CALL='(nemacs-batch-main)'
+if [[ -z "$FRONTEND" && -n "${DISPLAY:-}" && "$NEMACS_DRIVER" == nelisp ]]; then
+  FRONTEND=xcb
+fi
+FRONTEND="${FRONTEND:-tty}"
+if [[ -n "$DAEMON" ]]; then FRONTEND=tty; fi
+if [[ "$DAEMON" == t ]]; then
+  DAEMON_FORM=t
+elif [[ -n "$DAEMON" ]]; then
+  DAEMON_FORM="\"$(shell_quote "$DAEMON")\""
 else
-  ENTRY_CALL='(nemacs-main)'
+  DAEMON_FORM=nil
 fi
 
 if [[ "$NEMACS_RUNTIME_IMAGE" == "auto" ]]; then
@@ -870,7 +822,7 @@ EOF
 )"
   BOOT_LOAD_PATH_FORM="$(cat <<EOF
   (setq load-path
-        (append (list$LOAD_PATH_LIST$(elisp_dir_strings "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}"))
+        (append (list$(elisp_dir_strings "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}"))
                 (and (boundp 'load-path) load-path)
                 (list$(elisp_dir_strings "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}"))))
 EOF
@@ -879,7 +831,7 @@ else
   BOOT_HOST_PRELOAD_FORM=""
   BOOT_LOAD_PATH_FORM="$(cat <<EOF
   (setq load-path
-        (append (list$LOAD_PATH_LIST$(elisp_dir_strings "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}" "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}"))
+        (append (list$(elisp_dir_strings "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}" "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}"))
                 (and (boundp 'load-path) load-path)))
 EOF
 )"
@@ -899,57 +851,18 @@ EOF
 )"
 fi
 
-if [[ "$NEMACS_DRIVER" == "nelisp" ]]; then
-  if (( BATCH )); then
-    BOOT_ENTRY_FORM="$(cat <<'EOF'
-  (when (fboundp 'install-sigint-handler) (install-sigint-handler))
-  (unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init t))
-  (nemacs-main--apply-options)
-  (unless (nemacs-main-option :no-banner)
-    (when (fboundp 'message)
-      (message "%s" (nemacs-main-status-banner))))
+OPTIONS_FORM="$(cat <<EOF
+(setq nemacs-main-options
+      (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
+            :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
+            :driver '$NEMACS_DRIVER
+            :frontend '$FRONTEND
+            :frontend-directory "$(shell_quote "$NEMACS_HOME/packages/nelisp-gui-xcb/src")"
+            :daemon $DAEMON_FORM
+            :images (list$(elisp_dir_strings "${IMAGE_FILES[@]}"))
+            :command-line (list$(elisp_dir_strings "${CLI_ARGS[@]}"))))
 EOF
 )"
-  else
-    BOOT_ENTRY_FORM="$(cat <<EOF
-  (when (fboundp 'install-sigint-handler) (install-sigint-handler))
-  (when (fboundp 'install-winsize-handler) (install-winsize-handler))
-  (when (fboundp 'install-jobctrl-handlers) (install-jobctrl-handlers))
-  (unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init))
-  (nemacs-main--apply-options)
-  (setq nemacs-main--repl-tui-ok (nemacs-main--realise-tui))
-  (if nemacs-main--repl-tui-ok
-      (unwind-protect
-          (progn
-            (nemacs-main--enable-tty-raw-input)
-            (nemacs-main--enter-fullscreen)
-            (nemacs-main--initial-paint)
-            (nemacs-main--event-loop))
-        (nemacs-main--disable-tty-raw-input))
-    (progn
-      (when (fboundp 'message)
-        (message "nemacs: TUI not available, running batch-style"))
-      (nemacs-main--apply-options)))
-EOF
-)"
-  fi
-else
-  BOOT_ENTRY_FORM="  $ENTRY_CALL"
-fi
-
-if (( BATCH || NO_INIT )); then
-  NEMACS_INIT_GATE_FORM="(setq init-file-user nil)"
-else
-  NEMACS_INIT_GATE_FORM="(setq init-file-user \"\")"
-fi
-HOST_PACKAGE_STARTUP_FORM=""
-if [[ "$NEMACS_DRIVER" == "host" ]]; then
-  if (( BATCH || NO_INIT )); then
-    HOST_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup nil)"
-  else
-    HOST_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup t)"
-  fi
-fi
 
 BOOT_FORM="$(cat <<EOF
 (progn
@@ -963,8 +876,6 @@ BOOT_FORM="$(cat <<EOF
     (defvar nemacs-nelisp-executable nil))
   (setq nemacs-nelisp-executable "$(shell_quote "$NEMACS_NELISP")")
   (unless (boundp 'load-path) (defvar load-path nil))
-  $NEMACS_INIT_GATE_FORM
-  $HOST_PACKAGE_STARTUP_FORM
   (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
 $BOOT_HOST_PRELOAD_FORM
 $BOOT_LOAD_PATH_FORM
@@ -973,57 +884,19 @@ $BOOTSTRAP_BUNDLE_LOAD
 $BOOT_NELISP_SOURCE_REFRESH
 (setq emacs-load-auto-native-compile t)
   (require 'nemacs-main)
-  (setq nemacs-main-options
-        (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
-              :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
-              :driver '$NEMACS_DRIVER
-              :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
-              :startup-arguments (list$STARTUP_ARG_LIST)
-              :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
-              :images (list$IMAGE_LIST)
-              :load-path (list$LOAD_PATH_LIST)
-              :load (list$LOAD_LIST)
-              :eval-forms (list$EVAL_LIST)
-              :funcall (list$FUNCALL_LIST)
-              :args (list$ARG_LIST)))
-$BOOT_ENTRY_FORM)
+$OPTIONS_FORM
+  (nemacs-main))
 EOF
 )"
 
-# A cold image already contains the bootstrap artifact.  Reassert only
-# per-process context and command-line options: snapshots must not pin the
-# caller's default-directory/load-path, and warm startup must not replay the
-# bootstrap bundle or source files.
+# Restored heaps already contain the runtime and bootstrap load path.
+# Use an explicit eval, leaving stdin available to the terminal frontend.
 COLD_BOOT_FORM="$(cat <<EOF
 (progn
-  (setq native-comp-enable-subr-trampolines nil
-        comp-enable-subr-trampolines nil)
-  (unless (boundp 'load-file-name) (defvar load-file-name nil))
-  (unless (boundp 'buffer-file-name) (defvar buffer-file-name nil))
-  (unless (boundp 'default-directory) (defvar default-directory nil))
-  (setq default-directory "$(shell_quote "$NEMACS_HOME")/")
-  (unless (boundp 'nemacs-nelisp-executable)
-    (defvar nemacs-nelisp-executable nil))
+  (when (fboundp 'nemacs-runtime-dump-reinit) (nemacs-runtime-dump-reinit))
   (setq nemacs-nelisp-executable "$(shell_quote "$NEMACS_NELISP")")
-  (unless (boundp 'load-path) (defvar load-path nil))
-  $NEMACS_INIT_GATE_FORM
-  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
-$BOOT_LOAD_PATH_FORM
-  (setq emacs-load-auto-native-compile t)
-  (setq nemacs-main-options
-        (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
-              :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
-              :driver '$NEMACS_DRIVER
-              :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
-              :startup-arguments (list$STARTUP_ARG_LIST)
-              :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
-              :images (list$IMAGE_LIST)
-              :load-path (list$LOAD_PATH_LIST)
-              :load (list$LOAD_LIST)
-              :eval-forms (list$EVAL_LIST)
-              :funcall (list$FUNCALL_LIST)
-              :args (list$ARG_LIST)))
-$BOOT_ENTRY_FORM)
+$OPTIONS_FORM
+  (nemacs-main))
 EOF
 )"
 
@@ -1031,12 +904,11 @@ EOF
 
 case "$NEMACS_DRIVER" in
   host)
-    if (( BATCH )); then
-      exec "$NEMACS_EMACS" -Q --batch "${HOST_EARLY_ARGS[@]+"${HOST_EARLY_ARGS[@]}"}" --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
-    else
-      # Host -Q keeps host Emacs startup out of the way; nemacs owns init loading.
-      exec "$NEMACS_EMACS" -Q "${HOST_EARLY_ARGS[@]+"${HOST_EARLY_ARGS[@]}"}" --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+    if (( BATCH )); then HOST_EARLY_ARGS+=("--batch"); fi
+    if [[ -n ${NEMACS_USER_EMACS_DIRECTORY:-} ]]; then
+      HOST_EARLY_ARGS+=("--init-directory" "$NEMACS_USER_EMACS_DIRECTORY")
     fi
+    exec "$NEMACS_EMACS" "${HOST_EARLY_ARGS[@]}" --eval "$BOOT_FORM" "${CLI_ARGS[@]}"
     ;;
   nelisp)
     if [[ ! -x "$NEMACS_NELISP" ]]; then
@@ -1048,11 +920,13 @@ case "$NEMACS_DRIVER" in
     ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
     [[ "$NEMACS_NELISP_MEMORY" == "unlimited" ]] || ulimit -v "$NEMACS_NELISP_MEMORY" 2>/dev/null || true
     # A saved runtime dump (make bake-runtime-dump) beats every replay route.
-    if [[ -n "${NEMACS_RUNTIME_DUMP:-}" && -r "$NEMACS_RUNTIME_DUMP" &&
-          "$(nelisp_driver_kind)" == "standalone-reader" ]]; then
-      exec "$NEMACS_NELISP" --cold-load-from "$NEMACS_RUNTIME_DUMP" --eval \
-        "(progn (nemacs-runtime-dump-reinit) $BOOT_FORM
-)"
+    if [[ -n "${NEMACS_RUNTIME_DUMP:-}" ]]; then
+      if [[ ! -r "$NEMACS_RUNTIME_DUMP" ]]; then
+        echo "nemacs: runtime dump is not readable: $NEMACS_RUNTIME_DUMP" >&2
+        exit 1
+      fi
+      [[ "$NEMACS_RUNTIME_DUMP" == /* ]] || NEMACS_RUNTIME_DUMP="$PWD/$NEMACS_RUNTIME_DUMP"
+      exec "$NEMACS_NELISP" --cold-load-from "$NEMACS_RUNTIME_DUMP" --eval "$COLD_BOOT_FORM"
     fi
     cold_image_ready=0
     cold_skipped_by_policy=0
@@ -1165,37 +1039,10 @@ case "$NEMACS_DRIVER" in
       echo "nemacs: runtime image is not readable: $NEMACS_RUNTIME_IMAGE" >&2
       exit 1
     fi
-    # The cold-load stdin reader is line-oriented: it evaluates the first
-    # complete form on each line and discards the rest.  A multi-line boot
-    # form is therefore shredded, and inner forms that happen to start a line
-    # run on their own, outside the guards that enclose them in the source.
-    # That -- not the image -- is what made warm starts fail: the banner's
-    # `(message "%s" (nemacs-main-status-banner))' ran detached from its
-    # `(when (fboundp 'message)' guard and signalled, while the 118 MB image
-    # itself cold-loads in under a second (measured 2026-08-09).
-    #
-    # Collapse the form onto one line.  A `;' comment would then swallow the
-    # remainder of that line, so refuse the cold path rather than boot a
-    # silently truncated form.
-    COLD_BOOT_LINE="${COLD_BOOT_FORM//$'\n'/ }"
-    if (( cold_image_ready )) && [[ "$COLD_BOOT_LINE" == *";"* ]]; then
-      echo "nemacs: cold boot form contains a ';' comment and cannot be put" >&2
-      echo "  on one line for the cold-load reader; using normal startup" >&2
-      cold_image_ready=0
-    fi
     if [[ "$(nelisp_driver_kind)" == "standalone-reader" ]]; then
       if (( cold_image_ready )); then
-        tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-cold-boot.XXXXXX.el")"
-        printf '%s\n0\n' "$COLD_BOOT_LINE" > "$tmp"
-        set +e
-        # The implicit cold REPL has room for only one option.  The explicit
-        # REPL accepts both and keeps evaluated return values off stdout.
-        "$NEMACS_NELISP" --cold-load-from "$NEMACS_COLD_IMAGE" \
-          --repl --no-prompt --no-print < "$tmp"
-        rc=$?
-        set -e
-        rm -f "$tmp"
-        exit "$rc"
+        [[ "$NEMACS_COLD_IMAGE" == /* ]] || NEMACS_COLD_IMAGE="$PWD/$NEMACS_COLD_IMAGE"
+        exec "$NEMACS_NELISP" --cold-load-from "$NEMACS_COLD_IMAGE" --eval "$COLD_BOOT_FORM"
       elif [[ -n "$NEMACS_RUNTIME_IMAGE" ]]; then
         exec "$NEMACS_NELISP" exec-runtime-image "$NEMACS_RUNTIME_IMAGE" "$BOOT_FORM"
       elif [[ -r "$NEMACS_BOOTSTRAP_REPL" ]]; then
@@ -1212,60 +1059,13 @@ case "$NEMACS_DRIVER" in
         printf '%s\n' "(setq nemacs-nelisp-executable \"$(shell_quote "$NEMACS_NELISP")\")" >> "$tmp"
         printf '%s\n' "(setq native-comp-enable-subr-trampolines nil comp-enable-subr-trampolines nil)" >> "$tmp"
         printf '%s\n' "(unless (boundp 'load-path) (defvar load-path nil))" >> "$tmp"
-        printf '%s\n' "$NEMACS_INIT_GATE_FORM" >> "$tmp"
         printf '%s\n' "(setq emacs-load-auto-native-compile nil)" >> "$tmp"
         cat "$NEMACS_BOOTSTRAP_REPL" >> "$tmp"
         printf '%s\n' "(setq nelisp-emacs-vendor-root \"$(shell_quote "$NEMACS_HOME/vendor")\")" >> "$tmp"
         printf '%s\n' "$(one_line_form "$BOOT_LOAD_PATH_FORM")" >> "$tmp"
         printf '%s\n' "(require 'nemacs-main)" >> "$tmp"
         printf '%s\n' "(setq emacs-load-auto-native-compile t)" >> "$tmp"
-        REPL_OPTIONS_FORM="$(cat <<EOF
-(setq nemacs-main-options
-      (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
-            :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
-            :driver '$NEMACS_DRIVER
-            :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
-            :startup-arguments (list$STARTUP_ARG_LIST)
-            :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
-            :images (list$IMAGE_LIST)
-            :load-path (list$LOAD_PATH_LIST)
-            :load (list$LOAD_LIST)
-            :eval-forms (list$EVAL_LIST)
-            :funcall (list$FUNCALL_LIST)
-            :args (list$ARG_LIST)))
-EOF
-)"
-        printf '%s\n' "$(one_line_form "$REPL_OPTIONS_FORM")" >> "$tmp"
-        if (( BATCH )); then
-          # The standalone-reader REPL can capture top-level option defvars as
-          # nil when one closure calls another.  Keep batch CLI processing at
-          # top level so -L/-l/--eval/-f see the plist installed above.
-          printf '%s\n' "(when (fboundp 'install-sigint-handler) (install-sigint-handler))" >> "$tmp"
-          printf '%s\n' "(unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init t))" >> "$tmp"
-          printf '%s\n' "(nemacs-main--apply-options)" >> "$tmp"
-          printf '%s\n' "(unless (nemacs-main-option :no-banner) (when (fboundp 'message) (message \"%s\" (nemacs-main-status-banner))))" >> "$tmp"
-        else
-          printf '%s\n' "(when (fboundp 'install-sigint-handler) (install-sigint-handler))" >> "$tmp"
-          printf '%s\n' "(when (fboundp 'install-winsize-handler) (install-winsize-handler))" >> "$tmp"
-          printf '%s\n' "(when (fboundp 'install-jobctrl-handlers) (install-jobctrl-handlers))" >> "$tmp"
-          printf '%s\n' "(unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init))" >> "$tmp"
-          printf '%s\n' "(nemacs-main--apply-options)" >> "$tmp"
-          printf '%s\n' "(setq nemacs-main--repl-tui-ok (nemacs-main--realise-tui))" >> "$tmp"
-          if (( ! NO_BANNER )); then
-            printf '%s\n' "(when (and nemacs-main--repl-tui-ok (fboundp 'message)) (message \"%s\" (nemacs-main-status-banner)))" >> "$tmp"
-          fi
-          if [[ "$NEMACS_DRIVER" == "host" ]]; then
-            printf '%s\n' "(if (and nemacs-main--repl-tui-ok (boundp 'noninteractive) (not noninteractive)) (nemacs-main--install-keymap-host) (when nemacs-main--repl-tui-ok (unwind-protect (progn (princ \"NEMACS_TUI_TAIL_REACHED\\n\") (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input))))" >> "$tmp"
-          else
-            # Cheap unconditional diagnosability marker: emitted just before the
-            # raw-input handoff so pty smoke probes can tell "boot form reached
-            # the interactive tail" apart from "boot form never got this far"
-            # even when the rest of the TUI never becomes observable. Batch mode
-            # never reaches this branch, so the marker cannot leak into scripted
-            # --batch output.
-            printf '%s\n' "(if nemacs-main--repl-tui-ok (unwind-protect (progn (princ \"NEMACS_TUI_TAIL_REACHED\\n\") (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input)) (progn (when (fboundp 'message) (message \"nemacs: TUI not available, running batch-style\")) (nemacs-main--apply-options)))" >> "$tmp"
-          fi
-        fi
+        printf '%s\n' "$(one_line_form "$OPTIONS_FORM")" "(nemacs-main)" >> "$tmp"
         printf '%s\n' "0" >> "$tmp"
         restore_repl_tty() {
           if (( ! BATCH )); then

@@ -68,7 +68,7 @@
 
 Host Emacs keeps its native `kill-emacs'.  This helper is installed as
 `kill-emacs' in standalone, or when the name is absent or a bulk stub."
-  (let ((code (or exit-code 0)))
+  (let ((code (if (integerp exit-code) exit-code 0)))
     (unless (and (integerp code) (<= 0 code) (<= code 255))
       (setq code 1))
     (unwind-protect

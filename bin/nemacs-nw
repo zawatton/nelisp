@@ -112,9 +112,7 @@ if build or not driver_image.is_file():
             fd, temporary = tempfile.mkstemp(prefix='.tty-', dir=driver_cache)
             os.close(fd)
             marker = 'NEMACS-TTY-IMAGE|' + driver_key
-            form = ('(progn (setq noninteractive t init-file-user nil '
-                    'inhibit-startup-screen t nemacs-main-options nil) '
-                    '(unless nemacs-initialized (nemacs-init t)) '
+            form = ('(progn (nemacs-prepare-runtime) '
                     '(nemacs-main--prepare-tui-state) '
                     '(let ((emacs-tui-backend-output-fn (lambda (_text) nil))) '
                     '(nemacs-main--shutdown-tui)) '

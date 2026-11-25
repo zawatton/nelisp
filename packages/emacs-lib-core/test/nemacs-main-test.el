@@ -45,7 +45,6 @@
                  nemacs-main--initial-paint nemacs-main--event-loop
                  nemacs-main--event-loop-tick nemacs-main--repaint-tui
                  nemacs-main--drain-input-burst
-                 nemacs-main--eval-option-form
                  nemacs-main--rebuild-single-key-cache
                  nemacs-main--dispatch-key-code
                  nemacs-main--dispatch-printable-self-insert-direct
@@ -56,9 +55,8 @@
                  nemacs-main-kill-buffer-interactive
                  nemacs-main-execute-extended-command
                  nemacs-main--standalone-batch-p
-                 nemacs-main--apply-options nemacs-main--quit
-                 nemacs-main--startup-gate-option
-                 nemacs-main--apply-startup-gate))
+                 nemacs-main--startup nemacs-main--quit
+                 nemacs-main--startup-arguments))
     (should (fboundp sym))))
 
 ;;;; B. nemacs-main-option
@@ -75,8 +73,8 @@
     (unwind-protect
         (progn
           (nelisp-ec-set-buffer (nelisp-ec-generate-new-buffer "*scratch*"))
-          (cl-letf (((symbol-function 'nemacs-main--apply-options)
-                     (lambda ()
+          (cl-letf (((symbol-function 'nemacs-main--startup)
+                     (lambda (&optional _batch-p)
                        (emacs-window-set-window-buffer
                         (emacs-window-selected-window) native)))
                     ((symbol-function 'nemacs-main--init-keymap) #'ignore)
@@ -100,45 +98,18 @@
     (should (eq 'host (nemacs-main-option :driver)))
     (should (null (nemacs-main-option :load)))))
 
-;;;; B2. UX #18 Session A — startup gate (-q/-Q wiring)
+(ert-deftest nemacs-main-test/startup-preserves-cli-order ()
+  (let ((cli '("--eval" "(message \"before\")" "-l" "file" "-f" "command")))
+    (nemacs-main-test--with-options (list :command-line cli :init-file-user nil)
+      (should (equal cli (nemacs-main--startup-arguments))))))
 
-(ert-deftest nemacs-main-test/startup-gate-option-absent-key-returns-nil ()
-  "A key that was never passed in `nemacs-main-options' must be
-distinguishable from a key explicitly mapped to nil."
-  (nemacs-main-test--with-options '(:batch t)
-    (should-not (nemacs-main--startup-gate-option :init-file-user))
-    (should-not (nemacs-main--startup-gate-option :inhibit-startup-screen))))
-
-(ert-deftest nemacs-main-test/startup-gate-option-present-nil-value-is-detected ()
-  "An explicit nil VALUE for a present key must still read back as present."
-  (nemacs-main-test--with-options '(:init-file-user nil)
-    (let ((cell (nemacs-main--startup-gate-option :init-file-user)))
-      (should cell)
-      (should-not (car cell)))))
-
-(ert-deftest nemacs-main-test/apply-startup-gate-absent-keys-leave-globals-untouched ()
-  "Callers that never pass the new keys (most existing tests and direct
-`nemacs-init' callers) must not have `init-file-user' /
-`inhibit-startup-screen' clobbered."
-  (let ((init-file-user "unchanged")
-        (inhibit-startup-screen 'unchanged))
-    (nemacs-main-test--with-options '(:batch t)
-      (nemacs-main--apply-startup-gate))
-    (should (equal "unchanged" init-file-user))
-    (should (eq 'unchanged inhibit-startup-screen))))
-
-(ert-deftest nemacs-main-test/apply-startup-gate-nil-init-file-user-disables-init ()
-  "-Q equivalent: explicit :init-file-user nil must flip the global to nil."
-  (let ((init-file-user "not yet nil"))
-    (nemacs-main-test--with-options '(:init-file-user nil)
-      (nemacs-main--apply-startup-gate))
-    (should-not init-file-user)))
-
-(ert-deftest nemacs-main-test/apply-startup-gate-sets-inhibit-startup-screen ()
-  (let ((inhibit-startup-screen nil))
-    (nemacs-main-test--with-options '(:inhibit-startup-screen t)
-      (nemacs-main--apply-startup-gate))
-    (should (eq t inhibit-startup-screen))))
+(ert-deftest nemacs-main-test/startup-translates-lisp-options ()
+  (nemacs-main-test--with-options
+      '(:init-file-user nil :inhibit-startup-screen t :load-path ("local")
+        :load ("fixture.el") :eval-forms ((+ 1 2)) :funcall (demo) :args ("file"))
+    (should (equal (nemacs-main--startup-arguments)
+                   '("-q" "--no-splash" "-L" "local" "-l" "fixture.el"
+                     "--eval" "(+ 1 2)" "-f" "demo" "file")))))
 
 ;;;; C. Status banner shape
 
@@ -157,133 +128,6 @@ distinguishable from a key explicitly mapped to nil."
 
 ;;;; D. apply-options
 
-(ert-deftest nemacs-main-test/apply-eval-forms-runs-them ()
-  (let ((counter 0))
-    (defvar nemacs-main-test--counter 0)
-    (setq nemacs-main-test--counter 0)
-    (nemacs-main-test--with-options
-        (list :eval-forms '((setq nemacs-main-test--counter
-                                  (1+ nemacs-main-test--counter))
-                            (setq nemacs-main-test--counter
-                                  (1+ nemacs-main-test--counter))))
-      (nemacs-main--apply-options))
-    (should (= 2 nemacs-main-test--counter))))
-
-(ert-deftest nemacs-main-test/apply-eval-form-error-tolerated ()
-  (defvar nemacs-main-test--ran nil)
-  (setq nemacs-main-test--ran nil)
-  (nemacs-main-test--with-options
-      (list :eval-forms '((error "boom")
-                          (setq nemacs-main-test--ran t)))
-    (nemacs-main--apply-options))
-  ;; Both forms are tried; the error in the first does not block the
-  ;; second.
-  (should nemacs-main-test--ran))
-
-(ert-deftest nemacs-main-test/standalone-batch-eval-error-is-fatal ()
-  "A standalone batch eval error is reported and exits with status 255."
-  (let ((noninteractive t)
-        (reported nil)
-        (nemacs-main-test--ran nil)
-        (nemacs-main-options
-         '(:batch t
-           :eval-forms ((error "boom")
-                        (setq nemacs-main-test--ran t)))))
-    (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore)
-              ((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq reported (apply #'format format-string args))))
-              ((symbol-function 'kill-emacs)
-               (lambda (status) (throw 'nemacs-main-test--exit status))))
-      (should (= 255
-                 (catch 'nemacs-main-test--exit
-                   (nemacs-main--apply-options)
-                   nil))))
-    (should (equal "nemacs: --eval failed: boom form=(error \"boom\")"
-                   reported))
-    (should-not nemacs-main-test--ran)))
-
-(ert-deftest nemacs-main-test/apply-load-form-error-tolerated ()
-  (defvar nemacs-main-test--load-ran nil)
-  (setq nemacs-main-test--load-ran nil)
-  (nemacs-main-test--with-options
-      (list :load '("bad-path" "good-path"))
-    (cl-letf (((symbol-function 'nemacs-main--load-option-path)
-               (lambda (path)
-                 (if (equal path "bad-path")
-                     (error "boom")
-                   (setq nemacs-main-test--load-ran t)))))
-      (nemacs-main--apply-options)))
-  ;; Both paths are tried; the error loading the first does not block the
-  ;; second.
-  (should nemacs-main-test--load-ran))
-
-(ert-deftest nemacs-main-test/standalone-batch-load-error-is-fatal ()
-  "A standalone batch `-l'/`--load' error is reported and exits with
-status 255, mirroring `--eval'."
-  (let ((noninteractive t)
-        (reported nil)
-        (nemacs-main-test--load-ran nil)
-        (nemacs-main-options
-         '(:batch t
-           :load ("bad-path" "good-path"))))
-    (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore)
-              ((symbol-function 'nemacs-main--load-option-path)
-               (lambda (path)
-                 (if (equal path "bad-path")
-                     (error "boom")
-                   (setq nemacs-main-test--load-ran t))))
-              ((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq reported (apply #'format format-string args))))
-              ((symbol-function 'kill-emacs)
-               (lambda (status) (throw 'nemacs-main-test--exit status))))
-      (should (= 255
-                 (catch 'nemacs-main-test--exit
-                   (nemacs-main--apply-options)
-                   nil))))
-    (should (equal "nemacs: --load failed: boom file=bad-path"
-                   reported))
-    (should-not nemacs-main-test--load-ran)))
-
-(ert-deftest nemacs-main-test/standalone-batch-load-kill-emacs-passthrough ()
-  "A `kill-emacs' call inside a loaded file exits with its own status,
-not the fatal `-l' error handler's 255."
-  (let ((noninteractive t)
-        (reported nil)
-        (exit-status nil)
-        (nemacs-main-options
-         '(:batch t
-           :load ("kills-emacs"))))
-    (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore)
-              ((symbol-function 'nemacs-main--load-option-path)
-               (lambda (_path) (kill-emacs 7)))
-              ((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq reported (apply #'format format-string args))))
-              ((symbol-function 'kill-emacs)
-               (lambda (status) (throw 'nemacs-main-test--exit status))))
-      (setq exit-status
-            (catch 'nemacs-main-test--exit
-              (nemacs-main--apply-options)
-              nil)))
-    (should (= 7 exit-status))
-    (should-not reported)))
-
-(ert-deftest nemacs-main-test/apply-eval-source-string-uses-nelisp-eval ()
-  "Standalone NeLisp can pass --eval source without requiring `read'."
-  (let ((seen nil)
-        (nemacs-main-options
-         '(:eval-forms ("(setq nemacs-main-test--from-source t)"))))
-    (cl-letf (((symbol-function 'nelisp--eval-source-string)
-               (lambda (source)
-                 (setq seen source)
-                 'ok)))
-      (nemacs-main--apply-options))
-    (should (equal seen "(setq nemacs-main-test--from-source t)"))))
-
-;;;; E. quit handler
-
 (ert-deftest nemacs-main-test/quit-sets-flag ()
   (nemacs-main-test--fresh-runner
     (should-not nemacs-main--quit-flag)
@@ -300,74 +144,33 @@ not the fatal `-l' error handler's 255."
         (should (eq 'ok (nemacs-batch-main)))
       (nemacs-uninit))))
 
-(ert-deftest nemacs-main-test/batch-runs-load-and-eval ()
-  (let* ((tmp (make-temp-file "nemacs-main-test-" nil ".el")))
-    (unwind-protect
-        (progn
-          (with-temp-buffer
-            (insert "(defvar nemacs-main-test--from-load nil)\n"
-                    "(setq nemacs-main-test--from-load t)\n")
-            (write-region (point-min) (point-max) tmp nil 'silent))
-          (defvar nemacs-main-test--from-load nil)
-          (defvar nemacs-main-test--from-eval nil)
-          (setq nemacs-main-test--from-load nil
-                nemacs-main-test--from-eval nil)
-          (let ((nemacs-initialized nil)
-                (nemacs--initial-buffer nil)
-                (nemacs-main-options
-                 (list :no-banner t
-                       :load (list tmp)
-                       :eval-forms '((setq nemacs-main-test--from-eval t)))))
-            (unwind-protect (nemacs-batch-main) (nemacs-uninit)))
-          (should nemacs-main-test--from-load)
-          (should nemacs-main-test--from-eval))
-      (when (file-exists-p tmp) (delete-file tmp)))))
-
-(ert-deftest nemacs-main-test/apply-options-prepends-load-path ()
-  (let ((load-path '("base"))
-        (dir-a "/tmp/nemacs-main-test-a")
-        (dir-b "/tmp/nemacs-main-test-b"))
-    (let ((nemacs-main-options (list :load-path (list dir-a dir-b))))
-      (nemacs-main--apply-options))
-    (should (equal (list (nth 0 load-path)
-                         (nth 1 load-path)
-                         (nth 2 load-path))
-                   (list dir-a dir-b "base")))))
-
-(ert-deftest nemacs-main-test/apply-options-funcalls-after-eval ()
-  (defvar nemacs-main-test--order nil)
-  (defun nemacs-main-test--funcall-target ()
-    (push 'funcall nemacs-main-test--order))
-  (let ((nemacs-main-test--order nil)
-        (nemacs-main-options
-         '(:eval-forms ((push 'eval nemacs-main-test--order))
-           :funcall (nemacs-main-test--funcall-target))))
-    (nemacs-main--apply-options)
-    (should (equal nemacs-main-test--order '(funcall eval)))))
-
 (ert-deftest nemacs-main-test/apply-options-skips-legacy-image-loader-without-images ()
   "The .nlri path should not pay the legacy .nli loader cost."
-  (let ((nemacs-main-options '(:images nil :load nil :eval-forms nil)))
-    (cl-letf (((symbol-function 'require)
+  (let ((nemacs-initialized nil)
+        (nemacs-main-options '(:images nil)))
+    (cl-letf (((symbol-function 'nemacs-init) #'ignore)
+              ((symbol-function 'require)
                (lambda (feature &optional _filename _noerror)
                  (when (eq feature 'image-loader)
                    (error "image-loader should stay lazy"))
                  feature)))
-      (nemacs-main--apply-options))))
+      (nemacs-main--startup))))
 
 (ert-deftest nemacs-main-test/apply-options-loads-legacy-images-lazily ()
   "Legacy --load-image still restores .nli files on demand."
-  (let ((nemacs-main-options '(:images ("legacy.nli")))
+  (let ((nemacs-initialized nil)
+        (nemacs-main-options '(:images ("legacy.nli")))
         (required nil)
         (loaded nil))
-    (cl-letf (((symbol-function 'require)
+    (cl-letf (((symbol-function 'nemacs-init) #'ignore)
+              ((symbol-function 'require)
                (lambda (feature &optional _filename _noerror)
                  (push feature required)
                  feature))
               ((symbol-function 'image-loader-load)
                (lambda (path restore-buffers)
                  (setq loaded (list path restore-buffers)))))
-      (nemacs-main--apply-options)
+      (nemacs-main--startup)
       (should (equal required '(image-loader)))
       (should (equal loaded '("legacy.nli" t))))))
 
@@ -855,14 +658,14 @@ Emacs's `-q'/`-Q' contract."
               (let ((boot (buffer-string)))
                 (should (string-match-p "test repl bootstrap" boot))
                 (should (string-match-p "(require 'nemacs-main)" boot))
-                (should (string-match-p "(nemacs-main--apply-options)" boot))
+                (should (string-match-p "(nemacs-main)" boot))
                 (should (string-match-p
                          (regexp-quote extra-load-path)
                          boot))
                 (should (string-match-p (regexp-quote load-file) boot))
                 (should (string-match-p
                          (regexp-quote
-                          ":eval-forms (list \"(setq nemacs-main-test--standalone 42)\")")
+                          ":command-line (list \"--eval\" \"(setq nemacs-main-test--standalone 42)\")")
                          boot))
                 (should (string-match-p
                          (regexp-quote ":funcall (list 'nemacs-main-test--after-batch)")

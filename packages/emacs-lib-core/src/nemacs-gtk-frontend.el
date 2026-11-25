@@ -2914,49 +2914,14 @@ Iterates from the end so positions stay valid mid-walk."
                     (plist-get edit :line-count)))))))
 
 
-;;;; --- init file loading compatibility wrapper ---------------------------
-
-(defvar nemacs-gtk--init-file-loaded nil
-  "Non-nil after the session-owned init loader has run.")
-
-(defvar nemacs-gtk--init-file-error nil
-  "Session-owned init loader error mirrored for GTK status display.")
-
-(defun nemacs-gtk--candidate-init-files ()
-  "Compatibility wrapper for the session-owned init candidate list."
-  (nemacs-candidate-init-files))
-
-(defun nemacs-gtk--load-user-init-file ()
-  "Compatibility wrapper around session-owned init loading.
-Init-file discovery/loading now belongs to `nemacs-loadup'.  This wrapper is
-kept only for existing GTK menu/key bindings."
-  (cond
-   (nemacs-gtk--init-file-loaded
-    (setq nemacs-gtk--last-key-text "init: already loaded"))
-   (t
-    (nemacs-load-user-init-files)
-    (setq nemacs-gtk--init-file-loaded t)
-    (setq nemacs-gtk--init-file-error nemacs-init-file-error)
-    (setq nemacs-gtk--last-key-text
-          (cond
-           (nemacs-init-file-error
-            (format "init error: %s - %s"
-                    (car nemacs-init-file-error)
-                    (cdr nemacs-init-file-error)))
-           (user-init-file
-            (format "Loaded %s" user-init-file))
-           (t "init: no user init file found")))
-    nemacs-gtk--init-file-loaded)))
+;;;; --- init file reload command ------------------------------------
 
 (defun nemacs-gtk-load-user-init-file ()
-  "M-x load-user-init-file — re-run init file loading.  Useful for
-testing init.el changes without restarting; the variable
-`--init-file-loaded' is reset first so the search re-runs."
+  "Reload the initialization file selected by GNU startup."
   (interactive)
-  (setq nemacs-gtk--init-file-loaded nil)
-  (setq nemacs-gtk--init-file-error nil)
-  (nemacs-gtk--load-user-init-file))
-
+  (if user-init-file
+      (load user-init-file)
+    (user-error "No user initialization file")))
 
 ;;;; --- major-mode plumbing (Phase 3.A — per-buffer mode tracking) -------
 
@@ -5409,10 +5374,7 @@ is closed."
   ;; Layer 2 buffer registry has no auto-`*scratch*' so the first
   ;; buffer-touching call from init.el saw a nil current-buffer.
   (nemacs-gtk--prepare-welcome-buffer)
-  ;; Phase 3.C — load user init file (~/.emacs.d/init.el or ~/.emacs)
-  ;; before painting so any `setq` of GUI defvars / `electric-pair-mode'
-  ;; calls / etc. take effect on the first frame.
-  (nemacs-gtk--load-user-init-file)
+  (unless nemacs-initialized (nemacs-init))
   (nemacs-gtk--sync-window-title)
   ;; 4. First paint.
   (nemacs-gtk--repaint)
