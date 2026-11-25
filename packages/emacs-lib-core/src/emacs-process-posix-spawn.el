@@ -42,8 +42,8 @@ or environment string separately.  The dynamic owner list bounds lifetime."
             (+ (aref emacs-process-posix--spawn-arena 2) size))
       pointer)))
 
-(defun emacs-process-posix--cstring (text)
-  (let* ((bytes (encode-coding-string text 'utf-8-unix t))
+(defun emacs-process-posix--cstring (text &optional coding)
+  (let* ((bytes (encode-coding-string text (or coding 'utf-8-unix) t))
          (pointer (emacs-process-posix--allocate (1+ (length bytes)))))
     ;; Use the existing raw bulk-copy primitive on standalone readers.  The
     ;; fallback supports readers with only the original byte primitives.
@@ -64,7 +64,33 @@ or environment string separately.  The dynamic owner list bounds lifetime."
     (ptr-write-u64 pointer offset 0)
     pointer))
 
-(defun emacs-process-posix-spawn-pty (command &optional separate-stderr)
+(defun emacs-process-posix--cwd-pointer (directory)
+  (and directory
+       (emacs-process-posix--cstring
+        directory (or file-name-coding-system default-file-name-coding-system))))
+
+(defun emacs-process-posix--child-chdir (directory)
+  ;; GNU callproc.c's child_setup exits with EXIT_CANCELED if chdir fails
+  ;; after the directory has been checked in the parent.
+  (when (and directory (< (syscall-direct 80 directory 0 0 0 0 0) 0))
+    (syscall-direct 60 125 0 0 0 0 0)))
+
+(defun emacs-process-posix--environment (directory)
+  "Build the child environment, correcting an existing PWD for DIRECTORY."
+  (if (not directory)
+      process-environment
+    (let ((pwd (getenv "PWD"))
+          (entries process-environment)
+          environment)
+      (while (and (consp entries) (stringp (car entries)))
+        (let ((entry (pop entries)))
+          (unless (or (equal entry "PWD") (string-prefix-p "PWD=" entry))
+            (push entry environment))))
+      (when pwd
+        (push (concat "PWD=" (directory-file-name directory)) environment))
+      (nreverse environment))))
+
+(defun emacs-process-posix-spawn-pty (command &optional separate-stderr directory)
   "Create a controlling PTY using the existing raw OS primitives."
   (unless (eq system-type 'gnu/linux) (error "PTY spawn is qualified only on Linux"))
   (emacs-process-posix--retry-memory-releases)
@@ -84,7 +110,9 @@ or environment string separately.  The dynamic owner list bounds lifetime."
              (word (emacs-process-posix--allocate 64)) (pid -1)
              (path (emacs-process-posix--cstring (car command)))
              (argv (emacs-process-posix--string-vector command))
-             (envp (emacs-process-posix--string-vector process-environment)))
+             (cwd (emacs-process-posix--cwd-pointer directory))
+             (envp (emacs-process-posix--string-vector
+                    (emacs-process-posix--environment directory))))
         (when (< master 0) (error "Cannot open PTY master"))
         (ptr-write-u64 word 0 0)
         (unless (= (syscall-direct 16 master #x40045431 word 0 0 0) 0)
@@ -125,6 +153,7 @@ or environment string separately.  The dynamic owner list bounds lifetime."
               (syscall-direct 33 (if separate-stderr error-write slave) 2 0 0 0 0)
               (when (> error-write 2) (syscall-direct 3 error-write 0 0 0 0 0))
               (when (> slave 2) (syscall-direct 3 slave 0 0 0 0 0))
+              (emacs-process-posix--child-chdir cwd)
               (syscall-direct 59 path argv envp 0 0 0)
               (syscall-direct 60 127 0 0 0 0 0)))
            (t
@@ -149,7 +178,7 @@ or environment string separately.  The dynamic owner list bounds lifetime."
       ;; The parent releases every scratch/string owner, including errors.
       (emacs-process-posix--release-memory emacs-process-posix--spawn-memory))))
 
-(defun emacs-process-posix-spawn-pipe (command &optional separate-stderr)
+(defun emacs-process-posix-spawn-pipe (command &optional separate-stderr directory)
   "Spawn a pipe child in its own session, matching GNU's child setup."
   (emacs-process-posix--retry-memory-releases)
   (let ((emacs-process-posix--spawn-memory nil)
@@ -166,7 +195,9 @@ or environment string separately.  The dynamic owner list bounds lifetime."
       (let* ((out (emacs-process-posix--allocate 8)) (in (emacs-process-posix--allocate 8))
              (path (emacs-process-posix--cstring (car command)))
              (argv (emacs-process-posix--string-vector command))
-             (envp (emacs-process-posix--string-vector process-environment)))
+             (cwd (emacs-process-posix--cwd-pointer directory))
+             (envp (emacs-process-posix--string-vector
+                    (emacs-process-posix--environment directory))))
         (unless (= (syscall-direct 22 out 0 0 0 0 0) 0) (error "Cannot create output pipe"))
         (let* ((pair (ptr-read-u64 out 0))
                (readfd (logand pair #xffffffff)) (writefd (ash pair -32)))
@@ -194,6 +225,7 @@ or environment string separately.  The dynamic owner list bounds lifetime."
               (when (> error-write 2) (syscall-direct 3 error-write 0 0 0 0 0))
               (syscall-direct 3 child-input 0 0 0 0 0)
               (syscall-direct 3 writefd 0 0 0 0 0)
+              (emacs-process-posix--child-chdir cwd)
               (syscall-direct 59 path argv envp 0 0 0)
               (syscall-direct 60 127 0 0 0 0 0))
              (t

@@ -372,12 +372,14 @@ buffer and name live on the core plist, never in this layer's metadata."
                      'nelisp-process-start)
                     (t nil)))
          (process (and launcher command
-                       (cond (pty (emacs-process-posix-spawn-pty command stderr))
+                       (cond (pty (emacs-process-posix-spawn-pty
+                                   command stderr (emacs-process--call-process-cwd)))
                              ((and (eq system-type 'gnu/linux)
                                    (fboundp 'syscall-direct)
                                    (fboundp 'emacs-process-posix-spawn-pipe))
-                              (emacs-process-posix-spawn-pipe command stderr))
-                             (t (apply launcher command)))))
+                              (emacs-process-posix-spawn-pipe
+                               command stderr (emacs-process--call-process-cwd)))
+                             (t (apply launcher (emacs-process--cwd-command command))))))
          (stderr-fd (and process (emacs-process--native-metadata process :stderr-fd)))
          (pty-master (and process (emacs-process--native-metadata process :pty-master)))
          (tty-name (and process (emacs-process--native-metadata process :tty-name))))
