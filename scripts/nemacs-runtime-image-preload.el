@@ -220,7 +220,14 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   (load (concat repo-root "/scripts/nemacs-runtime-frame-tab-preload.el")
         nil 'no-message t t)
   (nemacs-runtime-image-preload--install-daily-driver-core)
-  (nemacs-runtime-image-preload--load-gnu-libraries repo-root)
+  ;; GNU's loadup queues Custom declarations whose setters may call modes
+  ;; defined later in the same file. Finish that queue once all libraries
+  ;; are defined, before this batch image starts accepting user calls.
+  (let ((custom-delayed-init-variables nil))
+    (nemacs-runtime-image-preload--load-gnu-libraries repo-root)
+    (let ((settings (nreverse custom-delayed-init-variables))
+          (custom-delayed-init-variables t))
+      (mapc #'custom-reevaluate-setting settings)))
   ;; Publish the default from GNU newcomment.el after the reader's early
   ;; buffer-local variable initialization has supplied a provisional value.
   (custom-reevaluate-setting 'comment-column)

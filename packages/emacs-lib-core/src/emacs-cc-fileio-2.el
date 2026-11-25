@@ -2,8 +2,9 @@
 
 ;;; Code:
 
-(defvar emacs-cc-fileio-2--auto-saved-ticks nil
-  "Buffer/tick pairs recording the last explicit auto-save mark.")
+(defvar-local emacs-cc-fileio-2--auto-saved-tick nil
+  "Modification tick at this buffer's last auto-save.")
+(put 'emacs-cc-fileio-2--auto-saved-tick 'permanent-local t)
 
 (defun emacs-cc-fileio-2--tick (&optional buffer)
   "Return BUFFER's modification tick when available."
@@ -14,14 +15,13 @@
   (defun recent-auto-save-p ()
     "Return t if current buffer has been auto-saved recently."
     (let* ((buffer (current-buffer))
-           (saved (assq buffer emacs-cc-fileio-2--auto-saved-ticks))
-           (saved-tick (cdr saved))
+           (saved-tick emacs-cc-fileio-2--auto-saved-tick)
            (save-tick (and (fboundp 'files--buffer-save-tick)
                            (files--buffer-save-tick buffer))))
       (if (numberp save-tick)
-          (and saved (numberp saved-tick) (< save-tick saved-tick))
+          (and (numberp saved-tick) (< save-tick saved-tick))
         (let ((current-tick (emacs-cc-fileio-2--tick buffer)))
-          (and saved current-tick (equal saved-tick current-tick)))))))
+          (and current-tick (equal saved-tick current-tick)))))))
 
 (unless (fboundp 'set-binary-mode)
   (defun set-binary-mode (stream mode)
@@ -34,11 +34,8 @@
 (unless (fboundp 'set-buffer-auto-saved)
   (defun set-buffer-auto-saved ()
     "Mark current buffer as auto-saved with its current text."
-    (let ((buffer (current-buffer)))
-      (setq emacs-cc-fileio-2--auto-saved-ticks
-            (cons (cons buffer (emacs-cc-fileio-2--tick buffer))
-                  (assq-delete-all buffer emacs-cc-fileio-2--auto-saved-ticks)))
-      nil)))
+    (setq emacs-cc-fileio-2--auto-saved-tick (emacs-cc-fileio-2--tick))
+    nil))
 
 (unless (fboundp 'set-file-acl)
   (defun set-file-acl (filename acl-string)

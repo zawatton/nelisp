@@ -545,7 +545,10 @@ called directly."
   ;; GNU kill-buffer replaces and unrecords the buffer while it is live.
   (when (and (featurep 'window) (buffer-live-p buffer))
     (replace-buffer-in-windows buffer))
-  (funcall orig buffer))
+  (prog1 (funcall orig buffer)
+    (when (and (not (buffer-live-p buffer))
+               (fboundp 'files--forget-buffer-state))
+      (files--forget-buffer-state buffer))))
 
 (defun emacs-buffer-builtins--indirect-kill (orig buffer)
   "Kill BUFFER and its indirect children when BUFFER is a base buffer."

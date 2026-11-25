@@ -13039,7 +13039,7 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
 ;; Fremove_text_properties and set_text_properties, which split an interval only
 ;; where it changes.
 
-(defvar nelisp--tp-string-properties (make-hash-table :test 'eq)
+(defvar nelisp--tp-string-properties (make-hash-table :test 'eq :weakness 'key)
   "STRING (by identity) -> the root of its text-property interval tree.")
 
 ;; GNU fns.c:951-1021 (concat_to_string) tests string_intervals (arg) inside
@@ -15933,81 +15933,124 @@ case)."
   (fset 'preceding-char (symbol-function 'nelisp--preceding-char-reference)))
 
 (defun nelisp--motion-parse-skip-spec (spec)
-  "Parse SPEC in `skip-chars-forward' syntax into (NEGATE . SET).
-SET is a list whose elements are either a literal character code or a
-\(LO . HI) inclusive range cons.  Supports a leading `^' negation, `X-Y'
-ranges, a literal `]' anywhere (never special, probed), and backslash-
-escaped `^'/`-'/`\\\\'.  POSIX class names such as `[:alpha:]' are NOT
-supported -- out of Doc 204 P2 scope, no consumer here needs them."
+  "Parse GNU skip_chars SPEC into (NEGATE . SET).
+SET contains character codes, inclusive range conses and class names."
   (nelisp--check-string spec)
   (let* ((len (length spec))
-         (i 0)
-         (negate nil)
+         (negate (and (> len 0) (eq (aref spec 0) ?^)))
+         (i (if negate 1 0))
          (set nil))
-    (when (and (< i len) (eq (elt spec i) ?^))
-      (setq negate t)
-      (setq i (1+ i)))
     (while (< i len)
-      (let ((c (elt spec i)))
+      (let* ((c (aref spec i))
+             (class-end (and (eq c ?\[) (< (1+ i) len)
+                             (eq (aref spec (1+ i)) ?:)
+                             (string-search ":]" spec (+ i 2)))))
         (cond
-         ((and (eq c ?\\) (< (1+ i) len)
-               (memq (elt spec (1+ i)) '(?^ ?- ?\\)))
-          (push (elt spec (1+ i)) set)
-          (setq i (+ i 2)))
-         ((and (< (+ i 2) len)
-               (eq (elt spec (1+ i)) ?-))
-          (push (cons c (elt spec (+ i 2))) set)
-          (setq i (+ i 3)))
+         (class-end
+          (let ((name (substring spec (+ i 2) class-end)))
+            (unless (member name '("alnum" "alpha" "ascii" "blank" "cntrl"
+                                   "digit" "graph" "lower" "multibyte"
+                                   "nonascii" "print" "punct" "space"
+                                   "unibyte" "upper" "word" "xdigit"))
+              (error "Invalid ISO C character class"))
+            (push name set)
+            (setq i (+ class-end 2))))
          (t
-          (push c set)
-          (setq i (1+ i))))))
+          (setq i (1+ i))
+          (when (eq c ?\\)
+            (setq c (and (< i len) (aref spec i))
+                  i (1+ i)))
+          (when c
+            (if (and (< (1+ i) len) (eq (aref spec i) ?-))
+                (let ((end (aref spec (1+ i))))
+                  (setq i (+ i 2))
+                  (when (and (eq end ?\\) (< i len))
+                    (setq end (aref spec i) i (1+ i)))
+                  (when (<= c end) (push (cons c end) set)))
+              (push c set)))))))
     (cons negate set)))
 
-(defun nelisp--motion-charset-member-p (ch set)
-  "T when character CH is covered by SET, the cdr of a
-`nelisp--motion-parse-skip-spec' result."
-  (let ((hit nil))
-    (dolist (item set)
-      (unless hit
-        (if (consp item)
-            (when (and (>= ch (car item)) (<= ch (cdr item))) (setq hit t))
-          (when (= ch item) (setq hit t)))))
+(defun nelisp--motion-charset-member-p (ch set &optional representation positive-multibyte)
+  "Test CH against SET, converting the literal spec's REPRESENTATION.
+POSITIVE-MULTIBYTE applies GNU's leading-byte filter to non-ASCII ranges."
+  (let ((hit nil)
+        (code (cond
+               ((eq representation 'unibyte-spec)
+                (and (>= ch #x3fff80) (logand ch #xff)))
+               ((eq representation 'unibyte-buffer) (+ ch #x3fff00))
+               (t ch))))
+    (while (and set (not hit))
+      (let ((item (pop set)))
+        (setq hit
+              (cond
+               ((consp item)
+                (and code (<= (car item) code) (<= code (cdr item))
+                     ;; A raw byte has a lower leading byte than any
+                     ;; ordinary multibyte character. A positive range
+                     ;; spanning that boundary selects only its ASCII part.
+                     (not (and positive-multibyte
+                               (< (car item) #x3fff80) (>= (cdr item) #x3fff80)))))
+               ((integerp item) (and code (= code item)))
+               ((equal item "word") (eq (char-syntax ch) ?w))
+               ((equal item "space") (eq (char-syntax ch) 32))
+               ((equal item "multibyte") (> ch #xff))
+               ((equal item "unibyte") (<= ch #xff))
+               (t (nlre--posix-class-p item ch))))))
     hit))
 
 (defun nelisp--motion-skip-table (spec)
-  "Return (NEGATE TABLE REST) for SPEC: TABLE is a 128-character string whose
-byte at C is 1 when ASCII character C is in the set, and REST is the parsed
-set used for non-ASCII characters.  The last SPEC seen is remembered on the
-symbol's plist."
-  (let ((cached (get 'nelisp--motion-skip-table 'last)))
-    (if (and cached (equal (car cached) spec))
+  "Return (NEGATE TABLE REST CLASSES MULTIBYTE) for SPEC.
+TABLE is the static ASCII bitmap, REST contains the full parsed set,
+and CLASSES contains the dynamic class names. Cache the last spec."
+  (let ((cached (get 'nelisp--motion-skip-table 'last))
+        (multibyte (multibyte-string-p spec)))
+    (if (and cached (equal (car cached) spec)
+             (eq multibyte (nth 4 (cdr cached))))
         (cdr cached)
       (let* ((parsed (nelisp--motion-parse-skip-spec spec))
              (table (make-string 128 0))
              (set (cdr parsed))
+             (classes nil)
              (hit nil))
         (while set
           (let ((item (car set)))
-            (if (consp item)
-                (let ((c (car item)) (hi (min (cdr item) 127)))
-                  (while (<= c hi) (aset table c 1) (setq c (1+ c))))
-              (when (< item 128) (aset table item 1))))
+            (cond
+             ((stringp item) (push item classes))
+             ((consp item)
+              (let ((c (car item)) (hi (min (cdr item) 127)))
+                (while (<= c hi) (aset table c 1) (setq c (1+ c)))))
+             ((< item 128) (aset table item 1))))
           (setq set (cdr set)))
-        (setq hit (list (car parsed) table (cdr parsed)))
-        (put 'nelisp--motion-skip-table 'last (cons spec hit))
+        (setq hit (list (car parsed) table (cdr parsed) classes multibyte))
+        (put 'nelisp--motion-skip-table 'last (cons (copy-sequence spec) hit))
         hit))))
+
+(defun nelisp--motion-skip-limit (limit edge)
+  "Resolve LIMIT to an integer position, using EDGE if nil."
+  (cond ((null limit) edge)
+        ((integerp limit) limit)
+        ((markerp limit)
+         (or (marker-position limit) (error "Marker does not point anywhere")))
+        (t (signal 'wrong-type-argument (list 'integer-or-marker-p limit)))))
 
 (defun nelisp--motion-skip-forward (spec lim)
   "Move point forward while it matches SPEC; return the distance moved
 \(0 or positive\).  LIM caps the position point may reach."
   (nelisp--check-string spec)
   (let* ((b nelisp--current-buffer)
+         (end (nelisp-point-max b))
+         (hi (min end (nelisp--motion-skip-limit lim end)))
          (info (nelisp--motion-skip-table spec))
          (negate (car info))
          (table (nth 1 info))
          (rest (nth 2 info))
+         (classes (nth 3 info))
+         (multibyte (nth 4 info))
+         (unibyte-buffer (nelisp-buffer-unibyte b))
+         (representation (if unibyte-buffer (and multibyte 'unibyte-buffer)
+                           (and (not multibyte) 'unibyte-spec)))
+         (positive-multibyte (and multibyte (not unibyte-buffer) (not negate)))
          (start (nelisp-point b))
-         (hi (if lim (min lim (nelisp-point-max b)) (nelisp-point-max b)))
          (cur start)
          (span 256) (go t))
     ;; Read the text in windows that start small and grow, as GNU scans the
@@ -16020,8 +16063,10 @@ symbol's plist."
         (while (and (< i n)
                     (let* ((ch (aref text i))
                            (matches (if (< ch 128)
-                                        (eq (aref table ch) 1)
-                                      (nelisp--motion-charset-member-p ch rest))))
+                                        (or (eq (aref table ch) 1)
+                                            (and classes (nelisp--motion-charset-member-p ch classes)))
+                                      (nelisp--motion-charset-member-p
+                                       ch rest representation positive-multibyte))))
                       (if negate (not matches) matches)))
           (setq i (1+ i)))
         (setq cur (+ cur i))
@@ -16036,12 +16081,19 @@ return the distance moved (0 or negative).  LIM floors the position
 point may reach."
   (nelisp--check-string spec)
   (let* ((b nelisp--current-buffer)
+         (begin (nelisp-point-min b))
+         (lo (max begin (nelisp--motion-skip-limit lim begin)))
          (info (nelisp--motion-skip-table spec))
          (negate (car info))
          (table (nth 1 info))
          (rest (nth 2 info))
+         (classes (nth 3 info))
+         (multibyte (nth 4 info))
+         (unibyte-buffer (nelisp-buffer-unibyte b))
+         (representation (if unibyte-buffer (and multibyte 'unibyte-buffer)
+                           (and (not multibyte) 'unibyte-spec)))
+         (positive-multibyte (and multibyte (not unibyte-buffer) (not negate)))
          (start (nelisp-point b))
-         (lo (if lim (max lim (nelisp-point-min b)) (nelisp-point-min b)))
          (cur start)
          (span 256) (go t))
     (while (and go (> cur lo))
@@ -16051,8 +16103,10 @@ point may reach."
         (while (and (> i 0)
                     (let* ((ch (aref text (1- i)))
                            (matches (if (< ch 128)
-                                        (eq (aref table ch) 1)
-                                      (nelisp--motion-charset-member-p ch rest))))
+                                        (or (eq (aref table ch) 1)
+                                            (and classes (nelisp--motion-charset-member-p ch classes)))
+                                      (nelisp--motion-charset-member-p
+                                       ch rest representation positive-multibyte))))
                       (if negate (not matches) matches)))
           (setq i (1- i)))
         (when (> i 0) (setq go nil))
@@ -18347,16 +18401,43 @@ that form a complete binding when KEY is too long."
 (defvar nelisp-buffer-local--owned (make-hash-table :test 'eq :weakness 'key)
   "BUFFER -> ((VARIABLE . CELL) ...), newest first; GNU local_var_alist.")
 
-(defun nelisp-buffer-local--new-cell ()
-  "Return a void cell symbol for a new buffer-local value."
-  (let ((cell (car nelisp-buffer-local--free-cells)))
-    (if cell
-        (setq nelisp-buffer-local--free-cells (cdr nelisp-buffer-local--free-cells))
-      (setq cell (intern (format "nelisp-buffer-local--cell-%d"
-                                 (setq nelisp-buffer-local--serial
-                                       (1+ nelisp-buffer-local--serial)))))
-      (eval (list 'defvar cell)))
-    cell))
+(defvar nelisp-buffer-local--retired-cells nil
+  "Removed local cells still named by a dynamic binding.")
+
+(defun nelisp-buffer-local--bound-in-frame-p (cell)
+  "Return non-nil if an unwind can still restore CELL."
+  (nelisp--env-globals-op 'variable-cell-bound-in-frame-p cell))
+
+(defun nelisp-buffer-local--take-retired (buffer variable)
+  "Reuse BUFFER's retired cell for VARIABLE and reclaim any unwound cells."
+  (let ((reuse nil))
+    (dolist (entry nelisp-buffer-local--retired-cells)
+      (let ((cell (nth 2 entry)))
+        (cond
+         ((not (nelisp-buffer-local--bound-in-frame-p cell))
+          (setq nelisp-buffer-local--retired-cells
+                (delq entry nelisp-buffer-local--retired-cells))
+          (makunbound cell)
+          (push cell nelisp-buffer-local--free-cells))
+         ((and (eq buffer (car entry)) (eq variable (nth 1 entry)))
+          (setq nelisp-buffer-local--retired-cells
+                (delq entry nelisp-buffer-local--retired-cells)
+                reuse cell)))))
+    reuse))
+
+(defun nelisp-buffer-local--new-cell (buffer variable)
+  "Return a void cell symbol for a new local VARIABLE in BUFFER."
+  (or (and nelisp-buffer-local--retired-cells
+           (nelisp-buffer-local--take-retired buffer variable))
+      (let ((cell (car nelisp-buffer-local--free-cells)))
+        (if cell
+            (setq nelisp-buffer-local--free-cells
+                  (cdr nelisp-buffer-local--free-cells))
+          (setq cell (intern (format "nelisp-buffer-local--cell-%d"
+                                     (setq nelisp-buffer-local--serial
+                                           (1+ nelisp-buffer-local--serial)))))
+          (eval (list 'defvar cell)))
+        cell)))
 
 (defun nelisp-buffer-local--note (buffer variable cell)
   "Record that BUFFER holds CELL as the local value of VARIABLE."
@@ -18392,7 +18473,7 @@ that form a complete binding when KEY is too long."
           (setq cell (cdr pair))
           (set cell (and disabled t)))
       (when entry (error "Undo-list ownership has no redirect entry"))
-      (setq cell (nelisp-buffer-local--new-cell))
+      (setq cell (nelisp-buffer-local--new-cell buffer variable))
       (set cell (and disabled t))
       (put cell 'nelisp--buffer-local-buffer buffer)
       (put cell 'nelisp--buffer-local-variable variable)
@@ -18405,10 +18486,14 @@ that form a complete binding when KEY is too long."
     cell))
 
 (defun nelisp-buffer-local--free (cell)
-  "Reset CELL and return it to the free list."
-  (setplist cell nil)
-  (makunbound cell)
-  (setq nelisp-buffer-local--free-cells (cons cell nelisp-buffer-local--free-cells)))
+  "Reset CELL, and recycle it once no dynamic binding can restore it."
+  (let ((buffer (get cell 'nelisp--buffer-local-buffer))
+        (variable (get cell 'nelisp--buffer-local-variable)))
+    (setplist cell nil)
+    (makunbound cell)
+    (if (nelisp-buffer-local--bound-in-frame-p cell)
+        (push (list buffer variable cell) nelisp-buffer-local--retired-cells)
+      (push cell nelisp-buffer-local--free-cells))))
 
 (defun nelisp-buffer-local--release (buffer variable cell)
   "Forget BUFFER's local VARIABLE (its alist entry is already gone)."
@@ -18590,63 +18675,6 @@ nil, matching the honest answer for every variable here.
 ;; A plain global here made default-value follow setq in a temporary buffer.
 (when (fboundp 'nelisp--native-env)
   (make-variable-buffer-local 'fill-column))
-
-(unless (boundp 'delay-mode-hooks)
-  (defvar delay-mode-hooks nil
-    "Non-nil inside `delay-mode-hooks' (the macro, below): `run-mode-hooks'
-then accumulates onto `delayed-mode-hooks' instead of running hooks
-immediately.  An ordinary global here (see the block comment above this
-section) rather than Emacs's real buffer-local variable, which is what
-lets a parent mode's `run-mode-hooks' call, made while a child mode's
-own `delay-mode-hooks' dynamic extent is still active, see this as
-non-nil without any buffer bookkeeping at all."))
-(unless (boundp 'delayed-mode-hooks)
-  (defvar delayed-mode-hooks nil
-    "Hooks queued by `run-mode-hooks' while `delay-mode-hooks' is non-nil,
-most-recently-queued first; see `run-mode-hooks'."))
-(unless (boundp 'change-major-mode-after-body-hook)
-  (defvar change-major-mode-after-body-hook nil
-    "Normal hook run by `run-mode-hooks', before the queued mode hooks."))
-(unless (boundp 'after-change-major-mode-hook)
-  (defvar after-change-major-mode-hook nil
-    "Normal hook run by `run-mode-hooks', after every other hook it runs."))
-
-(unless (fboundp 'delay-mode-hooks)
-  (defmacro delay-mode-hooks (&rest body)
-    "Run BODY with `run-mode-hooks' calls delayed onto `delayed-mode-hooks'
-instead of run immediately; the first `run-mode-hooks' call after this
-form's dynamic extent ends runs them.  DIVERGES from Emacs: no
-`(make-local-variable 'delay-mode-hooks)' call, because this substrate
-has no buffer-local variables at all (see the block comment above this
-section) -- the `let' below, which real Emacs also relies on once the
-variable is already buffer-local, is the entire mechanism here.
-
-(fn &rest BODY)"
-    `(let ((delay-mode-hooks t)) ,@body)))
-
-(unless (fboundp 'run-mode-hooks)
-  (defun run-mode-hooks (&rest hooks)
-    "Run mode hooks HOOKS the way a `define-derived-mode' mode function
-should: if `delay-mode-hooks' is non-nil, queue HOOKS onto
-`delayed-mode-hooks' instead of running them now (a parent mode function
-called from inside a child's own `delay-mode-hooks' form takes this
-branch).  Otherwise run, in order: `change-major-mode-after-body-hook',
-every queued `delayed-mode-hooks' entry (oldest-queued first -- a
-parent's hook, queued while the child's constructor ran the parent
-first, therefore runs before the child's own), then HOOKS themselves,
-then `after-change-major-mode-hook'.  Matches Emacs's own documented
-order; omits the file-local-variables step (`hack-local-variables'),
-which no consumer in this tree reaches.
-
-(fn &rest HOOKS)"
-    (if delay-mode-hooks
-        (dolist (hook hooks) (push hook delayed-mode-hooks))
-      (run-hooks 'change-major-mode-after-body-hook)
-      (dolist (hook (nreverse delayed-mode-hooks)) (run-hooks hook))
-      (setq delayed-mode-hooks nil)
-      (apply #'run-hooks hooks)
-      (run-hooks 'after-change-major-mode-hook))
-    nil))
 
 (unless (fboundp 'derived-mode-p)
   (defun derived-mode-p (&rest modes)
@@ -31551,14 +31579,8 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
   (setq nelisp--bytecode-lisp-providers
         (append nelisp--bytecode-lisp-providers
                 (list
-                 (cons 'skip-chars-forward
-                       (lambda (spec limit)
-                         (nelisp--check-string spec)
-                         (funcall skip-forward-value spec (and limit (funcall position-value limit)))))
-                 (cons 'skip-chars-backward
-                       (lambda (spec limit)
-                         (nelisp--check-string spec)
-                         (funcall skip-backward-value spec (and limit (funcall position-value limit)))))
+                 (cons 'skip-chars-forward skip-forward-value)
+                 (cons 'skip-chars-backward skip-backward-value)
                  (cons 'forward-line
                        (lambda (n)
                          (when n (nelisp--check-integer n))

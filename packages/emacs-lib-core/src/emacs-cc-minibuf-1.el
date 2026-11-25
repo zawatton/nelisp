@@ -78,7 +78,7 @@ This is minibuf.c's notion: the minibuffer stack lives in
 (unless (fboundp 'minibuffer-contents-no-properties)
   (defun minibuffer-contents-no-properties ()
     "Return user input in a minibuffer, without text-properties."
-    (buffer-substring-no-properties (point-min) (point-max))))
+    (buffer-substring-no-properties (minibuffer-prompt-end) (point-max))))
 
 (unless (fboundp 'minibuffer-innermost-command-loop-p)
   (defun minibuffer-innermost-command-loop-p (&optional buffer)

@@ -1,0 +1,6 @@
+text-mode	300
+skip-literal	4000
+skip-word-class	750
+query-replace-regexp	10
+binary-print	2000
+message-log-trim	20

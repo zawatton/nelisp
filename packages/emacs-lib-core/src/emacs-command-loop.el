@@ -2848,6 +2848,9 @@ loaded first."
        (emacs-command-loop--interactive-form function)
        t))
 
+(defvar emacs-command-loop--undo-point nil
+  "Buffer and point at the start of the current command, for undo records.")
+
 (defun emacs-command-loop-call-interactively (function &optional record-flag keys)
   "Phase B.3 MVP: invoke FUNCTION as if interactively from the keyboard.
 RECORD-FLAG / KEYS are accepted for API parity.
@@ -2858,7 +2861,9 @@ the call, then promotes `this-command' to `last-command'."
   (ignore record-flag keys)
   (unless (emacs-command-loop--commandp function)
     (signal 'wrong-type-argument (list 'commandp function)))
-  (let* ((form (emacs-command-loop--interactive-form function))
+  (let* ((emacs-command-loop--undo-point (or emacs-command-loop--undo-point
+                                           (cons (current-buffer) (point))))
+         (form (emacs-command-loop--interactive-form function))
          (spec (and (consp form) (cadr form)))
          (emacs-command-loop--current-prefix-arg
           emacs-command-loop--prefix-arg)

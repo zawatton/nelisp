@@ -112,7 +112,7 @@ operations; the symbol object itself never reaches Lisp."
          (buffer (current-buffer)))
     (unless (assq buffer (aref redirect 1))
       ;; Cells are recycled: a killed buffer or local returns its cell.
-      (let ((cell (nelisp-buffer-local--new-cell)))
+      (let ((cell (nelisp-buffer-local--new-cell buffer (indirect-variable variable))))
         ;; Populate the private cell before publishing its watcher identity:
         ;; make-local-variable itself must not notify public variable watchers.
         (when (boundp variable) (set cell (symbol-value variable)))
@@ -147,7 +147,7 @@ change the native multibyte table."
       (let ((pair (assq buffer (aref redirect 1))))
         (if pair
             (setq cell (cdr pair))
-          (setq cell (nelisp-buffer-local--new-cell))
+          (setq cell (nelisp-buffer-local--new-cell buffer variable))
           (set cell (and flag t))
           (put cell 'nelisp--buffer-local-buffer buffer)
           (put cell 'nelisp--buffer-local-variable variable)

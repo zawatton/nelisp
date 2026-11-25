@@ -8,6 +8,7 @@
 (defvar auto-composition-mode t)
 (defvar disable-point-adjustment nil)
 (defvar global-disable-point-adjustment nil)
+(defvar emacs-command-loop--undo-point)
 
 (defun emacs-cc-macros-1--finish-command (buffer previous-point)
   "Perform the automatic-composition line scan after a macro command.
@@ -45,7 +46,8 @@ this lazily creates the buffer's newline cache.  Keep point unchanged."
       (let* ((keys (read-key-sequence-vector nil))
              (command (key-binding keys))
              (buffer (current-buffer))
-             (previous-point (point)))
+             (previous-point (point))
+             (emacs-command-loop--undo-point (cons buffer previous-point)))
         ;; The headless bootstrap has an empty global map until editor
         ;; initialization.  Supply its usual printable-character binding
         ;; without mutating that map; explicit bindings still win.
