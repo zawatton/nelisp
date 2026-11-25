@@ -238,18 +238,7 @@ ACCESS times are zero since standalone has no real stat."
       (when (and (stringp path) (file-exists-p path))
 	(let ((uid (user-uid)))
           (list (if (file-directory-p path) t nil)
-		1 uid uid '(0 0) '(0 0) '(0 0) 0 "drwx------" nil 0 0)))))
-
-  (unless (fboundp 'file-attribute-type)
-    (defun file-attribute-type (attrs) (nth 0 attrs)))
-  (unless (fboundp 'file-attribute-link-number)
-    (defun file-attribute-link-number (attrs) (nth 1 attrs)))
-  (unless (fboundp 'file-attribute-user-id)
-    (defun file-attribute-user-id (attrs) (nth 2 attrs)))
-  (unless (fboundp 'file-attribute-group-id)
-    (defun file-attribute-group-id (attrs) (nth 3 attrs)))
-  (unless (fboundp 'file-attribute-modes)
-    (defun file-attribute-modes (attrs) (nth 8 attrs))))
+		1 uid uid '(0 0) '(0 0) '(0 0) 0 "drwx------" nil 0 0))))))
 
 ;; with-file-modes — the umask side effect is moot under standalone.
 (unless (fboundp 'with-file-modes)

@@ -51756,8 +51756,12 @@ never on the build host.  Keep the original Lisp factory as the reference."
            (file-attrs-forms-text
             (nelisp-vendor-source-forms
              "vendor/staged-emacs-lisp/files.el"
-             '(file-attribute-size file-attribute-modification-time
-               file-attribute-file-identifier)))
+             '(file-attribute-type file-attribute-link-number
+               file-attribute-user-id file-attribute-group-id
+               file-attribute-access-time file-attribute-modification-time
+               file-attribute-status-change-time file-attribute-size
+               file-attribute-modes file-attribute-inode-number
+               file-attribute-device-number file-attribute-file-identifier)))
            ;; `define-derived-mode' is a prelude macro defined late, so GNU's
            ;; messages-buffer forms must come after the prelude body, here.
            (messages-buffer-text

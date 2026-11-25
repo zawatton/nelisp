@@ -24363,33 +24363,6 @@ processors not available."
                 t
                 (nth 11 f)
                 (nth 12 f)))))))
-;; The accessors below are the standard public interface to the list
-;; `file-attributes' returns (real Emacs's `files.el' defines them as
-;; `defsubst', ported verbatim here as plain field lookups); without
-;; them, callers reading the now-correct atime/mtime/ctime this fix
-;; produces have no host-compatible way to pull a single field out.
-(unless (fboundp 'file-attribute-type)
-  (defun file-attribute-type (attributes) (nth 0 attributes)))
-(unless (fboundp 'file-attribute-link-number)
-  (defun file-attribute-link-number (attributes) (nth 1 attributes)))
-(unless (fboundp 'file-attribute-user-id)
-  (defun file-attribute-user-id (attributes) (nth 2 attributes)))
-(unless (fboundp 'file-attribute-group-id)
-  (defun file-attribute-group-id (attributes) (nth 3 attributes)))
-(unless (fboundp 'file-attribute-access-time)
-  (defun file-attribute-access-time (attributes) (nth 4 attributes)))
-(unless (fboundp 'file-attribute-modification-time)
-  (defun file-attribute-modification-time (attributes) (nth 5 attributes)))
-(unless (fboundp 'file-attribute-status-change-time)
-  (defun file-attribute-status-change-time (attributes) (nth 6 attributes)))
-(unless (fboundp 'file-attribute-size)
-  (defun file-attribute-size (attributes) (nth 7 attributes)))
-(unless (fboundp 'file-attribute-modes)
-  (defun file-attribute-modes (attributes) (nth 8 attributes)))
-(unless (fboundp 'file-attribute-inode-number)
-  (defun file-attribute-inode-number (attributes) (nth 10 attributes)))
-(unless (fboundp 'file-attribute-device-number)
-  (defun file-attribute-device-number (attributes) (nth 11 attributes)))
 ;; `time-less-p'/`time-equal-p' are the other half of making the fixed
 ;; atime/mtime/ctime usable: callers compare them, they do not just read
 ;; them.  This runtime's integers have no bignum (max ~2^61), so a

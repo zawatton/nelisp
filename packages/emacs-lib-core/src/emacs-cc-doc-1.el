@@ -58,16 +58,5 @@ docstring ending with its (fn ...) usage line."
         (signal 'error (list "DOC file invalid at position 0"))
       nil)))
 
-(unless (fboundp 'text-quoting-style)
-  (defun text-quoting-style ()
-    "Return the current effective text quoting style.
-
-(fn)"
-    (let ((style (and (boundp 'text-quoting-style)
-                      (symbol-value 'text-quoting-style))))
-      (if (memq style '(grave straight curve))
-          style
-        'curve))))
-
 (provide 'emacs-cc-doc-1)
 ;;; emacs-cc-doc-1.el ends here

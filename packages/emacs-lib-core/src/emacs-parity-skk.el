@@ -27,15 +27,9 @@
 ;; the roots below.  Each is filled with its faithful Emacs 30.1 definition
 ;; or default; nothing here fakes a skk-owned symbol.
 ;;
-;; ROOT 1 -- `documentation-stringp' (62 of the errors, the largest class).
-;;   `custom-declare-face' (cus-face.el:35, reached by every ddskk `defface')
-;;   does `(when (and doc (not (documentation-stringp doc))) (error ...))'.
-;;   `documentation-stringp' is a C subr in Emacs 30.1 and is absent from the
-;;   runtime, so every ddskk `defface' (35 in skk-vars.el alone, ~62 across
-;;   the loaded custom/skk files) raised `void-function'.  FIX: the faithful
-;;   C predicate -- a docstring object is a string, a fixnum (offset into the
-;;   DOC file), or a cons of a string with a fixnum/string reference.
-;;
+;; GNU Custom checks face docstrings with the core `documentation-stringp'
+;; provider from the standalone prelude.
+
 ;; ROOT 2 -- `window-system' / `frame-background-mode' (the skk-* var cascade).
 ;;   These two standard variables are void in the runtime.  ddskk reads them
 ;;   inside `defcustom' :STANDARD default forms: `skk-background-mode'
@@ -92,18 +86,6 @@
 Guards activation so host Emacs is left untouched (it already provides
 `documentation-stringp', `charsetp', `window-system', and the rest as C
 subrs / real defvars).")
-
-;; --- ROOT 1 helper: faithful `documentation-stringp' ---------------------
-(defun emacs-parity-skk--documentation-stringp (object)
-  "Return non-nil if OBJECT is a well-formed docstring object.
-Faithful port of the Emacs 30.1 C subr: a docstring is a string, a fixnum
-\(a byte offset into the DOC file), or a cons of a string (a .elc/DOC
-reference) with a fixnum or string tail."
-  (or (stringp object)
-      (integerp object)
-      (and (consp object)
-           (stringp (car object))
-           (or (integerp (cdr object)) (stringp (cdr object))))))
 
 ;; --- ROOT 4 helper: faithful `internal-lisp-face-attribute-values' -------
 (defun emacs-parity-skk--face-attribute-values (attribute)
@@ -307,10 +289,6 @@ one of these, so this file leaves the host untouched.")
     (unless (special-variable-p (intern (car cell)))
       (nelisp--eval-source-string
        (format "(defvar %s %s)" (car cell) (cdr cell)))))
-
-  ;; ROOT 1
-  (unless (fboundp 'documentation-stringp)
-    (defalias 'documentation-stringp #'emacs-parity-skk--documentation-stringp))
 
   ;; ROOT 3 -- `charsetp'/`charset-list' now come from the GNU charset.c
   ;; port in emacs-cc-charset-*.el (no stand-in here).
