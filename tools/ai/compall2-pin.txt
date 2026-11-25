@@ -202,3 +202,4 @@ nlre--install-syntax-cache-hook
 nlre--ct-epoch-sync
 nlre--ct-epoch
 nlre--nat-maps-fill
+emacs-load--find-local

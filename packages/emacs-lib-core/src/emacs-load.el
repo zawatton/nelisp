@@ -4375,40 +4375,170 @@ necessarily provide `file-newer-than-file-p'."
                               (nth 5 candidate-attributes)))))))
 
   (defvar emacs-load--directory-prefixes (make-hash-table :test 'equal)
-    "Absolute local directory spellings normalized for load search.
-Only the spelling is cached.  Every lookup checks the live filesystem.")
+    "Canonical directory spellings and remote-prefix flags for load search.
+Every lookup checks the live filesystem.")
+  ;; A source reload can encounter entries created by the previous loader.
+  (clrhash emacs-load--directory-prefixes)
 
   (defun emacs-load--directory-prefix (directory)
-    "Cache the local absolute DIRECTORY with exactly one trailing slash."
-    ;; The fast caller has already excluded leading // and /:.  Expand
-    ;; only when a component can change.  Hidden directories are ordinary
-    ;; path components, including the .emacs.d tree in typical load paths.
-    (let* ((expanded
-            (if (or (nelisp--string-search "//" directory 0)
-                    (nelisp--string-search "/./" directory 0)
-                    (nelisp--string-search "/../" directory 0)
-                    (eq (aref directory (1- (length directory))) ?.))
-                (expand-file-name directory "/")
-              directory))
-           (prefix (if (eq (aref expanded (1- (length expanded))) ?/)
-                       (copy-sequence expanded)
-                     (concat expanded "/"))))
-      (when (>= (hash-table-count emacs-load--directory-prefixes) 8192)
-        (clrhash emacs-load--directory-prefixes))
-      (puthash (copy-sequence directory) prefix emacs-load--directory-prefixes)
-      prefix))
+    "Return (PREFIX REMOTE-P . ASCII-P) for canonical DIRECTORY.
+Leave spellings that require expansion to the general search."
+    (when (and (stringp directory) (> (length directory) 0)
+               (eq (aref directory 0) ?/)
+               (not (string-prefix-p "/:" directory))
+               (not (nelisp--string-search "//" directory 0))
+               (not (nelisp--string-search "/./" directory 0))
+               (not (nelisp--string-search "/../" directory 0))
+               (not (nelisp--string-search "\0" directory 0))
+               (not (eq (aref directory (1- (length directory))) ?.)))
+      (let* ((prefix (if (eq (aref directory (1- (length directory))) ?/)
+                         (copy-sequence directory)
+                       (concat directory "/")))
+             (slash (nelisp--string-search "/" prefix 1))
+             (colon (nelisp--string-search ":" prefix 1))
+             (entry (cons prefix (cons (or (not slash)
+                                           (= slash (string-bytes directory))
+                                           (and colon (< colon slash)))
+                                       (nelisp--file-name-ascii-p prefix)))))
+        (when (>= (hash-table-count emacs-load--directory-prefixes) 8192)
+          (clrhash emacs-load--directory-prefixes))
+        (puthash (copy-sequence directory) entry emacs-load--directory-prefixes)
+        entry)))
 
-  (defun emacs-load--lookup-handlers-p ()
-    "Return non-nil if a filename handler can expand or find a candidate."
-    (let ((handlers file-name-handler-alist) enabled)
-      (while (and handlers (not enabled))
-        (let* ((handler (cdar handlers))
-               (operations (and (symbolp handler) (get handler 'operations))))
-          (setq enabled (or (null operations)
-                            (memq 'file-exists-p operations)
-                            (memq 'expand-file-name operations))))
-        (setq handlers (cdr handlers)))
-      enabled))
+  (defvar emacs-load--handler-regexp-classes (make-hash-table :test 'equal)
+    "Classification of filename handler regexps by their spelling.")
+
+  (defun emacs-load--slash-free-regexp-p (regexp start end)
+    "Prove that the REGEXP fragment from START to END cannot consume slash.
+Accept the context-free subset used in standard filename handlers.
+Reject top-level alternatives, which could bypass an adjacent anchor."
+    (let ((depth 0) (valid t))
+      (while (and valid (< start end))
+        (let ((char (aref regexp start)))
+          (setq start (1+ start))
+          (cond
+           ((eq char ?\[)
+            (let ((begin (1- start))
+                  (close nil))
+              (when (and (< start end) (eq (aref regexp start) ?^))
+                (setq start (1+ start)))
+              (when (and (< start end) (eq (aref regexp start) ?\]))
+                (setq start (1+ start)))
+              (while (and valid (not close) (< start end))
+                (cond
+                 ((eq (aref regexp start) ?\\)
+                  (setq valid nil))
+                 ((eq (aref regexp start) ?\])
+                  (setq close (1+ start)))
+                 ((and (< (1+ start) end) (eq (aref regexp start) ?\[))
+                  (cond
+                   ((eq (aref regexp (1+ start)) ?:)
+                    (let ((stop (string-search ":]" regexp (+ start 2))))
+                      (if (and stop (< (1+ stop) end)
+                               (member (substring regexp (+ start 2) stop)
+                                       '("alnum" "blank" "digit")))
+                          (setq start (1+ stop))
+                        (setq valid nil))))
+                   ((memq (aref regexp (1+ start)) '(?. ?=))
+                    (setq valid nil)))))
+                (setq start (1+ start)))
+              (setq valid (and valid close
+                               (not (string-match-p
+                                     (substring regexp begin close) "/"))))))
+           ((eq char ?\\)
+            (if (>= start end)
+                (setq valid nil)
+              (let ((escape (aref regexp start)))
+                (setq start (1+ start))
+                (cond
+                 ((eq escape ?\() (setq depth (1+ depth)))
+                 ((eq escape ?\)) (setq depth (1- depth) valid (>= depth 0)))
+                 ((eq escape ?|) (setq valid (> depth 0)))
+                 ((not (memq escape '(?\[ ?\] ?. ?$ ?^ ?{ ?})))
+                  (setq valid nil))))))
+           ((memq char '(?/ ?. ?^ ?$)) (setq valid nil)))))
+      (and valid (= depth 0))))
+
+  (defun emacs-load--classify-handler-regexp (regexp)
+    "Classify REGEXP by a necessary prefix or suffix condition."
+    (or (gethash regexp emacs-load--handler-regexp-classes)
+        (let* ((length (length regexp))
+               (case-fold-search nil)
+               (search-spaces-regexp nil)
+               (remote-start "\\(?:\\`/\\)")
+               (remote-end "\\(?::\\)\\([^\n\r]*\\'\\)")
+               (class
+                (condition-case nil
+                    (cond
+                     ((equal regexp "\\`/:") 'quoted)
+                     ((equal regexp "\\`/[^/:]+:[^/:]*:") 'remote)
+                     ;; Tramp's default syntax needs a colon before the
+                     ;; second slash.  Completion cannot consume it at all.
+                     ((and (string-prefix-p (concat remote-start "\\(") regexp)
+                           (or (and (string-suffix-p remote-end regexp)
+                                    (emacs-load--slash-free-regexp-p
+                                     regexp (length remote-start)
+                                     (- length (length remote-end))))
+                               (and (string-suffix-p "\\'" regexp)
+                                    (emacs-load--slash-free-regexp-p
+                                     regexp (length remote-start) (- length 2)))))
+                      (string-match-p regexp "") ; reject malformed regexps
+                      'remote)
+                     ((and (string-suffix-p "\\'" regexp)
+                           (emacs-load--slash-free-regexp-p regexp 0 (- length 2)))
+                      (string-match-p regexp "")
+                      'suffix)
+                     (t 'general))
+                  (invalid-regexp 'general))))
+          (when (>= (hash-table-count emacs-load--handler-regexp-classes) 64)
+            (clrhash emacs-load--handler-regexp-classes))
+          (puthash (copy-sequence regexp) class emacs-load--handler-regexp-classes)
+          class)))
+
+  (defun emacs-load--lookup-handlers-p (file names mode)
+    "Return constraints for fast lookup of FILE and its suffixed NAMES.
+Return t for full dispatch, or a vector of remote-prefix, directory-suffix
+and candidate-suffix checks.  Read operations and inhibition live."
+    (let ((tail file-name-handler-alist)
+          (case-fold-search nil) (search-spaces-regexp nil)
+          remote directory-regexps candidate-names general)
+      (while (and (consp tail) (not general))
+        (let ((entry (car tail)))
+          (when (and (consp entry) (stringp (car entry)))
+            (let* ((regexp (car entry))
+                   (handler (cdr entry))
+                   (class (emacs-load--classify-handler-regexp regexp))
+                   (ops (and (symbolp handler) (get handler 'operations)))
+                   (expand (and (or (null ops) (memq 'expand-file-name ops))
+                                (not (and (eq inhibit-file-name-operation 'expand-file-name)
+                                          (memq handler inhibit-file-name-handlers)))))
+                   (exists (and (not mode)
+                                (or (null ops) (memq 'file-exists-p ops))
+                                (not (and (eq inhibit-file-name-operation 'file-exists-p)
+                                          (memq handler inhibit-file-name-handlers))))))
+              (cond
+               ((eq class 'general) (setq general t))
+               ((eq class 'remote) (setq remote (or remote expand exists)))
+               ((eq class 'suffix)
+                ;; Slash-free suffixes see the same end of FILE or NAME
+                ;; before and after a slash-terminated directory is added.
+                (when expand
+                  (if (string-match-p regexp file)
+                      (setq general t)
+                    (push regexp directory-regexps)))
+                (when exists
+                  (dolist (name names)
+                    (when (string-match-p regexp name)
+                      (push name candidate-names)))))))))
+        (setq tail (cdr tail)))
+      (if general t (vector remote directory-regexps candidate-names))))
+
+  (defun emacs-load--directory-handler-p (directory regexps)
+    "Return non-nil if one of REGEXPS matches DIRECTORY for expansion."
+    (let ((case-fold-search nil) (search-spaces-regexp nil))
+      (while (and regexps (not (string-match-p (car regexps) directory)))
+        (setq regexps (cdr regexps)))
+      regexps))
 
   (defun emacs-load--expand-named-home (name)
     "Expand a leading ~USER in NAME using the local account database."
@@ -4423,50 +4553,93 @@ Only the spelling is cached.  Every lookup checks the live filesystem.")
           (if home (concat home (substring name end)) name))
       name))
 
-  (defun emacs-load--expand-lookup-name (file directory handlers)
-    "Expand FILE in DIRECTORY, consulting HANDLERS when non-nil."
+  (defun emacs-load--expand-lookup-name (file directory)
+    "Expand FILE in DIRECTORY with normal handler dispatch."
     (let* ((directory (if (or (null directory) (equal directory ""))
                           default-directory
                         directory))
-           (handler (and handlers
-                         (or (find-file-name-handler file 'expand-file-name)
-                             (and (stringp directory)
-                                  (find-file-name-handler directory 'expand-file-name))))))
+           (handler (or (find-file-name-handler file 'expand-file-name)
+                        (and (stringp directory)
+                             (find-file-name-handler directory 'expand-file-name)))))
       (if handler
           (funcall handler 'expand-file-name file directory)
         (expand-file-name (emacs-load--expand-named-home file)
                           (emacs-load--expand-named-home directory)))))
 
-  (defun emacs-load--find-local (file suffixes directories newer mode)
-    "Search local DIRECTORIES for FILE and SUFFIXES with access MODE."
-    (let ((names (mapcar (lambda (suffix) (concat file suffix)) suffixes))
-          (prefixes emacs-load--directory-prefixes)
-          (access-mode (or mode 0))
-          found)
+  (defun emacs-load--find-local (file local-name suffixes directories newer mode)
+    "Search DIRECTORIES for LOCAL-NAME and SUFFIXES with access MODE.
+Use the original FILE for handler discovery and general expansion."
+    (let* ((names (mapcar (lambda (suffix) (concat local-name suffix)) suffixes))
+           (prefixes emacs-load--directory-prefixes)
+           (access-mode (or mode 0))
+           (checks (emacs-load--lookup-handlers-p file names mode))
+           ;; Linux x86-64 paths passed to access(2) can share the prefix
+           ;; in a scratch buffer.  Keep non-ASCII names on the ordinary
+           ;; path, where concat and the syscall wrapper handle encoding.
+           (tails (and (not (eq checks t))
+                       (fboundp 'ptr-write-bytes)
+                       (fboundp 'nelisp--target-arch-code)
+                       (= (nelisp--target-arch-code) 0)
+                       (let (tails non-ascii)
+                         (dolist (name names)
+                           (if (nelisp--file-name-ascii-p name)
+                               (push (concat name "\0") tails)
+                             (setq non-ascii t)))
+                         (unless non-ascii (nreverse tails)))))
+           (max-tail (and tails (apply #'max (mapcar #'length tails))))
+           (scratch (and tails (alloc-bytes 4096 8)))
+           found)
       (while (and (consp directories) (not found))
-        (let* ((directory (car directories))
-               (prefix (or (gethash directory prefixes)
-                           (and (stringp directory)
-                                (string-prefix-p "/" directory)
-                                (not (string-prefix-p "//" directory))
-                                (not (string-prefix-p "/:" directory))
-                                (emacs-load--directory-prefix directory))))
-               (names-left names))
-          (if prefix
-              (while (and (consp names-left) (or newer (not found)))
-                (let* ((candidate (concat prefix (car names-left)))
-                       (access (nelisp--syscall-path-int 21 candidate access-mode)))
-                  (when (and (/= access -2) (/= access -20)
-                             (emacs-load--local-file-p candidate mode access)
-                             (or (not found)
-                                 (emacs-load--newer-file-p candidate found)))
-                    (setq found candidate)))
-                (setq names-left (cdr names-left)))
-            ;; Relative, default-directory and quoted entries still use
-            ;; the same expansion as the general search.
-            (setq found (emacs-load--search-file
-                         file suffixes (list directory) newer mode))))
-        (setq directories (cdr directories)))
+        (if (eq checks t)
+            (setq found (emacs-load--search-file file suffixes directories newer mode)
+                  directories nil)
+          (let* ((directory (car directories))
+                 (entry (or (gethash directory prefixes)
+                            (emacs-load--directory-prefix directory)))
+                 (prefix (car entry))
+                 (names-left names)
+                 (special-names (aref checks 2)))
+            (if (and prefix
+                     (not (and (aref checks 0) (cadr entry)))
+                     (not (and (aref checks 1)
+                               (emacs-load--directory-handler-p
+                                directory (aref checks 1)))))
+                (let ((tail-address (and scratch (> scratch 0) (cddr entry)
+                                         (<= (+ (length prefix) max-tail) 4096)
+                                         (+ scratch (ptr-write-bytes scratch prefix))))
+                      (tails-left tails))
+                  (while names-left
+                    (let ((name (car names-left)))
+                      (if (and special-names (memq name special-names))
+                          (progn
+                            (setq found (emacs-load--search-candidates
+                                         prefix names-left newer mode nil found)
+                                  names-left nil)
+                            (unless found
+                              (setq checks (emacs-load--lookup-handlers-p file names mode))))
+                        (let* ((access
+                                (if tail-address
+                                    (progn
+                                      (ptr-write-bytes tail-address (car tails-left))
+                                      (syscall-direct 21 scratch access-mode 0 0 0 0))
+                                  (nelisp--syscall-path-int
+                                   21 (concat prefix name) access-mode))))
+                          (when (and (/= access -2) (/= access -20))
+                            (let ((candidate (concat prefix name)))
+                              (when (and (emacs-load--local-file-p candidate mode access)
+                                         (or (not found)
+                                             (emacs-load--newer-file-p candidate found)))
+                                (setq found candidate)
+                                (unless newer (setq names-left nil))))))))
+                    (setq names-left (cdr names-left)
+                          tails-left (cdr tails-left))))
+              ;; Expansion and handler callbacks can change the active
+              ;; registrations before the next directory.
+              (setq found (emacs-load--search-file
+                           file suffixes (list directory) newer mode))
+              (unless found
+                (setq checks (emacs-load--lookup-handlers-p file names mode))))
+            (setq directories (cdr directories)))))
       found))
 
   (defun emacs-load--local-file-p (file access-mode &optional access-result)
@@ -4517,23 +4690,26 @@ can be an access mask or a function that may return `dir-ok'."
            (directories (or path '(nil)))
            (mask (and (integerp predicate) (>= predicate 0) predicate))
            (filter (and predicate (not (eq predicate t)) (not mask) predicate))
-           (handlers (or filter (emacs-load--lookup-handlers-p)))
+           ;; A leading ./ has the same local candidates as its tail.
+           ;; A handler can still inspect FILE's original spelling.
+           (local-name (if (string-prefix-p "./" file) (substring file 2) file))
            (suffixes (or suffixes '(""))))
       (cond
        ((> (or mask 0) 7) nil)
-       ((and (not handlers)
+       ((and (not filter)
              (eq system-type 'gnu/linux)
              (fboundp 'nelisp--syscall-path-int)
              (fboundp 'nelisp--string-search)
              (listp suffixes)
              (fboundp 'emacs-fns--plain-relative-name-p)
-             (emacs-fns--plain-relative-name-p file))
-        (emacs-load--find-local file suffixes directories newer mask))
+             (not (nelisp--string-search "\0" file 0))
+             (emacs-fns--plain-relative-name-p local-name))
+        (emacs-load--find-local file local-name suffixes directories newer mask))
        (t (emacs-load--search-file
-           file suffixes directories newer mask handlers filter absolute)))))
+           file suffixes directories newer mask filter absolute)))))
 
   (defun emacs-load--search-file
-      (file suffixes directories newer mode &optional handlers filter absolute)
+      (file suffixes directories newer mode &optional filter absolute)
     "Search DIRECTORIES with full expansion and predicate handling."
     (let (found)
       (while (and (consp directories) (not found))
@@ -4541,43 +4717,49 @@ can be an access mask or a function that may return `dir-ok'."
                (base (cond
                       ((eq absolute 'literal) file)
                       ((or (null directory) (stringp directory))
-                       (emacs-load--expand-lookup-name file directory handlers))
+                       (emacs-load--expand-lookup-name file directory))
                       ((file-name-absolute-p file)
-                       (emacs-load--expand-lookup-name file nil handlers))))
-               (remaining suffixes))
+                       (emacs-load--expand-lookup-name file nil)))))
           (when (and base (> (length base) 2) (string-prefix-p "/:" base))
             (setq base (substring base 2)))
-          (while (and base (consp remaining) (or newer (not found)))
-            (let* ((candidate (concat base (car remaining)))
-                   (handler (and handlers (not mode)
-                                 (find-file-name-handler candidate 'file-exists-p))))
-              (cond
-               (filter
-                (let ((answer (funcall filter candidate)))
-                  (when (and answer
-                             (or (eq answer 'dir-ok)
-                                 (not
-                                  (let ((dir-handler
-                                         (find-file-name-handler candidate 'file-directory-p)))
-                                    (if dir-handler
-                                        (funcall dir-handler 'file-directory-p candidate)
-                                      (file-directory-p candidate))))))
-                    (setq found candidate remaining nil))))
-               (handler
-                (let ((read-handler
-                       (find-file-name-handler candidate 'file-readable-p)))
-                  (when (if read-handler
-                            (funcall read-handler 'file-readable-p candidate)
-                          (file-readable-p candidate))
-                    ;; GNU returns a handler result immediately even with NEWER.
-                    (setq found candidate remaining nil))))
-               ((and (emacs-load--local-file-p candidate mode)
-                     (or (not found)
-                         (emacs-load--newer-file-p candidate found)))
-                (setq found candidate))))
-            (setq remaining (cdr remaining))))
+          (when base
+            (setq found (emacs-load--search-candidates base suffixes newer mode filter))))
         (setq directories (and (not absolute) (cdr directories))))
       found))
+
+  (defun emacs-load--search-candidates (base remaining newer mode filter &optional found)
+    "Check each suffix in REMAINING appended to the already expanded BASE."
+    (while (and (consp remaining) (or newer (not found)))
+      (let* ((candidate (concat base (car remaining)))
+             (handler (find-file-name-handler candidate 'file-exists-p)))
+        (cond
+         (filter
+          (let ((answer (funcall filter candidate)))
+            (when (and answer
+                       (or (eq answer 'dir-ok)
+                           (not
+                            (let ((dir-handler
+                                   (find-file-name-handler candidate 'file-directory-p)))
+                              (if dir-handler
+                                  (funcall dir-handler 'file-directory-p candidate)
+                                (file-directory-p candidate))))))
+              (setq found candidate remaining nil))))
+         ((and handler (not mode))
+          ;; GNU's file-readable-p expands the candidate before selecting
+          ;; its handler.  openp still returns the original candidate.
+          (let* ((expanded (expand-file-name candidate))
+                 (read-handler (find-file-name-handler expanded 'file-readable-p)))
+            (when (if read-handler
+                      (funcall read-handler 'file-readable-p expanded)
+                    (file-readable-p expanded))
+              ;; GNU returns a handler result immediately even with NEWER.
+              (setq found candidate remaining nil))))
+         ((and (emacs-load--local-file-p candidate mode)
+               (or (not found)
+                   (emacs-load--newer-file-p candidate found)))
+          (setq found candidate))))
+      (setq remaining (cdr remaining)))
+    found)
 
   (defun emacs-load--resolve-file (file nosuffix must-suffix)
     "Resolve FILE using GNU load suffix and search-path semantics."
