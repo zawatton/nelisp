@@ -1746,15 +1746,21 @@ GNU subr.el: `defvar' followed by `make-variable-buffer-local'.
   (nelisp--check-string s)
   ;; search.c returns S itself if no escape is needed.  An escaped
   ;; result preserves the byte representation and drops text properties.
-  (let ((i 0) (start 0) (n (length s)) chunks)
+  ;; Drop properties once, on the first escape, and slice the plain copy
+  ;; with `substring' (the per-slice `substring-no-properties' made this
+  ;; 1.7x slower than the m12 version on init.el's regexp-opt calls).
+  (let ((i 0) (start 0) (n (length s)) (plain nil) chunks)
     (while (< i n)
-      (when (memq (aref s i) '(?$ ?* ?+ ?. ?? ?\[ ?\\ ?^))
-        (push (substring-no-properties s start i) chunks)
-        (push "\\" chunks)
-        (setq start i))
+      (let ((ch (aref s i)))
+        (when (or (eq ch ?.) (eq ch ?*) (eq ch ?+) (eq ch ??)
+                  (eq ch ?\[) (eq ch ?^) (eq ch ?$) (eq ch ?\\))
+          (unless plain (setq plain (substring-no-properties s)))
+          (push (substring plain start i) chunks)
+          (push "\\" chunks)
+          (setq start i)))
       (setq i (1+ i)))
     (if chunks
-        (apply #'concat (nreverse (cons (substring-no-properties s start) chunks)))
+        (apply #'concat (nreverse (cons (substring plain start) chunks)))
       s)))
 
 ;; Doc 143 (pure, no-helper primitives): high-frequency, dependency-free.
