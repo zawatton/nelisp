@@ -3,6 +3,10 @@
 ;; This file follows startup.el in the standalone bootstrap image.
 
 (require 'emacs-vars)
+(require 'emacs-parity-subdirs)
+(require 'emacs-file-name-handler)
+(emacs-fnh-install-quoting)
+(emacs-parity-subdirs-install)
 
 (defvar frame-initial-frame nil)
 (defvar face-font-rescale-alist nil)

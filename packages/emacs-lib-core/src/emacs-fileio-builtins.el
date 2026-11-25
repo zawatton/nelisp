@@ -79,9 +79,8 @@ This GNU C-core option is also read by genuine files.el before auto-save.")
   "Functions this bridge may overwrite under standalone NeLisp.
 Path parsing, predicates, and directory/syscall primitives are left to
 the runtime when they already exist because `load' / `require' depend on
-those semantics during bootstrap. `expand-file-name' is explicitly on this
-override list so standalone readers always get the pure helper (including
-`~' expansion) even when bootstrap stubs are present.")
+those semantics during bootstrap.  The `expand-file-name' override covers
+readers without the POSIX prelude expander and the Windows file name port.")
 
 (defvar emacs-fileio-builtins--host-write-region
   (and (not (files-standalone-runtime-p))
@@ -436,7 +435,11 @@ literal dollar sign; substituted values are never expanded recursively."
       (intern (concat "nelisp-ec-" (symbol-name --name--))))))
 
 (dolist (--name-- emacs-fileio-builtins--handler-dispatch-ops)
-  (when (emacs-fileio-builtins--install-function-p --name--)
+  (when (and (emacs-fileio-builtins--install-function-p --name--)
+             ;; The prelude POSIX expander owns all three handler stages.
+             (not (and (eq --name-- 'expand-file-name)
+                       (not (eq system-type 'windows-nt))
+                       (fboundp 'nelisp--expand-file-name-posix))))
     (fset --name--
           (emacs-fnh-wrap --name--
                           (cond

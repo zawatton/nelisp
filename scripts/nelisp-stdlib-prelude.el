@@ -2548,24 +2548,348 @@ the interpreted `string-search', which costs ~5ms per call here."
          (not (nelisp--string-search "/./" s 0))
          (not (nelisp--string-search "/../" s 0)))))
 
+;; These variables are also needed by the bootstrap file-name expander.
+(defvar invocation-directory)
+(defvar file-name-handler-alist nil
+  "Alist of elements (REGEXP . HANDLER) for file names handled specially.")
+(defvar inhibit-file-name-handlers nil
+  "A list of file name handlers that temporarily should not be used.")
+(defvar inhibit-file-name-operation nil
+  "The operation for which `inhibit-file-name-handlers' is applicable.")
+
+(defvar nelisp--file-name-handler-compression-regexp nil
+  "Copy of the last jka-compr regexp successfully passed to the matcher.")
+
+(defvar nelisp--file-name-handler-local-registrations nil
+  "The validated compression entry and the standard quoting entry.")
+
+(defun nelisp--file-name-quoted-posix-p (name)
+  (and (> (length name) 1) (eq (aref name 0) ?/) (eq (aref name 1) ?:)))
+
+(defun nelisp--file-name-compression-excluded-p (operation)
+  (let ((ops (get 'jka-compr-handler 'operations)))
+    (and (equal ops '(byte-compiler-base-file-name write-region
+                       insert-file-contents file-local-copy load))
+         (not (memq operation ops)))))
+
+(defun nelisp--file-name-handler-possible-p (operation &optional unquoted)
+  "Return non-nil if OPERATION may require a file name handler.
+With UNQUOTED, the caller has ruled out a leading `/:' in the names."
+  (if (and unquoted nelisp--file-name-handler-local-registrations
+           (equal file-name-handler-alist nelisp--file-name-handler-local-registrations)
+           (nelisp--file-name-compression-excluded-p operation))
+      nil
+    (let ((tail file-name-handler-alist) found)
+      (while (and (consp tail) (not found))
+        (let ((entry (car tail)))
+          (when (and (consp entry) (stringp (car entry)))
+            (let ((handler (cdr entry)) (regexp (car entry)))
+              (setq found
+                    (not (or (and unquoted (equal regexp "\\`/:"))
+                             (and (eq handler 'jka-compr-handler)
+                                  (equal regexp nelisp--file-name-handler-compression-regexp)
+                                  (nelisp--file-name-compression-excluded-p operation))))))))
+        (setq tail (cdr tail)))
+      found)))
+
+(defun nelisp--find-file-name-handler (filename operation)
+  "Find FILENAME's handler for OPERATION, preserving match data."
+  (unless (stringp filename)
+    (signal 'wrong-type-argument (list 'stringp filename)))
+  (if (and nelisp--file-name-handler-local-registrations
+           (equal file-name-handler-alist nelisp--file-name-handler-local-registrations)
+           (not (nelisp--file-name-quoted-posix-p filename))
+           (nelisp--file-name-compression-excluded-p operation))
+      nil
+    (let ((tail file-name-handler-alist)
+          (inhibited (and (eq operation inhibit-file-name-operation)
+                          inhibit-file-name-handlers))
+          (pos -1) result)
+      (while (consp tail)
+        (let ((entry (car tail)))
+          (when (and (consp entry) (stringp (car entry)))
+            (let* ((regexp (car entry))
+                   (handler (cdr entry))
+                   (ops (and (symbolp handler) (get handler 'operations)))
+                   match)
+              (cond
+               ((equal regexp "\\`/:")
+                (when (and (> (length filename) 1)
+                           (eq (aref filename 0) ?/) (eq (aref filename 1) ?:))
+                  (setq match 0)))
+               ((and (eq handler 'jka-compr-handler)
+                     (equal regexp nelisp--file-name-handler-compression-regexp)
+                     (nelisp--file-name-compression-excluded-p operation)))
+               (t
+                (let ((case-fold-search nil) (search-spaces-regexp nil))
+                  (setq match (string-match regexp filename nil t)))
+                (when (and (eq handler 'jka-compr-handler)
+                           (not (equal regexp nelisp--file-name-handler-compression-regexp)))
+                  (setq nelisp--file-name-handler-compression-regexp (copy-sequence regexp)
+                        nelisp--file-name-handler-local-registrations
+                        (list (cons nelisp--file-name-handler-compression-regexp
+                                    'jka-compr-handler)
+                              '("\\`/:" . file-name-non-special))))))
+              (when (and match (> match pos)
+                         (or (null ops) (memq operation ops))
+                         (not (memq handler inhibited)))
+                (setq result handler pos match)))))
+        (setq tail (cdr tail)))
+      result)))
+
+(unless (fboundp 'find-file-name-handler)
+  (defalias 'find-file-name-handler #'nelisp--find-file-name-handler))
+
+(defun nelisp--file-name-absolute-posix-p (name)
+  (and (> (length name) 0) (eq (aref name 0) ?/)))
+
+(defun nelisp--file-name-needs-normalization-p (name)
+  ;; The raw search gives byte offsets.  These ASCII needles cannot match
+  ;; inside a multibyte character, and we only use the offsets as predicates.
+  (let ((end (length name)))
+    (or (nelisp--string-search "//" name 1)
+        (nelisp--string-search "/./" name 0)
+        (nelisp--string-search "/../" name 0)
+        (and (> end 1) (eq (aref name (1- end)) ?.)
+             (or (eq (aref name (- end 2)) ?/)
+                 (and (> end 2)
+                      (eq (aref name (- end 2)) ?.)
+                      (eq (aref name (- end 3)) ?/)))))))
+
+(defun nelisp--normalize-absolute-file-name (name)
+  ;; Track the written prefix in reverse, including its separators.
+  ;; This preserves GNU's double-root and above-root semantics as well
+  ;; as a terminal slash, even when a dot component consumed a separator.
+  (let ((len (length name)) (i 0) out)
+    (while (< i len)
+      (let* ((c (aref name i))
+             (next (and (eq c ?/) (< (1+ i) len) (aref name (1+ i)))))
+        (cond
+         ((and (eq next ?.) (or (= (+ i 2) len) (eq (aref name (+ i 2)) ?/)))
+          (setq i (+ i 2))
+          (when (and (null out) (= i len))
+            (push ?/ out)))
+         ((and out (eq next ?.) (< (+ i 2) len) (eq (aref name (+ i 2)) ?.)
+               (or (= (+ i 3) len) (eq (aref name (+ i 3)) ?/)))
+          (while (and out (not (eq (car out) ?/)))
+            (setq out (cdr out)))
+          (setq out (cdr out) i (+ i 3))
+          (when (and (null out) (= i len))
+            (push ?/ out)))
+         ((and (eq next ?/)
+               (or (> i 0) (and (< 2 len) (eq (aref name 2) ?/))))
+          (setq i (1+ i)))
+         (t (push c out) (setq i (1+ i))))))
+    (setq out (nreverse out))
+    (if (multibyte-string-p name) (concat out) (apply #'unibyte-string out))))
+
+(defun nelisp--file-name-trim-directory (directory)
+  ;; GNU keeps the double root, including when trimming a home prefix.
+  (let ((end (length directory)))
+    (while (and (> end 1)
+                (eq (aref directory (1- end)) ?/)
+                (not (and (= end 2) (eq (aref directory 0) ?/))))
+      (setq end (1- end)))
+    (if (= end (length directory)) directory (substring directory 0 end))))
+
+(defvar nelisp--file-name-home-environment nil
+  "Environment snapshot through the first HOME entry and its value.")
+
+(defun nelisp--file-name-environment-home ()
+  (when (boundp 'process-environment)
+    (let ((env process-environment)
+          (cached nelisp--file-name-home-environment))
+      (if (and cached (equal env (car cached)))
+          (cdr cached)
+        (let (prefix value)
+          (while (and (consp env) (not value))
+            (let ((entry (car env)))
+              (cond
+               ((and (stringp entry)
+                     (eq (nelisp--string-search "HOME=" entry 0) 0))
+                (setq value (substring-no-properties entry 5))
+                (push (copy-sequence entry) prefix))
+               ((equal entry "HOME") (setq env nil))
+               (t (push (if (stringp entry) (copy-sequence entry) entry) prefix))))
+            (setq env (cdr env)))
+          (when value
+            (setq nelisp--file-name-home-environment
+                  (cons (nconc (nreverse prefix) env) value)))
+          value)))))
+
+(defun nelisp--file-name-user-home (user)
+  ;; getent follows the host's login database configuration.  It is only
+  ;; needed for named users, and only once the subprocess layer is available.
+  (let ((default-directory "/")
+        (file-name-handler-alist nil))
+    (let ((home (and (fboundp 'emacs-subr-extras--passwd)
+                     (nth 5 (emacs-subr-extras--passwd user)))))
+      (and home (nelisp--file-name-absolute-posix-p home) home))))
+
+(defun nelisp--expand-file-name-posix (name base)
+  (cond
+   ((nelisp--file-name-absolute-posix-p name) name)
+   ((and (> (length name) 0) (eq (aref name 0) ?~))
+    (let* ((end (or (string-search "/" name) (length name)))
+           (home (if (= end 1)
+                     (or (nelisp--file-name-environment-home)
+                         (and (fboundp 'user-uid)
+                              (nelisp--file-name-user-home (user-uid)))
+                         "/")
+                   (nelisp--file-name-user-home (substring name 1 end)))))
+      (if home
+          (let ((prefix (nelisp--file-name-trim-directory home)))
+            (unless (nelisp--file-name-absolute-posix-p prefix)
+              (let ((cwd (and (fboundp 'nelisp--syscall-readlink)
+                              (nelisp--syscall-readlink "/proc/self/cwd"))))
+                (setq prefix
+                      (nelisp--file-name-trim-directory
+                       (concat (or cwd "") "/" prefix)))))
+            (if (= end (length name)) (substring-no-properties prefix)
+              (concat prefix (substring name end))))
+        (concat (if (eq (aref base (1- (length base))) ?/) base (concat base "/"))
+                name))))
+   ((= (length name) 0) (nelisp--file-name-trim-directory base))
+   ((= (length base) 0) (concat "./" name))
+   ((eq (aref base (1- (length base))) ?/) (concat base name))
+   (t (concat base "/" name))))
+
+(defun nelisp--expand-file-name-handler (handler name base)
+  (let ((result (funcall handler 'expand-file-name name base)))
+    (unless (stringp result)
+      (error "Invalid handler in `file-name-handler-alist'"))
+    result))
+
+(defun nelisp--file-name-ascii-p (name)
+  (let ((as-multi (if (multibyte-string-p name) name (string-to-multibyte name))))
+    (= (length as-multi) (string-bytes as-multi))))
+
+(defun nelisp--expand-file-name-slow (path base handlers)
+  (unless (stringp path) (signal 'wrong-type-argument (list 'stringp path)))
+  (when (nelisp--string-search "\0" path 0)
+    (signal 'wrong-type-argument (list 'filenamep path)))
+  (let ((handler (and handlers (find-file-name-handler path 'expand-file-name))))
+    (if handler
+        (nelisp--expand-file-name-handler handler path base)
+      (unless base
+        (setq base default-directory)
+        (when (stringp base)
+          (cond
+           ((and (not (nelisp--windows-paths-p))
+                 (not (nelisp--file-name-absolute-posix-p base)))
+            (let ((dir (and (boundp 'invocation-directory) invocation-directory)))
+              (setq base (expand-file-name
+                          base (if (and (stringp dir)
+                                        (nelisp--file-name-absolute-posix-p dir))
+                                   dir "/")))))
+           ((nelisp--string-search "\0" base 0)
+            (signal 'wrong-type-argument (list 'filenamep base))))))
+      (unless (stringp base) (setq base "/"))
+      (setq handler (and handlers (find-file-name-handler base 'expand-file-name)))
+      (when (and (not handler) (not (eq base path))
+                 (not (nelisp--file-name-absolute-posix-p base))
+                 (not (nelisp--windows-paths-p)))
+        (setq base (expand-file-name base)
+              handler (and handlers (find-file-name-handler base 'expand-file-name))))
+      (cond
+       (handler (nelisp--expand-file-name-handler handler path base))
+       ((nelisp--windows-paths-p)
+        (nelisp--expand-file-name-general path base))
+       (t
+        (unless (eq (multibyte-string-p path) (multibyte-string-p base))
+          (cond
+           ((multibyte-string-p path)
+            (if (or (nelisp--file-name-ascii-p path)
+                    (not (nelisp--file-name-ascii-p base)))
+                (setq path (string-as-unibyte path))
+              (setq base (string-to-multibyte base))))
+           ((nelisp--file-name-ascii-p path)
+            (setq path (string-to-multibyte path)))
+           (t (setq base (string-as-unibyte base)))))
+        (let* ((absolute (nelisp--file-name-absolute-posix-p path))
+               (result (if absolute path (nelisp--expand-file-name-posix path base)))
+               (nul (and (not absolute) (string-search "\0" result)))
+               (result (if nul (substring-no-properties result 0 nul) result))
+               (normalize (nelisp--file-name-needs-normalization-p result)))
+          (when normalize (setq result (nelisp--normalize-absolute-file-name result)))
+          (setq handler (and handlers (or normalize (not absolute))
+                             (find-file-name-handler result 'expand-file-name)))
+          (if handler (nelisp--expand-file-name-handler handler result base)
+            result)))))))
+
+(defvar nelisp--file-name-base-prefix nil
+  "Most recent canonical directory and its slash-terminated prefix.")
+
+(defvar nelisp--file-name-clean-absolute nil
+  "Private copy of the last clean absolute file name.")
+
 (defun expand-file-name (path &optional base)
-  ;; Fast paths (POSIX only): an already-canonical absolute PATH, or a plain
-  ;; relative PATH under a canonical absolute BASE / `default-directory',
-  ;; are answered by one `concat'.  Everything else takes the general walk.
-  (let ((fast nil))
-    (when (and (stringp path)
-               (fboundp 'nelisp--string-search)
+  "Convert PATH to an absolute, canonical file name relative to BASE.
+BASE defaults to the current buffer's `default-directory'.  Resolve dot
+components lexically, without following symbolic links."
+  (let* ((directory (or base default-directory))
+         (cached nelisp--file-name-base-prefix)
+         (first (and (stringp path) (> (length path) 0) (aref path 0)))
+         (clean-absolute (and (eq first ?/) (equal path nelisp--file-name-clean-absolute)))
+         (name
+          (and first
                (not (and (boundp 'system-type) (eq system-type 'windows-nt)))
-               (nelisp--path-plain-p path))
-      (if (eq (aref path 0) ?/)
-          (setq fast (substring path 0))
-        (let ((b (or base (and (boundp 'default-directory) default-directory))))
-          (when (and (stringp b) (> (length b) 0) (eq (aref b 0) ?/)
-                     (nelisp--path-plain-p b))
-            (setq fast (if (eq (aref b (1- (length b))) ?/)
-                           (concat b path)
-                         (concat b "/" path)))))))
-    (or fast (nelisp--expand-file-name-general path base))))
+               (or clean-absolute (not (nelisp--string-search "\0" path 0)))
+               (let ((prefix
+                      (if (and cached (equal directory (car cached))
+                               (eq (multibyte-string-p directory)
+                                   (multibyte-string-p (car cached))))
+                          (cdr cached)
+                        (when (and (stringp directory)
+                                   (nelisp--file-name-absolute-posix-p directory)
+                                   (not (nelisp--string-search "\0" directory 0))
+                                   (not (nelisp--file-name-needs-normalization-p directory)))
+                          (let* ((key (substring-no-properties directory))
+                                 (prefix (if (eq (aref key (1- (length key))) ?/)
+                                             key (concat key "/"))))
+                            (setq nelisp--file-name-base-prefix (cons key prefix))
+                            prefix)))))
+                 (when (and prefix
+                            (eq (multibyte-string-p path) (multibyte-string-p prefix)))
+                   (cond
+                    ((eq first ?/)
+                     (when (or clean-absolute
+                               (not (nelisp--file-name-needs-normalization-p path)))
+                       (unless clean-absolute
+                         (setq nelisp--file-name-clean-absolute
+                               (substring-no-properties path)))
+                       path))
+                    ((eq first ?~)
+                     ;; The general path can consult the account database.
+                     ;; Leave that until after any input and base handlers.
+                     (when (and (or (= (length path) 1) (eq (aref path 1) ?/))
+                                (or (null file-name-handler-alist)
+                                    (and nelisp--file-name-handler-local-registrations
+                                         (equal file-name-handler-alist
+                                                nelisp--file-name-handler-local-registrations)
+                                         (not (nelisp--file-name-quoted-posix-p directory))
+                                         (nelisp--file-name-compression-excluded-p
+                                          'expand-file-name))))
+                       (let ((expanded (nelisp--expand-file-name-posix path directory)))
+                         (unless (nelisp--file-name-needs-normalization-p expanded)
+                           expanded))))
+                    ((and (not (eq first ?.)) (not (nelisp--string-search "/" path 0)))
+                     (concat prefix path))
+                    (t
+                     (let ((result (concat prefix path)))
+                       (unless (nelisp--file-name-needs-normalization-p result)
+                         result)))))))))
+    (if (and name
+             (or (null file-name-handler-alist)
+                 (and nelisp--file-name-handler-local-registrations
+                      (equal file-name-handler-alist nelisp--file-name-handler-local-registrations)
+                      ;; DIRECTORY and NAME are absolute on this leg.  The
+                      ;; original input can only be quoted if it is NAME.
+                      (or (= (length directory) 1) (not (eq (aref directory 1) ?:)))
+                      (or (= (length name) 1) (not (eq (aref name 1) ?:)))
+                      (nelisp--file-name-compression-excluded-p 'expand-file-name))))
+        name
+      (nelisp--expand-file-name-slow path base file-name-handler-alist))))
 
 (defun nelisp--expand-file-name-general (path &optional base)
   ;; GNU fileio.c Fexpand_file_name: CHECK_STRING (name).
@@ -24734,36 +25058,41 @@ Keep the original precision rather than reducing a timestamp's frequency."
     ;; no-op when COUNT >= the entry count), post-filter, same as
     ;; lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
     (defun directory-files (directory &optional full match nosort count)
-  "Return entries in DIRECTORY, filtered by MATCH and limited by COUNT.
+      "Return entries in DIRECTORY, filtered by MATCH and limited by COUNT.
 Include dot entries.  FULL requests absolute names; NOSORT preserves the
 directory's enumeration order instead of sorting with `string-lessp'."
-  (nelisp--w101-directory-arguments directory match count)
-  (let* ((path (expand-file-name directory))
-         (handler (find-file-name-handler path 'directory-files)))
-    (if handler
-        (funcall handler 'directory-files path full match nosort count)
-      (let ((raw (nelisp--syscall-readdir-names path t)) (out nil))
-        (unless raw
-          (signal (if (file-exists-p path) 'file-error 'file-missing)
-                  (list "Opening directory"
-                        (cond ((file-directory-p path) "Permission denied")
-                              ((file-exists-p path) "Not a directory")
-                              (t "No such file or directory"))
-                        path)))
-        (when match
-          (nelisp--cc03-validate-regexp match)
-          (string-match-p match ""))
-        (let ((names (nelisp--directory-files-candidates raw match))
-              (prefix (and full (file-name-as-directory path)))
-              (remaining count) (case-fold-search nil))
-          (while (and names (or (null remaining) (> remaining 0)))
-            (let ((name (car names)))
-              (when (or (null match) (string-match-p match name))
-                ;; Concatenate rather than expand so FULL preserves dot entries.
-                (setq out (cons (if full (concat prefix name) name) out))
-                (when remaining (setq remaining (1- remaining)))))
-            (setq names (cdr names))))
-        (if nosort (nreverse out) (sort out #'string-lessp))))))))
+      (when (or match count)
+        (nelisp--w101-directory-arguments directory match count))
+      (let* ((path (expand-file-name directory))
+             (handler (and file-name-handler-alist
+                           (find-file-name-handler path 'directory-files))))
+        (if handler
+            (funcall handler 'directory-files path full match nosort count)
+          (let ((raw (nelisp--syscall-readdir-names path t)) (out nil))
+            (unless raw
+              (signal (if (file-exists-p path) 'file-error 'file-missing)
+                      (list "Opening directory"
+                            (cond ((file-directory-p path) "Permission denied")
+                                  ((file-exists-p path) "Not a directory")
+                                  (t "No such file or directory"))
+                            path)))
+            (if (not (or full match count))
+                (let ((names (nelisp--readdir-scan-raw raw nil t)))
+                  (if nosort names (sort names #'string-lessp)))
+              (when match
+                (nelisp--cc03-validate-regexp match)
+                (string-match-p match ""))
+              (let ((names (nelisp--directory-files-candidates raw match))
+                    (prefix (and full (file-name-as-directory path)))
+                    (remaining count) (case-fold-search nil))
+                (while (and names (or (null remaining) (> remaining 0)))
+                  (let ((name (car names)))
+                    (when (or (null match) (string-match-p match name))
+                      ;; Concatenate rather than expand so FULL preserves dot entries.
+                      (setq out (cons (if full (concat prefix name) name) out))
+                      (when remaining (setq remaining (1- remaining)))))
+                  (setq names (cdr names))))
+              (if nosort (nreverse out) (sort out #'string-lessp)))))))))
 (unless (fboundp 'make-directory)
   ;; Three defects fixed together (v1.2.0 parity gap 4), because the first
   ;; two hid the third:
@@ -25563,46 +25892,6 @@ the suggested string to use instead.  See
 (unless (boundp 'locale-coding-system)
   (defvar locale-coding-system 'utf-8-unix
     "Coding system to use with system messages."))
-;; GNU Emacs 31.1 fileio.c, translated: the file-name handler registry and
-;; its lookup.  This runtime installs no handlers, so the alist starts empty
-;; (GNU's own default holds TRAMP/jka-compr autoload handlers, none of which
-;; exist here), and the lookup is the C algorithm verbatim in Lisp.
-(unless (boundp 'file-name-handler-alist)
-  (defvar file-name-handler-alist nil
-    "Alist of elements (REGEXP . HANDLER) for file names handled specially."))
-(unless (boundp 'inhibit-file-name-handlers)
-  (defvar inhibit-file-name-handlers nil
-    "A list of file name handlers that temporarily should not be used."))
-(unless (boundp 'inhibit-file-name-operation)
-  (defvar inhibit-file-name-operation nil
-    "The operation for which `inhibit-file-name-handlers' is applicable."))
-(unless (fboundp 'find-file-name-handler)
-  (defun find-file-name-handler (filename operation)
-    "Return FILENAME's handler function for OPERATION, if it has one.
-Otherwise, return nil.
-A file name is handled if one of the regular expressions in
-`file-name-handler-alist' matches it.
-
-If OPERATION equals `inhibit-file-name-operation', then ignore
-any handlers that are members of `inhibit-file-name-handlers',
-but still do run any other handlers.  This lets handlers
-use the standard functions without calling themselves recursively."
-    (unless (stringp filename)
-      (signal 'wrong-type-argument (list 'stringp filename)))
-    (let ((inhibited (and (eq operation inhibit-file-name-operation)
-                          inhibit-file-name-handlers))
-          (result nil) (pos -1))
-      (dolist (elt file-name-handler-alist)
-        (when (consp elt)
-          (let* ((string (car elt)) (handler (cdr elt))
-                 (operations (and (symbolp handler) (get handler 'operations)))
-                 (match-pos (and (stringp string)
-                                 (save-match-data (string-match string filename)))))
-            (when (and match-pos (> match-pos pos)
-                       (or (null operations) (memq operation operations))
-                       (not (memq handler inhibited)))
-              (setq result handler pos match-pos)))))
-      result)))
 ;; GNU Emacs 31.1 fileio.c `Ffile_name_case_insensitive_p': a handler first,
 ;; then the host file system.  The C probe of the file system is not
 ;; available here; this answers GNU's per-platform default instead (case

@@ -17,12 +17,9 @@
 ;;
 ;; Under host Emacs, `find-file-name-handler' is a real C primitive and
 ;; `file-name-handler-alist' is the genuine variable Tramp/jka-compr/etc.
-;; already populate, so every definition in this file is
-;; `unless (fboundp ...)' gated and stays completely inert there --
-;; host Emacs' own dispatch wins, unchanged.  This module only takes
-;; over on the standalone NeLisp reader, where the file-I/O primitives
-;; are direct `nelisp-ec-*' bridges with no handler dispatch of their
-;; own (Doc 20 files/runtime boundary).
+;; already populate.  Lookups use the public operation on both hosts.
+;; Standalone bridges use the dispatch wrappers for the operations whose
+;; underlying `nelisp-ec-*' function is local-only.
 ;;
 ;; Public surface:
 ;;   - `emacs-fnh-find-file-name-handler' (FILENAME OPERATION)
@@ -34,61 +31,11 @@
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- file-remote-p dispatches through the library handler table.
 ;;; Code:
 
+(defvar file-name-handler-alist nil)
+
 (defun emacs-fnh-find-file-name-handler (filename operation)
-  "Return the `file-name-handler-alist' entry matching FILENAME/OPERATION.
-Mirrors Emacs' C-level `find-file-name-handler' (fileio.c): among the
-entries whose car matches FILENAME, the one whose match starts last
-wins; a handler whose `operations' property is non-nil is considered
-only for the operations it lists; and a handler is skipped when it is
-excluded by `inhibit-file-name-handlers'/`inhibit-file-name-operation'."
-  (when (and (boundp 'file-name-handler-alist)
-             file-name-handler-alist
-             (stringp filename))
-    (let ((inhibited (and (boundp 'inhibit-file-name-handlers)
-                          (boundp 'inhibit-file-name-operation)
-                          (eq inhibit-file-name-operation operation)
-                          inhibit-file-name-handlers))
-          (result nil)
-          (pos -1))
-      (dolist (entry file-name-handler-alist)
-        (when (and (consp entry)
-                   (stringp (car entry))
-                   (functionp (cdr entry)))
-          (let* ((handler (cdr entry))
-                 (operations (and (symbolp handler)
-                                  (get handler 'operations)))
-                 (match-pos (and (or (null operations)
-                                     (memq operation operations))
-                                 (save-match-data
-                                   (string-match (car entry) filename)))))
-            (when (and match-pos
-                       (> match-pos pos)
-                       (not (memq handler inhibited)))
-              (setq result handler
-                    pos match-pos)))))
-      result)))
-
-(unless (fboundp 'find-file-name-handler)
-  (defalias 'find-file-name-handler #'emacs-fnh-find-file-name-handler))
-
-(defun emacs-fnh-handler-possible-p (operation)
-  "Return non-nil when a `file-name-handler-alist' entry could handle OPERATION.
-An entry whose handler is a symbol with a non-nil `operations' property
-that does not list OPERATION can never be chosen for it (fileio.c
-`Ffind_file_name_handler'), so callers may skip the handler lookup and
-the file name match altogether when this returns nil."
-  (and (boundp 'file-name-handler-alist)
-       (let ((tail file-name-handler-alist)
-             (found nil))
-         (while (and tail (not found))
-           (let ((handler (cdr-safe (car tail))))
-             (when (or (not (symbolp handler))
-                       (let ((operations (get handler 'operations)))
-                         (or (null operations)
-                             (memq operation operations))))
-               (setq found t)))
-           (setq tail (cdr tail)))
-         found)))
+  "Return FILENAME's file name handler for OPERATION."
+  (find-file-name-handler filename operation))
 
 (defun emacs-fnh-dispatch (operation local-function &rest args)
   "Run OPERATION, honouring a `file-name-handler-alist' match on (car ARGS).
@@ -106,9 +53,7 @@ convention.  Otherwise apply LOCAL-FUNCTION to ARGS unchanged."
 The closure inspects its first argument for a `file-name-handler-alist'
 match before falling back to LOCAL-FUNCTION; see `emacs-fnh-dispatch'."
   (lambda (&rest args)
-    (if (emacs-fnh-handler-possible-p operation)
-        (apply #'emacs-fnh-dispatch operation local-function args)
-      (apply local-function args))))
+    (apply #'emacs-fnh-dispatch operation local-function args)))
 
 ;;;; --- handler-aware standalone fallbacks -----------------------------
 ;;
@@ -188,6 +133,11 @@ to the `emacs-version'-unbound heuristic."
   (defalias 'file-local-name #'emacs-fnh-file-local-name)
   (defalias 'unhandled-file-name-directory
     #'emacs-fnh-unhandled-file-name-directory))
+
+(defun emacs-fnh-install-quoting ()
+  "Register the GNU files.el handler for explicitly quoted names."
+  (when (and (emacs-fnh--standalone-p) (fboundp 'file-name-non-special))
+    (add-to-list 'file-name-handler-alist '("\\`/:" . file-name-non-special) t)))
 
 (provide 'emacs-file-name-handler)
 

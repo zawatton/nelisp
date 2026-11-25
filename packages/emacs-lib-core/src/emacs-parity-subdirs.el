@@ -1,45 +1,96 @@
-;;; emacs-parity-subdirs.el --- (intentionally no-op) subdir load-path walk -*- lexical-binding: t; -*-
+;;; emacs-parity-subdirs.el --- local startup subdirectory walk -*- lexical-binding: t; -*-
 
-;; HISTORY / WHY THIS IS A NO-OP
-;;
-;; This file used to redefine `normal-top-level-add-subdirs-to-load-path'
-;; (startup.el) with a hash-set dedup, on the theory that its O(n) `member'
-;; against `normal-top-level-add-subdirs-inode-list' made the real-init
-;; load-path walk O(n^2) and was a dominant reason the full-org audit did not
-;; finish init.
-;;
-;; Direct measurement on the standalone binary refuted that:
-;;
-;;   * The baked `normal-top-level-add-subdirs-to-load-path' walks the whole
-;;     external-packages tree CORRECTLY and reasonably fast:
-;;       len=788  themes=t  org-download=t  time=25.87s
-;;     (the `member' dedup is only ~5s of that; the rest is directory-files /
-;;     file-directory-p filesystem I/O that any implementation pays.)
-;;
-;;   * Every redefine attempt here was strictly worse:
-;;       - `file-attribute-file-identifier' -> void-function (added nothing);
-;;       - `normal-top-level-add-to-load-path' -> void-function (added nothing);
-;;       - relative `file-directory-p' -> nil on this substrate (added nothing);
-;;       - `file-truename' dedup key -> correct but >120s (stats every path
-;;         component per dir);
-;;       - `file-attributes' inode key -> nil inode here, so all dirs collide
-;;         to one bucket (added only the root's 177 children, dropped every
-;;         nested dir, e.g. themes/themes -- which lost the doom-dracula theme);
-;;       - absolute-path key -> correct (len=787 themes=t org-download=t) but
-;;         95.88s, i.e. 3.7x SLOWER than the baked original.
-;;
-;; The earlier "load-path form 32s -> <3s" speedup was an ILLUSION: the redefine
-;; was erroring out immediately and adding nothing, so it merely SKIPPED the
-;; subdir scan.  That skip is exactly what dropped external-packages'
-;; themes/themes and org-download from `load-path' and broke theme / org-download
-;; loading in the audit.
-;;
-;; Conclusion: the baked function is already correct and faster than anything we
-;; can cheaply do in pure Elisp on this substrate, so we intentionally do NOT
-;; override it.  Any real load-path-walk speedup must come from making the
-;; substrate's `directory-files' / `file-directory-p' cheaper, not from redoing
-;; the dedup in Elisp.  Keep this file as a documented no-op so the loader's
-;; `require'/load of `emacs-parity-subdirs' still succeeds.
+(require 'files-runtime)
+
+(defvar normal-top-level-add-subdirs-inode-list nil)
+(defvar emacs-parity-subdirs--gnu-walk nil)
+(defvar emacs-parity-subdirs--local-operations nil)
+
+(defun emacs-parity-subdirs--local-operations-p ()
+  (let ((operations emacs-parity-subdirs--local-operations)
+        (local t))
+    (while (and operations local)
+      (let ((entry (pop operations)))
+        (setq local (and (eq (symbol-function (car entry)) (cdr entry))
+                         (not (nelisp--file-name-handler-possible-p (car entry) t))))))
+    local))
+
+(defun emacs-parity-subdirs--local-walk ()
+  "Add local descendants to `load-path' in GNU's breadth-first order."
+  (let ((pending (list (expand-file-name default-directory)))
+        (visited (make-hash-table :test 'equal))
+        dirs matched)
+    (dolist (id normal-top-level-add-subdirs-inode-list)
+      (puthash id t visited))
+    (while pending
+      (let (next)
+        (dolist (directory pending)
+          (push directory dirs)
+          (let* ((raw (nelisp--syscall-readdir-names directory t))
+                 (contents (if raw (nelisp--readdir-scan-raw raw t t)
+                             (directory-files directory nil nil t)))
+                 (stat (nelisp--syscall-lstat-buf directory))
+                 (id (if (> stat 0)
+                         (list (ptr-read-u64 stat 8) (ptr-read-u64 stat 0))
+                       (file-attribute-file-identifier (file-attributes directory))))
+                 (prefix (if (eq (aref directory (1- (length directory))) ?/)
+                             directory (concat directory "/")))
+                 children)
+            (unless (gethash id visited)
+              (puthash id t visited)
+              (push id normal-top-level-add-subdirs-inode-list)
+              (dolist (name contents)
+                ;; Only directories survive the filter.  Sort those below
+                ;; instead of sorting the complete readdir result first.
+                (let ((first (aref name 0)))
+                  (when (if (< first 128)
+                            (or (and (>= first ?0) (<= first ?9))
+                                (and (>= (logior first 32) ?a)
+                                     (<= (logior first 32) ?z)))
+                          (string-match "\\`[[:alnum:]]" name))
+                    (setq matched t)
+                    (unless (member name '("RCS" "CVS" "rcs" "cvs"))
+                      (let ((child (concat prefix name)))
+                        (when (and
+                               (= (logand (nelisp--syscall-stat-field child 24) #o170000)
+                                  #o040000)
+                               (/= 0 (nelisp--syscall-path-int 21
+                                                               (concat child "/.nosearch") 0)))
+                          (push child children)))))))
+              (dolist (child (sort children #'string-lessp))
+                (push child next)))))
+        (setq pending (nreverse next))))
+    (when matched (set-match-data '(0 1)))
+    (normal-top-level-add-to-load-path (cdr (nreverse dirs)))))
+
+(defun emacs-parity-subdirs--walk ()
+  "Use the local startup walk where no file operation can dispatch."
+  (if (and (eq system-type 'gnu/linux)
+           (not (fboundp 'w32-untranslated-canonical-name))
+           (fboundp 'nelisp--syscall-stat-field)
+           (fboundp 'nelisp--syscall-path-int)
+           (fboundp 'nelisp--syscall-lstat-buf)
+           (fboundp 'nelisp--syscall-readdir-names)
+           (stringp default-directory)
+           (nelisp--file-name-absolute-posix-p default-directory)
+           (not (nelisp--string-search ":" default-directory 0))
+           (emacs-parity-subdirs--local-operations-p))
+      (emacs-parity-subdirs--local-walk)
+    (funcall emacs-parity-subdirs--gnu-walk)))
+
+(defun emacs-parity-subdirs-install ()
+  "Install the standalone walk after GNU startup has been loaded."
+  (when (and (files-standalone-runtime-p)
+             (fboundp 'normal-top-level-add-to-load-path)
+             (not (eq (symbol-function 'normal-top-level-add-subdirs-to-load-path)
+                      #'emacs-parity-subdirs--walk)))
+    (setq emacs-parity-subdirs--gnu-walk
+          (symbol-function 'normal-top-level-add-subdirs-to-load-path))
+    (setq emacs-parity-subdirs--local-operations
+          (mapcar (lambda (operation) (cons operation (symbol-function operation)))
+                  '(expand-file-name directory-files directory-file-name
+                    file-attributes file-directory-p file-exists-p)))
+    (defalias 'normal-top-level-add-subdirs-to-load-path #'emacs-parity-subdirs--walk)))
 
 (provide 'emacs-parity-subdirs)
 ;;; emacs-parity-subdirs.el ends here
