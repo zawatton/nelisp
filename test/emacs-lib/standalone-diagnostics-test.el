@@ -384,10 +384,6 @@ files))
 (standalone-diagnostics-test--src-file
 "emacs-mode-builtins.el")
 files))
-(parity-org-pos (standalone-diagnostics-test--position
-(standalone-diagnostics-test--src-file
-"emacs-parity-org.el")
-files))
 (parity-shims-pos (standalone-diagnostics-test--position
 (standalone-diagnostics-test--src-file
 "emacs-parity-shims.el")
@@ -418,7 +414,6 @@ files)))
 (should mode-builtins-pos)
 (should parity-misc-pos)
 (should parity-fns2-pos)
-(should parity-org-pos)
 (should emacs-load-pos)
 (should (< core-vars-pos vars-pos))
 (should (< regex-pos compat-pos))
@@ -427,14 +422,10 @@ files)))
 (should (< window-pos redisplay-pos))
 (should (< fileio-gui-pos fileio-pos))
 (should (< mode-pos mode-builtins-pos))
-(should (< keymap-builtins-pos parity-org-pos))
-(should (< mode-builtins-pos parity-org-pos))
 (should parity-shims-pos)
 (should (< mode-builtins-pos parity-misc-pos))
 (should (< parity-shims-pos parity-misc-pos))
 (should (< parity-misc-pos parity-fns2-pos))
-(should (< parity-fns2-pos parity-org-pos))
-(should (< parity-org-pos emacs-load-pos))
 (should (< mode-builtins-pos fileio-pos)))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-define-skeleton-creates-command ()

@@ -105,8 +105,7 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      "emacs-lisp/format.el"
                      "staged-emacs-lisp/window.el"
                      "staged-emacs-lisp/faces.el"
-                     "emacs-lisp/emacs-lisp/seq.el"
-                     "staged-emacs-lisp/frame.el"
+                     "emacs-lisp/frame.el"
                      "emacs-lisp/term/tty-colors.el"
                      "emacs-lisp/send-to.el"
                      "emacs-lisp/mouse.el"
@@ -146,13 +145,25 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      "emacs-lisp/international/idna-mapping.el"
                      "emacs-lisp/international/emoji-labels.el"
                      ;; The bootstrap has already loaded GNU button.el.
-                     "emacs-lisp/help-mode.el"))
+                     "emacs-lisp/help-mode.el"
+                     "emacs-lisp/international/iso-transl.el"
+                     "emacs-lisp/case-table.el"
+                     "emacs-lisp/emacs-lisp/easy-mmode.el"
+                     "emacs-lisp/help.el"
+                     "emacs-lisp/hl-line.el"
+                     "emacs-lisp/skeleton.el"
+                     "emacs-lisp/so-long.el"
+                     "emacs-lisp/keymap.el"
+                     "emacs-lisp/wid-edit.el"
+                     "emacs-lisp/cus-face.el"
+                     "emacs-lisp/term.el"
+                     "emacs-lisp/epa-hook.el"
+                     "emacs-lisp/bindings.el"
+                     "emacs-lisp/files.el"))
     ;; Preserve the reader's native-row functions and the setenv that
     ;; shares the reader's environment store with getenv.
     (let ((pins (cond
-                 ((equal library "emacs-lisp/env.el") '(getenv setenv))
-                 ((equal library "emacs-lisp/emacs-lisp/seq.el")
-                  '(seq-elt seq-group-by seq-map seq-reduce seq-uniq))))
+                 ((equal library "emacs-lisp/env.el") '(getenv setenv))))
           saved)
       (dolist (name pins)
         (push (cons name (symbol-function name)) saved))
@@ -184,6 +195,9 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
         nil 'no-message t t)
   (nemacs-runtime-image-preload--install-daily-driver-core)
   (nemacs-runtime-image-preload--load-gnu-libraries repo-root)
+  ;; Publish the default from GNU newcomment.el after the reader's early
+  ;; buffer-local variable initialization has supplied a provisional value.
+  (custom-reevaluate-setting 'comment-column)
   (nemacs-runtime-image-preload--reassert-process-bridge)
   (nemacs-runtime-image-preload--retry-stale-fx)
   ;; The reconvert compiles can record a fresh `none' behind them; one more
@@ -1468,555 +1482,14 @@ image startup."
     (provide 'subr-x))
   t)
 
-(defun nemacs-runtime-image-preload--seq-list (sequence)
-  "Return SEQUENCE as a list."
-  (cond
-   ((listp sequence) sequence)
-   ((vectorp sequence) (append sequence nil))
-   ((stringp sequence)
-    (let ((i 0)
-          (n (length sequence))
-          out)
-      (while (< i n)
-        (push (aref sequence i) out)
-        (setq i (1+ i)))
-      (nreverse out)))
-   (t (signal 'wrong-type-argument (list 'sequencep sequence)))))
-
-(defun nemacs-runtime-image-preload--install-seq-core ()
-  "Install common `seq' support helpers without source `load'."
-  (unless (featurep 'seq)
-    (unless (fboundp 'seqp)
-      (fset 'seqp (lambda (object)
-                    (or (listp object) (stringp object) (vectorp object)))))
-    (unless (fboundp 'seq-length)
-      (fset 'seq-length #'length))
-    (unless (fboundp 'seq-elt)
-      (fset 'seq-elt #'elt))
-    (unless (fboundp 'seq-map)
-      (fset 'seq-map #'mapcar))
-    (unless (fboundp 'seq-filter)
-      (fset 'seq-filter
-            (lambda (predicate sequence)
-              (let (out)
-                (dolist (elt (nemacs-runtime-image-preload--seq-list sequence)
-                             (nreverse out))
-                  (when (funcall predicate elt)
-                    (push elt out)))))))
-    (unless (fboundp 'seq-remove)
-      (fset 'seq-remove
-            (lambda (predicate sequence)
-              (seq-filter (lambda (elt) (not (funcall predicate elt)))
-                          sequence))))
-    (unless (fboundp 'seq-find)
-      (fset 'seq-find
-            (lambda (predicate sequence &optional default)
-              (catch 'found
-                (dolist (elt (nemacs-runtime-image-preload--seq-list sequence))
-                  (when (funcall predicate elt)
-                    (throw 'found elt)))
-                default))))
-    (unless (fboundp 'seq-some)
-      (fset 'seq-some
-            (lambda (predicate sequence)
-              (catch 'found
-                (dolist (elt (nemacs-runtime-image-preload--seq-list sequence))
-                  (let ((value (funcall predicate elt)))
-                    (when value (throw 'found value))))
-                nil))))
-    (unless (fboundp 'seq-every-p)
-      (fset 'seq-every-p
-            (lambda (predicate sequence)
-              (not (seq-some (lambda (elt) (not (funcall predicate elt)))
-                             sequence)))))
-    (unless (fboundp 'seq-reduce)
-      (fset 'seq-reduce
-            (lambda (function sequence initial-value)
-              (let ((acc initial-value))
-                (dolist (elt (nemacs-runtime-image-preload--seq-list sequence)
-                             acc)
-                  (setq acc (funcall function acc elt)))))))
-    (unless (fboundp 'seq-uniq)
-      (fset 'seq-uniq
-            (lambda (sequence &optional testfn)
-              (let ((test (or testfn #'equal))
-                    out)
-                (dolist (elt (nemacs-runtime-image-preload--seq-list sequence)
-                             (nreverse out))
-                  (unless (seq-some (lambda (seen) (funcall test elt seen))
-                                    out)
-                    (push elt out)))))))
-    (unless (fboundp 'seq-concatenate)
-      (fset 'seq-concatenate
-            (lambda (type &rest sequences)
-              (let ((list (apply #'append
-                                 (mapcar #'nemacs-runtime-image-preload--seq-list
-                                         sequences))))
-                (cond
-                 ((eq type 'list) list)
-                 ((eq type 'vector) (apply #'vector list))
-                 ((eq type 'string) (apply #'string list))
-                 (t list))))))
-    (provide 'seq))
-  t)
-
-(defun nemacs-runtime-image-preload--map-pairs (map)
-  "Return MAP as key/value cons pairs."
-  (cond
-   ((hash-table-p map)
-    (let (pairs)
-      (maphash (lambda (key value) (push (cons key value) pairs)) map)
-      pairs))
-   ((listp map) map)
-   ((vectorp map)
-    (let ((i 0)
-          pairs)
-      (while (< i (length map))
-        (push (cons i (aref map i)) pairs)
-        (setq i (1+ i)))
-      (nreverse pairs)))
-   (t nil)))
-
-(defun nemacs-runtime-image-preload--install-map-core ()
-  "Install common `map' support helpers without source `load'."
-  (unless (featurep 'map)
-    (unless (fboundp 'mapp)
-      (fset 'mapp (lambda (object)
-                    (or (listp object) (hash-table-p object) (vectorp object)))))
-    (unless (fboundp 'map-elt)
-      (fset 'map-elt
-            (lambda (map key &optional default)
-              (cond
-               ((hash-table-p map) (gethash key map default))
-               ((vectorp map) (if (and (integerp key) (< key (length map)))
-                                  (aref map key)
-                                default))
-               ((listp map) (let ((cell (assoc key map)))
-                              (if cell (cdr cell) default)))
-               (t default)))))
-    (unless (fboundp 'map-keys)
-      (fset 'map-keys
-            (lambda (map)
-              (mapcar #'car (nemacs-runtime-image-preload--map-pairs map)))))
-    (unless (fboundp 'map-values)
-      (fset 'map-values
-            (lambda (map)
-              (mapcar #'cdr (nemacs-runtime-image-preload--map-pairs map)))))
-    (unless (fboundp 'map-pairs)
-      (fset 'map-pairs #'nemacs-runtime-image-preload--map-pairs))
-    (unless (fboundp 'map-apply)
-      (fset 'map-apply
-            (lambda (function map)
-              (mapcar (lambda (pair) (funcall function (car pair) (cdr pair)))
-                      (nemacs-runtime-image-preload--map-pairs map)))))
-    (unless (fboundp 'map-do)
-      (fset 'map-do
-            (lambda (function map)
-              (dolist (pair (nemacs-runtime-image-preload--map-pairs map))
-                (funcall function (car pair) (cdr pair)))
-              nil)))
-    (unless (fboundp 'map-empty-p)
-      (fset 'map-empty-p
-            (lambda (map)
-              (cond
-               ((hash-table-p map) (= (hash-table-count map) 0))
-               (t (= (length map) 0))))))
-    (unless (fboundp 'map-contains-key)
-      (fset 'map-contains-key
-            (lambda (map key)
-              (not (eq (map-elt map key :nemacs-missing) :nemacs-missing)))))
-    (unless (fboundp 'map-merge)
-      (fset 'map-merge
-            (lambda (&rest maps)
-              (let (out)
-                (dolist (map maps out)
-                  (dolist (pair (nemacs-runtime-image-preload--map-pairs map))
-                    (let ((cell (assoc (car pair) out)))
-                      (if cell
-                          (setcdr cell (cdr pair))
-                        (push (cons (car pair) (cdr pair)) out)))))))))
-    (unless (fboundp 'map-merge-with)
-      (fset 'map-merge-with
-            (lambda (function &rest maps)
-              (let (out)
-                (dolist (map maps out)
-                  (dolist (pair (nemacs-runtime-image-preload--map-pairs map))
-                    (let ((cell (assoc (car pair) out)))
-                      (if cell
-                          (setcdr cell (funcall function (cdr cell) (cdr pair)))
-                        (push (cons (car pair) (cdr pair)) out)))))))))
-    (unless (fboundp 'map-into)
-      (fset 'map-into (lambda (map _type) map)))
-    (unless (fboundp 'map-put!)
-      (fset 'map-put!
-            (lambda (map key value)
-              (cond
-               ((hash-table-p map) (puthash key value map))
-               ((vectorp map) (aset map key value))
-               ((listp map) (let ((cell (assoc key map)))
-                              (if cell (setcdr cell value)
-                                (push (cons key value) map)))))
-              map)))
-    (unless (fboundp 'map-insert)
-      (fset 'map-insert
-            (lambda (map key value)
-              (cons (cons key value) map))))
-    (provide 'map))
-  t)
-
-(defconst nemacs-runtime-image-preload--case-table-size 256
-  "Number of character slots in the runtime-image case-table facade.")
-
-(defconst nemacs-runtime-image-preload--case-table-extra-slots 3
-  "Number of extra slots in the runtime-image case-table facade.")
-
-(defun nemacs-runtime-image-preload--case-table-extra-index (slot)
-  "Return vector index for extra SLOT."
-  (+ nemacs-runtime-image-preload--case-table-size slot))
-
-(defun nemacs-runtime-image-preload--case-table-identity-table ()
-  "Return a fresh lightweight char-table with identity entries."
-  (let ((table (make-vector
-                (+ nemacs-runtime-image-preload--case-table-size
-                   nemacs-runtime-image-preload--case-table-extra-slots)
-                nil))
-        (i 0))
-    (while (< i nemacs-runtime-image-preload--case-table-size)
-      (aset table i i)
-      (setq i (1+ i)))
-    table))
-
-(defun nemacs-runtime-image-preload--case-table-copy-vector (vector)
-  "Return a shallow copy of VECTOR."
-  (let* ((len (length vector))
-         (copy (make-vector len nil))
-         (i 0))
-    (while (< i len)
-      (aset copy i (aref vector i))
-      (setq i (1+ i)))
-    copy))
-
-(defun nemacs-runtime-image-preload--case-table-make-char-table
-    (&optional _subtype init)
-  "Make a lightweight char-table filled with INIT or identity mappings."
-  (if init
-      (make-vector
-       (+ nemacs-runtime-image-preload--case-table-size
-          nemacs-runtime-image-preload--case-table-extra-slots)
-       init)
-    (nemacs-runtime-image-preload--case-table-identity-table)))
-
-(defun nemacs-runtime-image-preload--case-table-char-table-p (object)
-  "Return non-nil when OBJECT is a lightweight char-table."
-  (and (vectorp object)
-       (= (length object)
-          (+ nemacs-runtime-image-preload--case-table-size
-             nemacs-runtime-image-preload--case-table-extra-slots))))
-
-(defun nemacs-runtime-image-preload--case-table-char-table-range
-    (table range)
-  "Return TABLE entry at RANGE."
-  (cond
-   ((integerp range) (aref table range))
-   ((eq range t) nil)
-   ((consp range) (aref table (car range)))
-   (t nil)))
-
-(defun nemacs-runtime-image-preload--case-table-set-char-table-range
-    (table range value)
-  "Set TABLE RANGE to VALUE."
-  (cond
-   ((integerp range)
-    (aset table range value))
-   ((consp range)
-    (let ((i (car range))
-          (end (cdr range)))
-      (while (<= i end)
-        (aset table i value)
-        (setq i (1+ i)))))
-   ((eq range t)
-    nil))
-  value)
-
-(defun nemacs-runtime-image-preload--case-table-extra-slot
-    (table slot)
-  "Return extra SLOT from lightweight TABLE."
-  (aref table (nemacs-runtime-image-preload--case-table-extra-index slot)))
-
-(defun nemacs-runtime-image-preload--case-table-set-extra-slot
-    (table slot value)
-  "Set extra SLOT in lightweight TABLE to VALUE."
-  (aset table
-        (nemacs-runtime-image-preload--case-table-extra-index slot)
-        value))
-
-(defun nemacs-runtime-image-preload--case-table-map
-    (function table)
-  "Call FUNCTION for every non-nil character entry in TABLE."
-  (let ((i 0))
-    (while (< i nemacs-runtime-image-preload--case-table-size)
-      (let ((value (aref table i)))
-        (when value
-          (funcall function i value)))
-      (setq i (1+ i)))))
-
-(defun nemacs-runtime-image-preload--case-table-ensure-extra-slots
-    (case-table)
-  "Ensure CASE-TABLE has up/canon/eqv extra slots."
-  (unless (char-table-extra-slot case-table 0)
-    (let ((up (nemacs-runtime-image-preload--case-table-identity-table))
-          (i 0))
-      (while (< i nemacs-runtime-image-preload--case-table-size)
-        (let ((down (aref case-table i)))
-          (when (and (integerp down)
-                     (>= down 0)
-                     (< down nemacs-runtime-image-preload--case-table-size))
-            (aset up down i)))
-        (setq i (1+ i)))
-      (set-char-table-extra-slot case-table 0 up)))
-  (unless (char-table-extra-slot case-table 1)
-    (set-char-table-extra-slot
-     case-table 1
-     (nemacs-runtime-image-preload--case-table-identity-table)))
-  (unless (char-table-extra-slot case-table 2)
-    (set-char-table-extra-slot
-     case-table 2
-     (nemacs-runtime-image-preload--case-table-identity-table)))
-  case-table)
-
-(defun nemacs-runtime-image-preload--case-table-get-table
-    (case-table table)
-  "Return TABLE from CASE-TABLE."
-  (let ((slot (cdr (assq table '((up . 0) (canon . 1) (eqv . 2))))))
-    (cond
-     ((eq table 'down) case-table)
-     (slot
-      (nemacs-runtime-image-preload--case-table-ensure-extra-slots
-       case-table)
-      (char-table-extra-slot case-table slot))
-     (t nil))))
-
-(defun nemacs-runtime-image-preload--case-table-copy (case-table)
-  "Return a shallow copy of CASE-TABLE with derived slots invalidated."
-  (let ((copy
-         (nemacs-runtime-image-preload--case-table-copy-vector case-table))
-        (up (char-table-extra-slot case-table 0)))
-    (when up
-      (set-char-table-extra-slot
-       copy 0
-       (nemacs-runtime-image-preload--case-table-copy-vector up)))
-    (set-char-table-extra-slot copy 1 nil)
-    (set-char-table-extra-slot copy 2 nil)
-    copy))
-
-(defun nemacs-runtime-image-preload--case-table-set-standard (table)
-  "Set the standard lightweight case table to TABLE."
-  (setq nelisp-casetab--standard table
-        nelisp-casetab--current table)
-  (nemacs-runtime-image-preload--case-table-ensure-extra-slots table)
-  table)
-
-(defun nemacs-runtime-image-preload--case-table-set-current (table)
-  "Set the current lightweight case table to TABLE."
-  (setq nelisp-casetab--current table)
-  (nemacs-runtime-image-preload--case-table-ensure-extra-slots table)
-  table)
-
-(defun nemacs-runtime-image-preload--case-table-set-delims (l r table)
-  "Make L and R non-case-converting delimiters in TABLE."
-  (aset table l l)
-  (aset table r r)
-  (let ((up (case-table-get-table table 'up)))
-    (aset up l l)
-    (aset up r r))
-  (set-char-table-extra-slot table 1 nil)
-  (set-char-table-extra-slot table 2 nil)
-  nil)
-
-(defun nemacs-runtime-image-preload--case-table-set-pair (uc lc table)
-  "Make UC and LC an inter-case-converting pair in TABLE."
-  (aset table uc lc)
-  (aset table lc lc)
-  (let ((up (case-table-get-table table 'up)))
-    (aset up uc uc)
-    (aset up lc uc))
-  (set-char-table-extra-slot table 1 nil)
-  (set-char-table-extra-slot table 2 nil)
-  nil)
-
-(defun nemacs-runtime-image-preload--case-table-set-upcase (uc lc table)
-  "Make UC an upcase character for LC in TABLE."
-  (aset table lc lc)
-  (let ((up (case-table-get-table table 'up)))
-    (aset up uc uc)
-    (aset up lc uc))
-  (set-char-table-extra-slot table 1 nil)
-  (set-char-table-extra-slot table 2 nil)
-  nil)
-
-(defun nemacs-runtime-image-preload--case-table-set-downcase (uc lc table)
-  "Make LC a downcase character for UC in TABLE."
-  (aset table uc lc)
-  (aset table lc lc)
-  (let ((up (case-table-get-table table 'up)))
-    (aset up uc uc))
-  (set-char-table-extra-slot table 1 nil)
-  (set-char-table-extra-slot table 2 nil)
-  nil)
-
-(defun nemacs-runtime-image-preload--case-table-set-syntax
-    (char _syntax table)
-  "Make CHAR case-invariant in TABLE."
-  (aset table char char)
-  (let ((up (case-table-get-table table 'up)))
-    (aset up char char))
-  (set-char-table-extra-slot table 1 nil)
-  (set-char-table-extra-slot table 2 nil)
-  nil)
-
-(defun nemacs-runtime-image-preload--install-case-table-core ()
-  "Install lightweight case-table helpers without source `load'."
-  (unless (featurep 'case-table)
-    (unless (fboundp 'make-char-table)
-      (fset 'make-char-table
-            #'nemacs-runtime-image-preload--case-table-make-char-table))
-    (unless (fboundp 'char-table-p)
-      (fset 'char-table-p
-            #'nemacs-runtime-image-preload--case-table-char-table-p))
-    (unless (fboundp 'char-table-range)
-      (fset 'char-table-range
-            #'nemacs-runtime-image-preload--case-table-char-table-range))
-    (unless (fboundp 'set-char-table-range)
-      (fset 'set-char-table-range
-            #'nemacs-runtime-image-preload--case-table-set-char-table-range))
-    (unless (fboundp 'char-table-extra-slot)
-      (fset 'char-table-extra-slot
-            #'nemacs-runtime-image-preload--case-table-extra-slot))
-    (unless (fboundp 'set-char-table-extra-slot)
-      (fset 'set-char-table-extra-slot
-            #'nemacs-runtime-image-preload--case-table-set-extra-slot))
-    (unless (fboundp 'map-char-table)
-      (fset 'map-char-table #'nemacs-runtime-image-preload--case-table-map))
-    (unless (fboundp 'set-char-table-parent)
-      (fset 'set-char-table-parent (lambda (&rest _args) nil)))
-    (unless (boundp 'nelisp-casetab--standard)
-      (defvar nelisp-casetab--standard (make-char-table 'case-table)))
-    (unless (boundp 'nelisp-casetab--current)
-      (defvar nelisp-casetab--current nelisp-casetab--standard))
-    (unless (boundp 'case-table--standard-syntax-table)
-      (defvar case-table--standard-syntax-table
-        (make-char-table 'syntax-table)))
-    (nemacs-runtime-image-preload--case-table-ensure-extra-slots
-     nelisp-casetab--standard)
-    (unless (fboundp 'standard-case-table)
-      (fset 'standard-case-table (lambda () nelisp-casetab--standard)))
-    (unless (fboundp 'current-case-table)
-      (fset 'current-case-table (lambda () nelisp-casetab--current)))
-    (unless (fboundp 'set-standard-case-table)
-      (fset 'set-standard-case-table
-            #'nemacs-runtime-image-preload--case-table-set-standard))
-    (unless (fboundp 'set-case-table)
-      (fset 'set-case-table
-            #'nemacs-runtime-image-preload--case-table-set-current))
-    (unless (fboundp 'standard-syntax-table)
-      (fset 'standard-syntax-table
-            (lambda () case-table--standard-syntax-table)))
-    (unless (fboundp 'modify-syntax-entry)
-      (fset 'modify-syntax-entry (lambda (&rest _args) nil)))
-    (unless (fboundp 'describe-buffer-case-table)
-      (fset 'describe-buffer-case-table
-            (lambda ()
-              (interactive)
-              (message "case-table: lightweight ASCII table"))))
-    (unless (fboundp 'case-table-get-table)
-      (fset 'case-table-get-table
-            #'nemacs-runtime-image-preload--case-table-get-table))
-    (unless (fboundp 'get-upcase-table)
-      (fset 'get-upcase-table
-            (lambda (case-table)
-              (case-table-get-table case-table 'up))))
-    (unless (fboundp 'copy-case-table)
-      (fset 'copy-case-table
-            #'nemacs-runtime-image-preload--case-table-copy))
-    (unless (fboundp 'set-case-syntax-delims)
-      (fset 'set-case-syntax-delims
-            #'nemacs-runtime-image-preload--case-table-set-delims))
-    (unless (fboundp 'set-case-syntax-pair)
-      (fset 'set-case-syntax-pair
-            #'nemacs-runtime-image-preload--case-table-set-pair))
-    (unless (fboundp 'set-upcase-syntax)
-      (fset 'set-upcase-syntax
-            #'nemacs-runtime-image-preload--case-table-set-upcase))
-    (unless (fboundp 'set-downcase-syntax)
-      (fset 'set-downcase-syntax
-            #'nemacs-runtime-image-preload--case-table-set-downcase))
-    (unless (fboundp 'set-case-syntax)
-      (fset 'set-case-syntax
-            #'nemacs-runtime-image-preload--case-table-set-syntax))
-    (provide 'case-table))
-  t)
-
 (defun nemacs-runtime-image-preload--install-support-core ()
   "Install lightweight support facades without source load."
   (nemacs-runtime-image-preload--install-subr-x-core)
-  (nemacs-runtime-image-preload--install-seq-core)
-  (nemacs-runtime-image-preload--install-map-core)
+  (require 'seq)
+  (require 'map)
   (unless (featurep 'emacs-symbol)
     (require 'emacs-symbol))
-  (nemacs-runtime-image-preload--install-case-table-core)
-  t)
-
-(defun nemacs-runtime-image-preload--install-charscript-core ()
-  "Install the lightweight `charscript' table surface without source `load'."
-  (unless (featurep 'charscript)
-    ;; Keep an existing table only when the active `char-table-p' accepts
-    ;; it: a bound value from another char-table implementation (or nil) is
-    ;; unusable here, as in `charscript--ensure-table'.
-    (unless (and (boundp 'char-script-table)
-                 (char-table-p char-script-table))
-      (defvar char-script-table nil)
-      (setq char-script-table
-            (if (fboundp 'make-char-table)
-                (make-char-table 'char-script-table nil)
-              [])))
-    (provide 'charscript))
-  t)
-
-(defun nemacs-runtime-image-preload--install-iso-transl-core ()
-  "Install representative `iso-transl' keymaps without source `load'."
-  (unless (featurep 'iso-transl)
-    (unless (boundp 'key-translation-map)
-      (defvar key-translation-map (make-sparse-keymap)))
-    (unless (boundp 'iso-transl-ctl-x-8-map)
-      (defvar iso-transl-ctl-x-8-map (make-sparse-keymap)))
-    (unless (boundp 'iso-transl-char-map)
-      (defvar iso-transl-char-map
-        '(("E" . [#x20ac])
-          ("Y" . [#x00a5])
-          ("C" . [#x00a9])
-          ("R" . [#x00ae])
-          ("a" . [#x00e1])
-          ("e" . [#x00e9]))))
-    (unless (boundp 'iso-transl-language-alist)
-      (defvar iso-transl-language-alist
-        '(("French" ("C" . [#x00c7]) ("c" . [#x00e7]))
-          ("German" ("A" . [#x00c4]) ("O" . [#x00d6])
-           ("U" . [#x00dc]) ("s" . [#x00df])))))
-    (unless (fboundp 'iso-transl-define-keys)
-      (fset 'iso-transl-define-keys
-            (lambda (alist)
-              (dolist (entry alist)
-                (define-key iso-transl-ctl-x-8-map (car entry) (cdr entry))))))
-    (unless (fboundp 'iso-transl-set-language)
-      (fset 'iso-transl-set-language
-            (lambda (lang)
-              (let ((entry (assoc lang iso-transl-language-alist)))
-                (unless entry
-                  (error "Unknown iso-transl language: %s" lang))
-                (iso-transl-define-keys (cdr entry))))))
-    (define-key key-translation-map "\C-x8" iso-transl-ctl-x-8-map)
-    (iso-transl-define-keys iso-transl-char-map)
-    (provide 'iso-transl))
+  (require 'case-table)
   t)
 
 (defun nemacs-runtime-image-preload--install-translation-table-core
@@ -2054,8 +1527,6 @@ image startup."
 (defun nemacs-runtime-image-preload--install-utility-i18n-core ()
   "Install utility/i18n surfaces and load the generated Unicode registry."
   (require 'charprop)
-  (nemacs-runtime-image-preload--install-charscript-core)
-  (nemacs-runtime-image-preload--install-iso-transl-core)
   (nemacs-runtime-image-preload--install-translation-table-core
    'cp51932 'cp51932-decode 'cp51932-encode)
   (nemacs-runtime-image-preload--install-translation-table-core

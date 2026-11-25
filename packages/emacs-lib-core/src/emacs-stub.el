@@ -244,10 +244,6 @@ the variable."))
 Vendor packages may bind or inspect this even on non-graphical runtime
 paths.  The compatibility surface only needs the variable to exist."))
 
-(unless (boundp 'font-lock-global-modes)
-  (defvar font-lock-global-modes t
-    "Compatibility binding for vendor font-lock consumers."))
-
 (unless (boundp 'line-move-visual)
   (defvar line-move-visual t
     "Compatibility binding for vendor line-motion consumers."))
@@ -2054,49 +2050,6 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
   (defmacro syntax-propertize-rules (&rest _rules)
     "Standalone fallback: return an inert syntax propertizer."
     `(lambda (&rest _args) nil)))
-
-(unless (fboundp 'cc-require)
-  (defmacro cc-require (feature)
-    "Standalone fallback: preserve CC Mode's runtime REQUIRE dependency."
-    `(require ,feature)))
-
-(unless (fboundp 'cc-require-when-compile)
-  (defmacro cc-require-when-compile (feature)
-    "Standalone fallback: load FEATURE when no compiler is present."
-    `(require ,feature)))
-
-(unless (fboundp 'cc-external-require)
-  (defmacro cc-external-require (feature)
-    "Standalone fallback: preserve CC Mode's external REQUIRE dependency."
-    `(require ,feature)))
-
-(unless (fboundp 'cc-bytecomp-defvar)
-  (defmacro cc-bytecomp-defvar (&rest _args)
-    "Standalone fallback: ignore compiler-only variable declarations."
-    nil))
-
-(unless (fboundp 'cc-bytecomp-defun)
-  (defmacro cc-bytecomp-defun (&rest _args)
-    "Standalone fallback: ignore compiler-only function declarations."
-    nil))
-
-(unless (fboundp 'cc-provide)
-  (defmacro cc-provide (feature)
-    "Standalone load-time fallback: provide FEATURE for CC Mode fragments."
-    (list 'provide feature)))
-
-(unless (boundp 'c-style-alist)
-  (defvar c-style-alist nil))
-
-(unless (fboundp 'c-add-style)
-  (defun c-add-style (style description &optional set-p)
-    "Standalone load-time fallback: remember a CC Mode STYLE."
-    (ignore set-p)
-    (let ((existing (assoc style c-style-alist)))
-      (if existing
-          (setcdr existing description)
-        (setq c-style-alist (cons (cons style description) c-style-alist))))
-    style))
 
 ;;;; --- mark-marker (one mark marker per buffer, as in GNU buffer.c) ---
 ;; Without this, `emacs-stub-bulk' binds `mark-marker' to a nil stub and
@@ -4164,19 +4117,6 @@ Non-positive durations return immediately.  Always return nil."
 
 ;;;; --- Custom metadata helpers (= preloaded in real Emacs) ---
 
-(unless (boundp 'customize-package-emacs-version-alist)
-  (defvar customize-package-emacs-version-alist nil
-    "Alist mapping package versions to Emacs versions.
-We use this for packages that keep :package-version metadata.
-
-Each entry looks like:
-
-  (PACKAGE (PVERSION . EVERSION)...)
-
-PACKAGE is a package symbol.  PVERSION and EVERSION are strings, where
-PVERSION identifies a package version and EVERSION is the first Emacs
-release that package version targets."))
-
 (unless (fboundp 'custom-add-option)
   (defun custom-add-option (symbol option)
     "Polyfill: add OPTION to SYMBOL's `custom-options' metadata."
@@ -4523,24 +4463,6 @@ customization type TYPE).
 The POST-FILTER should also take a single argument, the value after
 being customized, and should return a value suitable for setting the
 given face attribute."))
-
-(unless (fboundp 'custom-face-attributes-get)
-  (defun custom-face-attributes-get (face frame)
-    "For FACE on FRAME, return an alternating list describing its attributes.
-The list has the form (KEYWORD VALUE KEYWORD VALUE...).
-Each keyword should be listed in `custom-face-attributes'.
-
-If FRAME is nil, use the global defaults for FACE."
-    (let ((attrs custom-face-attributes)
-	  plist)
-      (while attrs
-	(let* ((attribute (car (car attrs)))
-	       (value (face-attribute face attribute frame)))
-	  (setq attrs (cdr attrs))
-	  (unless (or (eq value 'unspecified)
-		      (and (null value) (memq attribute '(:inherit))))
-	    (setq plist (cons attribute (cons value plist))))))
-      plist)))
 
 (unless (fboundp 'custom-declare-group)
   (defun custom-declare-group (symbol members doc &rest args)

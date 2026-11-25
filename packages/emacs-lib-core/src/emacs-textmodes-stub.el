@@ -128,10 +128,6 @@ nil means infer each paragraph's direction from its own content."))
   (defvar next-error-function nil
     "Buffer-local function used to jump to the next match or error."))
 
-(unless (boundp 'add-log-current-defun-function)
-  (defvar add-log-current-defun-function nil
-    "Function used to find the current defun for change-log entries."))
-
 (unless (boundp 'align-mode-rules-list)
   (defvar align-mode-rules-list nil
     "Mode-specific alignment rules."))
@@ -328,10 +324,6 @@ When DELETE is non-nil, delete the source text after copying."
   (defvar comment-fill-column nil
     "Column used for comment indentation, or nil for `fill-column'."))
 
-(unless (boundp 'comment-column)
-  (defvar comment-column 32
-    "Column to indent right-margin comments to."))
-
 (unless (boundp 'comment-start)
   (defvar comment-start nil
     "String used to start a comment, or nil if comments are unavailable."))
@@ -404,10 +396,10 @@ When DELETE is non-nil, delete the source text after copying."
                  selective-display auto-fill-function paragraph-start
                  paragraph-separate paragraph-ignore-fill-prefix
                  adaptive-fill-function fill-paragraph-function
-                 comment-column comment-start comment-start-skip
+                 comment-start comment-start-skip
                  completion-at-point-functions
                  minor-mode-overriding-map-alist
-                 add-log-current-defun-function next-error-function
+                 next-error-function
                  indent-line-function indent-region-function))
     (make-variable-buffer-local sym)))
 

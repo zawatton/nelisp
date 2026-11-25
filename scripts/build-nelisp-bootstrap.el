@@ -481,7 +481,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-parity-shims.el"
     "emacs-parity-misc.el"
     "emacs-parity-fns2.el"
-    "emacs-parity-org.el"
     ;; Stock variable fills that no other wired file provides.  Both are
     ;; purely additive -- every top-level form is
     ;; `(unless (boundp 'X) (defvar X ...))' -- so a real preload still wins.
@@ -490,20 +489,19 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; ahead of vars3: vars3 fills only what shims/vars2/core-vars did not.
     "emacs-parity-vars2.el"
     "emacs-parity-vars3.el"
-    ;; `char-script-table' for GNU fill.el, which reads it at load time.
-    "charscript.el"
     ;; GNU script/category runs consulted by word_boundary_p (forward-word).
     "emacs-word-boundary-data.el"
     ;; Runtime primitive repairs belong late: their dependencies have loaded,
     ;; while package/user-init consumers have not run yet.
     "emacs-parity-regex-charclass.el"
     "emacs-parity-makunbound.el"
-    "emacs-parity-clmacros.el"
     "emacs-parity-skk.el"
     "emacs-parity-subdirs.el"
     ;; GNU C-core coverage (tools/ai/c-core-progress.org): every
     ;; src/emacs-cc-*.el unit, in name order.
     ,@(nelisp-bootstrap--c-core-unit-files)
+    ;; GNU fill.el reads the script table while it loads.
+    "charscript.el"
     ;; GNU files.el definitions (generated, verbatim): directory-local
     ;; variables, file visiting, saving and backups.  After the C core, as
     ;; in GNU loadup (some defcustom defaults call C primitives such as
@@ -691,7 +689,7 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/emacs-lisp/lisp-mode.el"
     "emacs-lisp/progmodes/elisp-mode.el"
     ;; S2 coverage batch 6 (2026-09-29): compile, pcomplete (shell.el's
-    ;; live-`require' target), shell, ehelp (term.el's), term, woman,
+    ;; live-`require' target), shell, ehelp (term.el's), woman,
     ;; project.  Compile is carried verbatim in the .el bundle.
     ;; pcomplete.el/ehelp.el are bundled here rather than left to live
     ;; `require' because a live `require' of the raw file costs ~1.7s/~5.6s
@@ -708,7 +706,6 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp/pcomplete.el"
     "emacs-lisp/shell.el"
     "emacs-lisp/ehelp.el"
-    "emacs-lisp/term.el"
     "emacs-lisp/woman.el"
     "emacs-lisp-31.1/progmodes/project.el"
     ;; GNU's loaddefs.el defines `cursor-sensor-inhibit' at dump time (an
@@ -834,10 +831,10 @@ These files must not run during the self-healing replay phase itself.")
     "vendor/emacs-lisp/calc"
     "vendor/emacs-lisp/calendar"
     "vendor/emacs-lisp/eshell"
+    "vendor/emacs-lisp/emulation"
     "vendor/emacs-lisp/mail"
     "vendor/emacs-lisp/cedet"
     "vendor/emacs-lisp/leim"
-    "vendor/emacs-lisp/term"
     "vendor/emacs-lisp/erc"
     "vendor/emacs-lisp/org"
     "vendor/emacs-lisp/gnus"
@@ -1554,7 +1551,6 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/pcomplete.el"
     "vendor/emacs-lisp/shell.el"
     "vendor/emacs-lisp/ehelp.el"
-    "vendor/emacs-lisp/term.el"
     "vendor/emacs-lisp/woman.el"
     "vendor/emacs-lisp/progmodes/project.el"
     "vendor/emacs-lisp/json.el"

@@ -258,76 +258,6 @@ sort CODINGS instead."
       (check-coding-system coding-system))
     (setq selection-coding-system coding-system)))
 
-;;;; --- SMIE indentation helpers (emacs-lisp/smie.el) -----------------
-
-;; Stock default tokenizer used by `smie-forward-token-function'.
-(unless (fboundp 'smie-default-forward-token)
-  (defun smie-default-forward-token ()
-    (forward-comment (point-max))
-    (buffer-substring-no-properties
-     (point)
-     (progn (if (zerop (skip-syntax-forward "."))
-                (skip-syntax-forward "w_'"))
-            (point)))))
-
-(unless (boundp 'smie-forward-token-function)
-  (defvar smie-forward-token-function #'smie-default-forward-token
-    "Function to move forward by one token and return that token."))
-
-(unless (boundp 'smie--hanging-eolp-function)
-  (defvar smie--hanging-eolp-function
-    (lambda ()
-      (skip-chars-forward " \t")
-      (or (eolp)
-          (forward-comment (point-max))))
-    "Function to skip to the end of the line, comments included."))
-
-(unless (fboundp 'smie-indent--bolp)
-  (defun smie-indent--bolp ()
-    "Return non-nil if the current token is the first on the line."
-    (save-excursion (skip-chars-backward " \t") (bolp))))
-
-(unless (fboundp 'smie-rule-bolp)
-  (defalias 'smie-rule-bolp #'smie-indent--bolp))
-
-(unless (fboundp 'smie-indent--hanging-p)
-  (defun smie-indent--hanging-p ()
-    "Return non-nil if the current token is \"hanging\".
-A hanging keyword is one that's at the end of a line except it's not at
-the beginning of a line."
-    (and (not (smie-indent--bolp))
-         (save-excursion
-           (<= (line-end-position)
-               (progn
-                 (and (zerop (length (funcall smie-forward-token-function)))
-                      (not (eobp))
-                      ;; Could be an open-paren.
-                      (forward-char 1))
-                 (funcall smie--hanging-eolp-function)
-                 (point)))))))
-
-(unless (fboundp 'smie-rule-hanging-p)
-  (defalias 'smie-rule-hanging-p #'smie-indent--hanging-p))
-
-;;;; --- mode-line (bindings.el) ---------------------------------------
-
-(unless (boundp 'mode-line-buffer-identification-keymap)
-  (defvar mode-line-buffer-identification-keymap (make-sparse-keymap)
-    "Keymap for what is displayed by `mode-line-buffer-identification'."))
-
-(unless (fboundp 'propertized-buffer-identification)
-  (defun propertized-buffer-identification (fmt)
-    "Return a list suitable for `mode-line-buffer-identification'.
-FMT is a format specifier such as \"%12b\".  This function adds
-text properties for face, help-echo, and local-map to it."
-    (list (propertize fmt
-                      'face 'mode-line-buffer-id
-                      'help-echo
-                      (purecopy "Buffer name
-mouse-1: Previous buffer\nmouse-3: Next buffer")
-                      'mouse-face 'mode-line-highlight
-                      'local-map mode-line-buffer-identification-keymap))))
-
 ;;;; --- pcomplete (pcomplete.el) --------------------------------------
 
 (let ((current (and (fboundp 'pcomplete-uniquify-list)
@@ -600,50 +530,6 @@ Return a reordered plist."
 (when (and (fboundp 'nelisp--write-stdout-bytes)
            (fboundp 'emacs-parity-macros2--restore-iter-shims))
   (emacs-parity-macros2--restore-iter-shims))
-
-;;;; --- term.el: lightweight package load surface ---------------------
-
-;; The stock 192 KiB term.el is a full process/display implementation and
-;; does not finish loading within the standalone package-load budget.  Eat
-;; requires the `term' feature unconditionally, but on Emacs 28+ it uses the
-;; ansi-color faces and loads term/xterm separately; it does not call Term's
-;; process or mode implementation while loading.  Preserve the small shared
-;; configuration surface that packages legitimately customize, including the
-;; pre-Emacs-28 color-face fallback, without claiming `term-mode' support.
-(when (and (fboundp 'nelisp--write-stdout-bytes)
-           (not (featurep 'term)))
-  (defgroup term nil
-    "General command interpreter in a window."
-    :group 'processes)
-
-  (defcustom term-mode-hook nil
-    "Hook run after entering Term mode."
-    :type 'hook
-    :group 'term)
-
-  (defcustom term-exec-hook nil
-    "Hook run after starting a process in a Term buffer."
-    :type 'hook
-    :group 'term)
-
-  (defface term-color-black '((t :inherit ansi-color-black))
-    "Face used to render black terminal text." :group 'term)
-  (defface term-color-red '((t :inherit ansi-color-red))
-    "Face used to render red terminal text." :group 'term)
-  (defface term-color-green '((t :inherit ansi-color-green))
-    "Face used to render green terminal text." :group 'term)
-  (defface term-color-yellow '((t :inherit ansi-color-yellow))
-    "Face used to render yellow terminal text." :group 'term)
-  (defface term-color-blue '((t :inherit ansi-color-blue))
-    "Face used to render blue terminal text." :group 'term)
-  (defface term-color-magenta '((t :inherit ansi-color-magenta))
-    "Face used to render magenta terminal text." :group 'term)
-  (defface term-color-cyan '((t :inherit ansi-color-cyan))
-    "Face used to render cyan terminal text." :group 'term)
-  (defface term-color-white '((t :inherit ansi-color-white))
-    "Face used to render white terminal text." :group 'term)
-
-  (provide 'term))
 
 ;;;; --- native compilation (explicit "unavailable" graceful no-op) ----
 
