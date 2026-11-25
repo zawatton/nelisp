@@ -16,7 +16,8 @@ specific to the GNU build and target, even within Emacs 31.1.
 entry points, and =emacs-cc-census-files-w101.el= owns the relative
 filename function. Replace those definitions in place or transfer ownership
 atomically under Doc 246. Keep the code generator and ABI machinery under
-NeLisp-private names. Check the guarded prelude definition of
+NeLisp-private names. Publish the =native-compile= feature alongside
+the working backend. Check the guarded prelude definition of
 =native-comp-available-p= and the census bootstrap selection before changing
 availability. Advertise support when a normal compile and load can complete.
 
@@ -87,10 +88,18 @@ specialization. See [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/
 Give the LIMPLE adapter explicit basic blocks, label edges, tagged-word
 locations and typed call sites. Reuse the AOT/FX register, spill, branch,
 call and ELF relocation emitters where they implement the required target
-convention. Extend the ELN writer to take a unit of lowered functions,
+convention. For x86-64 SysV, use the call-marshalling and rel32 fixup
+paths in =nelisp-aot-compiler--emit-call= as the starting point for
+fixed calls, and use the ELN templates as examples of RIP-relative
+loads and indirect link-table calls. Keep analysis in the GNU passes
+and use the existing FX machinery only where it preserves the tagged
+word and control-flow semantics. Extend the ELN writer to take a unit of lowered functions,
 metadata and relocations. The current =nelisp-eln-emitter-write-ir= is a
 single exported AOT leaf writer, with fixed top-level templates. Keep it
 as an existing caller of shared ELF writing code when generalizing it.
+The current writer uses =nelisp-elf-write-binary= to write ET_REL, then
+=ld -shared -Bsymbolic= to link ET_DYN. This path requires a linker but
+does not invoke a C compiler or libgccjit.
 
 | LIMPLE instruction | Machine lowering |
 |--------------------+------------------|
@@ -149,7 +158,10 @@ machine code. See
 [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/comp.c#L5250-L5337][loader fixups]].
 
 Keep persistent relocation objects, registered anonymous functions and
-their code owner live with the native unit. Keep ephemeral data live
+their code owner live with the native unit. GNU copies persistent words
+from the unit-owned vector. A raw machine relocation cell alone does not
+keep an object live in NeLisp. Root reconstructed lambdas separately and
+remember their C names and relocation indexes for dump rehydration. Keep ephemeral data live
 through the full top-level call, including allocations during
 registration. Preserve shared and circular objects through print/read.
 Generate both top-level entries when present in LIMPLE. Preserve their
@@ -242,3 +254,10 @@ The installed GNU 31.1 reference reports nil from
 built without native compilation. Verify native publication and
 execution with a native-enabled GNU 31.1 build matching the producer
 profile. Keep all S11 criteria open until those runs exist.
+
+The build installed a fresh executable before its 300-second timeout.
+With that executable, a bare source load of the vendor compiler reached
+missing =map-keymap=, the older artifact dump failed its packed-image
+version check, and the fresh bootstrap dump bake timed out at 150 seconds.
+The LAP-to-LIMPLE diagnostic above therefore applies to the existing
+binary and artifact image together.
