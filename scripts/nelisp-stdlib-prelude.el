@@ -34086,19 +34086,7 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
   "The epoch-aware `set-case-table' function object.")
 (setq nelisp-casetab--epoch-owner (symbol-function 'set-case-table))
 
-(provide 'nelisp-stdlib-casetab)
-;;; nelisp-stdlib-casetab.el ends here
-;; END GENERATED CASETAB SOURCES
-
-;;; case-table.el --- GNU case-table Lisp layer for NeLisp -*- lexical-binding: t; -*-
-
-;; GNU Emacs 31.1 lisp/case-table.el:36-181 supplies the public Lisp layer.
-;; Standard Unicode data remains generated from the same reference version.
-;; Native char-tables are used directly; the optional foundation adapter is
-;; handled by the C-equivalent layer's primitive-access wrappers.
-
-;;; Code:
-
+;; Unicode runs extracted from GNU Emacs 31.1's standard case tables.
 (defconst nelisp-casetab--standard-ranges
   '(
     (0 64 0) (65 90 32) (91 127 0) (160 161 0) (166 167 0) (169 169 0)
@@ -34923,6 +34911,10 @@ local values but still allow the table's default or parent fallback."
     (dolist (pair pairs)
       (nelisp-casetab--shuffle table (car pair) (cdr pair)))
     table))
+
+(provide 'nelisp-stdlib-casetab)
+;;; nelisp-stdlib-casetab.el ends here
+;; END GENERATED CASETAB SOURCES
 
 (defun describe-buffer-case-table ()
   "Describe the case table of the current buffer."
