@@ -91,8 +91,6 @@ Native qualification is required before enabling this compiler option.")
 (defvar nelisp-cc-fxir-native--temps nil "Temporaries of the function being generated.")
 (defvar nelisp-cc-fxir-native--callees nil "Remaining callee names, in walk order.")
 (defvar nelisp-cc-fxir-native--maxargc 0 "Largest staged argument count.")
-(defvar nelisp-cc-fxir-native--nbd 0
-  "Dynamic bindings the code being lowered holds at its start (static count).")
 (defvar nelisp-cc-fxir-native--ncatch 0
   "Catch nodes of the function being generated (three window words each).")
 (defvar nelisp-cc-fxir-native--mutant nil
@@ -212,8 +210,8 @@ Not used on the lowering path."
              (puthash node (1+ (gethash node counts 0)) counts)
              (puthash node t active)
              (pcase (car node)
-               ((or :const :nil :slot :varref :alias) nil)
-               (:setslot (walk (nth 2 node) (append path '(2)) (1+ depth)))
+               ((or :const :nil :slot :varref :alias :late-ref :late-special-p) nil)
+               ((or :setslot :late-set) (walk (nth 2 node) (append path '(2)) (1+ depth)))
                ((or :seq :prog1)
                 (let ((i 1))
                   (dolist (child (nthcdr 1 node))
@@ -877,7 +875,7 @@ Opcodes: 4 +, 5 -, 6 <, 13 =, 14 >, 7 1+, 15 1-."
 ;; `nelisp-nc--callees' walks them.
 (defun nelisp-cc-fxir-native--handler (n)
   "Lower a handler node N (:catch :throw :condition-case :unwind-protect)."
-  (let ((d nelisp-cc-fxir-native--nbd))
+  (let ((depth (unless (eq (car n) :throw) (nelisp-cc-fxir-native--temp))))
     (pcase (car n)
       (:throw
        (let ((args (nelisp-cc-fxir-native--args (cdr n))))
@@ -892,12 +890,13 @@ Opcodes: 4 +, 5 -, 6 <, 13 =, 14 >, 7 1+, 15 1-."
          (setq nelisp-cc-fxir-native--ncatch (1+ nelisp-cc-fxir-native--ncatch))
          (cons (append (car lt)
                        (nelisp-cc-fxir-native--win)
-                       (list (cons (nelisp-cc-fxir-native--op-fallible-p :catch) `(seq (nc_catch_push env ,node ,(cdr lt))
+                       (list (cons (nelisp-cc-fxir-native--op-fallible-p :catch) `(seq (setq ,depth (+ (shl nb 2) 1))
+                                           (nc_catch_push env ,node ,(cdr lt))
                                            ,(nelisp-cc-fxir-native--value-block lb r)
                                            (nc_catch_pop env ,node)
                                            (if (> st 0)
                                                (if (= (nc_catch_match ,node) 1)
-                                                   (seq (setq nb (nc_unbind_to env nb ,d))
+                                                   (seq (setq nb (nc_unbind_to env nb (sar ,depth 2)))
                                                         (setq ,r (nl_ct_caught_word (nl_exit_val_w) 0))
                                                         (setq st 0))
                                                  0)
@@ -915,12 +914,13 @@ Opcodes: 4 +, 5 -, 6 <, 13 =, 14 >, 7 1+, 15 1-."
          (dolist (h (reverse hs))
            (setq chain
                  `(if (= (nc_cc_match env ,(nelisp-cc-fxir-native--cv (car h))) 1)
-                      (seq (setq nb (nc_unbind_to env nb ,d))
+                      (seq (setq nb (nc_unbind_to env nb (sar ,depth 2)))
                            (setq st 0)
                            ,(if var `(setq ,var (m5_fx_exit_condition 0 0)) '(m5_fx_exit_condition 0 0))
                            ,(nelisp-cc-fxir-native--value-block (cdr h) r))
                     ,chain)))
-         (cons (list (cons (nelisp-cc-fxir-native--op-fallible-p :condition-case) `(seq ,(nelisp-cc-fxir-native--value-block lb r)
+         (cons (list (cons (nelisp-cc-fxir-native--op-fallible-p :condition-case) `(seq (setq ,depth (+ (shl nb 2) 1))
+                                   ,(nelisp-cc-fxir-native--value-block lb r)
                                    (if (= st 0)
                                        ,(if ls
                                             `(seq ,(if var `(setq ,var ,r) 0)
@@ -934,13 +934,14 @@ Opcodes: 4 +, 5 -, 6 <, 13 =, 14 >, 7 1+, 15 1-."
               (r (nelisp-cc-fxir-native--temp))
               (rc (nelisp-cc-fxir-native--temp)) (fl (nelisp-cc-fxir-native--temp))
               (tg (nelisp-cc-fxir-native--temp)) (vl (nelisp-cc-fxir-native--temp)))
-         (cons (list (cons (nelisp-cc-fxir-native--op-fallible-p :unwind-protect) `(seq ,(nelisp-cc-fxir-native--value-block lb r)
+         (cons (list (cons (nelisp-cc-fxir-native--op-fallible-p :unwind-protect) `(seq (setq ,depth (+ (shl nb 2) 1))
+                                   ,(nelisp-cc-fxir-native--value-block lb r)
                                    (if (> st 0)
                                        (seq (setq ,rc (+ (shl st 2) 1))
                                             (setq ,fl (+ (shl (heap-read-u64 268435472 0) 2) 1))
                                             (setq ,tg (nl_exit_tag_w))
                                             (setq ,vl (nl_exit_val_w))
-                                            (setq nb (nc_unbind_to env nb ,d))
+                                            (setq nb (nc_unbind_to env nb (sar ,depth 2)))
                                             (setq st 0))
                                      (setq ,rc 1))
                                    ,(nelisp-cc-fxir-native--block (car lc))
@@ -975,6 +976,35 @@ Opcodes: 4 +, 5 -, 6 <, 13 =, 14 >, 7 1+, 15 1-."
     (:setslot
      (let ((l (nelisp-cc-fxir-native--lower (nth 2 n))) (v (nelisp-cc-fxir-native--local (nth 1 n))))
        (cons (append (car l) (list (cons nil `(setq ,v ,(cdr l))))) v)))
+
+    (:late-ref
+     (let* ((slot (nelisp-cc-fxir-native--local (nth 1 n)))
+            (name (nelisp-cc-fxir-native--cv (nth 2 n)))
+            (window (nelisp-cc-fxir-native--win))
+            (r (nelisp-cc-fxir-native--temp)))
+       (cons (list (cons (nelisp-cc-fxir-native--op-fallible-p :late-ref) `(if (= ,slot 2)
+                               (seq ,@(mapcar #'cdr window)
+                                    (setq st ,(nelisp-cc-fxir-native--memchk
+                                               `(nc_late_varref env ,name mem)))
+                                    (if (= st 0) (setq ,r (ptr-read-u64 mem 0)) 0))
+                             (setq ,r ,(if (nth 3 n) `(nl_cons_cdr_word ,slot) slot)))))
+             r)))
+    (:late-set
+     (let* ((slot (nelisp-cc-fxir-native--local (nth 1 n)))
+            (value (nelisp-cc-fxir-native--hold (nelisp-cc-fxir-native--lower (nth 2 n))))
+            (v (cdr value))
+            (name (nelisp-cc-fxir-native--cv (nth 3 n))))
+       (cons (append (car value)
+                     (list (cons (nelisp-cc-fxir-native--op-fallible-p :late-set) `(if (= ,slot 2)
+                                         (setq st (nc_late_varset env ,name ,v))
+                                       ,(if (nth 4 n)
+                                            `(seq (wf_dirty)
+                                                  (ptr-write-u64 (- ,slot 2) 8 (nl_word_canon ,v)))
+                                          `(setq ,slot ,v))))))
+             v)))
+    (:late-special-p
+     (let ((slot (nelisp-cc-fxir-native--local (nth 1 n))) (r (nelisp-cc-fxir-native--temp)))
+       (cons (list (cons nil `(setq ,r (if (= ,slot 2) 7 3)))) r)))
     (:seq
      (let ((stmts nil) (val 3) (rest (cdr n)))
        (while rest
@@ -1023,24 +1053,45 @@ Opcodes: 4 +, 5 -, 6 <, 13 =, 14 >, 7 1+, 15 1-."
                          `(while ,cond-form ,body)))
              3)))
     (:let
-     (let ((stmts nil))
-       (dolist (it (nth 1 n))
-         (let ((l (nelisp-cc-fxir-native--lower (nth 2 it))))
-           (setq stmts (append stmts (car l)))
-           (if (eq (car it) :store)
-               (setq stmts (append stmts (list (cons (nelisp-cc-fxir-native--op-fallible-p :store) `(setq ,(nelisp-cc-fxir-native--local (nth 1 it)) ,(cdr l))))))
-             ;; VARBIND: GNU's Bvarbind through the byte-code VM's binder.
-             (setq stmts (append stmts
-                                 (list (cons (nelisp-cc-fxir-native--op-fallible-p :varbind) `(setq st (wf_bytecode_varbind env ,(nelisp-cc-fxir-native--cv (nth 1 it)) ,(cdr l))))
-                                       (cons nil '(setq nb (+ nb 1)))))))))
-       (let ((body (let ((nelisp-cc-fxir-native--nbd (+ nelisp-cc-fxir-native--nbd (nth 3 n))))
-                     (nelisp-cc-fxir-native--lower (nth 2 n)))))
-         (if (= (nth 3 n) 0)
+     (let* ((bindings (nth 1 n))
+            (nspec (nth 3 n))
+            (depth (and (assq :late-bind bindings) (nelisp-cc-fxir-native--temp)))
+            (stmts (when depth
+                     (list (cons nil `(setq ,depth (+ (shl nb 2) 1)))))))
+       (dolist (it bindings)
+         (let* ((l (nelisp-cc-fxir-native--lower (nth 2 it)))
+                (v (cdr l)))
+           (setq stmts
+                 (append stmts (car l)
+                         (pcase (car it)
+                           (:store
+                            (list (cons (nelisp-cc-fxir-native--op-fallible-p :store)
+                                        `(setq ,(nelisp-cc-fxir-native--local (nth 1 it)) ,v))))
+                           (:varbind
+                            (list (cons (nelisp-cc-fxir-native--op-fallible-p :varbind)
+                                        `(setq st (wf_bytecode_varbind env ,(nelisp-cc-fxir-native--cv (nth 1 it)) ,v)))
+                                  (cons nil '(setq nb (+ nb 1)))))
+                           (:late-bind
+                            (let ((slot (nelisp-cc-fxir-native--local (nth 1 it)))
+                                  (name (nelisp-cc-fxir-native--cv (nth 3 it)))
+                                  (init (if (nth 4 it) `(nl_cons_cdr_word ,v) v)))
+                              (list (cons (nelisp-cc-fxir-native--op-fallible-p :late-bind)
+                                          `(if (= (nc_late_special_p env ,name) 0)
+                                                   (setq ,slot ,v)
+                                                 (seq (setq st (nc_late_varbind env ,name ,init))
+                                                      (if (= st 0)
+                                                          (seq (setq ,slot 2) (setq nb (+ nb 1)))
+                                                        0))))))))))))
+       (let ((body (nelisp-cc-fxir-native--lower (nth 2 n))))
+         (if (and (null depth) (= nspec 0))
              (cons (append stmts (car body)) (cdr body))
            (let ((held (nelisp-cc-fxir-native--hold body)))
              (cons (append stmts (car held)
-                           (list (cons nil `(seq (wf_bytecode_unbind (+ env 32) ,(nth 3 n))
-                                                 (setq nb (- nb ,(nth 3 n)))))))
+                           (list (cons nil
+                                       (if depth
+                                           `(setq nb (nc_unbind_to env nb (sar ,depth 2)))
+                                         `(seq (nc_unbind_n env ,nspec)
+                                               (setq nb (- nb ,nspec)))))))
                    (cdr held)))))))
     (:call (nelisp-cc-fxir-native--call n))
     (:inline (nelisp-cc-fxir-native--inline-op n))
@@ -1110,7 +1161,6 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
          (nelisp-cc-fxir-native--callees (copy-sequence (nth 3 row)))
          (nelisp-cc-fxir-native--maxargc 0)
          (nelisp-cc-fxir-native--uses-window nil)
-         (nelisp-cc-fxir-native--nbd 0)
          (nelisp-cc-fxir-native--ncatch 0)
          (body (nelisp-cc-fxir-native--lower (nth 1 (nth 4 row))))
          (emitted-body (if body-factory (funcall body-factory body) body))
@@ -1163,7 +1213,7 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
                                0))
                          0)
                        0
-                     (/= (m5_fx_entry_check ec env) 0)))
+                     (/= (nc_entry_check ec env) 0)))
                  -3
                (let* ((base (+ (nl_word_payload code) 8))
                       (mark (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
@@ -1178,7 +1228,7 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
                             (list (cons nil `(if (= wout 0) (nl_abi_word_to_rc ,(cdr emitted-body) out)
                                                (ptr-write-u64 wout 0 ,(cdr emitted-body)))))))
                   ;; One exit: bindings still held (a call failed) are undone.
-                  (if (> nb 0) (wf_bytecode_unbind (+ env 32) nb) 0)
+                  (if (> nb 0) (nc_unbind_n env nb) 0)
                   (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
                       (ptr-write-u64 (data-addr nl_rootstack_top) 0 mark)
                     (nl_root_release env mark))
@@ -1231,8 +1281,22 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
           (wf_bytecode_condition_matches env (nl_exit_tag_w) spec)
         0))
     ;; Undo the dynamic bindings above D of the NB held; answers the count left.
+    (defun nc_unbind_n (env n)
+      (wf_bytecode_unbind (+ env 32) n))
     (defun nc_unbind_to (env nb d)
-      (if (> nb d) (seq (wf_bytecode_unbind (+ env 32) (- nb d)) d) nb))
+      (if (> nb d) (seq (nc_unbind_n env (- nb d)) d) nb))
+    (defun nc_entry_check (guard env)
+      (m5_fx_entry_check guard env))
+    ;; Keep relocations to the runtime in one place. A late local can be
+    ;; read many times in one row, though the dynamic arm usually stays cold.
+    (defun nc_late_varref (env name dst)
+      (wf_bytecode_w_varref env name dst 0))
+    (defun nc_late_varset (env name val)
+      (bf_set_dynamic_value env name val))
+    (defun nc_late_special_p (env name)
+      (bf_declared_special_p env name))
+    (defun nc_late_varbind (env name val)
+      (wf_bytecode_varbind env name val))
     ;; Put a kept exit back (`nl_exit_restore' from words).
     (defun nc_exit_put (tag val flag)
       (seq (ptr-write-u64 (data-addr nl_exit_values) 0 tag)
@@ -1689,7 +1753,8 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
     nc_desc_call nc_builtin_call nc_funcall nc_list_call nc_pred6 nc_mul_fast nc_rem_fast
     nc_equal_fast nc_memq_fast nc_assq_fast nc_nthcdr_fast nc_length_fast nc_globals
     ;; nc4
-    nc_catch_push nc_catch_pop nc_catch_match nc_cc_match nc_unbind_to nc_exit_put)
+    nc_catch_push nc_catch_pop nc_catch_match nc_cc_match nc_unbind_n nc_unbind_to nc_exit_put nc_entry_check
+    nc_late_varref nc_late_varset nc_late_special_p nc_late_varbind)
   "Shared helpers the unit inliner must leave as calls.")
 
 (defun nelisp-cc-fxir-native-source ()

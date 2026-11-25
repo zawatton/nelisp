@@ -32894,6 +32894,13 @@ bytes are written into a fresh 8-byte buffer instead."
     ;;  4 ADD sym  5 SUB sym  6 LT sym  13 NUMEQ sym  14 GT sym   (2 args)
     ;;  7 ADD1 sym   15 SUB1 sym                                   (1 arg)
     ;;  16 CALL sym argc   28 CAPTURE-VALUE slot
+    ;;  32 BIND-LOCAL name slot (pop init; keep a lexical value or specbind)
+    ;;  33 REF-LOCAL name slot (read a binding chosen at runtime)
+    ;;  34 SET-LOCAL name slot (assign without popping the result)
+    ;;  35 UNBIND-LOCALS slot-or-vector count (undo actual dynamic bindings)
+    ;;  36 REBIND-LOCAL name slot (bind the already saved parallel init)
+    ;;  37 LOCAL-SPECIAL-P slot (push whether the binding is dynamic)
+    ;; A negative slot operand of 32/33/34/36 encodes a boxed lexical slot.
     ;; Arithmetic opcode fallbacks use the canonical builtin, independently
     ;; of later function-cell changes. Ordinary CALL still resolves its cell.
     (defun m5_fx_int_p (w)
@@ -34016,6 +34023,33 @@ bytes are written into a fresh 8-byte buffer instead."
                        (value (nl_cell_get_value_w (nl_cons_cdr_word pair) 0)))
                   (seq (ptr-write-u64 stk (* sp 8) value)
                        (setq sp (+ sp 1)) (setq pc (+ pc 2))))
+            (if (= op 37)
+                (let* ((index (wf_bytecode_w_int (heap-read-u64 base (* (+ pc 1) 8))))
+                       (local (heap-read-u64 mem (* index 8))))
+                  (seq (ptr-write-u64 stk (* sp 8) (if (= local 2) 7 3))
+                       (setq sp (+ sp 1)) (setq pc (+ pc 2))))
+            (if (if (= op 33) 1 (= op 34))
+                (let* ((index (wf_bytecode_w_int (heap-read-u64 base (* (+ pc 2) 8))))
+                       (boxed (< index 0))
+                       (slot (+ mem (* (if (= boxed 1) (- -1 index) index) 8)))
+                       (value (heap-read-u64 slot 0)))
+                  (if (= op 33)
+                      (let* ((dst (+ stk (* sp 8))))
+                        (seq (if (/= value 2)
+                                 (ptr-write-u64 dst 0
+                                                (if (= boxed 1) (nl_cons_cdr_word value) value))
+                               (setq status (wf_bytecode_w_varref
+                                             env (heap-read-u64 base (* (+ pc 1) 8)) dst 0)))
+                             (setq sp (+ sp 1)) (setq pc (+ pc 3))))
+                    (let* ((new (heap-read-u64 stk (* (- sp 1) 8))))
+                      (seq (if (= value 2)
+                               (setq status (bf_set_dynamic_value
+                                             env (heap-read-u64 base (* (+ pc 1) 8)) new))
+                             (if (= boxed 1)
+                                 (seq (wf_dirty)
+                                      (ptr-write-u64 (- value 2) 8 (nl_word_canon new)))
+                               (ptr-write-u64 slot 0 new)))
+                           (setq pc (+ pc 3))))))
             (if (= op 3)
                 (seq (setq sp (- sp 1))
                      (setq a (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
@@ -34153,13 +34187,26 @@ bytes are written into a fresh 8-byte buffer instead."
                 ;; cell (no clone, no allocation); any other name takes the
                 ;; general binder and a fixed-array event recording its frame. Each binding
                 ;; is one event, so NB counts events.
-                (if (= op 20)
-                    (seq (setq a (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
+                (if (if (= op 20) 1 (if (= op 32) 1 (= op 36)))
+                    (let* ((name (heap-read-u64 base (* (+ pc 1) 8)))
+                           (index (if (= op 20) 0
+                                    (wf_bytecode_w_int (heap-read-u64 base (* (+ pc 2) 8)))))
+                           (boxed (< index 0))
+                           (slot (if (= op 20) 0
+                                   (+ mem (* (if (= boxed 1) (- -1 index) index) 8))))
+                           (value (if (= op 36) (heap-read-u64 slot 0)
+                                    (heap-read-u64 stk (* (- sp 1) 8)))))
+                      (if (if (= op 20) 0 (= (bf_declared_special_p env name) 0))
+                          (seq (ptr-write-u64 slot 0 value)
+                               (if (= op 32) (setq sp (- sp 1)) 0)
+                               (setq pc (+ pc 3)))
+                        (seq
+                         (if (= boxed 1) (setq value (nl_cons_cdr_word value)) 0)
                          ;; Adopt only at zero active bindings. An older general
                          ;; prefix stays entirely in the environment; there is
                          ;; no replay or correction of a published link depth.
                          (if (and (= aux 0) (= nb 0))
-                             (if (= (m5_fx_lean_candidate a) 1)
+                             (if (= (m5_fx_lean_candidate name) 1)
                                  (seq (setq aux (wf_bytecode_aux_new env (nl_n4_state env)))
                                       (if (= aux 0) (setq status -4) 0))
                                0)
@@ -34168,22 +34215,45 @@ bytes are written into a fresh 8-byte buffer instead."
                            (seq
                             (if (= aux 0)
                                 (setq r (wf_bytecode_varbind
-                                         env a (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
+                                         env name value))
                               (seq
                                (setq r (wf_bytecode_w_lean_bind
-                                        env a (heap-read-u64 (+ stk (* (- sp 1) 8)) 0) aux))
+                                        env name value aux))
                                (if (= r 0) 0
                                  (seq (setq r (wf_bytecode_varbind
-                                               env a (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
+                                               env name value))
                                       (if (= r 0) (m5_fx_general_event env aux) 0)))))
                             (if (/= r 0) (setq status r)
-                              (seq (setq sp (- sp 1)) (setq nb (+ nb 1)) (setq pc (+ pc 2)))))))
+                              (seq
+                               ;; WORD 2 is an internal sentinel, never the
+                               ;; result of evaluating an initializer.
+                               (if (/= slot 0) (ptr-write-u64 slot 0 2) 0)
+                               (if (/= op 36) (setq sp (- sp 1)) 0)
+                               (setq nb (+ nb 1))
+                               (setq pc (+ pc (if (= op 20) 2 3))))))))))
                   ;; 21 UNBIND n: GNU's Bunbind -> unbind_to; the operand stack
                   ;; (the body's value) is untouched.
-                  (if (= op 21)
-                      (seq (setq n (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
-                           (if (> n 0) (m5_fx_unbind env aux n nb) 0)
-                           (setq nb (- nb n)) (setq pc (+ pc 2)))
+                  (if (if (= op 21) 1 (= op 35))
+                      (seq
+                       (if (= op 21)
+                           (seq (setq n (wf_bytecode_w_int (heap-read-u64 base (* (+ pc 1) 8))))
+                                (setq pc (+ pc 2)))
+                         (let* ((slots (heap-read-u64 base (* (+ pc 1) 8)))
+                                (i 0))
+                           (seq
+                            (setq n (wf_bytecode_w_int (heap-read-u64 base (* (+ pc 2) 8))))
+                            (if (= (logand slots 3) 1)
+                                (if (= (heap-read-u64 mem (* (sar slots 2) 8)) 2)
+                                    (setq n (+ n 1)) 0)
+                              (let* ((len (nl_vector_length slots)))
+                                (while (< i len)
+                                  (let* ((index (wf_bytecode_w_int (nl_vector_slot_word slots i))))
+                                    (seq (if (= (heap-read-u64 mem (* index 8)) 2)
+                                             (setq n (+ n 1)) 0)
+                                         (setq i (+ i 1)))))))
+                            (setq pc (+ pc 3)))))
+                       (if (> n 0) (m5_fx_unbind env aux n nb) 0)
+                       (setq nb (- nb n)))
                     ;; nativecomp N3 handler frames (`nelisp--fx-compile' catch /
                     ;; condition-case / unwind-protect): GNU's Bpushcatch,
                     ;; Bpushconditioncase, Bpophandler (bytecode.c) over
@@ -34241,7 +34311,7 @@ bytes are written into a fresh 8-byte buffer instead."
                     (if (= op 27)
                         (setq status (nl_ct_throw_words env (heap-read-u64 (+ stk (* (- sp 2) 8)) 0)
                                                         (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
-                    (setq status -2)))))))))))))))))))))))))
+                    (setq status -2)))))))))))))))))))))))))))
          ;; nativecomp N3: an exit (a call-out's rc, its signal or throw
          ;; stashed) while handler frames are pushed: the innermost frame
          ;; is popped; a catch whose tag is the throw's, or a
@@ -38605,6 +38675,10 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; a symbol without an object has never been declared.  Objects made
     ;; before the bit existed (short records) keep the registry lookup.
     (defun bf_declared_special_p (mirror name)
+      (if (= (nl_so_p name) 1)
+          (if (= (logand (heap-read-u64 (- name 6) 0) 16384) 0) 0 1)
+        (bf_declared_special_slow_p mirror name)))
+    (defun bf_declared_special_slow_p (mirror name)
       (let* ((obj (nelisp_mirror_lookup_entry_owned mirror name)))
         (if (= obj 0) 0
           (if (= (nl_so_p obj) 1)

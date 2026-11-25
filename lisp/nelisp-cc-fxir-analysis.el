@@ -42,6 +42,15 @@ returns :valid nil; even valid input never authorizes M1 transformation."
              (unless (and (vectorp code) (> k 0) (< k (length code))
                           (eql (aref code (1- k)) op))
                (fail :code-operand-mismatch))))
+         (late-operand (k local boxed ops)
+           (index k)
+           (unless (memq boxed '(nil t)) (fail :invalid-boxed-slot))
+           (when code
+             (unless (and (vectorp code) (> k 0) (< (1+ k) (length code))
+                          (memq (aref code (1- k)) ops)
+                          (symbolp (aref code k))
+                          (eql (aref code (1+ k)) (if boxed (- -1 local) local)))
+               (fail :code-operand-mismatch))))
          (slot (k)
            (index k)
            (unless (< k (nth 2 row)) (fail :invalid-slot)))
@@ -56,7 +65,7 @@ returns :valid nil; even valid input never authorizes M1 transformation."
            (shape n 1 nil)
            (pcase (car n)
              (:nil (shape n 1 1))
-             (:slot (shape n 2 2) (slot (nth 1 n)))
+             ((or :slot :late-special-p) (shape n 2 2) (slot (nth 1 n)))
              (:const
               (shape n 2 2) (operand (nth 1 n) 1)
               (let ((kind (if (not code) :unverified
@@ -76,6 +85,15 @@ returns :valid nil; even valid input never authorizes M1 transformation."
               (refuse :mutable-global-or-alias))
              (:setslot
               (shape n 3 3) (slot (nth 1 n))
+              (walk (nth 2 n) (append path '(2)) (1+ depth)))
+             (:late-ref
+              (shape n 3 4) (slot (nth 1 n))
+              (late-operand (nth 2 n) (nth 1 n) (nth 3 n) '(33))
+              (op-effects :late-ref) (refuse :dynamic-binding))
+             (:late-set
+              (shape n 4 5) (slot (nth 1 n))
+              (late-operand (nth 3 n) (nth 1 n) (nth 4 n) '(34))
+              (op-effects :late-set) (refuse :dynamic-binding)
               (walk (nth 2 n) (append path '(2)) (1+ depth)))
              (:call
               (shape n 3 nil) (operand (nth 1 n) 16)
@@ -116,12 +134,17 @@ returns :valid nil; even valid input never authorizes M1 transformation."
               (index (nth 3 n))
               (let ((i 0) (nbind 0))
                 (dolist (binding (nth 1 n))
-                  (shape binding 3 3)
+                  (shape binding 3 (if (eq (car-safe binding) :late-bind) 5 3))
                   (pcase (car binding)
                     (:store (slot (nth 1 binding)))
                     (:varbind
                      (operand (nth 1 binding) 20) (setq nbind (1+ nbind))
                      (op-effects :varbind) (refuse :dynamic-binding))
+                    (:late-bind
+                     (unless (>= (length binding) 4) (fail :invalid-binding))
+                     (slot (nth 1 binding))
+                     (late-operand (nth 3 binding) (nth 1 binding) (nth 4 binding) '(32 36))
+                     (op-effects :late-bind) (refuse :dynamic-binding))
                     (_ (fail :invalid-binding)))
                   (walk (nth 2 binding) (append path (list 1 i 2)) (1+ depth))
                   (setq i (1+ i)))
