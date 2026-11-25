@@ -25,6 +25,13 @@
 (declare-function nelisp--syscall-path-int "nelisp-runtime"
                   (number path integer))
 
+(declare-function nelisp--eval-source-string "nelisp-standalone"
+                  (source &optional compiled-start))
+(defvar nelisp--lh-file)
+(defvar nelisp--lh-parked)
+(defvar nelisp--lh-seg)
+(declare-function nelisp--lh-record "nelisp-standalone" (file entries))
+
 (declare-function nelisp--rd-read-one "nelisp-stdlib-prelude" (string start end))
 (declare-function nelisp--read-all-from-string-native "nelisp-standalone"
                   (source &optional start end encoding))
@@ -4007,26 +4014,41 @@ comment is the safety check; GNU does not impose a numeric version cap."
     "Decode utf-8-emacs BYTES.
 Return (TEXT . BYTE8-OFFSETS), where each offset marks an encoded raw
 byte that will occupy one byte after `string-as-unibyte'."
-    (let ((start 0) (cursor 0) (shrink 0) chunks offsets next)
+    (let* ((lead-c0 (unibyte-string #xc0))
+           (lead-c1 (unibyte-string #xc1))
+           (next-c0 (string-search lead-c0 bytes))
+           (next-c1 (string-search lead-c1 bytes))
+           (limit (length bytes))
+           (start 0)
+           (shrink 0)
+           chunks offsets next)
       ;; Unlike the external UTF-8 decoder, Emacs's .elc encoding also
       ;; accepts C0/C1 followed by a continuation as a single raw byte.
-      (while (setq next (string-match-p "[\300\301]" bytes cursor))
-        (setq cursor (1+ next))
-        (when (and (< cursor (length bytes)) (<= 128 (aref bytes cursor) 191))
-          (push (emacs-load--reader-slice bytes start next) chunks)
-          (push (char-to-string (+ #x3fff80
-                                   (* 64 (- (aref bytes next) 192))
-                                   (- (aref bytes cursor) 128)))
-                chunks)
-          (push (- next shrink) offsets)
-          (setq cursor (1+ cursor)
-                start cursor
-                shrink (1+ shrink))))
+      ;; Give each lead byte its own cursor. Searching again for an absent
+      ;; lead after every hit of the other one would rescan the suffix.
+      (while (setq next (if (and next-c0 next-c1)
+                            (min next-c0 next-c1)
+                          (or next-c0 next-c1)))
+        (let ((cursor (1+ next)))
+          (when (and (< cursor limit) (<= #x80 (aref bytes cursor) #xbf))
+            (push (emacs-load--reader-slice bytes start next) chunks)
+            (push (char-to-string (+ #x3fff80
+                                     (* 64 (- (aref bytes next) #xc0))
+                                     (- (aref bytes cursor) #x80)))
+                  chunks)
+            (push (- next shrink) offsets)
+            (setq cursor (1+ cursor)
+                  start cursor
+                  shrink (1+ shrink)))
+          (when (and next-c0 (< next-c0 cursor))
+            (setq next-c0 (string-search lead-c0 bytes cursor)))
+          (when (and next-c1 (< next-c1 cursor))
+            (setq next-c1 (string-search lead-c1 bytes cursor)))))
       (cons (if chunks
                 (apply #'concat
-                       (nreverse (cons (emacs-load--reader-slice bytes start (length bytes))
+                       (nreverse (cons (emacs-load--reader-slice bytes start limit)
                                        chunks)))
-              (emacs-load--reader-slice bytes 0 (length bytes)))
+              (emacs-load--reader-slice bytes 0 limit))
             offsets)))
 
   (defun emacs-load--elc-read-slice (source start end)
@@ -4105,11 +4127,22 @@ loader's defalias rewrites or native artifact compilation.  Top-level
           (inhibit-file-name-operation nil)
           (load-in-progress t)
           (lexical-binding nil)
+          (current-load-list (list resolved))
+          (nelisp--lh-file resolved)
+          (nelisp--lh-parked nil)
+          (nelisp--lh-seg nil)
           (position 0)
           (limit (length source))
           (next-hash -1)
-          (count 0))
-      (while (< (setq position (emacs-load--elc-skip-blocks source position limit))
+          (count 0)
+          (stream (and (fboundp 'nelisp--eval-source-string)
+                       (subrp (symbol-function 'nelisp--eval-source-string))
+                       (equal (subr-arity (symbol-function 'nelisp--eval-source-string))
+                              '(1 . 2)))))
+      (while (< (setq position
+                      (if stream
+                          (nelisp--eval-source-string source position)
+                        (emacs-load--elc-skip-blocks source position limit)))
                 limit)
         (let* ((native
                 (and (fboundp 'nelisp--read-all-from-string-native)
@@ -4146,8 +4179,10 @@ loader's defalias rewrites or native artifact compilation.  Top-level
               (eval form nil)))
           (setq position (cdr parsed)
                 count (1+ count))
-          (emacs-load--periodic-gc count)))
-      t))
+          (unless stream (emacs-load--periodic-gc count))))
+      (when (fboundp 'nelisp--lh-record)
+        (nelisp--lh-record resolved (cdr (nreverse current-load-list))))
+      :compiled))
 
   (defun emacs-load--elc-doc-start-p (source pos)
     "Return non-nil if byte POS follows a lazy docstring header or delimiter."
@@ -4208,13 +4243,15 @@ A successful load files RESOLVED in `load-history' and runs its
 after-load forms, as GNU `load' does (lread.c build_load_history)."
     (let ((result (nelisp--load-resolved-file-1 resolved noerror)))
       (when (and result (fboundp 'nelisp--after-load-feature))
-        (nelisp--after-load-feature resolved)
+        (if (eq result :compiled)
+            (do-after-load-evaluation resolved)
+          (nelisp--after-load-feature resolved))
         ;; Resume the enclosing file before its next form can locally
         ;; bind current-load-list, as cl-generic does after cl-loaddefs.
         (when (and load-file-name (boundp 'nelisp--lh-parked)
                    (assoc load-file-name nelisp--lh-parked))
           (nelisp--lh-select load-file-name)))
-      result))
+      (and result t)))
   (defun nelisp--load-resolved-file-1 (resolved noerror)
     "Load exact absolute RESOLVED path, honoring NOERROR for open failures."
     (cond

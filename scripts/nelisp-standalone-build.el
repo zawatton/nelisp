@@ -40308,14 +40308,14 @@ bytes are written into a fresh 8-byte buffer instead."
   (if (= (bf_require_file_readable_p (wf_arg_ptr args 0)) 1)
       (bf_load_with_lfn_rooted_w args env old-root)
     (bf_load_searched_w args env 0)))
-    (defun nl_driver_eval_word_with_recorded_roots (form env result out pool src cursor bsym state)
+    (defun nl_driver_eval_word_with_recorded_roots (form env result out pool src cursor bsym state discard)
   (let* ((depth-before (heap-read-u64 (data-addr nl_gc_loop_ctx) 0))
          (pushed (nl_gc_ctx_push env result out pool src cursor bsym)))
     (seq
      (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
      (let* ((word (nelisp_eval_call_w form env 0)))
        (seq
-        (if (/= word 0)
+        (if (and (/= word 0) (= discard 0))
             (seq
              (ptr-write-u64 (heap-sexp-payload state) 8 (nl_word_canon word))
              (wf_word_store_out out word)) 0)
@@ -40325,8 +40325,31 @@ bytes are written into a fresh 8-byte buffer instead."
           (seq
            (if (= pushed 1) (nl_gc_ctx_pop) 0)
            (if (and (/= word 0) (= drain-rc 0))
-               (nl_cons_cdr_word state) 0))))))))
-    (defun bf_eval_source_string_loop_w (src cursor result pool env out bsym state)
+               (if (= discard 1) 3 (nl_cons_cdr_word state)) 0))))))))
+    (defun bf_eval_stream_read_compiled_w (src cursor pool env)
+      ;; The source stays byte-indexed. Only the reader view interprets
+      ;; utf-8-emacs, including the two-byte on-disk encodings of byte8.
+      (let* ((data (bf_str_ptr src)) (end (bf_str_len src))
+             (start (nelisp_reader_skip_ws_p data (heap-sexp-payload cursor) end))
+             (view (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 cursor 8 start)
+         (if (= start end) 2
+           (seq
+            (ptr-write-u64 view 0 5)
+            (ptr-write-u64 view 8 end)
+            (ptr-write-u64 view 16 data)
+            (ptr-write-u64 view 24 end)
+            (let* ((form (nelisp_reader_parse_one_with_load_file_name_w
+                          view cursor 0 pool 0 (bf_read_load_file_name_w env 0))))
+              (if (and (/= form 0) (/= form 2)
+                       (= (bf_read_one_native_compatible_p
+                           src start (heap-sexp-payload cursor) 1) 1))
+                  form
+                ;; Return the start of the unread form to the Lisp loader.
+                ;; None of the earlier forms in the stream will be replayed.
+                (seq (ptr-write-u64 cursor 8 start) 0))))))))
+    (defun bf_eval_source_string_loop_w (src cursor result pool env out bsym state compiled)
   (let* ((more 1))
     (seq
      (while (= more 1)
@@ -40337,7 +40360,9 @@ bytes are written into a fresh 8-byte buffer instead."
         (nl_mxcache_evict result)
         (wf_write_nil result)
         (ptr-write-u64 268435472 0 0)
-        (let* ((form (nelisp_reader_parse_one_with_context_w src cursor 0 pool 0 3)))
+        (let* ((form (if (= compiled 1)
+                         (bf_eval_stream_read_compiled_w src cursor pool env)
+                       (nelisp_reader_parse_one_with_context_w src cursor 0 pool 0 3))))
           (if (= form 2) (setq more 0)
             (if (= form 0)
                 (setq more 3)
@@ -40346,34 +40371,56 @@ bytes are written into a fresh 8-byte buffer instead."
                (wf_word_store_out result form)
                (wf_write_nil out)
                (if (= (nl_driver_eval_word_with_recorded_roots
-                        form env result out pool src cursor bsym state) 0)
+                        form env result out pool src cursor bsym state compiled) 0)
                    (setq more 2)
-                 (if (< (heap-read-u64 268436184 0) (heap-read-u64 268435560 0)) 0
+                 ;; Use the same growth guard for both input encodings.
+                 ;; Allocation safepoints continue to service GC debt.
+                 (if (< (heap-read-u64 268436184 0) (heap-read-u64 268435560 0))
+                     0
                    (let* ((live (nl_gc_collect_form_boundary env result out pool src cursor bsym))
                           (bump (heap-read-u64 268436184 0))
                           (lo (+ (* live 3) 1048576)) (hi (+ bump 16777216)))
                      (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))))))))
-     (if (= more 3) (seq (bf_read_syntax_error src) 0)
-       (if (= more 2) 0 (nl_cons_cdr_word state))))))
+     (if (= more 2) 0
+       (if (= compiled 1)
+           (seq (ptr-write-u64 268435472 0 0)
+                (nl_imm_int (heap-sexp-payload cursor)))
+         (if (= more 3) (seq (bf_read_syntax_error src) 0)
+           (nl_cons_cdr_word state)))))))
+    (defun bf_eval_source_string_offset_w (args)
+      (let* ((rest (nl_cons_cdr_word args)))
+        (if (= (nl_val_tag rest) 7) (nl_cons_car_word rest) 3)))
     (defun bf_eval_source_string_inner_rooted_w (args env state)
   ;; Doc 216 S6.2: STATE is a WORD root slot holding the loop's state cons.
-  ;; The parse result and the value view are recorded by the GC context, like
-  ;; the cursor, pool and BSYM, so they are arena boxes made here.
+  ;; The parse result and the value view are recorded by the GC context.
   (let* ((src (wf_arg_ptr args 0)) (cursor (alloc-bytes 32 8))
-         (cap (let* ((n (* 4 (m5_strlen src))))
-                (if (< n 256) 256 (if (> n 32768) 32768 n))))
+         (offset (bf_eval_source_string_offset_w args))
+         (compiled (if (= (nl_val_tag offset) 2) 1 0))
+         (start (if (= compiled 1) (nl_word_payload offset) 0))
+         (cap (let* ((n (* 4 (- (m5_strlen src) start)))
+                     (max (if (= compiled 1) 4096 32768)))
+                (if (< n 256) 256 (if (> n max) max n))))
          (pool (alloc-bytes (* cap 32) 8)) (bsym (alloc-bytes 32 8))
          (result (alloc-bytes 32 8)) (out (alloc-bytes 32 8))
          (statew (nelisp_cons_construct_w 3 3 0))
-         (prevcap (heap-read-u64 268436448 0)))
+         (prevcap (heap-read-u64 268436448 0))
+         (saved (logand (heap-read-u64 env 112) 2097152)))
     (seq
      (wf_write_nil bsym) (wf_write_nil result) (wf_write_nil out)
      (ptr-write-u64 268435624 0 0)
-     (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+     (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 start)
      (ptr-write-u64 state 0 statew)
      (ptr-write-u64 268436448 0 cap)
-     (let* ((word (bf_eval_source_string_loop_w src cursor result pool env out bsym statew)))
+     (if (= compiled 1)
+         (ptr-write-u64 env 112 (logior (heap-read-u64 env 112) 2097152))
+       0)
+     (let* ((word (bf_eval_source_string_loop_w
+                   src cursor result pool env out bsym statew compiled)))
        (seq
+        (if (= compiled 1)
+            (ptr-write-u64 env 112
+                           (logior (logand (heap-read-u64 env 112) -2097153) saved))
+          0)
         (if (/= word 0) (wf_dirty) 0)
         (ptr-write-u64 268436448 0 prevcap)
         word)))))
@@ -40681,13 +40728,21 @@ bytes are written into a fresh 8-byte buffer instead."
   (nl_abi_word_to_rc (bf_eval_source_string_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
     (defun bf_eval_source_string_w (args env _pad)
-  (let* ((mark (nl_root_mark env)) (state (nl_root_word env)) (word 0))
-    (seq
-     (nelisp_frame_scope_push (+ env 32))
-     (setq word (nelisp_eval_call_root_done
-                 (bf_eval_source_string_inner_rooted_w args env state) env))
-     (nl_root_release env mark)
-     word)))
+  (let* ((offset (bf_eval_source_string_offset_w args)) (src (wf_arg_ptr args 0)))
+    (if (and (/= (nl_val_tag offset) 0)
+             (if (= (nl_val_tag offset) 2)
+                 (or (/= (bf_string_unibyte_p src) 1)
+                     (< (nl_word_payload offset) 0)
+                     (> (nl_word_payload offset) (bf_str_len src)))
+               1))
+        (nl_abi_fail (bf_wrong_type_fixnump (wf_word_view offset)) 0)
+      (let* ((mark (nl_root_mark env)) (state (nl_root_word env)) (word 0))
+        (seq
+         (nelisp_frame_scope_push (+ env 32))
+         (setq word (nelisp_eval_call_root_done
+                     (bf_eval_source_string_inner_rooted_w args env state) env))
+         (nl_root_release env mark)
+         word)))))
     (defun bf_eval_source_string_inner (args env out)
   (nl_abi_word_to_rc (bf_eval_source_string_inner_w args env 0) out))
     ;; Doc 215: the producer returns its canonical WORD directly.
@@ -40926,7 +40981,7 @@ bytes are written into a fresh 8-byte buffer instead."
       (seq (while (and (< at end) (/= (heap-read-u8 data at) 10))
              (setq at (+ at 1)))
            at))
-    (defun bf_read_one_native_compatible_p (src at end)
+    (defun bf_read_one_native_compatible_p (src at end compiled)
       (let* ((ok 1) (data (nl_bi_strptr src)))
         (seq
          (while (and (= ok 1) (< at end))
@@ -40946,8 +41001,14 @@ bytes are written into a fresh 8-byte buffer instead."
               ;; `#@N' (skip) and `#(...)' (text properties) are owned by the
               ;; interpreted reader, which implements GNU's semantics.
               ((and (= byte 35) (< (+ at 1) end)
-                    (or (= (heap-read-u8 data (+ at 1)) 64)
-                        (= (heap-read-u8 data (+ at 1)) 40)))
+                    (= (heap-read-u8 data (+ at 1)) 64))
+               (if (= compiled 1)
+                   (setq at (nelisp_reader_skip_lazy_p data (+ at 2) end))
+                 (setq ok 0)))
+              ((and (= byte 35) (< (+ at 1) end)
+                    (or (= (heap-read-u8 data (+ at 1)) 40)
+                        (and (= compiled 1)
+                             (= (heap-read-u8 data (+ at 1)) 94))))
                (setq ok 0))
               ;; Escaped atom bytes cannot open a string or spell `##'.
               ((= byte 92) (setq at (+ at 2)))
@@ -41042,7 +41103,7 @@ bytes are written into a fresh 8-byte buffer instead."
                    (setq cap (if (> (* cap 8) limit) limit (* cap 8)))
                    (setq pool (alloc-bytes (* cap 32) 8))))))
      (if (and (/= word 0) (/= word 2)
-              (= (bf_read_one_native_compatible_p src byte-start byte-pos) 1))
+              (= (bf_read_one_native_compatible_p src byte-start byte-pos 0) 1))
          (let* ((position (+ start (bf_read_one_bytes_to_chars src byte-start byte-pos))))
            (seq (if (if (= (sexp-tag src) 5) (>= start 0) 0)
                     (nl_aref_cache_store (heap-read-u64 src 16) byte-len
@@ -44065,7 +44126,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--arena-load-image-from-file nelisp--arena-load-split-verify
       nelisp--ascii-downcase nelisp--byte-code-wrap-test nelisp--cell-value
       nelisp--char-table-slots
-      nelisp--clear-string-bytes nelisp--declare-local-special nelisp--eval-source-string
+      nelisp--clear-string-bytes nelisp--declare-local-special
       nelisp--intern-lookup nelisp--json-encode nelisp--native-runtime-contract-word
       nelisp--load-external-utf8-p
       nelisp--native-callsite-symbol-addr
@@ -44089,7 +44150,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((1 . 2)
       delete-char
       atan butlast ceiling eval featurep floor intern intern-soft last log make-char-table
-      nelisp--debug-switch nelisp--gc-diag
+      nelisp--debug-switch nelisp--gc-diag nelisp--eval-source-string
       nelisp--syscall-read-file nelisp--syscall-readdir-names nelisp-socket-accept
       provide rdf signal string-to-number truncate)
     ((1 . 3)
@@ -53043,7 +53104,7 @@ resolved fine.  Same feature, different answer per entry point."
    "(defun nelisp--lh-attach (x)\n"
    "  (let ((key (or load-file-name nelisp--lh-seg)))\n"
    "    (when key\n"
-   "      (nelisp--lh-select key)\n"
+   "      (unless (eq key nelisp--lh-file) (nelisp--lh-select key))\n"
    "      (setq current-load-list (cons x current-load-list)))))\n"
    "(defun nelisp--lh-attach-once (x)\n"
    "  (let ((key (or load-file-name nelisp--lh-seg)))\n"
