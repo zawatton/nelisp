@@ -1,0 +1,13 @@
+t
+((((260 . 263) . range-one) (265) ((270 . 273) . range-two)) (((260 . 263) . range-one) (265) ((270 . 273) . range-two) (266 . parent)))
+(replaced replaced range-two parent)
+((1 2 3) new new new)
+("C-M-i" "Ą..ć" "C-a" "<C-a>" "ESC C-M-i" "M-x")
+(([] [b] [a] [27] [134217848] [b 120] [134217848 120]) ([27] [27 120]) ([a]) nil)
+(t original original override nil override)
+(metized metized metized)
+(from-parent from-parent from-parent)
+((own-event) (own-event child-event))
+(self-insert-command self-insert-command keymap original copy-only)
+((keymap (2 . single)) [nil local range] nil range copy-only local)
+(described described numeric)

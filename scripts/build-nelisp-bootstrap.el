@@ -18,6 +18,7 @@
 (require 'bytecomp)
 (require 'json)
 (require 'standalone-source-normalize)
+(require 'nelisp-vendor-source)
 
 (defvar nelisp-bootstrap-output-file
   (expand-file-name "build/nemacs-bootstrap.el"
@@ -1550,10 +1551,18 @@ overrides them for workflow tests."
     (setq nelisp--category-standard-table (nelisp--category-empty-table)))
   "Initialize the Unicode registry and standard table for characters.el.")
 
+(defun nelisp-bootstrap--keymap-subr-file ()
+  "Return the configured staged GNU subr.el for the keymap forms."
+  (expand-file-name "staged-emacs-lisp/subr.el" (nelisp-bootstrap--vendor-dir)))
+
 (defun nelisp-bootstrap--post-file-forms (file)
   "Return extra forms that should follow FILE in either bundle."
   (pcase (nelisp-bootstrap--logical-name file)
     ("src/emacs-stub.el" '((provide 'custom)))
+    ("src/emacs-keymap-builtins.el"
+     (car (read-from-string
+           (concat "(" (nelisp-vendor-source-subr-keymap
+                        (nelisp-bootstrap--keymap-subr-file)) "\n)"))))
     ("vendor/emacs-lisp/international/mule-cmds.el"
      nelisp-bootstrap--characters-prologue)
     ("vendor/emacs-lisp/international/characters.el"
@@ -1570,8 +1579,16 @@ overrides them for workflow tests."
 
 (defun nelisp-bootstrap--emit-post-file-bundle-forms (file)
   "Return extra bundle forms that should follow FILE."
-  (mapcar (lambda (form) (concat (prin1-to-string form) "\n"))
-          (nelisp-bootstrap--post-file-forms file)))
+  (if (equal (nelisp-bootstrap--logical-name file) "src/emacs-keymap-builtins.el")
+      ;; Keep the GNU forms verbatim and extend the earlier subr.el entry.
+      (let ((source-file (nelisp-bootstrap--keymap-subr-file)))
+        (list
+         (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))\n"
+                 source-file)
+         (nelisp-vendor-source-subr-keymap source-file)
+         "\n(when (fboundp 'nelisp--lh-extend-segment) (nelisp--lh-extend-segment))\n"))
+    (mapcar (lambda (form) (concat (prin1-to-string form) "\n"))
+            (nelisp-bootstrap--post-file-forms file))))
 
 (defvar nelisp-bootstrap-normalized-bundle-files
   '("vendor/emacs-lisp/vc/vc-hooks.el"
