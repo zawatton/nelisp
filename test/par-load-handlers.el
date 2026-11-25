@@ -89,7 +89,21 @@
               (par-load-handlers-expanded-target plain))
           (par-load-handlers-row
            'readable-after-expansion
-           (par-load-handlers-short root (locate-file "magic" (list root) '(".el.gpg")))))
+           (par-load-handlers-short root (locate-file "magic" (list root) '(".el.gpg"))))
+          (par-load-handlers-row
+           'absolute-candidate-handler
+           (par-load-handlers-short
+            root (locate-file-internal (concat root "magic.el.gpg") nil '(""))))
+          (let ((par-load-handlers-expanded-target gzip))
+            (par-load-handlers-row
+             'absolute-directory-handler
+             (par-load-handlers-short root
+                                      (locate-file-internal plain (list cipher) '(""))))))
+        (let* ((file-name-handler-alist nil)
+               (name (propertize plain 'par-load-handlers-property t))
+               (result (locate-file-internal name (list root) '(""))))
+          (par-load-handlers-row
+           'absolute-result (list (eq result name) (text-properties-at 0 result))))
         ;; Use the real registrations' regexps with an in-process handler.
         ;; Neither test needs a passphrase, remote host or remote process.
         (let ((file-name-handler-alist (list (cons tramp-regexp #'par-load-handlers-virtual)))

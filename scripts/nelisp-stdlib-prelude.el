@@ -22612,7 +22612,13 @@ line-continuation escapes, which generate nothing)."
                        (end-of-file
                         (signal 'invalid-read-syntax (list "Invalid modifier in string"))))))
               (setq out (concat out (car r)) i (cdr r)))
-          (setq out (concat out (char-to-string c)) i (1+ i)))))
+          ;; Like GNU read_string_literal, retain unibyte output when the
+          ;; literal contains only ASCII and raw bytes.  Concat promotes
+          ;; it if a real multibyte character occurs elsewhere.
+          (setq out (concat out (if (>= c #x3fff80)
+                                    (unibyte-string (- c #x3fff00))
+                                  (char-to-string c)))
+                i (1+ i)))))
     out))
 
 ;; `#N=' labels are scoped to one public reader call.  The recursive reader

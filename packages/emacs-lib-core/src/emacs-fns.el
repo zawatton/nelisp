@@ -86,7 +86,7 @@ NOERROR permits a nil result; otherwise a load that returns without
 providing FEATURE signals an error, even when the loader returns nil."
   (emacs-fns--load-required-file path noerror)
   (cond
-   ((featurep feature) feature)
+   ((memq feature features) feature)
    (noerror nil)
    (t (error "Required feature was not provided: %S" feature))))
 
@@ -343,16 +343,20 @@ branch, `load-file' being a builtin there."
     "Load FEATURE through `load-path' unless it is already provided.
 FILENAME and NOERROR follow the common Emacs `require' surface used by
 batch tests and local runtime modules."
+    (unless (symbolp feature)
+      (signal 'wrong-type-argument (list 'symbolp feature)))
     ;; GNU Frequire records (require . FEATURE) in load-history even when
     ;; FEATURE is already provided.
-    (if (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
-        (nelisp--lh-req feature))
-    (if (featurep feature)
+    (when (and (boundp 'nelisp--lh-seg) (or load-file-name nelisp--lh-seg))
+      (nelisp--lh-req feature))
+    ;; Frequire consults the registry directly.  Redefining the public
+    ;; `featurep' function does not change how GNU `require' checks it.
+    (if (memq feature features)
         feature
       (let ((base (or filename (symbol-name feature))))
         (if (fboundp 'emacs-load--resolve-file)
             (when (load base noerror t nil (not filename))
-              (if (featurep feature)
+              (if (memq feature features)
                   feature
                 (error "Required feature was not provided: %S" feature)))
           (let ((path (locate-file

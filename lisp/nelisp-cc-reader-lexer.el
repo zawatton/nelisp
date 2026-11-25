@@ -860,15 +860,31 @@
     (defun nelisp_reader_string_plain (str-ptr cursor n scratch)
       (nelisp_reader_string_plain_p str-ptr (str-data-ptr str-ptr) cursor n scratch))
 
+    (defun nelisp_reader_string_byte8 (dp cursor n first)
+      ;; Internal UTF-8 encodes byte8 values as C0/C1 plus a continuation.
+      ;; Return the raw byte, or 0 for a non-byte8 sequence.
+      (if (and (or (= first 192) (= first 193)) (< (+ cursor 1) n))
+          (let* ((next (ptr-byte-at dp (+ cursor 1))))
+            (if (= (logand next 192) 128)
+                (+ (* (- first 192) 64) next)
+              0))
+        0))
+
     (defun nelisp_reader_string_plain_p (str-ptr dp cursor n scratch)
-      (let* ((b (ptr-byte-at dp cursor)))
+      (let* ((b (ptr-byte-at dp cursor))
+             (raw (if (and (or (= b 192) (= b 193))
+                           (or (= (sexp-tag str-ptr) 5) (= (sexp-tag str-ptr) 6)))
+                      (nelisp_reader_string_byte8 dp cursor n b)
+                    0)))
         ;; A plain high source byte belongs to a UTF-8 character; a builder
         ;; made unibyte by a raw-byte escape is widened first.
-        (if (if (>= b 128) (= (nelisp_reader_scratch_to_multibyte scratch) 0) 0)
-            -2
-          (nelisp_reader_prog2
-           (mut-str-push-byte scratch b)
-           (nelisp_reader_string_body_p str-ptr dp (+ cursor 1) n scratch)))))
+        (if (/= raw 0)
+            (nelisp_reader_string_push_raw_byte str-ptr (+ cursor 2) n scratch raw)
+          (if (if (>= b 128) (= (nelisp_reader_scratch_to_multibyte scratch) 0) 0)
+              -2
+            (nelisp_reader_prog2
+             (mut-str-push-byte scratch b)
+             (nelisp_reader_string_body_p str-ptr dp (+ cursor 1) n scratch))))))
 
     (defun nelisp_reader_oct_count (str-ptr cursor n count)
       (if (>= count 3)
@@ -1301,18 +1317,23 @@
 
     ;; Span fast path: a literal with no backslash is its own bytes.  Answers
     ;; 2*Q + H, Q the index of the closing quote and H 1 when a byte >= 128
-    ;; was seen, or -1 (a backslash, or no closing quote: the general scanner
-    ;; decides).
-    (defun nelisp_reader_string_span (dp cursor n)
+    ;; was seen. A backslash or an internal byte8 needs the general scanner,
+    ;; which chooses unibyte when the decoded literal has only raw bytes.
+    (defun nelisp_reader_string_span (dp cursor n multibyte)
       (let* ((i cursor) (high 0) (r -2))
         (seq
          (while (= r -2)
            (if (>= i n) (setq r -1)
              (let* ((b (ptr-byte-at dp i)))
-               (if (= b 34) (setq r (+ (* i 2) high))
-                 (if (= b 92) (setq r -1)
-                   (seq (if (>= b 128) (setq high 1) 0)
-                        (setq i (+ i 1))))))))
+               (cond
+                ((= b 34) (setq r (+ (* i 2) high)))
+                ((= b 92) (setq r -1))
+                ((>= b 128)
+                 (if (and (= multibyte 1) (or (= b 192) (= b 193))
+                          (/= (nelisp_reader_string_byte8 dp i n b) 0))
+                     (setq r -1)
+                   (seq (setq high 1) (setq i (+ i 1)))))
+                (t (setq i (+ i 1)))))))
          r)))
 
     ;; Same payload as the scratch path: an all-ASCII literal is unibyte (as
@@ -1332,7 +1353,8 @@
     (defun nelisp_reader_lex_string
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
       (let* ((dp (str-data-ptr str-ptr))
-             (packed (nelisp_reader_string_span dp cursor n)))
+             (multibyte (or (= (sexp-tag str-ptr) 5) (= (sexp-tag str-ptr) 6)))
+             (packed (nelisp_reader_string_span dp cursor n multibyte)))
         (if (>= packed 0)
             (nelisp_reader_lex_string_span
              dp cursor packed payload-slot cursor-out-slot)

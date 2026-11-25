@@ -109,3 +109,88 @@
           (put 'par-elc--doc 'variable-documentation (cons file (1+ (car positions))))
           (documentation-property 'par-elc--doc 'variable-documentation t)))
     (delete-file file)))
+
+;; The byte8 in a skipped block occupies two bytes on disk.  Inside
+;; literals it widens the string only when there is a multibyte character.
+(defvar par-elc--after-byte8 nil)
+(let ((file (make-temp-file "par-elc-byte8-" nil ".elc"))
+      (compressed (make-temp-file "par-elc-byte8-" nil ".elc.gz"))
+      (coding-system-for-write 'no-conversion))
+  (unwind-protect
+      (progn
+        (write-region
+         (concat ";ELC\037\0\0\0\n;;; Compiled\n;;; in Emacs version 31.1\n"
+                 "#@4 " (unibyte-string 192 128 31)
+                 "(setq par-elc--after-byte8 (list (string-to-list \""
+                 (unibyte-string 193 191) "\") (string-to-list \""
+                 (unibyte-string 195 169 193 191) "\")))\n")
+         nil file nil 'silent)
+        (par-elc--check 'fixture-byte8-offset
+          (list (load file nil t t) par-elc--after-byte8))
+        (par-elc--check 'fixture-byte8-compressed
+          ;; A deterministic gzip of the exact compiled bytes above.
+          (write-region
+           (base64-decode-string
+            (concat
+             "H4sIAAAAAAAC/7N29XGWZ2Bg4LK2tlZwzs8tyMxJTQFzMvMUXHMTk4sV"
+             "ylKLijPz8xSMDfUMuZQdTBQONMhrFKeWFCoUJBbppuYk6+omppWkFukm"
+             "VZakWiho5GQWlyhoFJcUZeal65bk64L5Sgf3K2liih5eCRLX1OQCAP7i"
+             "2pqIAAAA"))
+           nil compressed nil 'silent)
+          (setq par-elc--after-byte8 nil)
+          (list (load compressed nil t t) par-elc--after-byte8)))
+    (delete-file file)
+    (delete-file compressed)))
+
+(defvar par-elc--operand-effect nil)
+(let ((file (make-temp-file "par-elc-operands-" nil ".elc"))
+      (header ";ELC\037\0\0\0\n;;; Compiled\n;;; in Emacs version 31.1\n")
+      (literal "(byte-code \"\\300\\207\" [17] 1)")
+      (original (symbol-function 'byte-code)))
+  (unwind-protect
+      (progn
+        (par-elc--check 'fixture-byte-code-operand
+          (write-region
+           (concat header "(byte-code (progn (setq par-elc--operand-effect 42) "
+                   "\"\\300\\207\") [17] 1)\n" literal "\n")
+           nil file nil 'silent)
+          (list (load file nil t t) par-elc--operand-effect))
+        (par-elc--check 'fixture-byte-code-rebound
+          (fset 'byte-code (lambda (&rest args)
+                             (setq par-elc--operand-effect (length args))))
+          (write-region (concat header literal) nil file nil 'silent)
+          (list (load file nil t t) par-elc--operand-effect)))
+    (fset 'byte-code original)
+    (delete-file file)))
+
+(defvar par-elc--header-effect nil)
+(let ((file (make-temp-file "par-elc-header-" nil ".elc")))
+  (unwind-protect
+      (progn
+        (par-elc--check 'fixture-empty-header (load file nil t t))
+        (par-elc--check 'fixture-unsafe-header
+          (write-region "(setq par-elc--header-effect t)\n"
+                        nil file nil 'silent)
+          (list (condition-case err (load file nil t t)
+                  (error (car err)))
+                par-elc--header-effect))
+        (par-elc--check 'fixture-old-header
+          (write-region ";ELC\001\n;;; in Emacs version 31.1\n(setq par-elc--header-effect t)\n"
+                        nil file nil 'silent)
+          (list (load file nil t t) par-elc--header-effect)))
+    (delete-file file)))
+
+(defvar par-elc--header-detected nil)
+(let ((file (make-temp-file "par-elc-content-" nil ".sample"))
+      (coding-system-for-write 'no-conversion))
+  (unwind-protect
+      (par-elc--check 'fixture-compiled-content
+        ;; The compiler comment identifies the format even without ;ELC.
+        (write-region
+         (concat ";file-without-magic\n;;; in Emacs version 31.1\n#@4 "
+                 (unibyte-string 192 128 31)
+                 "(setq par-elc--header-detected (string-to-list \""
+                 (unibyte-string 193 191) "\"))\n")
+         nil file nil 'silent)
+        (list (load file nil t t) par-elc--header-detected))
+    (delete-file file)))

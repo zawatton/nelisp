@@ -40592,11 +40592,11 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; Scan the string body starting at AT (just past the opening quote).
     ;; Returns the byte offset just past the closing quote, END for an
     ;; unterminated string, or -1 when an escape needs the fallback reader.
-    (defun bf_read_one_scan_string (src at end)
+    (defun bf_read_one_scan_string (src data at end)
       (let* ((res 0))
         (seq
          (while (and (= res 0) (< at end))
-           (let* ((byte (m5_byte_at src at)))
+           (let* ((byte (heap-read-u8 data at)))
              (cond
               ((= byte 34)
                (setq res (+ at 1)))
@@ -40607,13 +40607,10 @@ bytes are written into a fresh 8-byte buffer instead."
                  (setq res -1)))
               (t (setq at (+ at 1))))))
          (if (= res 0) end res))))
-    (defun bf_read_one_skip_comment (src at end)
-      (let* ((more 1))
-        (while (and (= more 1) (< at end))
-          (if (= (m5_byte_at src at) 10)
-              (setq more 0)
-            (setq at (+ at 1)))))
-      at)
+    (defun bf_read_one_skip_comment (data at end)
+      (seq (while (and (< at end) (/= (heap-read-u8 data at) 10))
+             (setq at (+ at 1)))
+           at))
     (defun bf_read_one_native_compatible_p (src at end)
       (let* ((ok 1) (data (nl_bi_strptr src)))
         (seq
@@ -40621,21 +40618,21 @@ bytes are written into a fresh 8-byte buffer instead."
            (let* ((byte (heap-read-u8 data at)))
              (cond
               ((= byte 59)
-               (setq at (bf_read_one_skip_comment src at end)))
+               (setq at (bf_read_one_skip_comment data at end)))
               ;; Skip the whole string body: bytes inside it are data, so a
               ;; `;', `?' or `\\' there must not be read as code (that used to
               ;; flip the string/code parity for the rest of the form and
               ;; decline forms whose comments merely contained `\\S').
               ((= byte 34)
-               (let* ((nx (bf_read_one_scan_string src (+ at 1) end)))
+               (let* ((nx (bf_read_one_scan_string src data (+ at 1) end)))
                  (if (< nx 0)
                      (setq ok 0)
                    (setq at nx))))
               ;; `#@N' (skip) and `#(...)' (text properties) are owned by the
               ;; interpreted reader, which implements GNU's semantics.
               ((and (= byte 35) (< (+ at 1) end)
-                    (or (= (m5_byte_at src (+ at 1)) 64)
-                        (= (m5_byte_at src (+ at 1)) 40)))
+                    (or (= (heap-read-u8 data (+ at 1)) 64)
+                        (= (heap-read-u8 data (+ at 1)) 40)))
                (setq ok 0))
               ;; Escaped atom bytes cannot open a string or spell `##'.
               ((= byte 92) (setq at (+ at 2)))
@@ -40643,27 +40640,57 @@ bytes are written into a fresh 8-byte buffer instead."
               ;; deliberately preserves the repository's historical "##"
               ;; symbol for llama aliases, so read-from-string falls back.
               ((and (= byte 35) (< (+ at 1) end)
-                    (= (m5_byte_at src (+ at 1)) 35))
+                    (= (heap-read-u8 data (+ at 1)) 35))
                (setq ok 0))
               ;; Do not mistake a quote byte used as a character literal for
               ;; the beginning of a string.
               ((= byte 63)
                (if (and (< (+ at 1) end)
-                        (= (m5_byte_at src (+ at 1)) 92))
+                        (= (heap-read-u8 data (+ at 1)) 92))
                    ;; `?\\N{...}' is decoded by the interpreted reader.
                    (if (and (< (+ at 2) end)
-                            (= (m5_byte_at src (+ at 2)) 78))
+                            (= (heap-read-u8 data (+ at 2)) 78))
                        (setq ok 0)
                      (setq at (+ at 3)))
                  (setq at (+ (+ at 1)
                               (if (< (+ at 1) end)
                                   (nl_u8_clen_at
-                                   (m5_byte_at src (+ at 1)))
+                                   (heap-read-u8 data (+ at 1)))
                                 0)))))
               (t (setq at (+ at 1))))))
          ok)))
-    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; Check a bounded source window against the external UTF-8 rules used
+    ;; by string-as-multibyte.  ASCII needs one load per byte.
+    (defun bf_read_one_external_utf8_p (src pos end)
+      (let* ((data (nl_bi_strptr src)) (width 1))
+        (seq
+         (while (and (< pos end) (> width 0))
+           (seq
+            (setq width (if (< (heap-read-u8 data pos) 128)
+                            1 (bf_external_sequence_width src pos end)))
+            (setq pos (+ pos width))))
+         (> width 0))))
+    (defun bf_load_external_utf8_p_w (args _pad)
+      (let* ((src (wf_arg_ptr args 0)))
+        (if (and (= (bf_string_unibyte_p src) 1)
+                 (= (bf_read_one_external_utf8_p src 0 (bf_str_len src)) 1))
+            7 3)))
+    ;; The source loader requests external-byte validation with t.  It uses
+    ;; byte offsets into a unibyte string and retries a t result on a
+    ;; converted window.  The compiled loader passes 1 for UTF-8-Emacs
+    ;; bytes.  Nil still means the native parser declined.
     (defun bf_read_one_from_string_native_w (args env _pad)
+      (if (/= (wf_arg_word args 3) 7)
+          (bf_read_one_from_string_native_inner_w args env 0)
+        (let* ((src (wf_arg_ptr args 0)) (pos (wf_argval args 1))
+               (end (wf_argval args 2)))
+          (if (and (= (bf_string_unibyte_p src) 1)
+                   (>= pos 0) (>= end pos) (<= end (bf_str_len src))
+                   (= (bf_read_one_external_utf8_p src pos end) 1))
+              (bf_read_one_from_string_native_inner_w args env 0)
+            7))))
+    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    (defun bf_read_one_from_string_native_inner_w (args env _pad)
   (let* ((src (wf_arg_ptr args 0))
          (hint (let* ((w (wf_arg_word args 1))) (if (= (nl_val_tag w) 7) w 0)))
          (start (if (/= hint 0) (sar (nl_cons_car_word hint) 2) (wf_argval args 1)))
@@ -40682,7 +40709,10 @@ bytes are written into a fresh 8-byte buffer instead."
          (pool (alloc-bytes (* cap 32) 8))
          (word 0) (byte-pos 0) (again 1) (prevcap (heap-read-u64 268436448 0)))
     (seq
-     (ptr-write-u64 view 0 (if (= (bf_string_unibyte_p src) 1) 14 5))
+     (ptr-write-u64 view 0
+                    (if (and (= (bf_string_unibyte_p src) 1)
+                             (/= (wf_arg_word args 3) (nl_imm_int 1)))
+                        14 5))
      (ptr-write-u64 view 8 byte-end)
      (ptr-write-u64 view 16 (bf_str_ptr src)) (ptr-write-u64 view 24 byte-end)
      (while (= again 1)
@@ -42314,6 +42344,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "nelisp--write-stdout-bytes") :word . (nl_bi_write_stdout_bytes_w args 0))
     ((:lit "nelisp--write-stderr-line") :word . (nl_bi_write_stderr_line_w args 0))
     ((:lit "nelisp--read-all-from-string-native") :word . (bf_read_all_from_string_native_w args env 0))
+    ((:lit "nelisp--load-external-utf8-p") :word . (bf_load_external_utf8_p_w args 0))
     ((:lit "read-stdin-bytes") :word . (nl_bi_read_stdin_bytes_w args 0))
     ;; nl-current-unix-time: epoch seconds via the linux-x86_64 time(2)
     ;; syscall (__NR_time=201, NULL arg).  Lets interpreted code (e.g.
@@ -43712,6 +43743,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--char-table-slots
       nelisp--clear-string-bytes nelisp--declare-local-special nelisp--eval-source-string
       nelisp--intern-lookup nelisp--json-encode nelisp--native-runtime-contract-word
+      nelisp--load-external-utf8-p
       nelisp--native-callsite-symbol-addr
       nelisp--native-runtime-symbol-addr nelisp--native-subr-arity
       nelisp--native-subr-live-count nelisp--native-symbol-addr nelisp--record-expand
@@ -43738,7 +43770,9 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       provide rdf signal string-to-number truncate)
     ((1 . 3)
       insert-char
-      nelisp--env-globals-op nelisp--native-substring nelisp--read-all-from-string-native require substring)
+      nelisp--env-globals-op nelisp--native-substring require substring)
+    ((1 . 4)
+      nelisp--read-all-from-string-native)
     ((1 . 5)
       load)
     ((1 . 7)
@@ -50488,7 +50522,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-utimes" "nelisp--syscall-statx-buf" "nelisp--syscall-unshare"
     "nelisp--syscall-mount" "nelisp--syscall-pivot-root"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
-    "nelisp--read-all-from-string-native"
+    "nelisp--read-all-from-string-native" "nelisp--load-external-utf8-p"
     "nl-current-unix-time" "nl-unix-time-usec" "float-time"
     "nl-local-utc-offset"
     "nelisp--monotonic-ns" "nelisp--boot-phase-ns"

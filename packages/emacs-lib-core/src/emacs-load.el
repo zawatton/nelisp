@@ -26,6 +26,9 @@
                   (number path integer))
 
 (declare-function nelisp--rd-read-one "nelisp-stdlib-prelude" (string start end))
+(declare-function nelisp--read-all-from-string-native "nelisp-standalone"
+                  (source &optional start end encoding))
+(declare-function nelisp--load-external-utf8-p "nelisp-standalone" (source))
 (declare-function emacs-load--elc-decode "emacs-load" (bytes))
 (declare-function emacs-load--elc-read-slice "emacs-load" (source start end))
 (declare-function emacs-load--elc-read-fallback "emacs-load"
@@ -62,8 +65,9 @@ aliases and names subsequently redefined as functions remain unchanged.")
 
   (defun emacs-load--symbolic-macro-alias-p (name)
     "Return non-nil when NAME currently aliases a macro by symbol."
-    (and (symbolp name) (fboundp name) (macrop name)
-         (symbolp (symbol-function name))))
+    (when (symbolp name)
+      (let ((target (symbol-function name)))
+        (and target (symbolp target) (macrop target)))))
 
   (defun emacs-load--macro-alias-source-p (source)
     "Return non-nil when SOURCE may call a loaded symbolic macro alias."
@@ -777,36 +781,8 @@ this invariant once, up front: `nelisp--load-map-source-forms' and
 ever calls this function, and `emacs-load--read-file-string' does the
 same to whatever `load' reads from disk.
 
-T94 investigated a real, reproducible superlinear cost in this loop
-(bisected on an isolated, unconverted copy of ange-ftp.el's ~30KB GNU
-comment header: 1000 bytes 0.04s, 25000 bytes 11.4s) caused by `aref'
-recomputing a multibyte string's character-to-byte offset from scratch
-on every call.  Two fixes were measured and both rejected:
-
-- Replacing the loop with one `string-match' call over the whole run:
-  on this runtime `string-match' is not a fast native primitive for
-  this pattern -- it measured 20-50x SLOWER than this loop at every
-  size tried, on both multibyte and already-unibyte SOURCE (75.9s vs
-  13.2s at 25000 multibyte bytes; 43.5s vs 0.78s at 25000 unibyte
-  bytes).
-- Converting SOURCE to unibyte inside this function on every call:
-  this removes the quadratic cost when POS is 0, but corrupts POS for
-  any later call in the same scan once SOURCE contains a non-ASCII
-  byte before POS, exactly the class of character-index-vs-byte-offset
-  bug documented on `emacs-load--native-read-one' above -- caught by
-  this task's own equivalence test before it shipped.
-
-The loop is unchanged from before T94.  What T94 confirmed instead is
-that the quadratic case, while real in isolation, is not reachable
-through `load' or any other real caller today, because SOURCE always
-already arrives byte-indexed (measured flat/linear on unibyte SOURCE:
-1000 bytes 0.05s, 25000 bytes 0.78-1.34s, 100000 bytes 4.0s -- the
-remaining ~40us/byte here is ordinary interpreted-loop overhead, not
-the quadratic defect, and neither rejected fix above improves on it).
-See the T94 report for the full measurement, including why
-`emacs-load--artifact-source-skip-ws-comments' below -- a pre-existing
-duplicate of this exact scan -- now delegates here instead of keeping
-its own separate (but equally already-safe) copy."
+Search for a newline in each comment run so the Lisp scanner only visits
+whitespace and comment starts."
     (let ((len (length source))
           (done nil))
       (while (and (< pos len) (not done))
@@ -815,8 +791,7 @@ its own separate (but equally already-safe) copy."
            ((or (= c ?\s) (= c ?\t) (= c ?\n) (= c ?\r) (= c ?\f))
             (setq pos (+ pos 1)))
            ((= c ?\;)
-            (while (and (< pos len) (not (= (aref source pos) ?\n)))
-              (setq pos (+ pos 1))))
+            (setq pos (or (string-search "\n" source pos) len)))
            (t
             (setq done t)))))
       pos))
@@ -837,26 +812,35 @@ large image is resident a fixed every-N-forms GC dominates ordinary loads
   (defvar emacs-load--gc-pid nil
     "Process id that recorded `emacs-load--gc-last-end'.")
 
+  (defvar emacs-load--gc-last-count nil
+    "Most recent collection count observed by the periodic load check.")
+
   (defun emacs-load--periodic-gc (count)
     "Run the periodic `load' GC when COUNT hits the interval and it is cheap enough."
     (when (and load-garbage-collect-interval
                (> load-garbage-collect-interval 0)
                (= (% count load-garbage-collect-interval) 0)
                (fboundp 'garbage-collect))
-      (let ((now (float-time))
-            (pid (and (fboundp 'emacs-pid) (emacs-pid))))
+      (let* ((now (float-time))
+             (pid (and (fboundp 'emacs-pid) (emacs-pid)))
+             (observed (and (boundp 'gcs-done) gcs-done))
+             (reset (or (null emacs-load--gc-last-end)
+                        (not (eql pid emacs-load--gc-pid))
+                        (not (eql observed emacs-load--gc-last-count)))))
         ;; A heap image carries the build process's last-GC time, so every
         ;; restored session collected on its first `load' (4-8 s on a large
-        ;; heap) right after the image builder had collected.  Start this
-        ;; process's clock at its first check instead.
-        (unless (and pid (eql pid emacs-load--gc-pid))
-          (setq emacs-load--gc-pid pid
-                emacs-load--gc-last-end now))
-        (when (>= (- now emacs-load--gc-last-end)
-                  (* emacs-load--gc-cost-ratio emacs-load--gc-last-cost))
-          (garbage-collect)
-          (setq emacs-load--gc-last-end (float-time))
-          (setq emacs-load--gc-last-cost (- emacs-load--gc-last-end now))))))
+        ;; heap).  Reset the clock when the process changes or an automatic
+        ;; or explicit collection has already run since the last check.
+        (if reset
+            (setq emacs-load--gc-pid pid
+                  emacs-load--gc-last-count observed
+                  emacs-load--gc-last-end now)
+          (when (>= (- now emacs-load--gc-last-end)
+                    (* emacs-load--gc-cost-ratio emacs-load--gc-last-cost))
+            (garbage-collect)
+            (setq emacs-load--gc-last-count (and (boundp 'gcs-done) gcs-done)
+                  emacs-load--gc-last-end (float-time)
+                  emacs-load--gc-last-cost (- emacs-load--gc-last-end now)))))))
 
   (defun nelisp--load-map-source-forms (source callback)
     "Read SOURCE one top-level form at a time and call CALLBACK on each.
@@ -900,20 +884,23 @@ Return the last CALLBACK result."
   (defun emacs-load--macro-alias-form-p (form)
     "Return non-nil when executable FORM contains a symbolic macro alias.
 Quoted data and bare function references are not executable subforms."
-    (and (consp form)
-         (not (eq (car form) 'quote))
-         (or (and (symbolp (car form))
-                  (emacs-load--symbolic-macro-alias-p (car form)))
-             ;; `car-safe'/`cdr-safe': backquote data such as GNU pp.el's
-             ;; (function . "#'") is walked too and is not a proper list.
-             (and (not (and (eq (car form) 'function)
-                            (not (eq (car-safe (car-safe (cdr-safe form)))
-                                     'lambda))))
-                  (let ((tail form) found)
-                    (while (and (consp tail) (not found))
-                      (setq found (emacs-load--macro-alias-form-p (car tail))
-                            tail (cdr tail)))
-                    found)))))
+    (when (consp form)
+      (let ((head (car form)))
+        (cond
+         ((eq head 'quote) nil)
+         ((emacs-load--symbolic-macro-alias-p head) t)
+         ;; Backquote data such as (function . "#'") need not be a list.
+         ((and (eq head 'function)
+               (not (eq (car-safe (car-safe (cdr form))) 'lambda)))
+          nil)
+         (t
+          (let ((tail (if (consp head) form (cdr form))) found)
+            (while (and (consp tail) (not found))
+              (let ((subform (car tail)))
+                (when (consp subform)
+                  (setq found (emacs-load--macro-alias-form-p subform))))
+              (setq tail (cdr tail)))
+            found))))))
 
   (defvar nelisp--load-file-local-specials nil
     "Symbols declared by initializer-free top-level `defvar' in this file.
@@ -980,67 +967,42 @@ consulted; a file without one is loaded with dynamic binding (nil)."
              t))))
 
   (defconst emacs-load--native-read-probe-window-sizes '(512 2048 8192 32768)
-    "Progressively larger byte windows `emacs-load--native-read-one' tries
-before giving up on the native per-form reader for one form.  Starting
-small keeps the common case (an ordinary small-to-medium form) to one
-cheap multibyte conversion of a few hundred bytes; the geometric growth
-bounds the total conversion work for a form that needs a bigger window
-to roughly twice its final window size, never to the size of the file
-already read so far.")
+    "Byte windows to try before falling back to the source boundary scanner.")
 
-  (defun emacs-load--native-read-one (source pos len)
-    "Try to read exactly one form from SOURCE at POS using the runtime's
-native reader.  Return (FORM . END-POS) on success, or nil when the
-form starting at POS cannot be read this way (see
-`nelisp--load-eval-source-incremental' for why that happens and what
-callers should do about it).
-
-SOURCE is `emacs-load--byte-indexed-source'-normalized (unibyte on the
-standalone runtime).  `nelisp--read-all-from-string-native' does not
-reliably terminate when given that representation directly -- T78
-measured every call hang regardless of the requested window size, even
-a 64-byte one, when handed a real file's unibyte content straight from
-`emacs-load--read-file-string' -- it needs the same multibyte conversion
-`emacs-load--reader-slice' has always applied before handing a slice to
-`read-from-string'.  Converting only a small, geometrically-growing
-WINDOW under POS instead of the whole remainder of SOURCE keeps that
-conversion a bounded per-form cost instead of one that grows with how
-much of the file is already behind POS.
-
-The native reader reports END-POS as a character offset into the
-(possibly multibyte-converted) slice, not a byte offset into SOURCE.
-For any content with a non-ASCII byte before the form's own end within
-the window, those disagree -- multibyte conversion can collapse a
-multi-byte UTF-8 sequence into one character -- and returning the raw
-character offset as though it were POS's byte-space position corrupts
-every later position in SOURCE (T78: this broke standalone boot on
-`macroexp.el', which has one somewhere in its 2000+ lines).  Convert
-back to a byte count by round-tripping the consumed prefix through
-`string-as-unibyte', which recovers SOURCE's original bytes exactly
-since it was produced by `string-as-multibyte' in the first place."
-    (catch 'emacs-load--native-read-one
-      (dolist (window emacs-load--native-read-probe-window-sizes)
-        (let* ((window-end (min len (+ pos window)))
-               (slice (emacs-load--reader-slice source pos window-end))
-               (slice-len (length slice))
-               (probe (and (> slice-len 0)
-                           (nelisp--read-all-from-string-native slice 0 slice-len))))
-          (when (and (consp probe) (integerp (cdr probe)) (> (cdr probe) 0))
-            (let ((end (cdr probe)))
-              ;; A read that consumes the entire (possibly truncated)
-              ;; window is ambiguous unless the window already covered the
-              ;; rest of SOURCE: it may have been cut short mid-form.  Only
-              ;; trust it when the reader stopped short of the window edge,
-              ;; or there was no more SOURCE left to possibly continue
-              ;; into.
-              (when (or (< end slice-len) (>= window-end len))
-                (let ((byte-end
-                       (if (= end slice-len)
-                           (- window-end pos)
-                         (length (string-as-unibyte (substring slice 0 end))))))
-                  (throw 'emacs-load--native-read-one
-                         (cons (car probe) (+ pos byte-end)))))))))
-      nil))
+  (defun emacs-load--native-read-one (source pos len &optional byte-source)
+    "Read one form from SOURCE at POS, returning (FORM . BYTE-END) or nil.
+With BYTE-SOURCE, SOURCE is unibyte and the reader validates each byte
+window in place.  It returns t for bytes that require conversion.  Read
+such a window as multibyte and recover its byte end from the consumed
+prefix."
+    (let ((windows emacs-load--native-read-probe-window-sizes)
+          result)
+      (while (and windows (not result))
+        (let* ((window-end (min len (+ pos (car windows))))
+               (raw (and byte-source
+                         (nelisp--read-all-from-string-native
+                          source pos window-end t)))
+               (slice (when (or (not byte-source) (eq raw t))
+                        (emacs-load--reader-slice source pos window-end)))
+               (end (if slice (length slice) window-end))
+               (probe (if slice
+                          (and (> end 0)
+                               (nelisp--read-all-from-string-native slice 0 end))
+                        raw))
+               (next (cdr-safe probe)))
+          ;; A token at a truncated window's end may continue in SOURCE.
+          (when (and (integerp next) (> next (if slice 0 pos))
+                     (or (< next end) (= window-end len)))
+            (setq result
+                  (if (not slice)
+                      probe
+                    (cons (car probe)
+                          (if (= next end)
+                              window-end
+                            (+ pos (length (string-as-unibyte
+                                            (substring slice 0 next)))))))))
+          (setq windows (and (< window-end len) (cdr windows)))))
+      result))
 
   (defvar emacs-load--source-single-form-p nil
     "Non-nil when the next source tail is already bounded to one form.")
@@ -1202,7 +1164,8 @@ scan unchanged."
           (last nil)
           (count 0)
           (nelisp--load-file-local-specials nil)
-          (native-probe-available (fboundp 'nelisp--read-all-from-string-native)))
+          (native-probe-available (fboundp 'nelisp--read-all-from-string-native))
+          (byte-source (not (multibyte-string-p source))))
       (while (let ((before pos))
                (setq pos (nelisp--load-skip-space-and-comments source pos))
                ;; A generated bundle concatenates many files; GNU would load
@@ -1213,7 +1176,8 @@ scan unchanged."
                  (setq nelisp--load-file-local-specials nil))
                (< pos len))
         (let ((probe (and native-probe-available
-                           (emacs-load--native-read-one source pos len))))
+                           (emacs-load--native-read-one
+                            source pos len byte-source))))
           (cond
            (probe
             (setq last
@@ -1334,7 +1298,13 @@ otherwise redundant per-form read, tree walk, and serialization pass."
     (concat "(progn\n"
             (if (nelisp--load-rewrite-target-present-p source)
                 (nelisp--load-normalize-source-rewriting source)
-              source)
+              ;; Convert malformed external bytes before concat can treat a
+              ;; raw C0/C1 and continuation as one internal byte8 character.
+              (if (or (multibyte-string-p source)
+                      (and (fboundp 'nelisp--load-external-utf8-p)
+                           (nelisp--load-external-utf8-p source)))
+                  source
+                (string-as-multibyte source)))
             "\n)"))
 
   (defun emacs-load--artifact-write-normalized-source (source path)
@@ -1399,13 +1369,13 @@ per-form evaluator; names containing `load' are not dependency tokens."
     ;; regexp-opt.el take 1.5s instead of 0.09s.
     (if (or (not (fboundp 'nelisp--eval-source-string))
             (nelisp--load-source-large-p source)
-            (emacs-load--macro-alias-source-p source)
             ;; Dependencies may install symbolic macro aliases after this
             ;; decision.  Native whole-source eval does not recognize those
             ;; aliases; per-form evaluation expands them at their call site.
             ;; Match conservatively, including quoted/comment occurrences:
             ;; those merely select the same evaluator used for large files.
             (emacs-load--dependency-source-p source)
+            (emacs-load--macro-alias-source-p source)
             (nelisp--load-rewrite-target-present-p source))
         #'nelisp--load-eval-source-incremental
       #'nelisp--load-eval-source-hybrid))
@@ -1723,24 +1693,33 @@ Comments, escaped backslashes and symbol names remain literal source text."
         (push (substring source start len) out)
         (apply #'concat (nreverse out)))))
 
-  (defun emacs-load--read-file-string (path)
+  (defun emacs-load--read-file-string (path &optional literal)
     "Return PATH source as a string, decoding gzip load representations.
 Return nil when unreadable.  The direct file reader bypasses GNU file
-handlers, so a selected .gz representation must be decoded explicitly."
+handlers, so a selected .gz representation must be decoded explicitly.
+With LITERAL, preserve the original bytes used by .elc file offsets."
     (let ((source
            (cond
             ((and (string-suffix-p ".gz" path) (file-readable-p path))
              (with-temp-buffer
-               (unless (equal (call-process "gzip" nil t nil "-cd" "--" path) 0)
-                 (unless (get 'compression-error 'error-conditions)
-                   (define-error 'compression-error nil 'file-error))
-                 (signal 'compression-error (list "Cannot decompress load file" path)))
+               (when literal
+                 (set-buffer-multibyte nil))
+               (let ((coding-system-for-read
+                      (if literal 'no-conversion coding-system-for-read)))
+                 (unless (equal (call-process "gzip" nil t nil "-cd" "--" path) 0)
+                   (unless (get 'compression-error 'error-conditions)
+                     (define-error 'compression-error nil 'file-error))
+                   (signal 'compression-error (list "Cannot decompress load file" path))))
                (buffer-string)))
             ((fboundp 'nelisp--syscall-read-file)
-             (nelisp--syscall-read-file path))
+             (if literal
+                 (nelisp--syscall-read-file path t)
+               (nelisp--syscall-read-file path)))
             ((file-readable-p path)
              (with-temp-buffer
-               (insert-file-contents path)
+               (if literal
+                   (insert-file-contents-literally path)
+                 (insert-file-contents path))
                (buffer-string)))
             (t nil))))
       (and source (emacs-load--byte-indexed-source source))))
@@ -4102,12 +4081,12 @@ SOURCE must be byte-indexed.  `#@00' discards the remainder."
           (setq done t)))
       p))
 
-  (defun emacs-load--eval-elc (source resolved)
+  (defun emacs-load--eval-elc (source resolved &optional version)
     "Read GNU compiled SOURCE incrementally and execute its top-level forms.
 Keep the original byte offsets and byte-code objects, without the source
 loader's defalias rewrites or native artifact compilation.  Top-level
 `byte-code' uses the same executor as compiled function calls."
-    (when (= (emacs-load--elc-version source) 0)
+    (when (= (or version (emacs-load--elc-version source)) 0)
       ;; Foundation bootstrap formatters may omit GNU message quoting.
       ;; Quote the template before interpolation, preserving filename bytes.
       (let* ((style (or (and (fboundp 'text-quoting-style)
@@ -4132,28 +4111,39 @@ loader's defalias rewrites or native artifact compilation.  Top-level
           (count 0))
       (while (< (setq position (emacs-load--elc-skip-blocks source position limit))
                 limit)
-        (let ((parsed
-               (condition-case nil
-                   (let ((native
-                          (and (fboundp 'nelisp--read-all-from-string-native)
-                               (condition-case nil
-                                   (nelisp--read-all-from-string-native
-                                    source position limit)
-                                 (error nil)))))
-                     (when (< next-hash position)
-                       (setq next-hash (or (string-search "#^" source position)
-                                           limit)))
-                     ;; The native parser treats char-table syntax as a
-                     ;; vector.  Otherwise keep its byte-indexed fast path.
-                     (if (and native (>= next-hash (cdr native)))
-                         native
-                       (emacs-load--elc-read-fallback source position limit
-                                                      (cdr native))))
-                 (end-of-file (signal 'end-of-file (list resolved))))))
+        (let* ((native
+                (and (fboundp 'nelisp--read-all-from-string-native)
+                     (condition-case nil
+                         (nelisp--read-all-from-string-native source position limit 1)
+                       (error nil))))
+               (parsed
+                (progn
+                  (when (< next-hash position)
+                    (setq next-hash (or (string-search "#^" source position) limit)))
+                  ;; The native parser treats char-table syntax as a vector.
+                  (if (and native (>= next-hash (cdr native)))
+                      native
+                    (condition-case nil
+                        (emacs-load--elc-read-fallback source position limit (cdr native))
+                      (end-of-file (signal 'end-of-file (list resolved))))))))
           (unless (and (consp parsed) (integerp (cdr parsed))
                        (> (cdr parsed) position))
             (signal 'end-of-file (list "compiled load reader made no progress")))
-          (eval (car parsed) nil)
+          (let ((form (car parsed)))
+            ;; The byte compiler emits three self-evaluating operands.
+            ;; Other shapes and rebound functions go through ordinary eval.
+            (if (and (eq (car-safe form) 'byte-code)
+                     (let* ((operands (cdr form))
+                            (constants (cdr-safe operands))
+                            (depth (cdr-safe constants)))
+                       (and (stringp (car-safe operands))
+                            (vectorp (car-safe constants))
+                            (integerp (car-safe depth))
+                            (null (cdr depth))))
+                     (subrp (symbol-function 'byte-code))
+                     (not (special-form-p 'byte-code)))
+                (byte-code (cadr form) (caddr form) (cadddr form))
+              (eval form nil)))
           (setq position (cdr parsed)
                 count (1+ count))
           (emacs-load--periodic-gc count)))
@@ -4203,7 +4193,7 @@ When UNIBYTE is non-nil, return the unquoted bytes."
                      (expand-file-name
                       file (and (boundp 'lisp-directory)
                                 (symbol-value 'lisp-directory)))))
-             (source (emacs-load--read-file-string path)))
+             (source (emacs-load--read-file-string path t)))
         (cond
          ((null source)
           (format "Cannot open doc string file \"%s\"\n" file))
@@ -4227,20 +4217,31 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
       (if noerror nil
         (signal 'file-error (list "Cannot open load file" resolved))))
      (t
-      (let* ((base (file-name-nondirectory resolved))
-             (source (emacs-load--read-file-string resolved))
+      (let* ((compiled-path (or (string-suffix-p ".elc" resolved)
+                                (string-suffix-p ".elc.gz" resolved)))
+             ;; GNU can recognize a compiled header in a file of any name.
+             ;; Read the bytes once before deciding how to decode them.
+             (source (emacs-load--read-file-string resolved t))
              ;; As in GNU Fload, publish the resolved init file before
              ;; executing it, including when evaluation subsequently fails.
              (_init-file (when (and source (eq user-init-file t))
                            (setq user-init-file resolved)))
-             (compiled (and (stringp source)
-                            (or (string-suffix-p ".elc" resolved)
-                                (string-suffix-p ".elc.gz" resolved)
-                                (> (emacs-load--elc-version source) 1))))
-             (lexical-binding (and (stringp source)
+             (version (and (stringp source) (emacs-load--elc-version source)))
+             (compiled (and version (or compiled-path (> version 1))))
+             (base (and (stringp source) (not compiled)
+                        (file-name-nondirectory resolved)))
+             (lexical-binding (and (stringp source) (not compiled)
                                    (emacs-load--source-lexical-binding-p source)))
              (source (if (and (stringp source) (not compiled))
-                         (emacs-load--rewrite-named-unicode-escapes source)
+                         (emacs-load--rewrite-named-unicode-escapes
+                          ;; The cookie above can follow a script header.  The
+                          ;; reader starts after that header, as in GNU load.
+                          (if (string-prefix-p "#!" source)
+                              (let ((newline (string-search "\n" source)))
+                                (substring source (if newline
+                                                      (1+ newline)
+                                                    (length source))))
+                            source))
                        source))
              (source (if (and (stringp source) (not compiled)
                                (not emacs-load--propertized-string-reader-native-p))
@@ -4262,8 +4263,8 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
                          (emacs-load--rewrite-escaped-unicode-character-literals source)
                        source))
              (artifact (and (not compiled) emacs-load-auto-native-compile
-                            (not (string-prefix-p "cc-" base))
                             (stringp source)
+                            (not (string-prefix-p "cc-" base))
                             (emacs-load--artifact-load-or-compile
                              resolved source))))
         (if artifact
@@ -4272,7 +4273,7 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
            ((null source)
             (if noerror nil
               (signal 'file-error (list "read error" resolved))))
-           (compiled (emacs-load--eval-elc source resolved))
+           (compiled (emacs-load--eval-elc source resolved version))
            (t
             ;; `cc-provide' is a compile-time wrapper around `provide', but
             ;; NeLisp's fast source evaluator bare-aborts on that form head.
@@ -4336,7 +4337,6 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
     (if nosuffix
         '("")
       (let ((suffixes nil)
-            (qualified (file-name-directory file))
             ;; GNU's value always contains ""; a bound-but-nil value
             ;; (early bootstrap) would otherwise yield no suffix.
             (representations (or (and (boundp 'load-file-rep-suffixes)
@@ -4348,10 +4348,11 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
           ;; configured load-suffixes do not contain that extension.
           (dolist (representation representations)
             (push (concat suffix representation) suffixes)))
-        (setq qualified (or qualified (string-suffix-p ".el" file)
-                            (string-suffix-p ".elc" file)))
         (setq suffixes (nreverse suffixes))
-        (if (and must-suffix (not qualified))
+        (if (and must-suffix
+                 (not (or (file-name-directory file)
+                          (string-suffix-p ".el" file)
+                          (string-suffix-p ".elc" file))))
             suffixes
           (append suffixes representations)))))
 
@@ -4380,6 +4381,13 @@ Every lookup checks the live filesystem.")
   ;; A source reload can encounter entries created by the previous loader.
   (clrhash emacs-load--directory-prefixes)
 
+  (defun emacs-load--possible-remote-prefix-p (name)
+    "Return non-nil if an anchored Tramp regexp might match NAME."
+    (when (and (> (length name) 0) (eq (aref name 0) ?/))
+      (let ((slash (nelisp--string-search "/" name 1))
+            (colon (nelisp--string-search ":" name 1)))
+        (or (not slash) (and colon (< colon slash))))))
+
   (defun emacs-load--directory-prefix (directory)
     "Return (PREFIX REMOTE-P . ASCII-P) for canonical DIRECTORY.
 Leave spellings that require expansion to the general search."
@@ -4387,18 +4395,12 @@ Leave spellings that require expansion to the general search."
                (eq (aref directory 0) ?/)
                (not (string-prefix-p "/:" directory))
                (not (nelisp--string-search "//" directory 0))
-               (not (nelisp--string-search "/./" directory 0))
-               (not (nelisp--string-search "/../" directory 0))
                (not (nelisp--string-search "\0" directory 0))
-               (not (eq (aref directory (1- (length directory))) ?.)))
+               (not (nelisp--file-name-needs-normalization-p directory)))
       (let* ((prefix (if (eq (aref directory (1- (length directory))) ?/)
                          (copy-sequence directory)
                        (concat directory "/")))
-             (slash (nelisp--string-search "/" prefix 1))
-             (colon (nelisp--string-search ":" prefix 1))
-             (entry (cons prefix (cons (or (not slash)
-                                           (= slash (string-bytes directory))
-                                           (and colon (< colon slash)))
+             (entry (cons prefix (cons (emacs-load--possible-remote-prefix-p directory)
                                        (nelisp--file-name-ascii-p prefix)))))
         (when (>= (hash-table-count emacs-load--directory-prefixes) 8192)
           (clrhash emacs-load--directory-prefixes))
@@ -4673,6 +4675,29 @@ ACCESS-MODE, when non-nil, is the caller's explicit access mask."
             (syscall-direct 3 fd 0 0 0 0 0))))) ; close
      (t (and (file-readable-p file) (not (file-directory-p file))))))
 
+  (defun emacs-load--absolute-local-p (file directory mode)
+    "Check if absolute FILE can bypass expansion and handler dispatch.
+DIRECTORY is the expansion base, or nil for a literal search."
+    (and (not (or (string-prefix-p "/:" file) (string-suffix-p "/" file)
+                  (nelisp--string-search "//" file 0)
+                  (nelisp--string-search "\0" file 0)
+                  (nelisp--file-name-needs-normalization-p file)))
+         (or (null directory)
+             (and (stringp directory) (> (length directory) 0)
+                  (eq (aref directory 0) ?/)
+                  (not (string-prefix-p "/:" directory))
+                  (not (nelisp--string-search "\0" directory 0))
+                  (eq (multibyte-string-p directory) (multibyte-string-p file))))
+         (let ((checks (emacs-load--lookup-handlers-p file (list file) mode)))
+           (and (not (eq checks t))
+                (not (aref checks 2))
+                (not (and (aref checks 0)
+                          (or (emacs-load--possible-remote-prefix-p file)
+                              (and directory
+                                   (emacs-load--possible-remote-prefix-p directory)))))
+                (not (and directory
+                          (emacs-load--directory-handler-p directory (aref checks 1))))))))
+
   (defun emacs-load--find-file (file suffixes path newer &optional predicate)
     "Find FILE using ordered SUFFIXES in PATH, as GNU openp does.
 NEWER selects by mtime within the first matching directory.  PREDICATE
@@ -4696,6 +4721,22 @@ can be an access mask or a function that may return `dir-ok'."
            (suffixes (or suffixes '(""))))
       (cond
        ((> (or mask 0) 7) nil)
+       ;; With no suffix to append, a canonical absolute name can go
+       ;; directly to the filesystem if neither it nor its base is handled.
+       ((and absolute (consp directories) (not filter)
+             (eq system-type 'gnu/linux)
+             (fboundp 'nelisp--string-search)
+             (fboundp 'nelisp--file-name-needs-normalization-p)
+             (equal suffixes '(""))
+             (emacs-load--absolute-local-p
+              file
+              (unless (eq absolute 'literal)
+                (let ((directory (car directories)))
+                  (if (and (stringp directory) (not (equal directory "")))
+                      directory default-directory)))
+              mask))
+        (and (emacs-load--local-file-p file mask)
+             (substring-no-properties file)))
        ((and (not filter)
              (eq system-type 'gnu/linux)
              (fboundp 'nelisp--syscall-path-int)

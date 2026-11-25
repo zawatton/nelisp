@@ -9,6 +9,7 @@
 (path-elements ("here.el" "here.el" "here.el"))
 (relative-path "b/foo.el")
 (literal-absolute "a/../here.el")
+(quoted-load-path (t second-el))
 (names ("a/org/item.el" "a/org/item.el" "b/foo.el"))
 (tilde "a/org/item.el")
 (mutation ("b/fresh.el" "a/fresh.el" "b/fresh.el"))

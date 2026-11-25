@@ -654,11 +654,11 @@ slow fallback when a reader limitation affects only one form."
     (makunbound second)
     (unwind-protect
         (cl-letf (((symbol-function 'emacs-load--native-read-one)
-                   (lambda (text pos len)
+                   (lambda (text pos len &optional byte-source)
                      (setq native-calls (1+ native-calls))
                      (if (= native-calls 1)
                          nil
-                       (funcall native text pos len))))
+                       (funcall native text pos len byte-source))))
                   ((symbol-function 'nelisp--load-eval-source-tail)
                    (lambda (text pos end)
                      (push (list pos end) tail-calls)
@@ -698,11 +698,11 @@ only the first form before native probing resumes."
     (makunbound second)
     (unwind-protect
         (cl-letf (((symbol-function 'emacs-load--native-read-one)
-                   (lambda (text pos len)
+                   (lambda (text pos len &optional byte-source)
                      (setq native-calls (1+ native-calls))
                      (if (= native-calls 1)
                          nil
-                       (funcall native text pos len))))
+                       (funcall native text pos len byte-source))))
                   ((symbol-function 'emacs-load--artifact-source-form-end)
                    (lambda (text _pos)
                      (setq scan-source-length (length text))
@@ -3312,8 +3312,10 @@ cost-ratio policy."
          (emacs-load--gc-cost-ratio 10)
          (emacs-load--gc-last-end 10.0)      ; recorded by an image builder
          (emacs-load--gc-last-cost 4.0)
+         (emacs-load--gc-last-count nil)
          (emacs-load--gc-pid (1+ (emacs-pid))))
-    (cl-letf (((symbol-function 'float-time) (lambda (&rest _) clock))
+    (cl-letf (((symbol-value 'gcs-done) 0)
+              ((symbol-function 'float-time) (lambda (&rest _) clock))
               ((symbol-function 'garbage-collect)
                (lambda () (setq collections (1+ collections)))))
       (emacs-load--periodic-gc 1)
@@ -3327,6 +3329,12 @@ cost-ratio policy."
       ;; Due again under the ordinary policy.
       (setq clock 1041.0)
       (emacs-load--periodic-gc 1)
+      (should (= collections 1))
+      ;; An intervening collection satisfies the next check.
+      (setq clock 1082.0)
+      (set 'gcs-done 1)
+      (emacs-load--periodic-gc 1)
+      (should (= emacs-load--gc-last-end 1082.0))
       (should (= collections 1)))))
 
 (ert-deftest emacs-load-test/incremental-eval-preserves-lexical-environment ()
