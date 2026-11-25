@@ -22980,7 +22980,7 @@ eval applyfn.")
                                                 (if (< first-op 128)
                                                     (if (/= (logand 2146960515 (shl 1 (- first-op 64))) 0) 1 0)
                                                   (if (< first-op 192)
-                                                      (if (/= (logand 55169526005760894 (shl 1 (- first-op 128))) 0) 1 0)
+                                                      (if (/= (logand 55169526056092542 (shl 1 (- first-op 128))) 0) 1 0)
                                                     1))) 1)
                                            (wf_bytecode_w_fast_run code-data code-len mem depth
                                                                    (+ (nl_word_payload constants) 8)
@@ -24463,26 +24463,28 @@ bytes are written into a fresh 8-byte buffer instead."
             (let* ((slot (+ mem (* (- sp 1) 8)))
                    (a (ptr-read-u64 slot 0)))
               (if (= a 3) (seq (ptr-write-u64 slot 0 1) sp)
-                (if (= (logand a 7) 6)
-                    (if (< a 4096) -1
-                      (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 8)
-                          (let* ((n (vector-len a)))
-                            (if (if (>= n 0) (/= n 7) 0)
-                                (seq (ptr-write-u64 slot 0 (+ (shl n 2) 1)) sp)
-                              -1))
-                        -1))
-                  (if (= (logand a 7) 2)
-                      (let* ((n 0) (cur a))
-                        (seq
-                         (while (if (= (logand cur 7) 2) (<= n 4096) 0)
-                           (seq (setq cur (ptr-read-u64 (- cur 2) 8))
-                                (setq n (+ n 1))))
-                         (if (= cur 3)
-                             (if (<= n 4096)
-                                 (seq (ptr-write-u64 slot 0 (+ (shl n 2) 1)) sp)
-                               -1)
-                           -1)))
-                    -1)))))
+                (if (= (logand a 7) 4)
+                    (seq (ptr-write-u64 slot 0 (+ (shl (nl_str_charlen_c a) 2) 1)) sp)
+                  (if (= (logand a 7) 6)
+                      (if (< a 4096) -1
+                        (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 8)
+                            (let* ((n (vector-len a)))
+                              (if (if (>= n 0) (/= n 7) 0)
+                                  (seq (ptr-write-u64 slot 0 (+ (shl n 2) 1)) sp)
+                                -1))
+                          -1))
+                    (if (= (logand a 7) 2)
+                        (let* ((n 0) (cur a))
+                          (seq
+                           (while (if (= (logand cur 7) 2) (<= n 4096) 0)
+                             (seq (setq cur (ptr-read-u64 (- cur 2) 8))
+                                  (setq n (+ n 1))))
+                           (if (= cur 3)
+                               (if (<= n 4096)
+                                   (seq (ptr-write-u64 slot 0 (+ (shl n 2) 1)) sp)
+                                 -1)
+                             -1)))
+                      -1))))))
         (if (< sp (if (= opcode 73) 3 2)) -1
           (if (= (wf_bytecode_vector_primitive mem sp opcode) 0)
               (- sp (if (= opcode 73) 2 1))
@@ -27269,7 +27271,8 @@ bytes are written into a fresh 8-byte buffer instead."
                                   (nelisp_env_lookup_function_raw_w (+ env 0) (+ env 64) fw 0))))
                           2))
                  (target (if (= fcell 2) fw fcell))
-                 (status (if (= (nl_val_tag target) 17)
+                 (ttag (nl_val_tag target))
+                 (status (if (= ttag 17)
                              (wf_bytecode_w_function target mem (+ fi 1) argc env
                                                      (+ mem (* fi 8)) 0 0)
                            (let* ((direct (nl_directcall_invoke target fw
@@ -27289,22 +27292,27 @@ bytes are written into a fresh 8-byte buffer instead."
                               direct)))))
             (if (/= status 2)
                 status
-              ;; Ordinary calls own rooted WORD operands and return a WORD.
-              ;; The throw adapter takes the operands as they are; the flat
-              ;; OS-path call keeps its view protocol.
-              (if (if (= ftag 4) (= (symbol-name-eq fw "throw") 1) 0)
-                  (if (if (= fcell 2) 1 (= (nl_val_tag fcell) 1))
-                      (if (= argc 2)
-                          (nl_ct_throw_words env
-                                             (heap-read-u64 (+ mem (* (+ fi 1) 8)) 0)
-                                             (heap-read-u64 (+ mem (* (+ fi 2) 8)) 0))
-                        (bf_wrong_number_of_args fw argc))
-                    (wf_bytecode_w_call_words env fw mem fi argc 0))
-                (if (if (= argc 3)
-                        (if (= fcell 2) 0 (wf_bytecode_flat_path_int_cell fcell))
-                      0)
-                    (wf_bytecode_w_call_views env fw mem fi argc)
-                  (wf_bytecode_w_call_words env fw mem fi argc 0))))))))))
+              (let* ((argv (if (= ttag 20)
+                               (wf_bytecode_call_subr_argv env fw target mem fi argc)
+                             2)))
+                (if (/= argv 2)
+                    argv
+                  ;; Ordinary calls own rooted WORD operands and return a WORD.
+                  ;; The throw adapter takes the operands as they are; the flat
+                  ;; OS-path call keeps its view protocol.
+                  (if (if (= ftag 4) (= (symbol-name-eq fw "throw") 1) 0)
+                      (if (if (= fcell 2) 1 (= (nl_val_tag fcell) 1))
+                          (if (= argc 2)
+                              (nl_ct_throw_words env
+                                                 (heap-read-u64 (+ mem (* (+ fi 1) 8)) 0)
+                                                 (heap-read-u64 (+ mem (* (+ fi 2) 8)) 0))
+                            (bf_wrong_number_of_args fw argc))
+                        (wf_bytecode_w_call_words env fw mem fi argc 0))
+                    (if (if (= argc 3)
+                            (if (= fcell 2) 0 (wf_bytecode_flat_path_int_cell fcell))
+                          0)
+                        (wf_bytecode_w_call_views env fw mem fi argc)
+                      (wf_bytecode_w_call_words env fw mem fi argc 0))))))))))))
     ;; corecall (W2c): the call arm of `wf_bytecode_w_fast_run' for a callee that is
     ;; not byte code.  GNU Bcall reaches funcall_subr with the SUBR struct in hand
     ;; (bytecode.c:803, eval.c:3254); here the leaf probe is made directly, with no
@@ -27314,6 +27322,50 @@ bytes are written into a fresh 8-byte buffer instead."
              (r (if (< fi 0) 2
                   (wf_bytecode_call_leaf env mem fi argc (ptr-read-u64 mem (* fi 8))))))
         (if (= r 2) (wf_bytecode_call env mem sp argc cell 1) r)))
+    (defun wf_bytecode_call_subr_argv (env fw target mem fi argc)
+      ;; The Subr's existing argument-array entry can borrow the VM operands.
+      ;; Calls requiring resolution, arity errors or entry hooks use the list
+      ;; route. Once entered, the lazy frame exposes the original operator and
+      ;; arguments to backtrace readers for the lifetime of the call.
+      (if (if (>= argc 256) 1
+            (if (/= (logand target 7) 6) 1
+              (/= (logand (ptr-read-u64 env 112) 3145728) 0)))
+          2
+        (let* ((desc (ptr-read-u64 target 10)))
+          (if (if (= desc 0) 1
+                (if (< argc (logand (sar desc 16) 255)) 1
+                  (if (= (logand (sar desc 24) 255) 255) 0
+                    (> argc (logand (sar desc 24) 255)))))
+              2
+            (let* ((out (+ mem (* fi 8)))
+                   (args (+ out 8))
+                   (frame (nl_n4_push_words env (nl_n4_apply_name fw) args argc)))
+              (if (= frame 0) 2
+                (let* ((i 0)
+                       (word
+                        (seq
+                         (while (< i argc)
+                           (let* ((arg (ptr-read-u64 args (* i 8))))
+                             (seq
+                              (if (= (logand arg 7) 0)
+                                  (ptr-write-u64 args (* i 8) (nl_word_canon arg)) 0)
+                              (setq i (+ i 1)))))
+                         (nl_apply_builtin_frame_sid_w (logand desc 65535)
+                                                       (ptr-read-u64 target 2)
+                                                       args env argc))))
+                  (if (= word 2)
+                      (seq (nl_n4_finish_w 3 env 0 frame) 2)
+                    (seq
+                     ;; Keep the result rooted if an exit hook inspects it.
+                     (if (= word 0) 0 (ptr-write-u64 out 0 word))
+                     (setq word (nl_n4_finish_w word env 0 frame))
+                     (if (= word 0) 1
+                       (seq
+                        (ptr-write-u64 out 0 word)
+                        (setq i 0)
+                        (while (< i argc)
+                          (seq (ptr-write-u64 args (* i 8) 3) (setq i (+ i 1))))
+                        0)))))))))))
     (defun wf_bytecode_w_call_views (env fw mem fi argc)
       ;; The flat OS-path call keeps the view protocol: the operands as
       ;; 32-byte views in a scratch block, consed into the argument list.
@@ -27376,6 +27428,14 @@ bytes are written into a fresh 8-byte buffer instead."
                    (if (= (wf_string_props_finish_w
                            (heap-read-u64 (+ mem (* (- sp k) 8)) 0) lst env 0) 0)
                        1 0)))))))
+    (defun wf_bytecode_w_string_compare (left right opcode)
+      ;; Both operands are canonical strings. Use the same comparison
+      ;; as the checked primitive, without building an argument list.
+      ;; Symbols, legacy views and type errors use the general handler.
+      (if (if (= (logand left 7) 4) (= (logand right 7) 4) 0)
+          (if (= (if (= opcode 152) (m5_streq left right)
+                   (bf_str_lt left right)) 1) 7 3)
+        0))
     (defun wf_bytecode_w_text_op (mem sp k id)
       ;; w1f: concat (ID 115) or substring (ID 116) of the K operands ending
       ;; at SP-1, straight on the WORD stack through the directcall text body.
@@ -30155,6 +30215,16 @@ bytes are written into a fresh 8-byte buffer instead."
                        (if (< raw 192)
                            (if (< raw 165)
                                (cond
+                                ((or (= raw 152) (= raw 153))
+                                 (if (< sp 2) (setq go 0)
+                                   (let* ((dst (+ mem (* (- sp 2) 8)))
+                                          (value (wf_bytecode_w_string_compare
+                                                  (ptr-read-u64 dst 0)
+                                                  (ptr-read-u64 dst 8) raw)))
+                                     (if (= value 0) (setq go 0)
+                                       (seq (ptr-write-u64 dst 0 value)
+                                            (setq sp (- sp 1))
+                                            (setq pc (+ pc 1)))))))
                                 ((= raw 158)
                                  (if (< sp 2) (setq go 0)
                                    (let* ((dst (+ mem (* (- sp 2) 8)))
@@ -30709,7 +30779,7 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; Masks: 0..13,32..37,40..47,56,61..65,71,74,83..94,129..134,136,137;
                   ;; A return-only function stays in the outer handler; Breturn
                   ;; remains available after useful work within a batch.
-                  ;; 158,162,165,166,178,182,183. These are guarded leaves;
+                  ;; 152,153,158,162,165,166,178,182,183. These are guarded leaves;
                   ;; unsupported operands replay in the outer handler.
                   ;; Constants 192..255 also enter the existing batch runner.
                   (if (= (if (< first-op 64)
@@ -30717,7 +30787,7 @@ bytes are written into a fresh 8-byte buffer instead."
 			   (if (< first-op 128)
 			       (if (/= (logand 2146960515 (shl 1 (- first-op 64))) 0) 1 0)
 			     (if (< first-op 192)
-				 (if (/= (logand 55169526005760894 (shl 1 (- first-op 128))) 0) 1 0)
+				 (if (/= (logand 55169526056092542 (shl 1 (- first-op 128))) 0) 1 0)
 			       1))) 1)
                       (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env curfp)))
                         (seq
