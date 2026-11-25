@@ -92,3 +92,25 @@ nested definitions in addition to the 45 previously reported.
 | =define-key-after= | The keymap bridge handles NeLisp keymap representations and the empty-menu path exercised by =woman.el=. |
 | =treesit-install-language-grammar= | The autoload resolves through the tree-sitter facade, which keeps the parser and grammar installation APIs behind the optional backend. |
 | =treesit-font-lock-rules= | The facade supplies the optional tree-sitter backend boundary. Org's require path loads this facade, so switching to the full GNU library needs a load-time comparison. |
+
+* Round 4 exception review (user decision, 2026-11-26)
+
+The project owner reviewed the Round 4 runtime exceptions and classified them.
+
+- Approved substrate boundaries (16). GNU obtains these from its C core or
+  display backend; NeLisp supplies them from its own substrate:
+  =start-process=, =process-get=, =process-put=, =shell-command=,
+  =shell-command-on-region=, =open-network-stream=, =sit-for=,
+  =called-interactively-p=, =event-basic-type=, =event-modifiers=,
+  =define-key-after=, =make-syntax-table=, =newline=,
+  =add-to-invisibility-spec=, =remove-from-invisibility-spec=,
+  =define-fringe-bitmap=.
+- Performance shims to return to GNU (4). Not approved as permanent; they go
+  back to the genuine GNU definitions once init.el meets its speed gate, and
+  the speed gate counts only with them genuine: =add-to-list=,
+  =define-symbol-prop=, =normal-top-level-add-subdirs-to-load-path=,
+  =locate-library=.
+- Fixable differences (7). Not approved; fix the substrate so the genuine GNU
+  definitions work: =replace-buffer-contents=, =subregexp-context-p=,
+  =message=, =calendar=, =cvs-dired-noselect=,
+  =treesit-install-language-grammar=, =treesit-font-lock-rules=.
