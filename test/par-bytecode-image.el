@@ -1,0 +1,27 @@
+;;; par-bytecode-image.el --- GNU owners in a cold runtime image -*- lexical-binding: t; -*-
+
+(dolist (entry '((ring "emacs-lisp/ring.elc" ring-insert)
+                 (comint "comint.elc" comint-check-proc)
+                 (isearch "isearch.elc" isearch-update)
+                 (register "register.elc" register-read-with-preview)
+                 (window "window.elc" display-buffer-at-bottom)
+                 (seq "emacs-lisp/seq.elc" seq-first)))
+  (let ((feature (nth 0 entry))
+        (file (nth 1 entry))
+        (name (nth 2 entry)))
+    ;; GNU may already have dumped these definitions as native code.
+    (unless (fboundp 'nelisp--write-stdout-bytes)
+      (load (expand-file-name file (getenv "NELISP_GNU_LISP")) nil t t t))
+    (let* ((owner (symbol-file name 'defun))
+           (history (and owner (assoc owner load-history))))
+      (prin1 (list feature (featurep feature)
+                   (and owner (file-name-nondirectory owner))
+                   (byte-code-function-p (symbol-function name))
+                   (and (member (cons 'defun name) history) t)))
+      (terpri))))
+
+(let ((ring (make-ring 2)))
+  (dolist (item '(a b c))
+    (ring-insert ring item))
+  (prin1 (list 'calls (ring-elements ring) (seq-first [first second])))
+  (terpri))

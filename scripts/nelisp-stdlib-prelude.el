@@ -10143,6 +10143,28 @@ NeLisp uses `intern' (= the standalone runtime has no
                     (list 'apply (list 'quote def) 'args)))
       (fset sym def))
     sym))
+(defvar nelisp--load-vendor-defalias-base nil)
+
+(defun nelisp--load-vendor-bytecode (file)
+  "Load exact GNU FILE and retain function history for bytecode calls."
+  ;; Source defalias is handled by the evaluator and records via nl-afset.
+  ;; A GNU bytecode call uses the builtin function cell instead.
+  (let ((original (symbol-function 'defalias)))
+    (if (and (subrp original) (fboundp 'nelisp--lh-fun))
+        (let ((nelisp--load-vendor-defalias-base original)
+              (publisher
+               (lambda (name definition &optional documentation)
+                 (prog1 (funcall nelisp--load-vendor-defalias-base
+                                 name definition documentation)
+                   (nelisp--lh-fun name)))))
+          (unwind-protect
+              (progn
+                (fset 'defalias publisher)
+                (load file nil 'no-message t t))
+            (when (eq (symbol-function 'defalias) publisher)
+              (fset 'defalias nelisp--load-vendor-defalias-base))))
+      (load file nil 'no-message t t))))
+
 (unless (fboundp 'fmakunbound)
   (defun fmakunbound (sym)
     (nelisp--check-symbol sym)

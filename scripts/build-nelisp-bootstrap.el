@@ -425,7 +425,9 @@ Package sources map to `src/<file>.el'; everything else (vendor inputs)
 is relative to `nelisp-bootstrap-repo-root'."
   (nelisp-bootstrap--ensure-package-table)
   (or (gethash (file-truename file) nelisp-bootstrap--package-reverse-table)
-      (file-relative-name file nelisp-bootstrap-repo-root)))
+      (if (nelisp-bootstrap--gnu-vendor-file-p file)
+          (concat "vendor/" (file-relative-name file (nelisp-bootstrap--vendor-dir)))
+        (file-relative-name file nelisp-bootstrap-repo-root))))
 
 (defun nelisp-bootstrap--c-core-unit-files ()
   "Return the src/emacs-cc-*.el C-core unit files, sorted by name."
@@ -771,15 +773,45 @@ loads the verbatim source on first use; these libraries are command/macro
 packages rather than bootstrap dependencies. Keeping them out of eager replay
 preserves the boot budget without changing their source or feature code.")
 
-(defconst nelisp-bootstrap--compiled-expander-files
-  '("backquote.el" "macroexp.el" "pcase.el" "gv.el")
-  "GNU language providers to load as byte code at their bundle position.")
+(defconst nelisp-bootstrap--source-only-vendor-files
+  '("vendor/staged-emacs-lisp/subr.el" ; Only the early GNU definition subset.
+    "vendor/emacs-lisp/loaddefs.el" ; Early Custom metadata, before custom-autoload.
+    "vendor/emacs-lisp/emacs-lisp/cl-lib.el" ; Before custom-declare-variable.
+    "vendor/emacs-lisp/emacs-lisp/cl-macs.el" ; Early macro substrate, before GNU Custom.
+    "vendor/emacs-lisp/jka-cmpr-hook.el" ; Early GNU byte code calls aref on funcall.
+    "vendor/emacs-lisp/international/mule-cmds.el" ; Initializes the characters prologue.
+    "vendor/emacs-lisp/international/characters.el" ; Saves mode definers for composite.
+    "vendor/emacs-lisp/composite.el") ; Restores those mode definers before after-load.
+  "GNU bundle members that need their source bootstrap boundary.
+The full CL byte-code libraries are loaded after Custom is available.")
 
-(defun nelisp-bootstrap--compiled-expander-p (relative)
-  "Return non-nil if RELATIVE names a GNU expander with a byte-code load."
-  (and (string-prefix-p "vendor/emacs-lisp/emacs-lisp/" relative)
-       (member (file-name-nondirectory relative)
-               nelisp-bootstrap--compiled-expander-files)))
+(defconst nelisp-bootstrap--compiled-vendor-prerequisites
+  '(("vendor/emacs-lisp/vc/vc.el" dired cond-star))
+  "Features the bundled source replay loaded while expanding GNU code.
+A precompiled member no longer executes the compile-time require or
+autoloads the macro expander, so preload these at the same bundle boundary.")
+
+(defconst nelisp-bootstrap--compiled-vendor-native-rows
+  '(("vendor/emacs-lisp/emacs-lisp/macroexp.el"
+     macroexpand-all macroexpand--all-toplevel)
+    ("vendor/emacs-lisp/simple.el" string-empty-p))
+  "GNU definitions with matching FXIR rows installed before the bundle.")
+
+(defconst nelisp-bootstrap--compiled-vendor-bridge-owners
+  '(("vendor/emacs-lisp/simple.el" shell-command shell-command-on-region))
+  "Existing Doc 246 bridge owners that the compiled definition would replace.")
+
+(defun nelisp-bootstrap--vendor-byte-code-file (file relative)
+  "Return the byte-code companion pathname for GNU FILE, if eligible.
+RELATIVE is FILE's logical name within the bundle.  Availability is
+checked in the configured vendor tree when the bundle is generated."
+  (unless (member relative nelisp-bootstrap--source-only-vendor-files)
+    (cond
+     ((string-prefix-p "vendor/emacs-lisp/" relative)
+      (concat file "c"))
+     ((equal relative "vendor/staged-emacs-lisp/minibuffer.el")
+      (expand-file-name "emacs-lisp/minibuffer.elc"
+                        (nelisp-bootstrap--vendor-dir))))))
 
 (defun nelisp-bootstrap--eager-runtime-files (files)
   "Return FILES with bootstrap-critical GNU declarations loaded first.
@@ -1762,22 +1794,6 @@ strings or comments, and calls with any non-literal argument, are kept."
     (cond
      ((assoc rel nelisp-bootstrap--early-gnu-definitions)
       (insert (nelisp-bootstrap--early-gnu-source file rel)))
-     ((nelisp-bootstrap--compiled-expander-p rel)
-      ;; Give the byte-code loader its own history and after-load boundary.
-      ;; The verbatim source bundle is also usable in checkouts without .elc.
-      (let ((compiled (concat file "c")))
-        (insert (format "(if (file-readable-p %S)\n    (progn\n      (when (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n      (let ((load-file-name nil))\n"
-                        compiled))
-        (if (equal (file-name-nondirectory file) "macroexp.el")
-            (insert
-             (format
-              "(let (native)\n  (when (boundp 'nelisp-nc--converted)\n    (dolist (name '(macroexpand-all macroexpand--all-toplevel))\n      (when (memq name nelisp-nc--converted)\n        (push (cons name (symbol-function name)) native))))\n  (load %S nil 'no-message t t)\n  (dolist (entry native) (fset (car entry) (cdr entry))))"
-              compiled))
-          (insert (format "(load %S nil 'no-message t t)" compiled)))
-        (insert "))\n  (progn\n"))
-      (insert-file-contents file)
-      (goto-char (point-max))
-      (insert "))\n"))
      ((equal rel "vendor/emacs-lisp/progmodes/elisp-mode.el")
       ;; Preserve the file loader's macroexpansion boundary.  Concatenating
       ;; this source eagerly expands flymake-log and loads Flymake at boot.
@@ -1790,6 +1806,67 @@ strings or comments, and calls with any non-literal argument, are kept."
       (insert-file-contents file)
       (goto-char (point-max))))
     (nelisp-bootstrap--fold-constant-regexp-opt start)))
+
+(defun nelisp-bootstrap--insert-source-bundle-member (file relative)
+  "Emit the source replay and after-load boundary for FILE at point."
+  (let ((gnu (nelisp-bootstrap--gnu-vendor-file-p file)))
+    (insert (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))\n"
+                    file))
+    (when gnu
+      (insert (format "(setq load-file-name %S)\n" file)))
+    (nelisp-bootstrap--insert-bundle-file-body file relative)
+    (dolist (feature (nelisp-bootstrap--file-features file))
+      (insert "\n(provide '" (symbol-name feature) ")\n"))
+    (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
+      (insert form))
+    (when gnu
+      (insert "\n(setq load-file-name nil)\n")
+      (insert (format "(if (fboundp 'do-after-load-evaluation) (do-after-load-evaluation %S))\n"
+                      file)))))
+
+(defun nelisp-bootstrap--insert-bundle-member (file)
+  "Emit FILE at its existing position, using its GNU .elc when present."
+  (let* ((relative (nelisp-bootstrap--logical-name file))
+         (compiled (nelisp-bootstrap--vendor-byte-code-file file relative)))
+    (insert "\n;;; >>> " relative "\n")
+    (if (and compiled (file-regular-p compiled) (file-readable-p compiled))
+        (progn
+          ;; The loader owns history and callbacks for this file.  Close the
+          ;; preceding source segment before loading the bytecode.
+          (insert "(when (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n")
+          (dolist (feature (cdr (assoc relative
+                                      nelisp-bootstrap--compiled-vendor-prerequisites)))
+            (insert (format "(require '%S)\n" feature)))
+          (let ((rows (cdr (assoc relative
+                                  nelisp-bootstrap--compiled-vendor-native-rows)))
+                (bridges (cdr (assoc relative
+                                     nelisp-bootstrap--compiled-vendor-bridge-owners))))
+            (let ((load-form
+                   `(if (fboundp 'nelisp--load-vendor-bytecode)
+                        (nelisp--load-vendor-bytecode ,compiled)
+                      (load ,compiled nil 'no-message t t))))
+              (prin1
+               (if (or rows bridges)
+                 `(let (saved)
+                    (dolist (name ',(append rows bridges))
+                      (when (and (fboundp name)
+                                 (or (memq name ',bridges)
+                                     (interpreted-function-p (symbol-function name))))
+                        (push (cons name (symbol-function name)) saved)))
+                    ,load-form
+                    (let ((history (assoc ,compiled load-history)))
+                      (dolist (entry saved)
+                        (fset (car entry) (cdr entry))
+                        (when (and history (memq (car entry) ',bridges))
+                          (setcdr history
+                                  (delete (cons 'defun (car entry)) (cdr history)))))))
+                 load-form)
+               (current-buffer))))
+          (insert "\n")
+          (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
+            (insert form)))
+      (nelisp-bootstrap--insert-source-bundle-member file relative))
+    (insert "\n;;; <<< " relative "\n")))
 
 (defun nelisp-bootstrap--write-bundle (files output)
   "Write FILES into OUTPUT as one lexical-binding Elisp bundle."
@@ -1831,35 +1908,7 @@ strings or comments, and calls with any non-literal argument, are kept."
               'utf-8-emacs-unix)))
       (nelisp-bootstrap--provider-seam-position)
       (dolist (file files)
-        (let ((rel (nelisp-bootstrap--logical-name file)))
-          ;; Attribute this file's definitions in `load-history' to its own
-          ;; path rather than to the bundle (GNU loads each file separately).
-          (insert (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))"
-                          (expand-file-name file)))
-          (insert "\n;;; >>> " rel "\n")
-          ;; A GNU vendor file sees what GNU `load' gives it (lread.c Fload):
-          ;; `load-file-name' is the file while its forms run, and
-          ;; `do-after-load-evaluation' runs once it is done, after
-          ;; `load-file-name' is restored.  custom-initialize-after-file-load
-          ;; (global minor modes such as minibuffer-regexp-mode) relies on
-          ;; both.  Package files keep the bundle contract (nil).
-          (when (nelisp-bootstrap--gnu-vendor-file-p file)
-            (insert (format "\n(setq load-file-name %S)\n" (expand-file-name file))))
-          (nelisp-bootstrap--insert-bundle-file-body file rel)
-          (dolist (feature (nelisp-bootstrap--file-features file))
-            (insert "\n(provide '")
-            (insert (symbol-name feature))
-            (insert ")\n"))
-          (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
-            (insert form))
-          (when (nelisp-bootstrap--gnu-vendor-file-p file)
-            (insert "\n(setq load-file-name nil)\n")
-            (insert (format "(if (and (fboundp 'do-after-load-evaluation)%s) (do-after-load-evaluation %S))\n"
-                            (if (nelisp-bootstrap--compiled-expander-p rel)
-                                (format " (not (file-readable-p %S))" (concat file "c"))
-                              "")
-                            (expand-file-name file))))
-          (insert "\n;;; <<< " rel "\n")))
+        (nelisp-bootstrap--insert-bundle-member file))
       (insert "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n")
       (nelisp-bootstrap--validate-provider-bundle-buffer
        provider provider-start provider-offset files)

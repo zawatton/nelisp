@@ -83,7 +83,11 @@
                 (setq found cand)
               (setq dir (and parent (not (equal parent dir)) parent)))))
         (when found (setq file found))))
-    (load file nil 'no-message t t)))
+    (let ((compiled (concat file "c")))
+      (cond
+       ((not (file-readable-p compiled)) (load file nil 'no-message t t))
+       ((fboundp 'nelisp--load-vendor-bytecode) (nelisp--load-vendor-bytecode compiled))
+       (t (load compiled nil 'no-message t t))))))
 
 (defvar emacs-frame-builtins--adopt-blank-frame-owner
   (and (fboundp 'nelisp--write-stdout-bytes)

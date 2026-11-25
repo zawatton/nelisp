@@ -70,13 +70,22 @@
 
 (defun nemacs-runtime-image-preload--load-source-file (file)
   "Load FILE robustly on both host Emacs and standalone runtime images."
-  (load file nil 'no-message t t))
+  (if (and (string-suffix-p ".elc" file)
+           (fboundp 'nelisp--load-vendor-bytecode))
+      (nelisp--load-vendor-bytecode file)
+    (load file nil 'no-message t t)))
 
-(defun nemacs-runtime-image-preload--load-compiled-file (source)
-  "Load GNU SOURCE's byte-code companion when available."
-  (let ((compiled (concat source "c")))
-    (nemacs-runtime-image-preload--load-source-file
-     (if (file-readable-p compiled) compiled source))))
+(defun nemacs-runtime-image-preload--gnu-file (repo-root library)
+  "Resolve LIBRARY in REPO-ROOT, preferring the genuine GNU bytecode."
+  (let* ((source (concat repo-root "/vendor/" library))
+         (compiled
+          (cond
+           ((member library '("staged-emacs-lisp/window.el"
+                              "staged-emacs-lisp/faces.el"))
+            (concat repo-root "/vendor/emacs-lisp/"
+                    (file-name-nondirectory library) "c"))
+           ((string-suffix-p ".el" library) (concat source "c")))))
+    (if (and compiled (file-readable-p compiled)) compiled source)))
 
 (defun nemacs-runtime-image--ensure-core-after-bootstrap (repo-root)
   "Make the batch entry visible after a bootstrap load.
@@ -104,6 +113,13 @@ batch entry is still unavailable."
     (load bootstrap-file nil 'no-message t t))
   (nemacs-runtime-image--ensure-core-after-bootstrap repo-root)
   t)
+
+(defconst nemacs-runtime-image-preload--compiled-prerequisites
+  '(("emacs-lisp/emacs-lisp/cl-generic.el" byte-opt)
+    ("emacs-lisp/mouse.el" rect)
+    ("emacs-lisp/tab-bar.el" icons)
+    ("emacs-lisp/term.el" ange-ftp))
+  "Features the previous source preload brought in while expanding these files.")
 
 (defun nemacs-runtime-image-preload--load-gnu-libraries (repo-root)
   "Load GNU 31.1 libraries after the NeLisp image substrate is ready.
@@ -209,11 +225,13 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
           (push (cons name (symbol-function name)) saved)))
       (unwind-protect
           (condition-case err
-              (let ((source (concat repo-root "/vendor/" library)))
-                (if (member library '("emacs-lisp/emacs-lisp/cl-seq.el"
-                                      "emacs-lisp/emacs-lisp/cl-extra.el"))
-                    (nemacs-runtime-image-preload--load-compiled-file source)
-                  (nemacs-runtime-image-preload--load-source-file source)))
+              (let ((file (nemacs-runtime-image-preload--gnu-file
+                           repo-root library)))
+                (when (string-suffix-p ".elc" file)
+                  (dolist (feature (cdr (assoc library
+                                              nemacs-runtime-image-preload--compiled-prerequisites)))
+                    (require feature)))
+                (nemacs-runtime-image-preload--load-source-file file))
             (error
              (message "Error preloading GNU library %s" library)
              (signal (car err) (cdr err))))
@@ -238,10 +256,9 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   "Install the batch libraries and bridges after the bootstrap has loaded."
   ;; The early bundle slot is before Custom. GNU cl-lib.elc calls
   ;; custom-declare-variable directly, so defer it until Custom is live.
-  (let* ((source (concat repo-root "/vendor/emacs-lisp/emacs-lisp/cl-lib.el"))
-         (compiled (concat source "c"))
-         (provider (if (file-readable-p compiled) compiled source))
-         (owner (symbol-file 'cl-pushnew 'defun)))
+  (let ((provider (nemacs-runtime-image-preload--gnu-file
+                   repo-root "emacs-lisp/emacs-lisp/cl-lib.el"))
+        (owner (symbol-file 'cl-pushnew 'defun)))
     (unless (equal owner provider)
       (nemacs-runtime-image-preload--load-source-file provider)))
   ;; These .elc files use the full loader installed by the bundle.
@@ -275,7 +292,7 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
       (mapc #'custom-reevaluate-setting settings)))
   ;; The tab buttons search `image-load-path' while the library loads.
   (nemacs-runtime-image-preload--load-source-file
-   (concat repo-root "/vendor/emacs-lisp/tab-line.el"))
+   (nemacs-runtime-image-preload--gnu-file repo-root "emacs-lisp/tab-line.el"))
   ;; Publish the default from GNU newcomment.el after the reader's early
   ;; buffer-local variable initialization has supplied a provisional value.
   (custom-reevaluate-setting 'comment-column)

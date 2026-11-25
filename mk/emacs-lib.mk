@@ -2081,9 +2081,19 @@ NELISP_CONSUMER_VENDOR_INPUTS = $(shell find vendor/compat vendor/cond-let vendo
 
 build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 
+# The generator chooses source or bytecode before emitting each member.
+# Track additions and removals even when a restored companion has an old mtime.
+.PHONY: nemacs-bootstrap-elc-force
+$(NEMACS_BOOTSTRAP_BUNDLE).elc-inputs: nemacs-bootstrap-elc-force
+	@mkdir -p "$(@D)"
+	@tmp="$@.$$$$"; \
+	  find -L "$(abspath $(NELISP_BOOTSTRAP_VENDOR_ROOT))/emacs-lisp" -type f -name '*.elc' -print | LC_ALL=C sort > "$$tmp"; \
+	  if cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv -f "$$tmp" "$@"; fi
+
 $(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el scripts/standalone-source-normalize.el src/nelisp-vendor-source.el \
 		scripts/nelisp-prelude-bytecode.el lisp/nelisp-stdlib-regexp.el lisp/nelisp-fxir-native-data.el \
-		$(NELISP_BOOTSTRAP_VENDOR_ROOT)/staged-emacs-lisp/subr.el $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
+		$(NELISP_BOOTSTRAP_VENDOR_ROOT)/staged-emacs-lisp/subr.el $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS) \
+		$(NEMACS_BOOTSTRAP_BUNDLE).elc-inputs
 	NELISP_BOOTSTRAP_VENDOR_DIR="$(abspath $(NELISP_BOOTSTRAP_VENDOR_ROOT))" $(EMACS) -Q -L scripts $(NELISP_LOAD_PATH) $(NELISP_LOAD_PATH) \
 		--eval '(setq nelisp-bootstrap-output-file "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
 		--eval '(setq nelisp-bootstrap-repl-output-file "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \

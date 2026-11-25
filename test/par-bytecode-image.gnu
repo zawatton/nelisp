@@ -1,0 +1,7 @@
+(ring t "ring.elc" t t)
+(comint t "comint.elc" t t)
+(isearch t "isearch.elc" t t)
+(register t "register.elc" t t)
+(window t "window.elc" t t)
+(seq t "seq.elc" t t)
+(calls (c b) first)
