@@ -1339,21 +1339,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
     (emacs-process--native-prop process :command))
    (t (emacs-process--delegate 'process-command (list process)))))
 
-(defun emacs-process-process-live-p (process)
-  "Return non-nil if PROCESS is alive (status = run/open/listen/connect/stop)."
-  (cond
-   ((emacs-process--process-object-p process)
-    (memq (emacs-process-process-status process)
-          '(run open listen connect stop)))
-   ((and (not (emacs-standalone-mode-p))
-         (emacs-process--delegate-p 'process-live-p))
-    (funcall (indirect-function 'process-live-p) process))
-   (t
-    ;; Standalone fallback: derive from process-status if available.
-    (let ((s (and (or (fboundp 'process-status)
-                      (fboundp 'emacs-process-process-status))
-                  (emacs-process-process-status process))))
-      (memq s '(run open listen connect stop))))))
+(defalias 'emacs-process-process-live-p #'process-live-p)
 
 (defun emacs-process-process-id (process)
   "Return PROCESS's OS pid integer (or nil if not yet running)."

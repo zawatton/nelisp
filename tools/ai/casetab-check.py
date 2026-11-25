@@ -28,10 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODES = ("api", "behaviour")
 BEGIN = ";; BEGIN GENERATED CASETAB SOURCES"
 END = ";; END GENERATED CASETAB SOURCES"
-SOURCES = (
-    "packages/emacs-lib-core/src/emacs-cc-casetab-1.el",
-    "packages/emacs-lib-core/src/case-table.el",
-)
+SOURCES = ("lisp/nelisp-stdlib-casetab.el",)
 PRELUDE = "scripts/nelisp-stdlib-prelude.el"
 
 

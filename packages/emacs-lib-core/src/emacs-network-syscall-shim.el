@@ -418,10 +418,6 @@ Doc 06 C2 added wait4 for SIGCHLD-fallback child reaping.")
   ;; its builtin fails; current runtimes define them correctly, and these
   ;; replaced them (the `truncate' here answered 2 for 2.5e-5, a float for
   ;; 1e20 and 0 for a NaN, and cost 5.8 us against 0.1 us).
-  (unless (fboundp '/=)
-    (defun /= (a b)
-      "Reader polyfill: only = < > <= >= ship as numeric builtins."
-      (not (= a b))))
   (defmacro declare (&rest _specs)
     "Reader polyfill: in host Emacs `declare' inside a defun body is
 consumed by the defun machinery; the reader's plain defun executes

@@ -14887,10 +14887,6 @@ both must lie in the accessible portion, else `args-out-of-range'."
 (unless (fboundp 'delete-region)
   (fset 'delete-region (symbol-function 'nelisp--delete-region-reference)))
 ;; ---- GNU editfns.c / buffer.c accessors that follow BEGV/ZV ----------------
-(unless (fboundp 'buffer-narrowed-p)
-  (defun buffer-narrowed-p ()
-    "Return non-nil if the current buffer is narrowed."
-    (nelisp--buffer-narrowed-p nelisp--current-buffer)))
 (unless (fboundp 'buffer-end)
   (defun buffer-end (arg)
     "Return the \"far end\" position of the buffer, in direction ARG."
@@ -16560,9 +16556,17 @@ by element."
   (fset 'map-char-table #'nelisp--chartab-map-char-table)
   t)
 
-;; Not a native: the usual guard keeps host Emacs's own.
-(unless (fboundp 'optimize-char-table)
-  (defalias 'optimize-char-table #'nelisp--chartab-optimize-char-table))
+(defvar nelisp--chartab-optimize-owned-function nil
+  "Optional optimizer for compatibility-layer char-tables.
+Call with the table and comparison function. A non-nil result means
+the optimizer handled the table.")
+
+(defun optimize-char-table (char-table &optional test)
+  "Optimize CHAR-TABLE by merging entries that compare equal under TEST.
+TEST defaults to `equal'."
+  (unless (and nelisp--chartab-optimize-owned-function
+               (funcall nelisp--chartab-optimize-owned-function char-table test))
+    (nelisp--chartab-optimize-char-table char-table test)))
 
 (defvar nelisp--chartab-installed
   (and (nelisp--chartab-standalone-p) (nelisp--chartab-install))
@@ -19479,24 +19483,6 @@ bootstrap implementation.
      ((and (vectorp process) (> (length process) 0) (eq (aref process 0) 'process))
       (aref process 3))
      (t (signal 'wrong-type-argument (list 'processp process))))))
-(unless (fboundp 'process-live-p)
-  (defun process-live-p (process)
-    ;; Answers nil for a non-process, unlike `process-status' beside it --
-    ;; so it cannot simply delegate, which is what made it inherit the
-    ;; signal.
-    ;;
-    ;; Doc 194 P0: real Emacs's own `process-live-p' documentation says
-    ;; non-nil for STATUS run/open/listen/connect/stop -- not only `run'
-    ;; (the subprocess-only vocabulary this used to hardcode).  A
-    ;; `network-process' never reaches `run' at all (S1.3), so widening
-    ;; this to the full set is required for it to ever report live, and is
-    ;; a safe generalization for the existing `process'/native shapes
-    ;; too: neither ever produces `open'/`listen'/`connect' today, so
-    ;; this is not a behaviour change for them.
-    (and (or (processp process)
-             (and (vectorp process) (> (length process) 0)
-                  (eq (aref process 0) 'process)))
-         (and (memq (process-status process) '(run open listen connect)) t))))
 ;; feat/standalone-agent-loadpath: `set-process-query-on-exit-flag' was
 ;; `void-function' on 4 of the ~80 nelisp-agent host-only test files' load
 ;; closures (../nelisp-agent/lisp/nl-agent-client.el,
@@ -33805,7 +33791,7 @@ They are not deferred again; the next call of each compiles it afresh."
 (setq nelisp--fx-anon-ready t)
 
 ;; BEGIN GENERATED CASETAB SOURCES
-;;; emacs-cc-casetab-1.el --- casetab.c primitives -*- lexical-binding: t; -*-
+;;; nelisp-stdlib-casetab.el --- casetab.c primitives -*- lexical-binding: t; -*-
 
 ;; GNU Emacs 31.1: src/casetab.c:35-169,177-240,248-285.
 ;; The native char-table substrate owns representation and slot access.
@@ -33836,7 +33822,9 @@ They are not deferred again; the next call of each compiles it afresh."
 
 (defun nelisp-casetab--sparse-table-p (table)
   "Return non-nil when TABLE belongs to the foundation adapter."
-  (and (fboundp 'emacs-char-table-p) (emacs-char-table-p table)))
+  (and (fboundp 'emacs-char-table-p)
+       (emacs-char-table-p table)
+       (not (funcall nelisp-casetab--native-p table))))
 
 (defun nelisp-casetab--char-table-p (table)
   "Return non-nil for a native or foundation char-table TABLE."
@@ -34096,14 +34084,14 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
   (if (nelisp-casetab--sparse-table-p table)
       (emacs-char-table-copy table)
     (let* ((parent (funcall nelisp-casetab--native-parent table))
-           (default (nelisp-casetab--char-table-range table nil))
-           (subtype (nelisp-casetab--char-table-subtype table))
+           (default (funcall nelisp-casetab--native-range table nil))
+           (subtype (funcall nelisp-casetab--native-subtype table))
            (properties (copy-sequence (symbol-plist subtype)))
            (slot 0) (extras nil) done copy)
       (while (not done)
         (condition-case nil
             (progn
-              (push (nelisp-casetab--get-extra-slot table slot) extras)
+              (push (funcall nelisp-casetab--native-extra table slot) extras)
               (setq slot (1+ slot)))
           (args-out-of-range (setq done t))))
       ;; A subtype's allocation property can change after TABLE was made.
@@ -34116,16 +34104,20 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
       (unwind-protect
           (progn
             (funcall nelisp-casetab--native-set-parent table nil)
-            (nelisp-casetab--set-char-table-range table nil nil)
-            (nelisp-casetab--map-char-table
-             (lambda (range value) (nelisp-casetab--set-char-table-range copy range value)) table))
-        (nelisp-casetab--set-char-table-range table nil default)
+            (funcall nelisp-casetab--native-set-range table nil nil)
+            (funcall
+             nelisp-casetab--native-map
+             (lambda (range value)
+               (funcall nelisp-casetab--native-set-range copy range value))
+             table))
+        (funcall nelisp-casetab--native-set-range table nil default)
         (funcall nelisp-casetab--native-set-parent table parent))
-      (nelisp-casetab--set-char-table-range copy nil default)
+      (funcall nelisp-casetab--native-set-range copy nil default)
       (funcall nelisp-casetab--native-set-parent copy parent)
       (setq slot 0)
       (dolist (extra (nreverse extras))
-        (nelisp-casetab--put-extra-slot copy slot extra)
+        (setq nelisp-casetab--epoch (1+ nelisp-casetab--epoch))
+        (funcall nelisp-casetab--native-set-extra copy slot extra)
         (setq slot (1+ slot)))
       copy)))
 
@@ -34135,8 +34127,10 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
   "The epoch-aware `set-case-table' function object.")
 (setq nelisp-casetab--epoch-owner (symbol-function 'set-case-table))
 
-(provide 'emacs-cc-casetab-1)
-;;; emacs-cc-casetab-1.el ends here
+(provide 'nelisp-stdlib-casetab)
+;;; nelisp-stdlib-casetab.el ends here
+;; END GENERATED CASETAB SOURCES
+
 ;;; case-table.el --- GNU case-table Lisp layer for NeLisp -*- lexical-binding: t; -*-
 
 ;; GNU Emacs 31.1 lisp/case-table.el:36-181 supplies the public Lisp layer.
@@ -34145,9 +34139,6 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
 ;; handled by the C-equivalent layer's primitive-access wrappers.
 
 ;;; Code:
-
-(unless (fboundp 'nelisp-casetab--ensure-extra-slots)
-  (require 'emacs-cc-casetab-1))
 
 (defconst nelisp-casetab--standard-ranges
   '(
@@ -35138,25 +35129,10 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
   (nelisp-casetab--put-extra-slot table 2 nil)
   (nelisp-casetab--modify-syntax-entry c syntax (standard-syntax-table)))
 
-;; GNU Emacs 31.1 lisp/subr.el:5782-5795.  Restore the original buffer's
-;; table even when BODY changes the selected buffer or exits nonlocally.
-(defmacro with-case-table (table &rest body)
-  "Execute BODY with TABLE as the current case table."
-  (declare (indent 1) (debug t))
-  (let ((old-case-table (make-symbol "table"))
-        (old-buffer (make-symbol "buffer")))
-    `(let ((,old-case-table (current-case-table))
-           (,old-buffer (current-buffer)))
-       (unwind-protect
-           (progn (set-case-table ,table) ,@body)
-         (with-current-buffer ,old-buffer
-           (set-case-table ,old-case-table))))))
-
 (nelisp-casetab--register-standard-data)
 
 (provide 'case-table)
 ;;; case-table.el ends here
-;; END GENERATED CASETAB SOURCES
 ;; Queue only the sort provider, rather than making every prelude definition
 ;; a compilation candidate during unrelated library loads.
 (when (nelisp--fx-active-p)

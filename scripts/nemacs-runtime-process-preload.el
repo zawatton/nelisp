@@ -993,14 +993,6 @@
       '(lambda (process)
          (emacs-process-process-command process)))
 
-(fset 'emacs-process-process-live-p
-      '(lambda (process)
-         (memq (process-status process) '(run open listen connect stop))))
-
-(fset 'process-live-p
-      '(lambda (process)
-         (emacs-process-process-live-p process)))
-
 (fset 'emacs-process-process-id
       '(lambda (process)
          (if (emacs-process--bidi-process-p process)

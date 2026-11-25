@@ -679,7 +679,6 @@ existing function cell alone."
         (nelisp-process-buffer--original-put . process-put)
         (nelisp-process-buffer--original-p . processp)
         (nelisp-process-buffer--original-status . process-status)
-        (nelisp-process-buffer--original-live . process-live-p)
         (nelisp-process-buffer--original-buffer . process-buffer)
         (nelisp-process-buffer--original-exit . process-exit-status)
         (nelisp-process-buffer--original-markerp . markerp)) "")

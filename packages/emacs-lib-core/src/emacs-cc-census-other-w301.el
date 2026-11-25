@@ -93,32 +93,6 @@ Unless RAW is non-nil, substitute command keys in the resulting string."
                     nil)))
       (emacs-cc-census-other-w301--doc-result doc raw))))
 
-(unless (fboundp 'fillarray)
-  (defun fillarray (array item)
-    "Store ITEM in every element of ARRAY and return ARRAY.
-String replacements must preserve the string's byte length."
-    (unless (arrayp array)
-      (signal 'wrong-type-argument (list 'arrayp array)))
-    (cond
-     ((char-table-p array)
-      ;; GNU fills root slots, preserving allocated subtables.  The
-      ;; standalone range API does not expose that allocation topology.
-      (error "Char-table root slot access is unavailable"))
-     ((stringp array)
-      (unless (characterp item)
-        (signal 'wrong-type-argument (list 'characterp item)))
-      (if (multibyte-string-p array)
-          (unless (= (string-bytes array)
-                     (* (length array) (string-bytes (string item))))
-            (error "Attempt to change byte length of a string"))
-        (setq item (logand item 255))))
-     ((bool-vector-p array) (setq item (and item t))))
-    (let ((index 0) (size (length array)))
-      (while (< index size)
-        (aset array index item)
-        (setq index (1+ index))))
-    array))
-
 (defun emacs-cc-census-other-w301--index-description (index)
   "Describe INDEX as a character in GNU's vector description format."
   (cond

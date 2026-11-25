@@ -496,9 +496,6 @@ font/charset capability query."
     "Return advertised calling convention metadata for FUNCTION."
     (get function 'advertised-calling-convention)))
 
-(unless (fboundp 'byte-code-function-p)
-  (defun byte-code-function-p (object) (ignore object) nil))
-
 (unless (fboundp 'compiled-function-p)
   (defun compiled-function-p (object) (ignore object) nil))
 
@@ -514,18 +511,6 @@ It replaces a GNU C primitive with Lisp, while retaining its calling contract.
 Keep the callable itself, so later user redefinitions are not classified as
 primitive replacements just because they use the same symbol name.")
 
-(unless (fboundp 'subr-arity)
-  (defun subr-arity (subr)
-    "Return argument counts of SUBR or the registered buffer primitive.
-The standalone buffer constructor is Lisp; GNU packages such as org-compat
-introspect this primitive to select its optional-argument calling convention.
-Unregistered Lisp functions still fail the ordinary subr type check."
-    (unless (or (subrp subr)
-                (and emacs-subr-metadata--buffer-constructor
-                     (eq subr emacs-subr-metadata--buffer-constructor)))
-      (signal 'wrong-type-argument (list 'subrp subr)))
-    (func-arity subr)))
-
 (unless (fboundp 'special-form-p)
   (defun special-form-p (object) (ignore object) nil))
 
@@ -537,16 +522,6 @@ Unregistered Lisp functions still fail the ordinary subr type check."
     (if (boundp symbol)
         (eval symbol)
       (signal 'void-variable (list symbol)))))
-
-(unless (fboundp 'default-value)
-  (defalias 'default-value 'symbol-value))
-
-(unless (fboundp 'default-boundp)
-  (defalias 'default-boundp 'boundp))
-
-(unless (fboundp 'set-default)
-  (defun set-default (symbol value)
-    (set symbol value)))
 
 (when (fboundp 'nl-ffi-call)
   (when (or (not (boundp 'emacs-version))
@@ -595,33 +570,6 @@ Unregistered Lisp functions still fail the ordinary subr type check."
       (when doc
 	(put symbol 'variable-documentation doc))
       nil)))
-
-(when (fboundp 'nl-ffi-call)
-  (when (or (not (boundp 'emacs-version))
-            (get 'make-variable-buffer-local 'emacs-stub-bulk)
-            (not (fboundp 'make-variable-buffer-local)))
-    (defun make-variable-buffer-local (variable)
-      "Stub: accept VARIABLE and return it.
-Even without a full buffer-local subsystem, callers such as
-`setq-local' depend on Emacs's contract that this returns the symbol
-that can then be passed to `set'."
-      variable)))
-
-(when (fboundp 'nl-ffi-call)
-  (when (or (not (boundp 'emacs-version))
-            (get 'make-local-variable 'emacs-stub-bulk)
-            (not (fboundp 'make-local-variable)))
-    (defun make-local-variable (variable)
-      "Stub: accept VARIABLE and return it.
-This keeps `(set (make-local-variable 'foo) value)' from attempting to
-set nil or another constant symbol in standalone NeLisp."
-      variable)))
-
-(unless (fboundp 'local-variable-p)
-  (defun local-variable-p (variable &optional buffer) (ignore variable buffer) nil))
-
-(unless (fboundp 'kill-local-variable)
-  (defun kill-local-variable (variable) (ignore variable) nil))
 
 ;; condition-case variants used by subr.el
 (unless (fboundp 'condition-case-unless-debug)
@@ -1573,16 +1521,6 @@ returns a float, while pixels and face columns return an integer."
 (unless (fboundp 'eq)
   (defalias 'eq 'equal))  ;; conservative — bootstrap should have eq, but harmless
 
-(unless (fboundp 'memql)
-  (defun memql (element list)
-    "Stub: like memq but uses eql."
-    (let ((c list) (found nil))
-      (while (and c (not found))
-        (if (or (eq (car c) element) (equal (car c) element))
-            (setq found c)
-          (setq c (cdr c))))
-      found)))
-
 ;;;; --- format / message helpers ----------------------------------------
 
 (unless (fboundp 'format-message)
@@ -1637,27 +1575,6 @@ machine-readable stdout.  Nil and empty messages emit a blank line unless
 
 ;;;; --- numeric primitives -------------------------------------------------
 
-(unless (fboundp 'min)
-  (defun min (&rest numbers)
-    (let ((acc (car numbers)))
-      (setq numbers (cdr numbers))
-      (while numbers
-        (when (< (car numbers) acc) (setq acc (car numbers)))
-        (setq numbers (cdr numbers)))
-      acc)))
-
-(unless (fboundp 'max)
-  (defun max (&rest numbers)
-    (let ((acc (car numbers)))
-      (setq numbers (cdr numbers))
-      (while numbers
-        (when (> (car numbers) acc) (setq acc (car numbers)))
-        (setq numbers (cdr numbers)))
-      acc)))
-
-(unless (fboundp 'abs)
-  (defun abs (n) (if (< n 0) (- n) n)))
-
 (unless (fboundp 'zerop)
   (defun zerop (n) (= n 0)))
 
@@ -1673,54 +1590,8 @@ machine-readable stdout.  Nil and empty messages emit a blank line unless
 (unless (fboundp 'evenp)
   (defun evenp (n) (= 0 (mod n 2))))
 
-(unless (fboundp 'natnump)
-  (defun natnump (n) (and (integerp n) (>= n 0))))
-
-(unless (fboundp '1+)
-  (defun 1+ (n) (+ n 1)))
-
-(unless (fboundp '1-)
-  (defun 1- (n) (- n 1)))
-
 
 ;;;; --- bitwise ops --------------------------------------------------------
-
-(unless (fboundp 'logior)
-  (defun logior (&rest ints)
-    "Stub: bitwise OR of all INTS."
-    (let ((acc 0))
-      (while ints
-        (setq acc (+ acc (- (car ints) (logand acc (car ints)))))
-        (setq ints (cdr ints)))
-      acc)))
-
-(unless (fboundp 'logand)
-  (defun logand (&rest ints)
-    "Stub: bitwise AND of all INTS.  Approximation via min for non-negative."
-    (if (null ints)
-        -1
-      (let ((acc (car ints)))
-        (setq ints (cdr ints))
-        (while ints
-          ;; Conservative: use min as a lower bound; not strictly correct
-          ;; but adequate for the bit-flag use cases in subr.el load path.
-          (setq acc (min acc (car ints)))
-          (setq ints (cdr ints)))
-        acc))))
-
-(unless (fboundp 'logxor)
-  (defun logxor (&rest ints)
-    "Stub: bitwise XOR (= using +/- proxy for non-overlapping flags)."
-    (let ((acc 0))
-      (while ints
-        (setq acc (+ acc (car ints)))
-        (setq ints (cdr ints)))
-      acc)))
-
-(unless (fboundp 'lognot)
-  (defun lognot (int)
-    "Stub: bitwise NOT."
-    (- (- int) 1)))
 
 (unless (fboundp 'ash)
   (defun ash (value count)
@@ -1740,9 +1611,6 @@ machine-readable stdout.  Nil and empty messages emit a blank line unless
 
 
 ;;;; --- char.c / fns.c -----------------------------------------------------
-
-(unless (fboundp 'clear-string)
-  (defun clear-string (string) (ignore string) nil))
 
 (unless (fboundp 'store-substring)
   (defun store-substring (string idx obj) (ignore idx obj) string))
@@ -1801,10 +1669,6 @@ machine-readable stdout.  Nil and empty messages emit a blank line unless
     "Stub: synthetic placeholder.  Real impl needs nelisp-ec-current-buffer alias."
     (cons 'buffer nil))
   (put 'current-buffer 'emacs-stub-bulk t))
-
-(unless (fboundp 'bufferp)
-  (defun bufferp (object) (and (consp object) (eq (car object) 'buffer)))
-  (put 'bufferp 'emacs-stub-bulk t))
 
 (unless (fboundp 'buffer-live-p)
   (defun buffer-live-p (buffer) (bufferp buffer))
@@ -1954,19 +1818,6 @@ resolved to its canonical (obsolete-alias aware) variable first."
   (defun remove-hook (hook function &optional local)
     "Remove FUNCTION from HOOK."
     (emacs-stub--remove-hook hook function local)))
-
-(unless (fboundp 'run-hooks)
-  (defun run-hooks (&rest hooks)
-    "Run each normal hook in HOOKS."
-    (while hooks
-      (emacs-stub--run-hook (car hooks) nil)
-      (setq hooks (cdr hooks)))
-    nil))
-
-(unless (fboundp 'run-hook-with-args)
-  (defun run-hook-with-args (hook &rest args)
-    "Run HOOK as an abnormal hook with ARGS."
-    (emacs-stub--run-hook hook args)))
 
 
 ;;;; --- list helpers ------------------------------------------------------
@@ -2301,16 +2152,6 @@ Preserve existing entries and prepend any unseen dependency."
     "Stub: degrade to global `setq' (standalone has no buffer-local cells)."
     (cons 'setq pairs)))
 
-(unless (fboundp 'default-value)
-  (defun default-value (symbol)
-    "Stub: standalone has no buffer-local cells; return the global value."
-    (symbol-value symbol)))
-
-(unless (fboundp 'set-default)
-  (defun set-default (symbol value)
-    "Stub: degrade to global `set'."
-    (set symbol value)))
-
 (unless (fboundp 'derived-mode-p)
   (defun derived-mode-p (&optional modes &rest old-modes)
     "Return non-nil if the current `major-mode' is derived from one of MODES.
@@ -2539,51 +2380,6 @@ Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
     "Return non-nil if OBJECT is a valid character code point (0..#x3FFFFF)."
     (and (integerp object) (>= object 0) (<= object #x3FFFFF))))
 
-(unless (fboundp 'expt)
-  (defun expt (base exponent)
-    "Return BASE raised to EXPONENT.
-Integer BASE and non-negative integer EXPONENT give an integer.  A negative
-integer EXPONENT gives a float reciprocal.  A float EXPONENT is computed as
-exp(EXPONENT * log(BASE)) for a positive BASE; a zero BASE gives 0.0 or
-infinity; a negative BASE with a non-integral EXPONENT gives NaN.  An
-integral float EXPONENT is treated as that integer, on a float result."
-    (unless (numberp base)
-      (signal 'wrong-type-argument (list 'numberp base)))
-    (unless (numberp exponent)
-      (signal 'wrong-type-argument (list 'numberp exponent)))
-    (cond
-     ((and (integerp exponent) (>= exponent 0))
-      (let ((acc 1) (b base) (n exponent))
-        (while (> n 0)
-          (when (= (% n 2) 1) (setq acc (* acc b)))
-          (setq n (/ n 2))
-          (when (> n 0) (setq b (* b b))))
-        acc))
-     ((integerp exponent)
-      (let ((acc 1) (b base) (n (- exponent)))
-        (while (> n 0)
-          (when (= (% n 2) 1) (setq acc (* acc b)))
-          (setq n (/ n 2))
-          (when (> n 0) (setq b (* b b))))
-        (/ 1.0 (float acc))))
-     (t
-      (let ((x (float base)) (y (float exponent)))
-        (cond
-         ((or (/= x x) (/= y y)) (+ x y))
-         ((and (< (abs y) 9007199254740992.0) (/= y 0.0)
-               (= y (float (truncate y))))
-          (float (expt x (truncate y))))
-         ((= y 0.0) 1.0)
-         ((= x 0.0) (if (< y 0.0) (/ 1.0 0.0) 0.0))
-         ((< x 0.0)
-          (if (= y (* y 0.5)) (if (< y 0.0) 0.0 (/ 1.0 0.0)) (/ 0.0 0.0)))
-         ;; Split Y so the integral part uses exact-ish repeated squaring and
-         ;; only the fraction goes through exp/log (keeps large results tight).
-         (t (let* ((yi (truncate y)) (yf (- y (float yi))))
-              (if (and (/= yi 0) (< (abs yi) 1000000))
-                  (* (expt x yi) (exp (* yf (log x))))
-                (exp (* y (log x))))))))))))
-
 ;;;; --- define-inline (Doc 15 B4): runtime-compatible function-only impl ---
 ;;
 ;; `emacs-stub-bulk' (required above) pre-stubs `define-inline' to a no-op,
@@ -2727,16 +2523,6 @@ If only one of the arguments is non-nil, return it; otherwise return nil."
     (cond ((not cond1) cond2)
           ((not cond2) cond1))))
 
-(unless (fboundp 'ntake)
-  (defun ntake (n list)
-    "Modify LIST to keep only the first N elements, and return it.
-If N is zero or negative, return nil.  If N is greater or equal to the
-length of LIST, return LIST unmodified.  Destructive counterpart of `take'."
-    (when (and (> n 0) list)
-      (let ((cell (nthcdr (1- n) list)))
-        (when (consp cell) (setcdr cell nil)))
-      list)))
-
 (unless (fboundp 'char-uppercase-p)
   (defun char-uppercase-p (char)
     "Return non-nil if CHAR is an upper-case character.
@@ -2858,15 +2644,6 @@ E is V itself when V is self-quoting, otherwise (quote V)."
 ;; `copy-hash-table' was void, which broke `map-copy' on hash tables.  The
 ;; runtime does not expose `hash-table-test', so the copy uses the default
 ;; test -- correct for the common `eql'/`eq'-keyed tables.
-
-(unless (fboundp 'copy-hash-table)
-  (defun copy-hash-table (table)
-    "Return a shallow copy of hash TABLE.
-The copy uses the default hash test, since the runtime does not expose
-`hash-table-test'."
-    (let ((new (make-hash-table)))
-      (maphash (lambda (k v) (puthash k v new)) table)
-      new)))
 
 (provide 'emacs-stub)
 

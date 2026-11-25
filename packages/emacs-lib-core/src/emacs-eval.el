@@ -219,60 +219,11 @@ inspecting a literal lambda / closure body."
       (put function 'emacs-eval--autoload-thunk-object nil))
     definition))
 
-(unless (fboundp 'autoload)
-  (defun autoload (function file &optional docstring interactive type)
-    "Lazy-load FUNCTION from FILE on first call (standalone autoload).
-
-When FUNCTION is not yet defined, install a thunk that `load's FILE — which
-is expected to redefine FUNCTION — on the first call, then invokes the real
-definition with the original arguments.  Functions that are already defined
-(the common case under eager module loading) are left untouched, so this is
-a no-op for them.  DOCSTRING/INTERACTIVE/TYPE are accepted for
-call-compatibility and otherwise ignored.
-
-This keeps startup bounded: vendor libraries can be declared with `autoload'
-and only paid for when a workflow actually calls them."
-    (when (symbolp function)
-      (put function 'autoload-file-name file)
-      (put function 'autoload-documentation docstring)
-      (put function 'autoload-interactive interactive)
-      (put function 'autoload-type type))
-    (when (and (symbolp function) (not (fboundp function)))
-      (let ((emacs-eval--autoload-thunk t)
-            (emacs-eval--autoload-function function)
-            (emacs-eval--autoload-file file)
-            thunk)
-        (setq thunk
-              (lambda (&rest args)
-                (emacs-eval--autoload-load function file)
-                (apply function args)))
-        (put function 'emacs-eval--autoload-thunk-object thunk)
-        (fset function thunk)))
-    function))
-
 (unless (fboundp 'autoloadp)
   (defun autoloadp (object)
     "Return non-nil when OBJECT is an autoload object."
     (or (and (consp object) (eq (car object) 'autoload))
         (emacs-eval--autoload-thunk-p object))))
-
-(unless (fboundp 'autoload-do-load)
-  (defun autoload-do-load (autoload &optional name _macro-only)
-    "Load AUTOLOAD and return the loaded function definition."
-    (cond
-     ((and name (symbolp name) (get name 'autoload-file-name))
-      (emacs-eval--autoload-load name (get name 'autoload-file-name)))
-     ((and (consp autoload) (eq (car autoload) 'autoload))
-      (load (cadr autoload))
-      (and name (symbolp name) (symbol-function name)))
-     ((emacs-eval--autoload-thunk-p autoload)
-      (let ((fn (emacs-eval--autoload-thunk-prop
-                 autoload 'emacs-eval--autoload-function))
-            (file (emacs-eval--autoload-thunk-prop
-                   autoload 'emacs-eval--autoload-file)))
-        (when (and fn file)
-          (emacs-eval--autoload-load fn file))))
-     (t autoload))))
 
 (defun nelisp--defalias-late (symbol definition &optional docstring)
   "Install SYMBOL as a late-bound alias for DEFINITION."
@@ -336,17 +287,6 @@ Public name for `nelisp--defalias-late'.")
 ;; `internal-make-var-non-special' is an Emacs C-core helper used by a
 ;; few dump/bootstrap files to mark variables as lexically bindable.
 ;; The standalone declaration registry is shared with the evaluator.
-(unless (fboundp 'internal-make-var-non-special)
-  (defun internal-make-var-non-special (symbol)
-    "Make SYMBOL lexically bindable by clearing its special declaration.
-Return nil without changing SYMBOL's value or properties."
-    (unless (symbolp symbol)
-      (signal 'wrong-type-argument (list 'symbolp symbol)))
-    (when (boundp 'nelisp--special-variables)
-      (remhash symbol nelisp--special-variables))
-    (when (fboundp 'nelisp--env-globals-op)
-      (nelisp--env-globals-op 'variable-make-non-special symbol))
-    nil))
 
 ;; `defsubst' — Emacs special form for an inline-hinted function.  The
 ;; inlining is a byte compiler optimisation; semantically identical to

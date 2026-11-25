@@ -237,63 +237,9 @@ UID may be a numeric user ID or a login name.  Unknown users return nil."
 ;; of computing the full length, so they stay correct on long lists; arrays
 ;; fall back to `length'.
 
-(unless (fboundp 'length=)
-  (defun length= (sequence length)
-    "Return non-nil if SEQUENCE has exactly LENGTH elements."
-    (if (listp sequence)
-        (let ((n length))
-          (while (and (consp sequence) (> n 0))
-            (setq sequence (cdr sequence) n (1- n)))
-          (and (= n 0) (null sequence)))
-      (= (length sequence) length))))
-
-(unless (fboundp 'length<)
-  (defun length< (sequence length)
-    "Return non-nil if SEQUENCE is shorter than LENGTH."
-    (if (listp sequence)
-        (let ((n length))
-          (while (and (consp sequence) (> n 0))
-            (setq sequence (cdr sequence) n (1- n)))
-          (and (null sequence) (> n 0)))
-      (< (length sequence) length))))
-
-(unless (fboundp 'length>)
-  (defun length> (sequence length)
-    "Return non-nil if SEQUENCE is longer than LENGTH."
-    (if (listp sequence)
-        (let ((n length))
-          (while (and (consp sequence) (> n 0))
-            (setq sequence (cdr sequence) n (1- n)))
-          (consp sequence))
-      (> (length sequence) length))))
-
 ;; ---- value< : standard value order (Emacs 30 C builtin) ----
 ;; A total-ish order over like-typed values; `sort' and friends rely on it.
 ;; Covers numbers, strings, symbols, and conses/arrays lexicographically.
-
-(unless (fboundp 'value<)
-  (defun value< (a b)
-    "Return non-nil if A precedes B in standard value order.
-A and B should be of the same kind: numbers, strings, symbols, lists, or
-arrays (compared lexicographically)."
-    (cond
-     ((and (numberp a) (numberp b)) (< a b))
-     ((and (stringp a) (stringp b)) (string< a b))
-     ((and (symbolp a) (symbolp b)) (string< (symbol-name a) (symbol-name b)))
-     ((and (consp a) (consp b))
-      (cond ((value< (car a) (car b)) t)
-            ((value< (car b) (car a)) nil)
-            (t (value< (cdr a) (cdr b)))))
-     ((and (null a) (consp b)) t)
-     ((and (consp a) (null b)) nil)
-     ((and (arrayp a) (arrayp b))
-      (let ((la (length a)) (lb (length b)) (i 0) (res 'equal))
-        (while (and (eq res 'equal) (< i la) (< i lb))
-          (cond ((value< (aref a i) (aref b i)) (setq res t))
-                ((value< (aref b i) (aref a i)) (setq res nil))
-                (t (setq i (1+ i)))))
-        (if (eq res 'equal) (< la lb) res)))
-     (t (error "value<: unsupported or mismatched types: %S %S" a b)))))
 
 ;; ---- four-level caaaar..cddddr (cadddr is NeLisp builtin) ----
 
@@ -364,26 +310,6 @@ not supported in this minimal port)."))
 (unless (fboundp 'when-let)
   (defalias 'when-let 'when-let*
     "Compatibility alias for `when-let*'."))
-
-;; ---- derived mode parent cache helpers ----
-;;
-;; Runtime mode inheritance metadata is cached; when additional parents are
-;; injected we need to clear cached parent lists and recurse through followers.
-
-(unless (fboundp 'derived-mode--flush)
-  (defun derived-mode--flush (mode)
-    "Flush the cached parent list of MODE and its followers."
-    (put mode 'derived-mode--all-parents nil)
-    (let ((followers (get mode 'derived-mode--followers)))
-      (when followers
-        (put mode 'derived-mode--followers nil)
-        (mapc #'derived-mode--flush followers)))))
-
-(unless (fboundp 'derived-mode-add-parents)
-  (defun derived-mode-add-parents (mode extra-parents)
-    "Add EXTRA-PARENTS (list of symbols) to the parents of MODE."
-    (put mode 'derived-mode-extra-parents extra-parents)
-    (derived-mode--flush mode)))
 
 ;; ---- interactive-context primitives ----
 ;;

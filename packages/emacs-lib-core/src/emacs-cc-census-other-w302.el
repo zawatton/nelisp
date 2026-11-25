@@ -243,13 +243,6 @@ and MENTION-SHADOW.  Suppress hidden commands and group equal bindings."
     (emacs-cc-census-other-w302--arity 'invocation-name arguments 0 0)
     (copy-sequence invocation-name)))
 
-(unless (fboundp 'remove-pos-from-symbol)
-  (defun remove-pos-from-symbol (&rest arguments)
-    "Return a positioned symbol's bare symbol, or ARG unchanged."
-    (emacs-cc-census-other-w302--arity 'remove-pos-from-symbol arguments 1 1)
-    (let ((arg (car arguments)))
-      (if (symbol-with-pos-p arg) (bare-symbol arg) arg))))
-
 (defun emacs-cc-census-other-w302--global-hook (value wrapper args)
   "Call WRAPPER for functions in the default hook VALUE with ARGS."
   (if (or (not (consp value)) (eq (car value) 'lambda))

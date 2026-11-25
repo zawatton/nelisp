@@ -202,34 +202,6 @@ CASE-FOLD non-nil compares via `downcase'."
 (unless (fboundp 'string-lessp) (defun string-lessp (a b) (string< a b)))
 (unless (fboundp 'string-greaterp) (defun string-greaterp (a b) (string< b a)))
 (unless (fboundp 'string>) (defun string> (a b) (string< b a)))
-(unless (fboundp 'compare-strings)
-  (defun compare-strings (string1 start1 end1 string2 start2 end2
-                                  &optional ignore-case)
-    "Compare the selected parts of STRING1 and STRING2.
-Return t when they are equal.  Otherwise return a signed one-based mismatch
-position: positive when STRING1's part sorts after STRING2's part, negative
-when it sorts before it.  IGNORE-CASE non-nil compares folded strings."
-    (let ((part1 (substring string1 (or start1 0) end1))
-          (part2 (substring string2 (or start2 0) end2)))
-      (when ignore-case
-        (setq part1 (downcase part1)
-              part2 (downcase part2)))
-      (let ((i 0)
-            (len1 (length part1))
-            (len2 (length part2))
-            result)
-        (while (and (not result) (< i len1) (< i len2))
-          (let ((char1 (aref part1 i))
-                (char2 (aref part2 i)))
-            (cond
-             ((< char1 char2) (setq result (- (1+ i))))
-             ((> char1 char2) (setq result (1+ i)))))
-          (setq i (1+ i)))
-        (or result
-            (cond
-             ((< len1 len2) (- (1+ i)))
-             ((> len1 len2) (1+ i))
-             (t t)))))))
 (when (fboundp 'nl-ffi-call)
   (unless (and (fboundp 'substring-no-properties) (not (fboundp 'nelisp--repr)))
     (defun substring-no-properties (s &optional from to)
@@ -437,62 +409,6 @@ space character, and leading/trailing whitespace is removed."
 ;; string-collate-equalp / string-to-vector were void.  All gated on
 ;; `unless (fboundp ...)'.  collate-* fall back to byte order (no locale
 ;; collation in the standalone runtime).
-
-(unless (fboundp 'string-distance)
-  (defun string-distance (string1 string2 &optional _bytecompare)
-    "Return the Levenshtein edit distance between STRING1 and STRING2.
-Characters are compared by code point (the BYTECOMPARE argument, which
-would switch to a byte-wise comparison, is ignored)."
-    (let* ((l1 (length string1))
-           (l2 (length string2))
-           (col (make-vector (1+ l2) 0))
-           (prev 0)
-           (cur 0))
-      (dotimes (j (1+ l2)) (aset col j j))
-      (dotimes (i l1)
-        (setq prev (aref col 0))
-        (aset col 0 (1+ i))
-        (dotimes (j l2)
-          (setq cur (aref col (1+ j)))
-          (aset col (1+ j)
-                (min (1+ (aref col (1+ j)))
-                     (1+ (aref col j))
-                     (+ prev (if (= (aref string1 i) (aref string2 j)) 0 1))))
-          (setq prev cur)))
-      (aref col l2))))
-
-(unless (fboundp 'string-version-lessp)
-  (defun string-version-lessp (string1 string2)
-    "Return non-nil if STRING1 is less than STRING2 in version order.
-Runs of digits are compared by numeric value, so e.g. \"foo2\" sorts
-before \"foo10\".  (Very long digit runs are compared via
-`string-to-number' and so lose precision beyond the float range.)"
-    (let ((i 0) (j 0)
-          (n1 (length string1)) (n2 (length string2))
-          (result nil) (done nil))
-      (while (not done)
-        (cond
-         ((and (>= i n1) (>= j n2)) (setq done t result nil))
-         ((>= i n1) (setq done t result t))
-         ((>= j n2) (setq done t result nil))
-         (t
-          (let* ((c1 (aref string1 i)) (c2 (aref string2 j))
-                 (d1 (and (>= c1 ?0) (<= c1 ?9)))
-                 (d2 (and (>= c2 ?0) (<= c2 ?9))))
-            (if (and d1 d2)
-                (let ((si i) (sj j))
-                  (while (and (< i n1) (>= (aref string1 i) ?0) (<= (aref string1 i) ?9))
-                    (setq i (1+ i)))
-                  (while (and (< j n2) (>= (aref string2 j) ?0) (<= (aref string2 j) ?9))
-                    (setq j (1+ j)))
-                  (let ((v1 (string-to-number (substring string1 si i)))
-                        (v2 (string-to-number (substring string2 sj j))))
-                    (cond ((< v1 v2) (setq done t result t))
-                          ((> v1 v2) (setq done t result nil)))))
-              (cond ((< c1 c2) (setq done t result t))
-                    ((> c1 c2) (setq done t result nil))
-                    (t (setq i (1+ i) j (1+ j)))))))))
-      result)))
 
 (unless (fboundp 'string-collate-lessp)
   (defun string-collate-lessp (s1 s2 &optional _locale ignore-case)

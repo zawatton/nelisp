@@ -5,8 +5,7 @@
 
 ;;; Code:
 
-(unless (fboundp 'nelisp-casetab--ensure-extra-slots)
-  (require 'emacs-cc-casetab-1))
+(require 'nelisp-stdlib-casetab)
 
 (defconst nelisp-casetab--standard-ranges
   '(
@@ -810,20 +809,6 @@ local values but still allow the table's default or parent fallback."
     (dolist (pair pairs)
       (nelisp-casetab--shuffle table (car pair) (cdr pair)))
     table))
-
-;; GNU Emacs 31.1 lisp/subr.el:5782-5795.  Restore the original buffer's
-;; table even when BODY changes the selected buffer or exits nonlocally.
-(defmacro with-case-table (table &rest body)
-  "Execute BODY with TABLE as the current case table."
-  (declare (indent 1) (debug t))
-  (let ((old-case-table (make-symbol "table"))
-        (old-buffer (make-symbol "buffer")))
-    `(let ((,old-case-table (current-case-table))
-           (,old-buffer (current-buffer)))
-       (unwind-protect
-           (progn (set-case-table ,table) ,@body)
-         (with-current-buffer ,old-buffer
-           (set-case-table ,old-case-table))))))
 
 (nelisp-casetab--register-standard-data)
 

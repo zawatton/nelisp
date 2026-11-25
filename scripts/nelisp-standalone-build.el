@@ -52189,7 +52189,8 @@ skipped and re-run once cl-preloaded has defined the base types."
     posn-object posn-object-x-y posn-object-width-height
     values--store-value log10 derived-mode-all-parents
     provided-mode-derived-p major-mode-suspend major-mode-restore
-    locate-eln-file process-kill-buffer-query-function memory-limit
+    locate-eln-file process-live-p process-kill-buffer-query-function
+    buffer-narrowed-p memory-limit
     read--potential-mouse-event read-char-choice
     read-char-choice-with-read-key goto-char--read-natnum-interactive
     read-char-from-minibuffer-insert-char
@@ -52323,6 +52324,8 @@ resolved fine.  Same feature, different answer per entry point."
    "\n;; --- GNU Emacs 31.1 subr.el: minor-mode-list ---\n"
    (nelisp-vendor-source-form
     "vendor/staged-emacs-lisp/subr.el" 'minor-mode-list)
+   "\n;; --- GNU Emacs 31.1 subr.el: with-case-table ---\n"
+   (nelisp-vendor-source-form "vendor/staged-emacs-lisp/subr.el" 'with-case-table)
    "\n;; --- GNU Emacs 31.1 subr.el: add-minor-mode ---\n"
    (nelisp-vendor-source-form
     "vendor/staged-emacs-lisp/subr.el" 'add-minor-mode)

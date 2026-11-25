@@ -92,11 +92,6 @@ Operates on raw bytes, so multibyte UTF-8 is encoded byte-by-byte
 ;; `(require 'subr-x)' / `(require 'cl-lib)' and uses these load on the
 ;; standalone GUI runtime.
 
-(unless (fboundp 'mapcan)
-  (defun mapcan (func sequence)
-    "Apply FUNC to each element of SEQUENCE; nconc the results."
-    (apply #'nconc (mapcar func sequence))))
-
 (unless (fboundp 'assoc-default)
   (defun assoc-default (key alist &optional test default)
     "Find the first ALIST element whose car matches KEY; return its cdr.
@@ -315,21 +310,6 @@ Supports :test/:key.  Keeps the LAST occurrence, matching cl-lib's default."
       (let ((current (symbol-value hook)))
         (when (listp current)
           (set hook (delete function current)))))))
-
-(unless (fboundp 'run-hooks)
-  (defun run-hooks (&rest hooks)
-    "Run each function on each hook variable in HOOKS."
-    (let ((hs hooks))
-      (while hs
-        (let ((hook (car hs)))
-          (when (boundp hook)
-            (let ((fns (symbol-value hook)))
-              (when (listp fns)
-                (let ((l fns))
-                  (while l
-                    (unless (eq (car l) t) (funcall (car l)))
-                    (setq l (cdr l))))))))
-        (setq hs (cdr hs))))))
 
 ;; `eval-after-load' / `with-eval-after-load': run BODY when FILE is loaded.
 ;; This runtime has no deferred-load machinery and `featurep' does not round-trip

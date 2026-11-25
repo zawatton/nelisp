@@ -9,43 +9,6 @@
 ;; bulk below — a nil-returning `identity' silently breaks every
 ;; `(mapconcat 'identity ...)' pipeline (s.el's s-join returned
 ;; "nil-nil-..." on the standalone reader, found 2026-06-11).
-(unless (fboundp 'float)
-  (defun float (x)
-    "Numeric coercion (never a nil no-op: same hazard as `identity')."
-    (+ x 0.0)))
-(unless (fboundp 'floor)
-  (defun floor (x &optional d)
-    ;; integer pair: exact flooring division without floats (the
-    ;; reader's float division/`integerp' are unreliable - recorded
-    ;; caveat); float input falls back to truncate-and-adjust
-    (if (and d (integerp x) (integerp d))
-        (let ((q (/ x d)))
-          (if (and (/= (* q d) x) (< (* x d) 0))
-              (1- q)
-            q))
-      (progn
-        (when d (setq x (/ (float x) d)))
-        (if (integerp x)
-            x
-          (let ((tr (truncate x)))
-            (if (> (float tr) x) (1- tr) tr)))))))
-(unless (fboundp 'ceiling)
-  (defun ceiling (x &optional d)
-    (when d (setq x (/ (float x) d)))
-    (if (integerp x)
-        x
-      (let ((tr (truncate x)))
-        (if (< (float tr) x) (1+ tr) tr)))))
-(unless (fboundp 'round)
-  (defun round (x &optional d)
-    (when d (setq x (/ (float x) d)))
-    (if (integerp x)
-        x
-      (truncate (if (< x 0) (- x 0.5) (+ x 0.5))))))
-(unless (fboundp 'identity)
-  (defun identity (arg)
-    "Return ARG unchanged."
-    arg))
 (unless (fboundp 'int-to-string)
   (defun int-to-string (n)
     "Alias of `number-to-string' (same nil no-op hazard as `identity')."
@@ -103,28 +66,6 @@
     (if (fboundp 'emacs-frame-frame-char-height)
         (emacs-frame-frame-char-height frame)
       16)))
-
-(unless (fboundp 'subr-arity)
-  (defun subr-arity (subr)
-    "Return minimum and maximum number of args allowed for SUBR.
-The returned value is a pair (MIN . MAX).  MAX is the symbol `many'
-for a function with `&rest' args.  Unlike real Emacs, SUBR need not be
-a true built-in subr on this runtime -- see the commentary above."
-    (unless (or (functionp subr) (symbolp subr))
-      (signal 'wrong-type-argument (list 'subrp subr)))
-    (let ((arglist (help-function-arglist subr t))
-          (min 0) (max 0) (state 'req))
-      (if (not (listp arglist))
-          (cons 0 'many)
-        (progn
-          (dolist (arg arglist)
-            (cond
-             ((eq arg '&optional) (setq state 'opt))
-             ((eq arg '&rest) (setq state 'rest))
-             ((eq state 'req) (setq min (1+ min) max (1+ max)))
-             ((eq state 'opt) (setq max (1+ max)))
-             ((eq state 'rest) (setq max 'many))))
-          (cons min max))))))
 
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n)
@@ -192,17 +133,6 @@ Forwarder to `forward-char' with negated count."
 ;; make-process moved to emacs-process-builtins (Track I).
 
 ;; mode-name moved to emacs-mode-builtins (Track H).
-
-(unless (fboundp 'multibyte-string-p)
-  ;; NeLisp の Sexp::Str は内部 UTF-8 — 上位 ASCII bit を含む文字が
-  ;; あれば multibyte 扱い。pure-ASCII なら nil を返す。
-  (defun multibyte-string-p (string)
-    (when (stringp string)
-      (let ((i 0) (n (length string)) found)
-        (while (and (not found) (< i n))
-          (when (>= (aref string i) 128) (setq found t))
-          (setq i (1+ i)))
-        found))))
 
 ;; negative-argument moved to emacs-command-loop-builtins (Phase B.5).
 

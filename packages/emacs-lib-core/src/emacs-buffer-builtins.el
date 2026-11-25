@@ -1214,10 +1214,6 @@ Reset the local keymap, syntax and case tables, and mode-line display.
              (nelisp-ec-buffer-narrow-end buf))
          t)))
 
-(when (emacs-buffer-builtins--install-function-p 'buffer-narrowed-p)
-  (defalias 'buffer-narrowed-p
-    #'emacs-buffer-builtins-buffer-narrowed-p))
-
 (defun emacs-buffer-builtins-copy-marker (&optional marker-or-integer type)
   "Return a fresh marker copied from MARKER-OR-INTEGER.
 nil MARKER-OR-INTEGER returns a detached marker, matching Emacs."
@@ -2325,18 +2321,6 @@ The sidecar stores overlays in a flat list, so no repartition is needed."
   (defun set-buffer-multibyte (flag)
     flag))
 
-;; NeLisp v1.1.0 (Doc 200) gave unibyte strings their own representation,
-;; so the runtime's own `multibyte-string-p' answers as Emacs does: nil for
-;; a pure-ASCII string and nil for a unibyte one.  Installing the bridge
-;; stub over it would report every string as multibyte again.  Ask the
-;; runtime about a pure-ASCII string and keep the stub only for a reader
-;; that predates Doc 200 (or has no `multibyte-string-p' at all).
-(when (fboundp 'nl-ffi-call)
-  (when (and (emacs-buffer-builtins--install-function-p 'multibyte-string-p)
-             (condition-case nil (multibyte-string-p "a") (error t)))
-    (defun multibyte-string-p (object)
-      (stringp object))))
-
 ;;;; --- registry lookup (Phase L1, 2026-05-03) --------------------------
 
 ;; S2 coverage batch 5 (2026-09-28): on the standalone, a NATIVE `get-buffer'
@@ -2479,15 +2463,6 @@ buffers are returned regardless."
     "Phase 9 polyfill: forward to `nelisp-ec-with-current-buffer'."
     (declare (indent 1) (debug (form body)))
     (cons 'nelisp-ec-with-current-buffer (cons buf body))))
-
-(when (emacs-buffer-builtins--install-function-p 'default-value)
-  (defalias 'default-value #'emacs-buffer-default-value))
-
-(when (emacs-buffer-builtins--install-function-p 'default-boundp)
-  (defalias 'default-boundp #'emacs-buffer-default-boundp))
-
-(when (emacs-buffer-builtins--install-function-p 'set-default)
-  (defalias 'set-default #'emacs-buffer-setq-default-1))
 
 (defun emacs-buffer-builtins-buffer-modified-tick (&optional buffer)
   "Return BUFFER's standalone modified tick."

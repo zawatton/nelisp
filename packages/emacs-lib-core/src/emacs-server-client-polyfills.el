@@ -66,9 +66,6 @@
       `(progn ,form nil)))
 
   ;; --- tiny pure functions ---------------------------------------------
-  (unless (fboundp 'length>)
-    (defun length> (sequence n)
-      (> (length sequence) n)))
   ;; These GNU variables must remain dynamic in the standalone closures.
   (defvar noninteractive)
   (defvar executing-kbd-macro)
