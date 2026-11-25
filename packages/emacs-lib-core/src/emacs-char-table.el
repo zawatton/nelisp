@@ -1107,15 +1107,7 @@ rather than materialised."
     (progn
   (cond
    ((emacs-char-table--native-p ct)
-    ;; Native tables are written element-wise; only single characters and
-    ;; bounded ranges are supported (the default slot is not reachable).
-    (let ((from (cond ((integerp range) range) ((consp range) (car range))))
-          (to (cond ((integerp range) range) ((consp range) (cdr range)))))
-      (unless (and from to (<= 0 from) (<= to emacs-char-table--max-char))
-        (error "Unsupported RANGE for a native char-table: %S" range))
-      (while (<= from to)
-        (emacs-char-table--native-set ct from value)
-        (setq from (1+ from)))))
+    (nelisp--chartab-set-char-table-range ct range value))
    ((null range)
     (emacs-char-table--raw-set ct emacs-char-table--i-default value))
    ((eq range t)
@@ -1453,7 +1445,7 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (fset 'char-table-p #'emacs-char-table-p)
   (fset 'make-char-table #'emacs-char-table-make)
   (fset 'char-table-range #'emacs-char-table-range)
-  (fset 'set-char-table-range #'emacs-char-table-set-range)
+  (setq nelisp--chartab-legacy-set-range-function #'emacs-char-table-set-range)
   (fset 'char-table-parent #'emacs-char-table-parent)
   (fset 'set-char-table-parent #'emacs-char-table-set-parent)
   (fset 'char-table-subtype #'emacs-char-table-subtype)
@@ -1468,8 +1460,6 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (defalias 'make-char-table #'emacs-char-table-make))
 (when (emacs-char-table--install-function-p 'char-table-range)
   (defalias 'char-table-range #'emacs-char-table-range))
-(when (emacs-char-table--install-function-p 'set-char-table-range)
-  (defalias 'set-char-table-range #'emacs-char-table-set-range))
 (when (emacs-char-table--install-function-p 'char-table-parent)
   (defalias 'char-table-parent #'emacs-char-table-parent))
 (when (emacs-char-table--install-function-p 'set-char-table-parent)

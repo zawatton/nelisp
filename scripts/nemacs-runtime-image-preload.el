@@ -228,6 +228,9 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
     (let ((settings (nreverse custom-delayed-init-variables))
           (custom-delayed-init-variables t))
       (mapc #'custom-reevaluate-setting settings)))
+  ;; The tab buttons search `image-load-path' while the library loads.
+  (nemacs-runtime-image-preload--load-source-file
+   (concat repo-root "/vendor/emacs-lisp/tab-line.el"))
   ;; Publish the default from GNU newcomment.el after the reader's early
   ;; buffer-local variable initialization has supplied a provisional value.
   (custom-reevaluate-setting 'comment-column)
@@ -1347,60 +1350,11 @@ image startup."
   t)
 
 (defun nemacs-runtime-image-preload--install-tab-core ()
-  "Install the daily-driver tab-line surface and tab-bar height primitive."
-  (unless (boundp 'tab-line-mode)
-    (defvar tab-line-mode nil))
-  (unless (boundp 'global-tab-line-mode)
-    (defvar global-tab-line-mode nil))
-  (unless (boundp 'tab-line-format)
-    (defvar tab-line-format nil))
+  "Install the tab-bar height primitive."
   (unless (fboundp 'tab-bar-height)
     (fset 'tab-bar-height
           '(lambda (&optional frame)
              (if (bound-and-true-p tab-bar-mode) 1 0))))
-  (unless (fboundp 'tab-line-mode)
-    (fset 'tab-line-mode
-          '(lambda (&optional arg)
-             (setq tab-line-mode
-                   (if arg
-                       (> arg 0)
-                     (not tab-line-mode)))
-             (setq tab-line-format
-                   (and tab-line-mode '(:eval (buffer-name))))
-             tab-line-mode)))
-  (unless (fboundp 'global-tab-line-mode)
-    (fset 'global-tab-line-mode
-          '(lambda (&optional arg)
-             (setq global-tab-line-mode
-                   (if arg
-                       (> arg 0)
-                     (not global-tab-line-mode)))
-             global-tab-line-mode)))
-  (unless (fboundp 'window-tab-line-height)
-    (fset 'window-tab-line-height
-          '(lambda (&optional window)
-             (if (or tab-line-mode global-tab-line-mode) 1 0))))
-  (unless (fboundp 'tab-line-tabs-buffer-list)
-    (fset 'tab-line-tabs-buffer-list
-          '(lambda ()
-             (if (fboundp 'buffer-list)
-                 (buffer-list)
-               nil))))
-  (unless (fboundp 'tab-line-tabs-window-buffers)
-    (fset 'tab-line-tabs-window-buffers
-          '(lambda ()
-             (tab-line-tabs-buffer-list))))
-  (unless (fboundp 'tab-line-tabs-fixed-window-buffers)
-    (fset 'tab-line-tabs-fixed-window-buffers
-          '(lambda ()
-             (tab-line-tabs-buffer-list))))
-  (unless (fboundp 'tab-line-tab-name-buffer)
-    (fset 'tab-line-tab-name-buffer
-          '(lambda (buffer &optional buffers)
-             (if (fboundp 'buffer-name)
-                 (buffer-name buffer)
-               ""))))
-  (provide 'tab-line)
   t)
 
 (defun nemacs-runtime-image-preload--install-subr-x-core ()

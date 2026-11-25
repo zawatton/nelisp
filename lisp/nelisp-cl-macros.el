@@ -2186,14 +2186,6 @@ it into a `let' first."
 byte-compiler so defsubst is a strict synonym for `defun'."
   (cons 'defun (cons name (cons args body))))
 
-(defun cl-every (pred seq)
-  "Return non-nil iff (PRED ELT) is non-nil for every ELT in SEQ."
-  (let ((all t) (cur seq))
-    (while (and all cur)
-      (unless (funcall pred (car cur)) (setq all nil))
-      (setq cur (cdr cur)))
-    all))
-
 ;; ---------------------------------------------------------------------------
 ;; Wave A21-fix (2026-05-24) — cl-case / cl-position / cl-set-difference /
 ;; cl-gensym / cl-macrolet.  Standalone NeLisp loads `nelisp-bytecode.el'

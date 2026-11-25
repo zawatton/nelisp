@@ -439,37 +439,7 @@
 (fset 'display-pixel-width '(lambda (&optional display) 1024))
 (fset 'display-pixel-height '(lambda (&optional display) 768))
 
-(setq tab-line-mode nil)
-(setq global-tab-line-mode nil)
-(setq tab-line-format nil)
-
-(fset 'tab-line-mode
-      '(lambda (&optional arg)
-         (setq tab-line-mode (if arg (> arg 0) (if tab-line-mode nil t)))
-         (setq tab-line-format (if tab-line-mode '(:eval (buffer-name)) nil))
-         tab-line-mode))
-(fset 'global-tab-line-mode
-      '(lambda (&optional arg)
-         (setq global-tab-line-mode
-               (if arg (> arg 0) (if global-tab-line-mode nil t)))
-         global-tab-line-mode))
-(fset 'window-tab-line-height
-      '(lambda (&optional window)
-         (if tab-line-mode
-             1
-           (if global-tab-line-mode 1 0))))
-(fset 'tab-line-tabs-buffer-list
-      '(lambda () (if (fboundp 'buffer-list) (buffer-list) nil)))
-(fset 'tab-line-tabs-window-buffers
-      '(lambda () (tab-line-tabs-buffer-list)))
-(fset 'tab-line-tabs-fixed-window-buffers
-      '(lambda () (tab-line-tabs-buffer-list)))
-(fset 'tab-line-tab-name-buffer
-      '(lambda (buffer &optional buffers)
-         (if (fboundp 'buffer-name) (buffer-name buffer) "")))
-
 (provide 'frame)
 (provide 'emacs-frame-builtins)
-(provide 'tab-line)
 
 ;;; nemacs-runtime-frame-tab-preload.el ends here
