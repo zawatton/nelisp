@@ -31,8 +31,10 @@
 
 (defconst nelisp-cc-jit-cons-car-ptr--source
   '(defun nl_cons_car_ptr (arg)
-      (if (= (nl_val_tag arg) 7)
-          (let ((word (ptr-read-u64 (nl_word_payload arg) 0)))
+      (let* ((box (if (= (logand arg 7) 2) (- arg 2)
+                    (if (= (nl_val_tag arg) 7) (nl_word_payload arg) 0))))
+        (if (/= box 0)
+          (let* ((word (ptr-read-u64 box 0)))
             ;; Doc 216: a legacy view (000) and a direct cons (010) pass through
             ;; unchanged -- no transient box that could not cross an eval;
             ;; immediates and vectorlikes still materialise.
@@ -46,7 +48,7 @@
                           (= (logand (ptr-read-u64 (- word 6) 0) 63) 16))
                       word
                     (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)))
-                (extern-call nl_sexp_clone_into word (alloc-bytes 32 8))))) 0))
+                (extern-call nl_sexp_clone_into word (alloc-bytes 32 8))))) 0)))
   "AOT source for `nl_cons_car_ptr' (Doc 147 Phase 3 materialiser).
 Doc 216 S2.1: a direct cons WORD (payload | 2) is returned as it is,
 like a legacy view; callers read it through the semantic accessors.

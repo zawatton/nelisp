@@ -7676,11 +7676,15 @@ it shares with cons and symbol blocks.")
     ;; buffer, and a plain overflow view keeps the historical name compare.
     (defun nl_symbol_word_eq (a b)
       (if (= a b) 1
-        (let* ((oa (nl_so_p a)) (ob (nl_so_p b)))
-          (if (= (logand oa ob) 1) 0
-            (let* ((view (if (= oa 1) b a)) (obj (if (= oa 1) a b)))
-              (if (= (logand view 7) 0)
-                  (if (= (heap-read-u8 view 0) 4)
+        ;; Distinct object words cannot be the same symbol. Only a mixed
+        ;; object/view pair needs to resolve the view's canonical identity.
+        (if (= (logxor (logand a 7) (logand b 7)) 6)
+            (let* ((view (if (= (logand a 7) 0) a b))
+                   (obj (if (= (logand a 7) 6) (- a 6) (- b 6))))
+              (if (if (= (logand view 7) 0)
+                      (if (= (logand (heap-read-u8 obj 0) 63) 4)
+                          (= (heap-read-u8 view 0) 4) 0)
+                    0)
                       ;; The symbol of a view is the one its canonical buffer
                       ;; (or the object address it was derived from) names:
                       ;; the same symbol as OBJ when that is OBJ's cell.  A
@@ -7696,24 +7700,23 @@ it shares with cons and symbol blocks.")
                       ;; whatever the mirror root names.
                       (let* ((vb (heap-read-u64 view 16))
                              (base (heap-read-u64 268436288 0))
-                             (m (if (= (logand (heap-read-u64 (- obj 6) 0) 63) 4)
-                                    (heap-read-u64 (- obj 6) 40) 0)))
+                             (m (heap-read-u64 obj 40)))
                         (if (if (= m 0) 0
                               (if (> vb (+ base 16777224)) (< vb (heap-read-u64 268436296 0)) 0))
                             (if (= vb (heap-read-u64 (+ base (+ (* (logand m 1048575) 16) 8)) 0)) 1 0)
                           (let* ((mp (nl_symcells_mirror))
                                  (e (if (= mp 0) 1 (nl_symcell_entry mp view))))
-                            (if (> e 1) (if (= e obj) 1 0)
+                            (if (> e 1) (if (= e (+ obj 6)) 1 0)
                               (if (= e 0) 0
-                                (let* ((n (nl_word_length obj)) (i 0) (same 1)
-                                       (p (nl_word_data obj)) (q (heap-read-u64 view 16)))
+                                (let* ((n (nl_word_length (+ obj 6))) (i 0) (same 1)
+                                       (p (nl_word_data (+ obj 6))) (q (heap-read-u64 view 16)))
                                   (if (/= n (heap-read-u64 view 24)) 0
                                     (seq (while (if (= same 1) (< i n) 0)
                                            (seq (if (= (heap-read-u8 p i) (heap-read-u8 q i)) 0 (setq same 0))
                                                 (setq i (+ i 1))))
                                          same))))))))
-                    0)
-                0))))))
+                0))
+          0)))
     ;; The name String of the interned name BUF/N as its WORD, GNU's u.s.name,
     ;; or 0 when memory is exhausted: the side table's, made on first use.  Decision
     ;; item A: this is what an interned symbol object's name cell holds, and what the
@@ -44698,6 +44701,32 @@ never has one."
          (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
          (let* ((st (nl_directcall_invoke fn operator (+ stk (* (- sp argc) 8)) argc env resw)))
            (if (= st 2) -3 st))))
+      ;; A resolved object carries all three entry descriptors. Read its header
+      ;; once, and leave the live-cell lookup and the generic error path to the
+      ;; caller. An absent descriptor needs neither an ABI call nor an arity check.
+      (defun m5_fx_call_subr_resolved (env operator fn stk sp argc resw)
+        (if (if (= (logand fn 7) 6) (>= fn 4096) 0)
+            (let* ((hdr (ptr-read-u64 (- fn 6) 0)))
+              (if (/= (logand hdr 63) 20) -3
+                (let* ((base (+ stk (* (- sp argc) 8)))
+                       (lo (logand (shr hdr 8) 255))
+                       (min (logand (shr hdr 16) 255))
+                       (max (logand (shr hdr 24) 255))
+                       (st 2))
+                  (seq
+                   ;; Keep the call boundary's poll even when it has no direct arm.
+                   (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+                   (if (if (if (= lo 0) 1 (= lo 17)) 0
+                         (if (< argc min) 0
+                           (if (> argc 255) 0 (if (= max 127) 1 (<= argc max)))))
+                       (setq st (nl_directcall_invoke_id fn operator base argc env resw (- lo 17)))
+                     0)
+                   (if (/= st 2) st
+                     (let* ((p (shr hdr 33))
+                            (pst (if (= p 0) -3 (m5_fx_subr_prim2_desc env p base argc resw))))
+                       (if (/= pst -3) pst
+                         (m5_fx_subr_argv env operator fn stk sp argc resw))))))))
+          -3))
       ;; callpath2: the interpreter's primitive of the Subr object FN (its
       ;; descriptor in header bits 33-62, `nl_eic_subr_call_w''s read), ids 15 and
       ;; up (`nl_eic_prim2_run': + - * 1+ 1- = > <= >= cons list make-vector aref aset
@@ -44709,12 +44738,14 @@ never has one."
       (defun m5_fx_subr_prim2 (env fn stk sp argc resw)
         (let* ((p (shr (ptr-read-u64 (- fn 6) 0) 33)))
           (if (= p 0) -3
-            (let* ((desc (logior (logand p 63) (shl (shr p 6) 8))))
-              (if (= (nl_subr_arity_bad desc argc) 1) -3
-                (let* ((id (nl_subr_prim desc argc)))
-                  (if (< id 15) -3
-                    (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
-                         (nl_eic_prim2_run id (+ stk (* (- sp argc) 8)) argc resw env)))))))))
+            (m5_fx_subr_prim2_desc env p (+ stk (* (- sp argc) 8)) argc resw))))
+      (defun m5_fx_subr_prim2_desc (env p base argc resw)
+        (let* ((desc (logior (logand p 63) (shl (shr p 6) 8))))
+          (if (= (nl_subr_arity_bad desc argc) 1) -3
+            (let* ((id (nl_subr_prim desc argc)))
+              (if (< id 15) -3
+                (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+                     (nl_eic_prim2_run id base argc resw env)))))))
       ;; callpath2: GNU funcall_general (eval.c:3105-3140) for a definition DEF
       ;; that is no primitive id: a Subr object through its argument-array entry
       ;; (`m5_fx_subr_argv', GNU funcall_subr), a byte-code function through the
@@ -45061,7 +45092,9 @@ answer -3 or 0 (`m5_fx_subr_prim2', `m5_fx_funcall_value', `bf_builtin_subr_arit
 (defun nelisp-standalone--argframe-m5-helpers ()
   "Replace only the FX list callout with proven rooted argv transport."
   (let ((shape-form (nelisp-standalone--argframe-shape-form 'argframe_sid)))
-    (mapcar
+    (cons
+     (cl-find 'm5_fx_subr_prim2_desc nelisp-standalone--callpath2-m5-defs :key #'cadr)
+     (mapcar
      (lambda (definition)
        (if (eq (cadr definition) 'm5_fx_builtin_name)
            ;; subr1: the head of an interned symbol OBJECT is `builtin' iff its
@@ -45106,9 +45139,12 @@ answer -3 or 0 (`m5_fx_subr_prim2', `m5_fx_funcall_value', `bf_builtin_subr_arit
                                 (word (seq
                                        (let* ((k 0))
                                          (while (< k argc)
-                                           (seq (ptr-write-u64 argv (* k 8)
-                                                               (nl_word_canon (ptr-read-u64 argv (* k 8))))
-                                                (setq k (+ k 1)))))
+                                           (let* ((arg (ptr-read-u64 argv (* k 8))))
+                                             (seq
+                                              (if (= (logand arg 7) 0)
+                                                  (ptr-write-u64 argv (* k 8) (nl_word_canon arg))
+                                                0)
+                                              (setq k (+ k 1))))))
                                        (nl_apply_builtin_frame_sid_w (logand w 65535) legacy argv env argc))))
                            (if (= word 2)
                                (let* ((args (if (= argc 0) (nl_n4_nil_view env) (m5_fx_word_list stk sp argc 0))))
@@ -45167,7 +45203,7 @@ answer -3 or 0 (`m5_fx_subr_prim2', `m5_fx_funcall_value', `bf_builtin_subr_arit
                      ;; The VM vector owns this result through debug/reentrant GC.
                      (ptr-write-u64 resw 0 word)
                      (m5_fx_take (nl_n4_finish_w word env 0 frame) resw)))))))))))
-     nelisp-standalone--applyfn-m5-helpers)))
+      nelisp-standalone--applyfn-m5-helpers))))
 
 (defun nelisp-standalone--fx-dispatch-opcodes (test)
   "Return the opcodes matched by a pure dispatch TEST on `op'."
@@ -70113,6 +70149,10 @@ remains the reference. No production hit/fallback counters are emitted."
                                                 0))
                                        (if (= st -3) 2 (if (= st -4) 2 1)))))))))))))))))))
       (defun nl_directcall_invoke (fn original base argc env out)
+        (let* ((id (nl_directcall_id fn original argc)))
+          (if (= id 0) 2
+            (nl_directcall_invoke_id fn original base argc env out id))))
+      (defun nl_directcall_invoke_id (fn original base argc env out id)
         ;; BASE belongs to a live rooted VM/evaluator frame, and so does OUT:
         ;; every caller passes a slot of that frame (the VM slot of the
         ;; function, the evaluator's result word, a walker's result slot), as
@@ -70145,8 +70185,7 @@ remains the reference. No production hit/fallback counters are emitted."
         ;; copier declines to the ordinary call. Bytecode closure allocation
         ;; has the same no-safepoint contract. The other allocating ids
         ;; keep the record.
-        (let* ((id (nl_directcall_id fn original argc)))
-          (if (if (= id 0) 1 (/= (logand (heap-read-u64 env 112) 3145728) 0)) 2
+        (if (/= (logand (heap-read-u64 env 112) 3145728) 0) 2
            (if (if (or (< id 112) (= id 116) (= id 122))
                    (if (= (heap-read-u64 env 176) 0) 0
                      (< (heap-read-u64 (heap-read-u64 env 176) 0) 32768))
@@ -70185,7 +70224,7 @@ remains the reference. No production hit/fallback counters are emitted."
                     (let* ((w (nl_n4_finish_w (if (= st 0) (heap-read-u64 out 0) 0)
                                               env 0 frame)))
                       (if (= w 0) 1
-                        (seq (ptr-write-u64 out 0 w) 0))))))))))))))
+                        (seq (ptr-write-u64 out 0 w) 0)))))))))))))
 
 (defun nelisp-standalone--special-gate-mask (name)
   "The bit of the env+112 flags word that marks the special form NAME as redefined.

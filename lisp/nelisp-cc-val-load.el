@@ -256,17 +256,12 @@
                0)
              (+ box 6))))
     (defun nl_val_clone_into (src_slot dst_word_ptr)
-      (if (= (logand src_slot 7) 4)
+      ;; Every non-view representation is already a storable word.
+      (if (/= (logand src_slot 7) 0)
           (seq (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
-        (if (and (= (logand src_slot 7) 0)
-                 (/= (nl_string_view_header src_slot) 0))
+        (if (/= (nl_string_view_header src_slot) 0)
             (let ((word (nl_string_from_view src_slot)))
               (seq (ptr-write-u64 dst_word_ptr 0 word) word))
-      (if (= (logand src_slot 1) 1)
-          (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
-        (if (/= (logand src_slot 7) 0)
-            ;; Direct cons (010) or vectorlike (110): already canonical.
-            (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 src_slot) src_slot)
           (let ((tag (heap-read-u8 src_slot 0)))
             (if (if (= tag 7)
                     ;; A special-form definition keeps a marker (13108) in
@@ -298,7 +293,7 @@
                       (if (= word 0)
                           (nl_val_clone_legacy src_slot dst_word_ptr)
                         (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word)))
-                  (nl_val_clone_legacy src_slot dst_word_ptr))))))))))))
+                  (nl_val_clone_legacy src_slot dst_word_ptr))))))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 
 Six-entry `(seq DEFUN ...)' manifest:
