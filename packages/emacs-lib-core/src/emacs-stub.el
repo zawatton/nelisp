@@ -2350,11 +2350,6 @@ Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
     "Stub: no text properties in standalone; report no change (LIMIT or nil)."
     (ignore position prop object) limit))
 
-(unless (fboundp 'string-width)
-  (defun string-width (string &optional from to)
-    "Degraded width: count characters (wide chars not doubled) in STRING."
-    (length (if (or from to) (substring string (or from 0) to) string))))
-
 (unless (fboundp 'ding)
   (defun ding (&optional arg)
     "Stub: no terminal bell in the standalone reader."
@@ -2368,11 +2363,6 @@ Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
 ;;;; --- character / arithmetic helpers (vendor-coverage 2026-06-07 batch3) ---
 ;; Re-provided in the substrate because the current standalone reader no longer
 ;; bakes them in; `unless fboundp' keeps them inert when the reader does.
-
-(unless (fboundp 'characterp)
-  (defun characterp (object)
-    "Return non-nil if OBJECT is a valid character code point (0..#x3FFFFF)."
-    (and (integerp object) (>= object 0) (<= object #x3FFFFF))))
 
 ;;;; --- define-inline (Doc 15 B4): runtime-compatible function-only impl ---
 ;;

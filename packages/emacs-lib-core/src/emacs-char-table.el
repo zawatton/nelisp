@@ -1458,8 +1458,7 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (fset 'char-table-subtype #'emacs-char-table-subtype)
   (fset 'char-table-extra-slot #'emacs-char-table-extra-slot)
   (fset 'set-char-table-extra-slot #'emacs-char-table-set-extra-slot)
-  (fset 'map-char-table #'emacs-char-table-map)
-  (fset 'max-char #'emacs-char-table-max-char))
+  (fset 'map-char-table #'emacs-char-table-map))
 
 (when (emacs-char-table--install-function-p 'char-table-p)
   (defalias 'char-table-p #'emacs-char-table-p))
@@ -1479,9 +1478,6 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (defalias 'set-char-table-extra-slot #'emacs-char-table-set-extra-slot))
 (when (emacs-char-table--install-function-p 'map-char-table)
   (defalias 'map-char-table #'emacs-char-table-map))
-(when (emacs-char-table--install-function-p 'max-char)
-  (defalias 'max-char #'emacs-char-table-max-char))
-
 ;;;; --- equal ---------------------------------------------------------
 
 (defun emacs-char-table--tagged-p (object)

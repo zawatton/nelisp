@@ -154,14 +154,6 @@ is non-nil, each returned line keeps its trailing newline when present."
   (put 'char-equal 'emacs-stub-bulk nil))
 
 (when (fboundp 'nl-ffi-call)
-  (unless (and (fboundp 'string-width)
-               (not (get 'string-width 'emacs-stub-bulk)))
-    (defun string-width (string)
-      "Return the display width of STRING (sum of per-character widths)."
-      (emacs-string--string-width string))
-    (put 'string-width 'emacs-stub-bulk nil)))
-
-(when (fboundp 'nl-ffi-call)
   (unless (and (fboundp 'assoc-string)
                (not (get 'assoc-string 'emacs-stub-bulk)))
     (defun emacs-string--assoc-string-key (value)
@@ -317,15 +309,6 @@ TAB resolves to `tab-width' (matching host `char-width')."
             i (1+ i)))
     w))
 
-(when (fboundp 'nl-ffi-call)
-  (unless (and (fboundp 'char-width) (not (get 'char-width 'emacs-stub-bulk)))
-    (defun char-width (char)
-      "Return the column width of CHAR (default policy, ASCII + rough EAW)."
-      (unless (characterp char)
-	(signal 'wrong-type-argument (list 'characterp char)))
-      (emacs-string--char-width char))
-    (put 'char-width 'emacs-stub-bulk nil)))
-
 ;;;; --- character.c: unibyte-char-to-multibyte / multibyte-char-to-unibyte
 ;; Real Emacs C primitives (character.c), void anywhere in src/ (T52, load
 ;; matrix hit `(void-function unibyte-char-to-multibyte)' for 10 features:
@@ -348,17 +331,6 @@ TAB resolves to `tab-width' (matching host `char-width')."
   "Base added to a raw byte 128..255 to form its \"eight-bit\" character.
 Matches Emacs's `RAW_BYTE_CHAR_BASE' (character.h): the eight-bit range is
 this base plus BYTE, i.e. #x3FFF80..#x3FFFFF for BYTE in 128..255.")
-
-(unless (fboundp 'unibyte-char-to-multibyte)
-  (defun unibyte-char-to-multibyte (ch)
-    "Convert the byte CH to multibyte character."
-    (unless (characterp ch)
-      (signal 'wrong-type-argument (list 'characterp ch)))
-    (when (>= ch #x100)
-      (error "Not a unibyte character: %d" ch))
-    (if (< ch 128)
-        ch
-      (+ ch emacs-string--raw-byte-char-base))))
 
 (unless (fboundp 'multibyte-char-to-unibyte)
   (defun multibyte-char-to-unibyte (ch)

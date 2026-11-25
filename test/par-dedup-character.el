@@ -1,0 +1,20 @@
+;;; Character primitives -*- lexical-binding: t; -*-
+(prin1 (list 'max-char (max-char) (max-char t)))
+(terpri)
+(prin1 (list 'characterp (characterp -1) (characterp #x3fffff t)
+             (characterp #x400000) (characterp 65.0)))
+(terpri)
+(dolist (ch '(0 127 128 255 256 -1 65.0))
+  (prin1 (list 'unibyte-char-to-multibyte ch
+               (condition-case err
+                   (unibyte-char-to-multibyte ch)
+                 (error err))))
+  (terpri))
+(prin1 (cons 'char-width (mapcar #'char-width '(9 10 65 769 12354))))
+(terpri)
+(require 'disp-table)
+(let ((standard-display-table (make-char-table 'display-table)))
+  (aset standard-display-table ?A [?あ ?x])
+  (aset standard-display-table ?あ [?x ?y ?z ?w])
+  (prin1 (list 'display-table (char-width ?A) (string-width "Aあ" 0 1)))
+  (terpri))

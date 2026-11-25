@@ -775,60 +775,6 @@ NOERROR permits falling back to raw text for an invalid coding system."
                     ((eq coding 'raw-text) (string-as-unibyte text))
                     (t (encode-coding-string text coding)))))))
 
-(defun emacs-redisplay-core--character-width (char)
-  "Return CHAR's width under the current buffer's control display policy."
-  (cond
-   ((= char ?\t)
-    (if (and (boundp 'tab-width) (integerp tab-width)
-             (> tab-width 0) (<= tab-width 1000))
-        tab-width
-      8))
-   ((or (< char 32) (= char 127))
-    (if (= char ?\n) 0
-      (if (and (boundp 'ctl-arrow) (not ctl-arrow)) 4 2)))
-   ((or (and (<= 128 char) (< char 160))
-        (and (<= #x3fff80 char) (<= char #x3fffff)))
-    4)
-   (t (char-width char))))
-
-(when (fboundp 'nl-ffi-call)
-  (when (or (not (fboundp 'string-width))
-            (fboundp 'nelisp--repr))
-    (defun string-width (&rest args)
-      "Return STRING's display width in the current buffer.
-FROM and TO delimit a substring, including negative substring indices.
-Each tab occupies `tab-width' columns, independently of its position.
-
-(fn STRING &optional FROM TO)"
-      (unless (<= 1 (length args) 3)
-	(signal 'wrong-number-of-arguments (list 'string-width (length args))))
-      (let ((string (car args))
-            (from (cadr args))
-            (to (nth 2 args)))
-	(unless (stringp string)
-          (signal 'wrong-type-argument (list 'stringp string)))
-	(let* ((text (substring string (or from 0) to))
-               (table (or (and (boundp 'buffer-display-table)
-                               buffer-display-table)
-                          (and (boundp 'standard-display-table)
-                               standard-display-table)))
-               (width 0)
-               (i 0))
-          (while (< i (length text))
-            (let* ((char (aref text i))
-                   (glyphs (and (char-table-p table) (aref table char))))
-              (if (vectorp glyphs)
-                  (let ((j 0))
-                    (while (< j (length glyphs))
-                      (setq width
-                            (+ width (emacs-redisplay-core--character-width
-                                      (logand (aref glyphs j) #x3fffff)))
-                            j (1+ j))))
-		(setq width (+ width
-                               (emacs-redisplay-core--character-width char)))))
-            (setq i (1+ i)))
-          width)))))
-
 (defun emacs-redisplay-core--uid (uid)
   "Convert UID to an unsigned 32-bit user ID, or signal GNU's error."
   (let ((value uid))

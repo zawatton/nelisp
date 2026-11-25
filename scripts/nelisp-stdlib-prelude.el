@@ -27389,34 +27389,69 @@ final multibyte promotion."
                        (t (setq width (aref nelisp--format-width-ranges (+ slot 2)) lo hi)))))
              width))))
 
-(unless (fboundp 'char-width)
-  (defun char-width (char)
-    "Return the number of columns CHAR occupies when displayed."
-    (unless (characterp char)
-      (signal 'wrong-type-argument (list 'characterp char)))
-    (or (and (>= char 128)
-             ;; characters.el installs the active table, including CJK
-             ;; locale overrides.  The bare runtime uses default widths.
-             (boundp 'cjk-char-width-table-list)
-             (aref char-width-table char))
-        (nelisp--string-width-fast char nelisp--format-width-ranges)
-        (nelisp--char-width-ref char))))
+(defun nelisp--character-width (char)
+  "Return CHAR's width before display-table substitution."
+  (or (and (>= char 128)
+           ;; characters.el installs the active table, including CJK
+           ;; locale overrides.  The bare runtime uses default widths.
+           (boundp 'cjk-char-width-table-list)
+           (aref char-width-table char))
+      (nelisp--string-width-fast char nelisp--format-width-ranges)
+      (nelisp--char-width-ref char)))
 
-(unless (fboundp 'string-width)
-  (defun string-width (string &optional from to)
-    "Return the display width of STRING (or its FROM..TO part) in columns."
-    (or (and (null from) (null to)
+(defun nelisp--display-table-p (table)
+  "Recognize an allocated GNU display table."
+  (and (char-table-p table)
+       (eq (char-table-subtype table) 'display-table)
+       (= (nelisp--char-table-extra-count table) 18)))
+
+(defun nelisp--active-display-table ()
+  "Return the current buffer's display table, or the standard one."
+  (cond ((and (boundp 'buffer-display-table)
+              (nelisp--display-table-p buffer-display-table))
+         buffer-display-table)
+        ((and (boundp 'standard-display-table)
+              (nelisp--display-table-p standard-display-table))
+         standard-display-table)))
+
+(defun nelisp--display-char-width (char table)
+  "Return CHAR's width with TABLE's glyph substitution, when present."
+  (let ((glyphs (and table (aref table char))))
+    (if (vectorp glyphs)
+        (let ((width 0) (index 0))
+          (while (< index (length glyphs))
+            (let* ((glyph (aref glyphs index))
+                   ;; GNU uses 22 character bits and 20 face ID bits.
+                   (code (cond ((and (fixnump glyph) (<= 0 glyph #x3ffffffffff))
+                                (logand glyph #x3fffff))
+                               ((and (consp glyph) (characterp (car glyph))
+                                     (fixnump (cdr glyph)) (<= 0 (cdr glyph) #xfffff))
+                                (car glyph)))))
+              (when code
+                (setq width (+ width (nelisp--character-width code)))))
+            (setq index (1+ index)))
+          width)
+      (nelisp--character-width char))))
+
+(defun char-width (char)
+  "Return the number of columns CHAR occupies when displayed."
+  (unless (characterp char)
+    (signal 'wrong-type-argument (list 'characterp char)))
+  (nelisp--display-char-width char (nelisp--active-display-table)))
+
+(defun string-width (string &optional from to)
+  "Return the display width of STRING (or its FROM..TO part) in columns."
+  (unless (stringp string)
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (when (or from to) (setq string (substring string from to)))
+  (let ((table (nelisp--active-display-table)))
+    (or (and (null table) (not (boundp 'cjk-char-width-table-list))
              (nelisp--string-width-fast string nelisp--format-width-ranges))
-        (progn
-          (unless (stringp string)
-            (signal 'wrong-type-argument (list 'stringp string)))
-          (when (or from to) (setq string (substring string from to)))
-          (or (nelisp--string-width-fast string nelisp--format-width-ranges)
-              (let ((i 0) (n (length string)) (w 0))
-                (while (< i n)
-                  (setq w (+ w (nelisp--char-width-ref (aref string i))) i (1+ i)))
-                w))))))
-
+        (let ((index 0) (width 0))
+          (while (< index (length string))
+            (setq width (+ width (nelisp--display-char-width (aref string index) table))
+                  index (1+ index)))
+          width))))
 
 (defun nelisp--format-char-width (char)
   "GNU CHARACTER_WIDTH for the default standalone display policy."

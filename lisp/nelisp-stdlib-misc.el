@@ -807,19 +807,6 @@ SUBLIST (compared by `eq') removed, not an approximation."
         (push (pop list) res))
       (nreverse res))))
 
-(unless (fboundp 'unibyte-char-to-multibyte)
-  (defun unibyte-char-to-multibyte (ch)
-    "NeLisp standalone stub for Emacs's C primitive `unibyte-char-to-multibyte'.
-Real Emacs maps a raw byte 0-255 to its multibyte counterpart: ASCII
-(< 128) unchanged, and 128-255 to the \"raw byte\" character range
-(#x3FFF80 and up) so it round-trips through `multibyte-char-to-unibyte'.
-This runtime does not maintain a separate unibyte/multibyte string
-representation, so CH already behaves as a plain character for ASCII;
-the >= 128 branch reproduces Emacs's raw-byte numbering for
-round-tripping, but nothing in this runtime currently decodes it back
-out to a byte, unlike real Emacs."
-    (if (< ch 128) ch (+ ch #x3FFF00))))
-
 ;; Doc segI (vendor-emacs-lisp) follow-up: `decoded-time-SLOT' accessors
 ;; for the `decoded-time' value vendored `calendar/time-date.el' reads
 ;; AND writes through, e.g. `decoded-time-add' (time-date.el line ~473):
