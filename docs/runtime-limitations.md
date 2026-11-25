@@ -78,6 +78,13 @@ Grouped A–E by impact on C-equivalence.  Each item cites a primary source.
   base pointer is 0 and `nl_gc_mark_rootstack` is silently skipped, which can
   produce incomplete marking.
   → `lisp/nelisp-cc-rootstack.el:19-23`.
+- **Standalone GC reserves address-space headroom.** On Linux x86-64, a
+  safepoint can force a collection at 6 GiB of process virtual memory even
+  when `gc-cons-threshold` or `gc-cons-percentage` defers ordinary GC. If
+  procfs is unavailable, the runtime estimates usage from its allocator's
+  reservations. The guard leaves room for collector scratch under an 8 GiB
+  process limit. A single allocation can still hit the OS limit before
+  reaching a safepoint. `memory-limit` reports virtual memory in KiB.
 
 ## E. AOT grammar / ABI — staged support
 

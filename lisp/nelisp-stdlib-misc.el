@@ -635,7 +635,9 @@ overflow the standalone arena on upstream-sized package files."
         (when (and load-garbage-collect-interval
                    (> load-garbage-collect-interval 0)
                    (= (% count load-garbage-collect-interval) 0)
-                   (fboundp 'garbage-collect))
+                   (fboundp 'garbage-collect)
+                   (or (not (fboundp 'nelisp--gc-pressure))
+                       (>= (nelisp--gc-pressure) 100)))
           (garbage-collect))))
     last))
 

@@ -49,10 +49,9 @@
           (not (boundp 'emacs-version))
           (not (stringp emacs-version)))
   (defvar load-garbage-collect-interval 64
-    "Number of forms between opportunistic `garbage-collect' calls in `load'.
-Nil or 0 disables the periodic collection.  The standalone reader uses a
-flat arena, so large source files must not keep every already-read
-top-level form reachable until the end of the load.")
+    "Number of forms between opportunistic GC checks in `load'.
+Nil or 0 disables the periodic check.  When the standalone collector
+reports pressure, collection also requires its current budget to be due.")
 
   (defvar emacs-load-large-source-threshold 32768
     "Byte threshold above which source loads use the incremental evaluator.
@@ -822,12 +821,18 @@ large image is resident a fixed every-N-forms GC dominates ordinary loads
   (defvar emacs-load--gc-last-count nil
     "Most recent collection count observed by the periodic load check.")
 
+  (defun emacs-load--collection-due-p ()
+    "Return non-nil if an opportunistic load collection may run."
+    (and (fboundp 'garbage-collect)
+         (or (not (fboundp 'nelisp--gc-pressure))
+             (>= (nelisp--gc-pressure) 100))))
+
   (defun emacs-load--periodic-gc (count)
     "Run the periodic `load' GC when COUNT hits the interval and it is cheap enough."
     (when (and load-garbage-collect-interval
                (> load-garbage-collect-interval 0)
                (= (% count load-garbage-collect-interval) 0)
-               (fboundp 'garbage-collect))
+               (emacs-load--collection-due-p))
       (let* ((now (float-time))
              (pid (and (fboundp 'emacs-pid) (emacs-pid)))
              (observed (and (boundp 'gcs-done) gcs-done))
@@ -1423,8 +1428,8 @@ Nil or a non-positive value disables the size-based streaming path and
 forces the historical whole-payload reader for all artifacts.")
 
   (defvar emacs-load-artifact-replay-preflight-gc t
-    "When non-nil, run one preflight `garbage-collect' before top-level
-artifact replay in `emacs-load--artifact-replay-file'.")
+    "When non-nil, check GC pressure before top-level artifact replay.
+An eligible collection runs in `emacs-load--artifact-replay-file'.")
 
   (defvar emacs-load-artifact-replay-pressure-threshold 536870912
     "When positive, reclaim memory on nested artifact replay once growth
@@ -1543,7 +1548,6 @@ requests including free-list reuse.  Fall back to used bytes from
     "Run pressure-driven GC when artifact replay usage growth exceeds threshold."
     (let ((threshold emacs-load-artifact-replay-pressure-threshold))
       (when (and emacs-load--artifact-replay-pressure-enabled
-                 (fboundp 'garbage-collect)
                  (integerp threshold)
                  (> threshold 0)
                  (integerp emacs-load--artifact-replay-pressure-baseline)
@@ -1551,8 +1555,9 @@ requests including free-list reuse.  Fall back to used bytes from
         (let ((used (emacs-load--artifact-replay-pressure-bytes)))
           (if (not (integerp used))
               (setq emacs-load--artifact-replay-pressure-enabled nil)
-            (when (>= (- used emacs-load--artifact-replay-pressure-baseline)
-                      threshold)
+            (when (and (>= (- used emacs-load--artifact-replay-pressure-baseline)
+                           threshold)
+                       (emacs-load--collection-due-p))
               (garbage-collect)
               (setq emacs-load--artifact-replay-pressure-baseline
                     (emacs-load--artifact-replay-pressure-bytes))
@@ -2102,7 +2107,7 @@ Use ordinary `read-from-string' on the slice and reject trailing input."
                       (when (and load-garbage-collect-interval
                                  (> load-garbage-collect-interval 0)
                                  (= (% count load-garbage-collect-interval) 0)
-                                 (fboundp 'garbage-collect))
+                                 (emacs-load--collection-due-p))
                         (garbage-collect))))
                   (nreverse items))))))))))
 
@@ -2156,7 +2161,7 @@ processed."
               (when (and load-garbage-collect-interval
                          (> load-garbage-collect-interval 0)
                          (= (% count load-garbage-collect-interval) 0)
-                         (fboundp 'garbage-collect))
+                         (emacs-load--collection-due-p))
                 (garbage-collect))))
           (setq pos (emacs-load--artifact-source-skip-ws-comments source pos))
           (unless (and (< pos end)
@@ -2417,7 +2422,7 @@ processed."
                     (when (and load-garbage-collect-interval
                                (> load-garbage-collect-interval 0)
                                (= (% count load-garbage-collect-interval) 0)
-                               (fboundp 'garbage-collect))
+                               (emacs-load--collection-due-p))
                       (garbage-collect)))))
             (while items
               (let ((item (car items)))
@@ -2428,7 +2433,7 @@ processed."
                 (when (and load-garbage-collect-interval
                            (> load-garbage-collect-interval 0)
                            (= (% count load-garbage-collect-interval) 0)
-                           (fboundp 'garbage-collect))
+                           (emacs-load--collection-due-p))
                   (garbage-collect)))))
           (if vector-response-p
               (progn
@@ -3853,7 +3858,7 @@ converted for `read-from-string'.  Reject any non-comment trailing input."
             load-garbage-collect-interval)))
     (when (and emacs-load-artifact-replay-preflight-gc
                top-level-p
-               (fboundp 'garbage-collect))
+               (emacs-load--collection-due-p))
       (garbage-collect))
     (if top-level-p
         (let* ((initial-baseline (and (integerp threshold)

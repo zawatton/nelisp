@@ -1010,6 +1010,8 @@ WORD, m5_fx_word_ptr for a non-symbol pointer WORD that is not a view).")
      8
      ;; GNU's zero_vector: one permanent, slotless vector header.
      8
+     ;; Process-local GC policy, accounting and timing (see nl_gc_policy).
+     120
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -1357,7 +1359,7 @@ storage — not an arena reservation."
     ;; Windows cold I/O counters and diagnostics are outside the dumped heap.
     (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
       (list (nelisp-link-symbol "nl_win_cold_io"
-                                (- (nelisp-standalone--driver-bss-size) 192)
+                                (- (nelisp-standalone--driver-bss-size) 312)
                                 :section 'bss :bind 'global :type 'object)))
     ;; Doc 216 S4.2: transient descriptor registry and opt-in counters.
     (list (nelisp-link-symbol "nl_frame_stack_registry"
@@ -1462,14 +1464,22 @@ storage — not an arena reservation."
                                  8)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
-                              (- (nelisp-standalone--driver-bss-size) 32)
+                              (- (nelisp-standalone--driver-bss-size) 152)
                               :section 'bss :bind 'global :type 'object))
     ;; Transient weak-table chain; metadata slot 10 holds the next box.
     (list (nelisp-link-symbol "nl_gc_weak_head"
-                              (- (nelisp-standalone--driver-bss-size) 16)
+                              (- (nelisp-standalone--driver-bss-size) 136)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_empty_vector"
-                              (- (nelisp-standalone--driver-bss-size) 8)
+                              (- (nelisp-standalone--driver-bss-size) 128)
+                              :section 'bss :bind 'global :type 'object))
+    ;; +0 threshold symbol, +8 percentage symbol, +16 elapsed symbol,
+    ;; +24 policy ready, +32 logical consing at last collection, +40 vector
+    ;; and other arena-object bytes ever consed, +48 start ns, +56 elapsed ns,
+    ;; +64 string debt baseline, +72 next emergency watermark,
+    ;; +80 procfs scratch lock, +88 procfs or fallback clock scratch.
+    (list (nelisp-link-symbol "nl_gc_policy"
+                              (- (nelisp-standalone--driver-bss-size) 120)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_stats"
                               (+ 57616 4194304 96 176 64 56 40 1040
@@ -7140,17 +7150,9 @@ it shares with cons and symbol blocks.")
     ;; Body is byte-for-byte the historical allocator.
     (defun nl_alloc_bytes_uncheck (size align)
       (let ((want (nl_block_total size)))
-        ;; Doc 201 §6.14 follow-up: ALLOCATION DEBT.  Every block handed out,
-        ;; reused or bumped, adds its BLOCK_TOTAL to nl_gc_stats+0; the
-        ;; collector zeroes it and re-arms nl_gc_stats+8 after each sweep
-        ;; (`nl_gc_debt_rearm').  This is what lets `nl_gc_boundary_due' and
-        ;; the mid-form gate fire on bytes ALLOCATED rather than only on
-        ;; chunk growth: the growth-only trigger could never fire while the
-        ;; free lists were satisfying requests, so it collected exactly once
-        ;; per 64 MiB chunk mapped and the heap grew by one chunk per cycle
-        ;; for the life of the process (Doc 201 §6.13-6.14).  Two loads, an
-        ;; add and a store on the hot path; plain (not atomic) on purpose --
-        ;; a lost update under Doc 199 workers only delays a trigger.
+        ;; Physical bytes spend the next safepoint budget even when a
+        ;; block is reused. Only the object constructors charge Lisp
+        ;; consing. The shared budget is approximate during parallel work.
         (nl_seq2
          (ptr-write-u64 (data-addr nl_gc_until) 0
                         (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
@@ -7465,7 +7467,7 @@ it shares with cons and symbol blocks.")
                           (let* ((d (nl_record_slot_word w 7)))
                             (if (= (logand d 3) 1) (sar d 2) 0))))
                     0))
-             (v (if (= fwd 0) val
+             (v (if (or (= fwd 0) (= fwd 3)) val
                   (if (if (= (logand val 7) 0)
                           (if (= (heap-read-u8 val 0) 16)
                               (let* ((u (heap-read-u64 268436336 0)))
@@ -7502,7 +7504,12 @@ it shares with cons and symbol blocks.")
                          (if (= r 2)
                              (extern-call nl_vector_set_slot
                                           (nl_word_payload (heap-read-u64 b 16)) 1 v)
-                           (extern-call nl_val_clone_into v (+ b 16))))
+                           (seq
+                            (extern-call nl_val_clone_into v (+ b 16))
+                            (if (and (= r 3)
+                                     (or (= w (heap-read-u64 (data-addr nl_gc_policy) 0))
+                                         (= w (heap-read-u64 (data-addr nl_gc_policy) 8))))
+                                (nl_gc_budget_poke) 0))))
                      (extern-call nl_val_clone_into v (+ b (+ 16 (* k 8)))))
                  (if (= k 3)
                      (nl_so_flags_set b 3072 (if (= (nl_val_tag v) 0) 0 1024))
@@ -9455,6 +9462,7 @@ REPL-facing module it feeds."
              (chunk (heap-read-u64 268436160 0))
              (count 0) (need 0) (ok 1) (minimum 0) (maximum 0))
         (seq
+         (ptr-write-u64 (data-addr nl_gc_policy) 48 (nl_gc_clock_ns))
          (nl_gc_index_end)
          ;; Doc 223: image objects use the boot structures, built once.
          (nl_boot_build)
@@ -11008,57 +11016,137 @@ REPL-facing module it feeds."
                     (setq prev chunk)))))
           (setq chunk next))
         0))
-    ;; ===== Doc 201 §6.14 follow-up: allocation-debt trigger =====
-    ;; The collector used to run only when `chunk-bytes-reserved' (268436184)
-    ;; crossed a watermark re-armed at reserved+16 MiB -- i.e. once per 64 MiB
-    ;; growth chunk mapped, because that counter moves in whole chunks.  A
-    ;; collection therefore came only AFTER the free lists had run dry and a
-    ;; chunk had been added, so every cycle grew the heap by one chunk and the
-    ;; sweep (which costs the whole heap) grew with it: 1.2 s -> 2.4 s over
-    ;; six collections in Doc 201 §6.13 with a live set that never moved.
-    ;; The debt trigger fires on bytes allocated since the last collection
-    ;; (nl_gc_stats+0, counted in `nl_alloc_bytes_uncheck') crossing a
-    ;; threshold armed from the live bytes the last sweep counted:
-    ;;     threshold = max(FLOOR, live * PCT / 100 + cold-image credit)
-    ;; with FLOOR 16 MiB and PCT 300 unless nl_gc_stats+40/+48 override them.
-    ;; The bounded credit below applies only to large restored heaps with
-    ;; the default percentage; diagnostic percentages select the plain ratio.
-    ;; (`nelisp--debug-switch' 30/31).  300 % is the ratio the form-boundary
-    ;; re-arm has always written as `live*3 + 1 MiB'; it never took effect
-    ;; because `live' was advisory 0.  With the debt due before the free
-    ;; lists run dry, a steady live set reuses its own garbage and the heap
-    ;; stops at live + threshold + fragmentation slack instead of growing.
-    ;; A threshold of 0 means "not armed" (the reader driver arms it after
-    ;; the boot watermark is frozen), so other entry points keep the old
-    ;; growth-only behaviour exactly.  The growth trigger itself is kept:
-    ;; every collection that used to happen still happens.
+    ;; The allocators already count typed cells and strings, and the vector
+    ;; and record constructors charge their backing stores at allocation.
+    ;; Byte sizes match GNU's 64-bit Lisp objects. The string allocator
+    ;; includes sdata alignment and the trailing byte, as tally_consing does.
+    ;; The physical budget below also tracks evaluator scratch, but scratch
+    ;; without a Lisp object does not spend the user's consing allowance.
+    (defun nl_gc_lisp_bytes ()
+      (let* ((typed (data-addr nl_typed_alloc)))
+        (+ (* (heap-read-u64 typed 88) 16)
+           (+ (* (heap-read-u64 typed 440) 48)
+              (+ (* (heap-read-u64 (data-addr nl_float_state) 48) 8)
+                 (+ (heap-read-u64 (data-addr nl_strings_state) 88)
+                    (heap-read-u64 (data-addr nl_gc_policy) 40)))))))
+    (defun nl_gc_policy_active ()
+      (let* ((st (data-addr nl_gc_stats)))
+        (and (= (heap-read-u64 (data-addr nl_gc_policy) 24) 1)
+             (= (heap-read-u64 st 40) 0) (= (heap-read-u64 st 48) 0))))
+    (defun nl_gc_policy_debt ()
+      (- (nl_gc_lisp_bytes) (heap-read-u64 (data-addr nl_gc_policy) 32)))
+    (defun nl_gc_policy_limit (debt)
+      (let* ((p (data-addr nl_gc_policy))
+             (word (nl_ent_w (heap-read-u64 p 0) 0))
+             (pct (nl_ent_w (heap-read-u64 p 8) 0))
+             (floor (if (= (logand word 3) 1)
+                        (let ((n (sar word 2))) (if (< n 80000) 80000 n))
+                      (if (= (nl_val_tag word) 13)
+                          (if (= (nl_big_sign word) 0) 4611686018427387903 80000)
+                        800000)))
+             (live (heap-read-u64 (data-addr nl_gc_stats) 16)))
+        ;; GNU consing_threshold uses a float percentage, an 80 KB minimum,
+        ;; and estimates that half the debt is still live at a safepoint.
+        (if (/= (nl_val_tag pct) 3) floor
+          (let ((scaled (f64-bits
+                         (f64-mul (bits-to-f64 (nl_float_bits pct))
+                                  (i64-to-f64 (+ live (sar debt 1)))))))
+            (if (= (f64-gt (bits-to-f64 scaled) (i64-to-f64 floor)) 0) floor
+              (if (= (f64-lt (bits-to-f64 scaled)
+                              (i64-to-f64 4611686018427387903)) 1)
+                  (f64-to-i64-trunc (bits-to-f64 scaled))
+                4611686018427387903))))))
+    (defun nl_gc_linux_vsize ()
+      ;; Linux x86-64 statm reports the virtual address space in 4 KiB
+      ;; pages, including mappings outside the Lisp allocator. Read the
+      ;; first field into fixed scratch so this check cannot allocate.
+      ,(if (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+           '(let* ((lock (+ (data-addr nl_gc_policy) 80))
+                   (buf (+ lock 8)) (i 0) (pages 0) (n 0))
+              (if (= (atomic-compare-exchange lock 0 1) 0) -1
+                (seq
+                 ;; "/proc/self/statm" followed by NUL padding.
+                 (ptr-write-u64 buf 0 7310238724270485551)
+                 (ptr-write-u64 buf 8 7887036000209167980)
+                 (ptr-write-u64 buf 16 0)
+                 (setq n (nl_os_read_file_cpath buf buf 24))
+                 (while (and (< i n) (>= (heap-read-u8 buf i) 48)
+                             (<= (heap-read-u8 buf i) 57))
+                   (setq pages (+ (* pages 10) (- (heap-read-u8 buf i) 48)))
+                   (setq i (+ i 1)))
+                 (ptr-write-u64 lock 0 0)
+                 (if (and (> i 0) (< i n)) (* pages 4096) 0))))
+         0))
+    (defun nl_gc_emergency_usage ()
+      (let* ((actual (nl_gc_linux_vsize))
+             (strings (data-addr nl_strings_state)))
+        (if (/= actual 0) actual
+          ;; Without procfs, use arena reservations, typed group mappings,
+          ;; and an upper estimate of string growth since the last sweep.
+          ;; Charge another 2 GiB for mappings this estimate cannot see.
+          (+ 2147483648
+             (+ (heap-read-u64 268436184 0)
+                (+ (* (heap-read-u64 (data-addr nl_typed_alloc) 64) 524288)
+                   (+ (* (heap-read-u64 strings 48) 2)
+                      (- (heap-read-u64 strings 88)
+                         (heap-read-u64 (data-addr nl_gc_policy) 64)))))))))
+    (defun nl_gc_policy_reset ()
+      (let* ((p (data-addr nl_gc_policy)))
+        (seq
+         (ptr-write-u64 p 32 (nl_gc_lisp_bytes))
+         (ptr-write-u64 p 64 (heap-read-u64 (data-addr nl_strings_state) 88))
+         ;; Start at 6 GiB under the 8 GiB process cap. If a large live
+         ;; heap remains after a sweep, pace retries by another 128 MiB.
+         (let ((next (+ (nl_gc_emergency_usage) 134217728)))
+           (ptr-write-u64 p 72 (if (< next 6442450944) 6442450944 next)))
+         0)))
+    (defun nl_gc_policy_due ()
+      (let* ((p (data-addr nl_gc_policy)) (debt (nl_gc_policy_debt))
+             (limit (nl_gc_policy_limit debt)))
+        (seq
+         (ptr-write-u64 (data-addr nl_gc_stats) 8 limit)
+         (or (> debt limit) (>= (nl_gc_emergency_usage) (heap-read-u64 p 72))))))
+    (defun nl_gc_clock_ns ()
+      ;; Linux has a raw monotonic clock. Other targets can use the same
+      ;; wall clock as float-time, written into scratch without consing.
+      (let ((now (nl_os_monotonic_ns 0)))
+        (if (> now 0) now
+          (let ((out (+ (data-addr nl_gc_policy) 88)))
+            (seq
+             (nl_os_float_time out)
+             (f64-to-i64-trunc
+              (f64-mul (bits-to-f64 (heap-read-u64 out 8))
+                       (i64-to-f64 1000000000))))))))
+    (defun nl_gc_time_finish ()
+      (let* ((p (data-addr nl_gc_policy)) (cell (heap-read-u64 p 16))
+             (start (heap-read-u64 p 48)))
+        (if (or (= cell 0) (= start 0) (/= (nl_val_tag (nl_ent_w cell 0)) 3)) 0
+          (let ((end (nl_gc_clock_ns)))
+            (if (< end start) 0
+              (let* ((total (+ (heap-read-u64 p 56) (- end start)))
+                     (box (nl_float_alloc)))
+                (seq
+                 (ptr-write-u64 p 56 total)
+                 ;; Reporting must not attempt a fallible general-heap
+                 ;; allocation while the collector is handling pressure.
+                 (if (= box 0) 0
+                   (seq
+                    (ptr-write-u64 box 0 3)
+                    (ptr-write-u64 box 8
+                                   (f64-bits (f64-div (i64-to-f64 total)
+                                                      (i64-to-f64 1000000000))))
+                    (nl_ent_set cell 0 (+ box 6)))))))))))
+
+    ;; Diagnostic switches 30/31 retain the allocation-debt and growth
+    ;; experiment from Doc 201. Boot before the Lisp cells are ready also
+    ;; keeps the old guard; ordinary user Lisp goes through nl_gc_policy_due.
     (defun nl_gc_debt_floor ()
       (if (= (heap-read-u64 (data-addr nl_gc_stats) 40) 0) 16777216
         (heap-read-u64 (data-addr nl_gc_stats) 40)))
     (defun nl_gc_debt_pct ()
       (if (= (heap-read-u64 (data-addr nl_gc_stats) 48) 0) 300
         (heap-read-u64 (data-addr nl_gc_stats) 48)))
-    ;; A collected cold image keeps less permanent garbage.  Give large
-    ;; restored heaps an allocation credit, capped by the image byte span
-    ;; beyond 96 MiB AND 1.5 live sets.  Reserving that image headroom keeps
-    ;; the old peak bound while recovering cadence without retaining garbage.
-    ;; Both uncapped 450% and credit for the whole image exceeded that bound.
-    ;; Small/source heaps and explicit diagnostic percentages stay unchanged.
-    ;; Only requested allocation and byte counts schedule GC; addresses,
-    ;; reservation size, free-list success and time are not scheduling clocks.
-    ;; gc1, trigger policy against GNU.  GNU decides in alloc.c (`garbage_collect_1',
-    ;; `consing_until_gc'): collect after `gc-cons-threshold' bytes of allocation
-    ;; (800000 by default), raised to `gc-cons-percentage' (0.1) of the live heap
-    ;; when that is larger -- so GNU collects every max(800 KB, 10 % of the heap).
-    ;; Its pdumper objects are traversed (marked) every cycle but never swept.
-    ;; Here a cycle costs a fixed image-marking term (the whole restored image is
-    ;; reachable: ~40 M Ir, 114 MB of live bytes) plus index and sweep terms
-    ;; proportional to the blocks allocated since the last cycle, so the policy is
-    ;; max(FLOOR, 300 % of the bytes the last sweep counted live -- the image
-    ;; included -- + credit): in practice ~3x the live image between cycles
-    ;; rather than GNU's 800 KB, and FLOOR (16 MiB) only matters for a small
-    ;; source-loaded heap.  Fewer, larger cycles are deliberate while marking the
-    ;; image dominates a cycle; it is left unchanged by gc1.
+    ;; Legacy raw-debt policy, used only by boot and diagnostic overrides.
     (defun nl_gc_debt_limit_for (live)
       (let* ((fl (nl_gc_debt_floor)) (eligible live)
              (pct (nl_gc_debt_pct))
@@ -11091,35 +11179,38 @@ REPL-facing module it feeds."
     ;; path from the legacy growth/reclaim path; waiting for the next sweep
     ;; would leave the old limit active for the whole probe.
     (defun nl_gc_debt_refresh_limit ()
-      (seq (ptr-write-u64 (data-addr nl_gc_stats) 8
-                          (nl_gc_debt_limit_for
-                           (heap-read-u64 (data-addr nl_gc_stats) 16)))
-           (nl_gc_budget_refill)))
+      (let* ((st (data-addr nl_gc_stats))
+             (limit (if (= (nl_gc_policy_active) 1)
+                        (nl_gc_policy_limit (nl_gc_policy_debt))
+                      (nl_gc_debt_limit_for (heap-read-u64 st 16)))))
+        (seq (ptr-write-u64 st 8 limit)
+             (nl_gc_budget_refill))))
     (defun nl_gc_debt_now ()
       ;; The bytes allocated since the last collection: the debt folded at the last refill plus
       ;; the slice spent since (the budget's base less what is left of it).
       (+ (heap-read-u64 (data-addr nl_gc_stats) 0)
          (- (heap-read-u64 (data-addr nl_gc_until_base) 0)
             (heap-read-u64 (data-addr nl_gc_until) 0))))
-    ;; The budget a poll site tests (GNU's consing_until_gc, alloc.c): negative means decide now.
-    ;; It is a slice of the headroom before a trigger can fire: the debt against its limit (64 MiB
-    ;; before the trigger arms, the poll's backstop), at most 4 MiB at a time, less one so that a
-    ;; nonnegative word proves debt < limit; -1 when the force hook is set or the reservation has
-    ;; reached the mid-form trigger.  The debt is folded into nl_gc_stats+0 here.
+    ;; Allocation spends a short physical slice and a negative balance
+    ;; wakes the next poll. Keep no more than 4 MiB between pressure checks.
+    ;; Before the Lisp policy starts, keep the legacy 64 MiB backstop.
     (defun nl_gc_budget_refill ()
       (let* ((st (data-addr nl_gc_stats))
              (debt (nl_gc_debt_now))
-             (rem (if (< (heap-read-u64 st 24) 2)
+             (rem (if (= (nl_gc_policy_active) 1)
+                      (+ 1 (- (heap-read-u64 st 8) (nl_gc_policy_debt)))
+                    (if (< (heap-read-u64 st 24) 2)
                       (- 67108864 debt)
                     (if (= (heap-read-u64 st 8) 0) 4194304
-                      (- (heap-read-u64 st 8) debt))))
+                      (- (heap-read-u64 st 8) debt)))))
              (u (if (< rem 4194304) rem 4194304))
              (until (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1) -1
                       ;; Batch F's countdown (debug switch 32): a mode above 1 collects
                       ;; at every poll, so the budget stays negative while it counts.
                       (if (> (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1) -1
                       (if (<= u 0) -1
-                        (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
+                        (if (and (= (nl_gc_policy_active) 0)
+                                 (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1))
                             (if (>= (heap-read-u64 268436184 0)
                                     (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
                                 -1 (- u 1))
@@ -11142,7 +11233,10 @@ REPL-facing module it feeds."
     (defun nl_gc_debt_rearm_for (live)
       (seq
        (ptr-write-u64 268435576 0 live)
-       (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_debt_limit_for live))
+       (if (= (nl_gc_policy_active) 1)
+           (seq (nl_gc_policy_reset)
+                (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_policy_limit 0)))
+         (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_debt_limit_for live)))
        (ptr-write-u64 (data-addr nl_gc_stats) 32
                       (+ (heap-read-u64 (data-addr nl_gc_stats) 32) (nl_gc_debt_now)))
        (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
@@ -11160,7 +11254,8 @@ REPL-facing module it feeds."
          (if (= gobj 0) 0
            (let* ((gcell (+ (- gobj 6) 16)) (gw (heap-read-u64 gcell 0)))
              (if (= (logand gw 3) 1) (ptr-write-u64 gcell 0 (+ gw 4)) 0))))
-       (nl_gc_debt_rearm_for (heap-read-u64 (data-addr nl_gc_stats) 16))))
+       (nl_gc_debt_rearm_for (heap-read-u64 (data-addr nl_gc_stats) 16))
+       (nl_gc_time_finish)))
     ;; 1 when the debt trigger is armed and the debt has reached it.
     (defun nl_gc_debt_due ()
       (if (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2) 1 0) 0
@@ -11168,11 +11263,18 @@ REPL-facing module it feeds."
         (if (< (nl_gc_debt_now)
                (heap-read-u64 (data-addr nl_gc_stats) 8))
             0 1))))
-    ;; The form-boundary test: growth watermark (unchanged) OR debt.
+    ;; Ordinary safepoints share one budget. The allocation fast paths
+    ;; spend physical bytes to wake the poll no later than the logical debt
+    ;; can cross its limit, and cap the sleep at 4 MiB for pressure checks.
+    (defun nl_gc_policy_poll ()
+      (if (>= (heap-read-u64 (data-addr nl_gc_until) 0) 0) 0
+        (if (= (nl_gc_policy_due) 1) 1
+          (seq (nl_gc_budget_refill) 0))))
     (defun nl_gc_boundary_due ()
-      (if (< (heap-read-u64 268436184 0) (heap-read-u64 268435560 0))
-          (nl_gc_debt_due)
-        1))
+      (if (= (nl_gc_policy_active) 1)
+          (nl_gc_policy_poll)
+        (if (< (heap-read-u64 268436184 0) (heap-read-u64 268435560 0))
+            (nl_gc_debt_due) 1)))
     ;; One-pass sweep.  The collector used to walk every chunk three times:
     ;; a per-block sweep freed each dead block onto the free lists, the
     ;; coalesce walk merged runs of free blocks, and the relink walk cleared
@@ -13325,18 +13427,7 @@ REPL-facing module it feeds."
            (nl_seq2
             (nl_gc_collect_recorded_mark_sweep mode)
             (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0))))))
-    ;; Gated mid-form collect (called from nl_sf_while's backedge).  BSS leaves
-    ;; enable (ctx+8) OFF during boot; the reader driver turns it ON immediately
-    ;; after freezing the boot watermark.  Alloc-debt gate: fire when currently
-    ;; reserved chunk bytes
-    ;; (268436184 -- also used by boundary GC; chunk-0's bump cursor caps at
-    ;; the first chunk and is useless here) crosses ctx+40.  Stage 4c subtracts
-    ;; successful unmaps before this helper re-arms at reserved+16 MiB.  Since
-    ;; normal growth chunks are 64 MiB, the next growth event crosses that
-    ;; watermark immediately: collection already runs at the earliest point
-    ;; the former current chunk can become releasable.  Bump ctx+32 for each
-    ;; fire.  MIDFORM uses recorded frames plus the conservative scan (mode 0),
-    ;; never compaction.
+    ;; Mid-form collections use recorded frames and the conservative scan.
     (defun nl_gc_midform_collect_now ()
       (let ((before (ptr-read-u64 (data-addr nl_gc_stats) 24)))
         (seq
@@ -13356,23 +13447,18 @@ REPL-facing module it feeds."
          (nl_gc_growth_rearm)
          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                         (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
-    ;; The debt half of a poll site's gate.  Armed (two collections after boot)
-    ;; it is the trigger itself; before that it is the 64 MiB backstop that
-    ;; `nl_gc_vm_poll' applies.  The `while' back edge and the native poll
-    ;; lacked the backstop, so a program that is one long top-level form never
-    ;; armed the trigger: mapped string and vector data is not part of the
-    ;; reservation test above, and the loop allocated to the address-space cap.
     (defun nl_gc_debt_gate_due ()
       (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
           (if (< (nl_gc_debt_now) 67108864) 0 1)
         (nl_gc_debt_due)))
+    (defun nl_gc_midform_due ()
+      (if (= (nl_gc_policy_active) 1)
+          (nl_gc_policy_poll)
+        (if (< (heap-read-u64 268436184 0) (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
+            (nl_gc_debt_gate_due) 1)))
     (defun nl_gc_midform_collect ()
       (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-          (if (if (< (heap-read-u64 268436184 0)
-                     (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
-                  (if (= (nl_gc_debt_gate_due) 0) 1 0) 0)
-              0
-            (nl_gc_midform_collect_now))
+          (if (= (nl_gc_midform_due) 1) (nl_gc_midform_collect_now) 0)
         0))
 
     ;; Doc 223 "Bytecode VM safepoints".  GNU's maybe_gc for the bytecode
@@ -13396,35 +13482,19 @@ REPL-facing module it feeds."
     ;;      collector never moves objects, but a swept block is reused.
     ;; The gate also refuses while the collector runs and parks parallel
     ;; workers around a collection, so a worker thread needs no extra check.
-    ;; Backstop: the typed blocks (cons, symbol, vector) are mapped outside the
-    ;; arena chunks, so before the debt trigger arms (two collections after
-    ;; boot) a loop that allocates only typed cells never crosses the growth
-    ;; watermark and nothing would collect it.  Until then one chunk (64 MiB)
-    ;; of debt opens the gate, as a mapped chunk would; once armed the debt
-    ;; trigger counts typed bytes itself.  Debug switch 70 sets
-    ;; `nl_vm_poll_force': every poll then collects (the trigger is zeroed
-    ;; before the gate), 71 clears it, 72 answers the number of mid-form
-    ;; collections so far.
-    ;; Merged from F's poll (GNU bytecode.c maybe_gc at Bcall and every 256th
-    ;; backward branch, F's f2d6a2492): `(nelisp--debug-switch 32 [N])' sets the
-    ;; interpreter's mid-form gate word (ctx+8) above 1, so the next N polls (all
-    ;; of them without N) collect unconditionally and the poll that spends the
-    ;; last one re-arms the normal mode.  Below that the poll is gc-port's.
+    ;; Debug switches 32 and 70 force polls to collect. This bypasses
+    ;; the user budget deliberately, as explicit garbage-collect does.
     (defun nl_gc_vm_poll ()
       (let ((mode (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8)))
         (if (> mode 1)
             (seq (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8
                                 (if (= mode 2) 1 (- mode 1)))
                  (nl_gc_midform_collect_now))
-          (seq (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1)
-                   (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0)
-                 (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
-                     (if (< (nl_gc_debt_now) 67108864) 0
-                       (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0))
-                   0))
-               (nl_gc_midform_collect)
-               (nl_gc_budget_refill)
-               0))))
+          (if (and (= mode 1) (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1))
+              (nl_gc_midform_collect_now)
+            (seq (nl_gc_midform_collect)
+                 (if (= (nl_gc_policy_active) 0) (nl_gc_budget_refill) 0)))))
+      0)
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
     ;; the reservation it was armed from, so `nelisp--gc-pressure' can report
@@ -17029,6 +17099,13 @@ list groups retain the original leaves/default exactly."
     ;; it reads collector state with no Lisp form.
     ;; Doc 215 builtin word ABI: bf_gc_pressure_w returns the result WORD (0 = signal stashed).
     (defun bf_gc_pressure_w (_pad)
+      (if (= (nl_gc_policy_active) 1)
+          (let* ((p (data-addr nl_gc_policy)) (debt (nl_gc_policy_debt)))
+            (wf_write_int_w
+             0 (if (>= (nl_gc_emergency_usage) (heap-read-u64 p 72)) 100
+                 (/ (* debt 100) (nl_gc_policy_limit debt)))))
+        (bf_gc_pressure_legacy_w)))
+    (defun bf_gc_pressure_legacy_w ()
       (let* ((st (data-addr nl_gc_stats))
              (lim (heap-read-u64 st 8))
              (debt (if (if (< (heap-read-u64 st 24) 2) 1 (if (= lim 0) 1 0))
@@ -17551,8 +17628,11 @@ list groups retain the original leaves/default exactly."
     ;; Doc 215 builtin word ABI: nl_bignum_write_w returns the result WORD (0 = signal stashed); nl_bignum_write keeps the (rc, OUT) ABI.
     (defun nl_bignum_write_w (sign limb_ptr limb_count _pad)
       ;; Doc 216 S5: the Bignum object [header | limbs], answered as its WORD.
-      (let* ((box (alloc-bytes (+ 8 (logand (+ (* limb_count 4) 7) -8)) 8)) (i 0))
-        (seq (ptr-write-u64 box 0 (+ 13 (+ (* sign 64) (* limb_count 256))))
+      (let* ((limb-bytes (logand (+ (* limb_count 4) 7) -8))
+             (box (alloc-bytes (+ 8 limb-bytes) 8)) (i 0)
+             (p (data-addr nl_gc_policy)))
+        (seq (ptr-write-u64 p 40 (+ (heap-read-u64 p 40) (+ 16 limb-bytes)))
+             (ptr-write-u64 box 0 (+ 13 (+ (* sign 64) (* limb_count 256))))
              (while (< i limb_count)
                (seq (ptr-write-u32 box (+ 8 (* i 4)) (heap-read-u32 limb_ptr (* i 4)))
                     (setq i (+ i 1))))
@@ -24832,9 +24912,7 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= cached 1) 1 (nl_native_poll_gc_due_v2))))
     (defun nl_native_poll_gc_due_v2 ()
       (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-          (if (< (heap-read-u64 268436184 0)
-                 (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
-              (nl_gc_debt_gate_due) 1) 0))
+          (nl_gc_midform_due) 0))
     (defun nl_native_funcall_v2 (env ticket f a n r)
       (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
              (top (atomic-fetch-add (+ (data-addr nl_root_pin_control) 24) 0))
@@ -36821,9 +36899,9 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (= n 0) (+ (nl_alloc_vector 0) 6)
             (if (/= (logand init 7) 0)
                 ;; GNU make_vector: allocate the block, then fill it with INIT.
-                (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)) (k 0) (lim (- n 1)))
-                  (seq (ptr-write-u64 box 0 (+ 8 (* n 256)))
-                       (while (< k lim)
+                (let* ((box (nl_alloc_vector_uninit n)) (k 0) (lim (- n 1)))
+                  (seq
+                   (while (< k lim)
                          (seq (ptr-write-u64 box (+ 8 (* k 8)) init)
                               (ptr-write-u64 box (+ 16 (* k 8)) init)
                               (setq k (+ k 2))))
@@ -36857,9 +36935,9 @@ bytes are written into a fresh 8-byte buffer instead."
                (seq (if (= (logand (nl_cons_car_word node) 7) 0) (setq ok 0) 0)
                     (setq node (nl_cons_cdr_ptr node))))
              (if (= ok 1)
-                 (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)) (k 0) (cell args))
-                   (seq (ptr-write-u64 box 0 (+ 8 (* n 256)))
-                        (while (< k n)
+                 (let* ((box (nl_alloc_vector_uninit n)) (k 0) (cell args))
+                   (seq
+                    (while (< k n)
                           (seq (ptr-write-u64 box (+ 8 (* k 8)) (nl_cons_car_word cell))
                                (setq cell (nl_cons_cdr_ptr cell))
                                (setq k (+ k 1))))
@@ -39844,26 +39922,41 @@ bytes are written into a fresh 8-byte buffer instead."
                               (nl_ent_set obj 0 (if (= (nl_val_tag v) 0) 3 7))))
                         0)
                       1))))))
-    ;; GNU `gcs-done' (DEFVAR_INT, alloc.c): collections completed so far.  The
-    ;; symbol is a forwarded integer like `max-lisp-eval-depth', so a Lisp
-    ;; `setq' of a non-integer is refused as in GNU.  Its object word is cached in
-    ;; the private `nl_gc_done_cell' slot (zero-fresh on every start; this
-    ;; init runs on every boot, after a cold image restore too), and
-    ;; `nl_gc_debt_rearm' bumps the value cell inline at the end of each completed
-    ;; collection (inline and on an exported data symbol, because that function
-    ;; is part of the reloadable runtime source and may import nothing new).
-    ;; Symbol cells never move, so the cached object stays valid.
-    (defun nl_gcs_done_init (env)
-      (let* ((bytes (alloc-bytes 8 1)) (name (alloc-bytes 32 8)))
+    ;; Install the Lisp-visible collector cells before any prelude or user
+    ;; Lisp runs. Retain the policy values in a restored image, but reset
+    ;; the process counters even when loading a previously used heap.
+    (defun nl_gc_install_variable (env bytes len kind value reset)
+      (let* ((name (alloc-bytes 32 8)))
+        (seq
+         (nl_alloc_symbol bytes len name)
+         (let ((obj (nl_pa_entry env name)))
+           (seq
+            (nl_ent_set obj 6 (nl_imm_int 64))
+            (nl_ent_set obj 7 (nl_imm_int kind))
+            (if (or (= reset 1) (= (wf_bytecode_w_unbound_p env (nl_ent_w obj 0)) 1))
+                (nl_ent_set obj 0 value) 0)
+            obj)))))
+    (defun nl_gc_vars_init (env)
+      (let ((bytes (alloc-bytes 24 1)) (p (data-addr nl_gc_policy)))
         (seq
          (ptr-write-u64 bytes 0 7308901721318843239)
-         (nl_alloc_symbol bytes 8 name)
-         (let* ((obj (nl_pa_entry env name)))
-           (if (or (= obj 0) (< (nl_ent_n obj) 9)) 0
-             (seq (nl_ent_set obj 7 (nl_imm_int 1))
-                  (nl_ent_set obj 0 (nl_imm_int (heap-read-u64 (data-addr nl_gc_stats) 24)))
-                  (ptr-write-u64 (data-addr nl_gc_done_cell) 0 obj)
-                  1))))))
+         (ptr-write-u64 (data-addr nl_gc_done_cell) 0
+                        (nl_gc_install_variable env bytes 8 1 (nl_imm_int 0) 1))
+         (ptr-write-u64 bytes 0 3275082778712826727)
+         (ptr-write-u64 bytes 8 7813578723343624308)
+         (ptr-write-u64 bytes 16 100)
+         (ptr-write-u64 p 0
+                        (nl_gc_install_variable env bytes 17 1 (nl_imm_int 800000) 0))
+         (ptr-write-u64 bytes 0 3275082778712826727)
+         (ptr-write-u64 bytes 8 7022359100716639600)
+         (ptr-write-u64 bytes 16 25959)
+         (ptr-write-u64 p 8
+                        (nl_gc_install_variable env bytes 18 3 (nl_float_object 4607182418800017408) 0))
+         (ptr-write-u64 bytes 0 8318255629935141735)
+         (ptr-write-u64 bytes 8 25701)
+         (ptr-write-u64 p 16
+                        (nl_gc_install_variable env bytes 10 3 (nl_float_object 0) 1))
+         0)))
     (defun nl_sym_fwd_init (env)
       (let* ((bytes (alloc-bytes 24 1)))
         (seq
@@ -39875,7 +39968,7 @@ bytes are written into a fresh 8-byte buffer instead."
          (ptr-write-u64 bytes 8 8603403804415648099)
          (ptr-write-u64 bytes 16 495622973804)
          (nl_sym_fwd_mark env bytes 21 2)
-         (nl_gcs_done_init env)
+         (nl_gc_vars_init env)
          0)))
     ;; 1 when SYM names a FORWARDED symbol (an object with a descriptor).
     ;; 1 when SYM is FORWARDED (redirect 3); a forwarded variable made
@@ -40174,20 +40267,12 @@ bytes are written into a fresh 8-byte buffer instead."
                (seq
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
                 (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym eager)))
-                  ;; GC trigger must compare TOTAL allocated bytes across all
-                  ;; chunks (268436184 = chunk-bytes-reserved running counter),
-                  ;; not the chunk-0 bump offset (268435456) — after Doc 140's
-                  ;; chunk-growth refactor the chunk-0 bump caps at the 256 MiB
-                  ;; first chunk and never reaches the 512 MiB trigger, so the
-                  ;; tracing GC never fired and the arena grew unbounded.
                   ;; A form that signalled used to be stepped over: `rc' was
                   ;; bound here and never read, so `load' ran the rest of the
                   ;; file and reported success.  A library whose host requires
                   ;; had all failed still came back loaded, `featurep' t, its
                   ;; functions half-defined.  `bf_load' already tests this loop
                   ;; for 2: the receiving end was written and nothing sent it.
-                  ;; Doc 201 §6.14 follow-up: `nl_gc_boundary_due' is that same
-                  ;; reserved-vs-trigger test OR the allocation debt.
                   (if (= rc 0)
                       (if (= (nl_gc_boundary_due) 0)
                           0
@@ -40220,11 +40305,7 @@ bytes are written into a fresh 8-byte buffer instead."
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
                 (let* ((rc (nl_driver_eval_with_recorded_roots result env out pool src cursor bsym 0)))
                   (if (= rc 0)
-                      ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
-                      ;; not the chunk-0 bump offset (268435456).  See the note
-                      ;; in `bf_load_eval_loop'.
-                      (if (< (heap-read-u64 268436184 0)
-                             (heap-read-u64 268435560 0))
+                      (if (= (nl_gc_boundary_due) 0)
                           0
                         (let* ((live (nl_gc_collect_form_boundary env result out pool src cursor bsym))
                                (bump (heap-read-u64 268436184 0))
@@ -40373,9 +40454,7 @@ bytes are written into a fresh 8-byte buffer instead."
                (if (= (nl_driver_eval_word_with_recorded_roots
                         form env result out pool src cursor bsym state compiled) 0)
                    (setq more 2)
-                 ;; Use the same growth guard for both input encodings.
-                 ;; Allocation safepoints continue to service GC debt.
-                 (if (< (heap-read-u64 268436184 0) (heap-read-u64 268435560 0))
+                 (if (= (nl_gc_boundary_due) 0)
                      0
                    (let* ((live (nl_gc_collect_form_boundary env result out pool src cursor bsym))
                           (bump (heap-read-u64 268436184 0))
@@ -54435,9 +54514,6 @@ no-catch tail above, not this defensive path."
                                    (nl_eval_source_report_error file_ptr file_len form_index this_start line_no)
                                  (nl_eval_source_print_error file_ptr file_len form_index this_start line_no))))))
                        (nl_boundary_maybe_reclaim mark_chunk mark_cursor epoch0 out)
-                       ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
-                       ;; not the chunk-0 bump offset, OR on the allocation
-                       ;; debt (Doc 201 §6.14 follow-up).  See `bf_load_eval_loop'.
                        (if (= (nl_gc_boundary_due) 0)
                            0
                          (let* ((live (nl_gc_collect_form_boundary ctx result out pool src cursor builtin_sym))
@@ -62953,8 +63029,9 @@ correctly."
         ;; (SIGKILL) in BOTH cold and normal -- a pre-existing single-form limit
         ;; (no mid-form collection for one deeply-recursive top-level form), not
         ;; a cold-load regression.
-        ;; Final boot boundary: discard debt accumulated while installing
-        ;; the driver itself; user forms start with an unarmed budget.
+        ;; Final boot boundary: install the policy after startup scratch and
+        ;; cold reinitialization. A sweep replaces the initial image-size
+        ;; estimate with the measured live heap.
         ;; cold boot: re-derive the environment-dependent prelude globals
         ;; the image froze (see `nelisp-standalone--cold-boot-reinit-source').
         (if (< _cl 0) 0
@@ -62973,6 +63050,14 @@ correctly."
         (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
         (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
         (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+        (let ((end (heap-read-u64 (data-addr nl_gc_stats) 56)))
+          (if (> end (heap-read-u64 268435568 0))
+              (ptr-write-u64 (data-addr nl_gc_stats) 16
+                             (- end (heap-read-u64 268435568 0)))
+            0))
+        (ptr-write-u64 (data-addr nl_gc_policy) 24 1)
+        (nl_gc_policy_reset)
+        (ptr-write-u64 (data-addr nl_gc_stats) 8 (nl_gc_policy_limit 0))
         (nl_gc_budget_refill)
         (if (= argv_shifted_p 1)
             (seq
@@ -70490,9 +70575,9 @@ two flag bits 20 and 21."
                       ;; GNU make_vector: allocate the block, then fill it with INIT, as `bf_make_vector_w' does
                       ;; for a WORD that is no legacy view (648 Ir for 16 slots on gc-port's tip; the 32-byte
                       ;; view and the recursive fill below cost 2,342 on the m9 stage).
-                      (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)) (k 0) (lim (- n 1)))
-                        (seq (ptr-write-u64 box 0 (+ 8 (* n 256)))
-                             (while (< k lim)
+                      (let* ((box (nl_alloc_vector_uninit n)) (k 0) (lim (- n 1)))
+                        (seq
+                         (while (< k lim)
                                (seq (ptr-write-u64 box (+ 8 (* k 8)) b)
                                     (ptr-write-u64 box (+ 16 (* k 8)) b)
                                     (setq k (+ k 2))))
