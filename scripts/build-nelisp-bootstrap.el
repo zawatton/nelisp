@@ -1726,6 +1726,14 @@ context method because the runtime lacks window-system specialization."
           (insert (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))"
                           (expand-file-name file)))
           (insert "\n;;; >>> " rel "\n")
+          ;; A GNU vendor file sees what GNU `load' gives it (lread.c Fload):
+          ;; `load-file-name' is the file while its forms run, and
+          ;; `do-after-load-evaluation' runs once it is done, after
+          ;; `load-file-name' is restored.  custom-initialize-after-file-load
+          ;; (global minor modes such as minibuffer-regexp-mode) relies on
+          ;; both.  Package files keep the bundle contract (nil).
+          (when (nelisp-bootstrap--gnu-vendor-file-p file)
+            (insert (format "\n(setq load-file-name %S)\n" (expand-file-name file))))
           (nelisp-bootstrap--insert-bundle-file-body file rel)
           (dolist (feature (nelisp-bootstrap--file-features file))
             (insert "\n(provide '")
@@ -1733,6 +1741,10 @@ context method because the runtime lacks window-system specialization."
             (insert ")\n"))
           (dolist (form (nelisp-bootstrap--emit-post-file-bundle-forms file))
             (insert form))
+          (when (nelisp-bootstrap--gnu-vendor-file-p file)
+            (insert "\n(setq load-file-name nil)\n")
+            (insert (format "(if (fboundp 'do-after-load-evaluation) (do-after-load-evaluation %S))\n"
+                            (expand-file-name file))))
           (insert "\n;;; <<< " rel "\n")))
       (insert "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n")
       (nelisp-bootstrap--validate-provider-bundle-buffer
@@ -1744,6 +1756,11 @@ context method because the runtime lacks window-system specialization."
        output provider provider-offset
        '("runtime-load-path-prologue" "feature-registry-prologue"
          "lisp/nelisp-stdlib-regexp.el" "host-discovered-package-files")))))
+
+(defun nelisp-bootstrap--gnu-vendor-file-p (file)
+  "Return non-nil when FILE is a GNU Emacs file under the vendor tree."
+  (string-prefix-p (file-name-as-directory (nelisp-bootstrap--vendor-dir))
+                   (expand-file-name file)))
 
 (defun nelisp-bootstrap--read-forms-from-file (file)
   "Return top-level forms read from FILE."
