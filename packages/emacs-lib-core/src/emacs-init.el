@@ -24,9 +24,11 @@
 ;; Keep host Emacs untouched; standalone derives the vendor root from this
 ;; file when callers do not seed it explicitly.
 (defconst emacs-init--vendor-load-path-subdirs
-  '("" "emacs-lisp" "international" "textmodes" "progmodes"
-    "net" "url" "vc" "calc" "calendar" "eshell" "mail"
-    "cedet" "leim" "term" "erc" "org" "gnus")
+  ;; GNU 31.1 lisp/subdirs.el, in its order.
+  '("" "vc" "use-package" "url" "textmodes" "progmodes" "play" "org" "nxml"
+    "net" "mh-e" "mail" "leim" "language" "international" "image" "gnus"
+    "eshell" "erc" "emulation" "emacs-lisp" "cedet" "calendar" "calc"
+    "obsolete")
   "Standard vendor `lisp/' subdirectories appended to `load-path'.")
 
 (defun emacs-init--standalone-runtime-p ()

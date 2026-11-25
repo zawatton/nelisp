@@ -820,24 +820,31 @@ bundled source that may evaluate a declaration."
 These files must not run during the self-healing replay phase itself.")
 
 (defconst nelisp-bootstrap-vendor-load-path-subdirs
+  ;; GNU 31.1 lisp/subdirs.el order (normal-top-level-add-to-load-path);
+  ;; cedet is not vendored.
   '("vendor/emacs-lisp"
-    "vendor/emacs-lisp/emacs-lisp"
-    "vendor/emacs-lisp/international"
+    "vendor/emacs-lisp/vc"
+    "vendor/emacs-lisp/use-package"
+    "vendor/emacs-lisp/url"
     "vendor/emacs-lisp/textmodes"
     "vendor/emacs-lisp/progmodes"
-    "vendor/emacs-lisp/net"
-    "vendor/emacs-lisp/url"
-    "vendor/emacs-lisp/vc"
-    "vendor/emacs-lisp/calc"
-    "vendor/emacs-lisp/calendar"
-    "vendor/emacs-lisp/eshell"
-    "vendor/emacs-lisp/emulation"
-    "vendor/emacs-lisp/mail"
-    "vendor/emacs-lisp/cedet"
-    "vendor/emacs-lisp/leim"
-    "vendor/emacs-lisp/erc"
+    "vendor/emacs-lisp/play"
     "vendor/emacs-lisp/org"
+    "vendor/emacs-lisp/nxml"
+    "vendor/emacs-lisp/net"
+    "vendor/emacs-lisp/mh-e"
+    "vendor/emacs-lisp/mail"
+    "vendor/emacs-lisp/leim"
+    "vendor/emacs-lisp/language"
+    "vendor/emacs-lisp/international"
+    "vendor/emacs-lisp/image"
     "vendor/emacs-lisp/gnus"
+    "vendor/emacs-lisp/eshell"
+    "vendor/emacs-lisp/erc"
+    "vendor/emacs-lisp/emulation"
+    "vendor/emacs-lisp/emacs-lisp"
+    "vendor/emacs-lisp/calendar"
+    "vendor/emacs-lisp/calc"
     "vendor/emacs-lisp/obsolete")
   "Vendor directories that should be present on standalone `load-path'.")
 
@@ -1518,7 +1525,16 @@ overrides them for workflow tests."
       (unless (boundp 'load-path)
         (defvar load-path nil))
       (setq nelisp-emacs-vendor-root ,vendor-root)
-      (setq load-path (append ',load-paths load-path)))))
+      ;; Re-seeded after nemacs-main.el; drop earlier copies so each
+      ;; directory occurs once, as on GNU's load-path.
+      (setq load-path
+            (append ',load-paths
+                    (let ((tail load-path) (kept nil))
+                      (while tail
+                        (unless (member (car tail) ',load-paths)
+                          (setq kept (cons (car tail) kept)))
+                        (setq tail (cdr tail)))
+                      (nreverse kept)))))))
 
 (defun nelisp-bootstrap--emit-post-file-bundle-forms (file)
   "Return extra bundle forms that should follow FILE."
