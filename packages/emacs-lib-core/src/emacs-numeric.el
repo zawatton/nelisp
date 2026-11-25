@@ -40,27 +40,6 @@
 
 ;;;; --- numeric primitives ----------------------------------------------
 
-(unless (fboundp 'min)
-  (defun min (&rest numbers)
-    (let ((acc (car numbers)))
-      (setq numbers (cdr numbers))
-      (while numbers
-        (when (< (car numbers) acc) (setq acc (car numbers)))
-        (setq numbers (cdr numbers)))
-      acc)))
-
-(unless (fboundp 'max)
-  (defun max (&rest numbers)
-    (let ((acc (car numbers)))
-      (setq numbers (cdr numbers))
-      (while numbers
-        (when (> (car numbers) acc) (setq acc (car numbers)))
-        (setq numbers (cdr numbers)))
-      acc)))
-
-(unless (fboundp 'abs)
-  (defun abs (n) (if (< n 0) (- n) n)))
-
 (unless (fboundp 'zerop)
   (defun zerop (n) (= n 0)))
 
@@ -76,15 +55,6 @@
 (unless (fboundp 'evenp)
   (defun evenp (n) (= 0 (mod n 2))))
 
-(unless (fboundp 'natnump)
-  (defun natnump (n) (and (integerp n) (>= n 0))))
-
-(unless (fboundp '1+)
-  (defun 1+ (n) (+ n 1)))
-
-(unless (fboundp '1-)
-  (defun 1- (n) (- n 1)))
-
 (unless (fboundp '%)
   (defun % (dividend divisor)
     "Polyfill: return the integer remainder of DIVIDEND divided by DIVISOR.
@@ -94,45 +64,6 @@ whose sign follows DIVISOR."
 
 ;;;; --- bitwise ops -----------------------------------------------------
 ;; See file commentary for the approximation caveats.
-
-(unless (fboundp 'logior)
-  (defun logior (&rest ints)
-    "Polyfill: bitwise OR of all INTS.
-Approximation = additive proxy with already-set bit removal; correct
-when args share no bit overlap (= the bytecomp/subr load path)."
-    (let ((acc 0))
-      (while ints
-        (setq acc (+ acc (- (car ints) (logand acc (car ints)))))
-        (setq ints (cdr ints)))
-      acc)))
-
-(unless (fboundp 'logand)
-  (defun logand (&rest ints)
-    "Polyfill: bitwise AND of all INTS.
-Approximation = `min' lower bound; correct only for non-overlapping
-flags."
-    (if (null ints)
-        -1
-      (let ((acc (car ints)))
-        (setq ints (cdr ints))
-        (while ints
-          (setq acc (min acc (car ints)))
-          (setq ints (cdr ints)))
-        acc))))
-
-(unless (fboundp 'logxor)
-  (defun logxor (&rest ints)
-    "Polyfill: bitwise XOR using `+' as a non-overlap proxy."
-    (let ((acc 0))
-      (while ints
-        (setq acc (+ acc (car ints)))
-        (setq ints (cdr ints)))
-      acc)))
-
-(unless (fboundp 'lognot)
-  (defun lognot (int)
-    "Polyfill: bitwise NOT (= arithmetic two's-complement)."
-    (- (- int) 1)))
 
 (unless (fboundp 'ash)
   (defun ash (value count)
@@ -489,21 +420,6 @@ same value and rounding as negating it first, without a negation call."
   (defun cos (arg)
     "Return the cosine of ARG (radians).  Pure-Elisp fallback."
     (emacs-numeric--trig arg t)))
-
-(unless (fboundp '/=)
-  (defun /= (a b) (not (= a b))))
-(unless (fboundp 'float)
-  (defun float (x) (if (integerp x) (* x 1.0) x)))
-(unless (fboundp 'floor)
-  (defun floor (x &optional divisor) (truncate (if divisor (/ x divisor) x))))
-(unless (fboundp 'ceiling)
-  (defun ceiling (x &optional divisor)
-    (let* ((v (if divisor (/ x divisor) x)) (tv (truncate v)))
-      (if (= v tv) tv (+ tv 1)))))
-(unless (fboundp 'round)
-  (defun round (x &optional divisor)
-    (let ((v (if divisor (/ x divisor) x)))
-      (truncate (+ v (if (< v 0) -0.5 0.5))))))
 
 (defvar emacs-numeric--random-state 2463534242
   "Internal LCG state for the standalone `random' polyfill.")

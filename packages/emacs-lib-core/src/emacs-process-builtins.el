@@ -261,9 +261,6 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
 (when (emacs-process-builtins--install-function-p 'process-command)
   (defalias 'process-command #'emacs-process-process-command))
 
-(when (emacs-process-builtins--install-function-p 'process-live-p)
-  (defalias 'process-live-p #'emacs-process-process-live-p))
-
 (when (emacs-process-builtins--install-function-p 'process-id)
   (defalias 'process-id #'emacs-process-process-id))
 

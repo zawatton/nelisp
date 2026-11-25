@@ -236,16 +236,6 @@ CHECK-TIMERS is accepted; this implementation examines the Lisp input queues."
           (put symbol 'event-symbol-elements elements)
           elements)))))
 
-(unless (fboundp 'local-variable-if-set-p)
-  (defun local-variable-if-set-p (variable &optional buffer)
-    "Return non-nil if VARIABLE is local or automatically local in BUFFER."
-    (unless (symbolp variable)
-      (signal 'wrong-type-argument (list 'symbolp variable)))
-    (setq variable (indirect-variable variable))
-    (or (local-variable-p variable buffer)
-        (and (boundp 'emacs-buffer--variable-buffer-local)
-             (memq variable emacs-buffer--variable-buffer-local) t))))
-
 ;; Labeled restrictions need the narrowing engine to enforce their bounds
 ;; during ordinary `widen', `narrow-to-region' and `save-restriction'.
 ;; Those owners are outside this unit, so their existing entry points remain.

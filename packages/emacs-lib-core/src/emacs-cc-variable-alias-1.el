@@ -3,31 +3,6 @@
 (defvar nelisp--defvaralias-notifications (make-hash-table :test 'eq)
   "Alias/base names mapped to their canonical copied-cell variable.")
 
-(unless (fboundp 'indirect-variable)
-  (defun indirect-variable (object)
-    "Follow OBJECT's variable alias chain, preserving non-symbols."
-    (let ((seen nil) next)
-      (while (and (symbolp object)
-                  (boundp 'nelisp--defvaralias-registry)
-                  (setq next (assq object nelisp--defvaralias-registry)))
-        (when (memq object seen)
-          (signal 'cyclic-variable-indirection (list object)))
-        (setq seen (cons object seen) object (cdr next)))
-      object)))
-
-(unless (fboundp 'internal-delete-indirect-variable)
-  (defun internal-delete-indirect-variable (symbol)
-    "Remove SYMBOL's alias registration and unbind it."
-    (unless (symbolp symbol)
-      (signal 'wrong-type-argument (list 'symbolp symbol)))
-    (when (boundp 'nelisp--defvaralias-registry)
-      (setq nelisp--defvaralias-registry
-            (assq-delete-all symbol nelisp--defvaralias-registry))
-      (when (fboundp 'nelisp--alias-rebuild-reverse)
-        (nelisp--alias-rebuild-reverse)))
-    (makunbound symbol)
-    symbol))
-
 ;; The standalone evaluator stores variable aliases as copied values.  Keep
 ;; that bootstrap representation coherent while forwarding Lisp accessors to
 ;; the registered canonical variable.  Native special-form dispatch defers

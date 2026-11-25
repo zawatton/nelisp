@@ -1,4 +1,4 @@
-;;; emacs-cc-casetab-1.el --- casetab.c primitives -*- lexical-binding: t; -*-
+;;; nelisp-stdlib-casetab.el --- casetab.c primitives -*- lexical-binding: t; -*-
 
 ;; GNU Emacs 31.1: src/casetab.c:35-169,177-240,248-285.
 ;; The native char-table substrate owns representation and slot access.
@@ -288,10 +288,7 @@ equivalence tables in extra slots 0, 1 and 2.  Missing tables are derived."
 (defun nelisp-casetab--copy-char-table (table)
   "Copy TABLE's local contents, default, parent and all extra slots.
 This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
-  ;; The broad foundation predicate also recognizes native char-tables.
-  ;; Keep native objects on the native operations throughout this copy.
-  (if (and (nelisp-casetab--sparse-table-p table)
-           (not (funcall nelisp-casetab--native-p table)))
+  (if (nelisp-casetab--sparse-table-p table)
       (emacs-char-table-copy table)
     (let* ((parent (funcall nelisp-casetab--native-parent table))
            (default (funcall nelisp-casetab--native-range table nil))
@@ -337,5 +334,5 @@ This adapts chartab.c:copy_char_table until the core owns a Lisp clone."
   "The epoch-aware `set-case-table' function object.")
 (setq nelisp-casetab--epoch-owner (symbol-function 'set-case-table))
 
-(provide 'emacs-cc-casetab-1)
-;;; emacs-cc-casetab-1.el ends here
+(provide 'nelisp-stdlib-casetab)
+;;; nelisp-stdlib-casetab.el ends here

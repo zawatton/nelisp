@@ -18,16 +18,6 @@
         (when (not (memq nil values)) (nreverse values)))
     (error nil)))
 
-(unless (fboundp 'garbage-collect-heapsize)
-  (defun garbage-collect-heapsize ()
-    "Return a list with info on amount of space in use."
-    ;; The seed's statistics are fixed placeholders, not collector output.
-    ;; Querying them need not force a full runtime heap traversal; automatic
-    ;; collection and the explicit `garbage-collect' API still own collection.
-    (list '(conses 16 0 0) '(symbols 48 0 0) '(strings 32 0 0)
-          '(string-bytes 1 0) '(vectors 16 0) '(vector-slots 8 0 0)
-          '(floats 8 0 0) '(intervals 56 0 0) '(buffers 1064 0))))
-
 (unless (fboundp 'garbage-collect-maybe)
   (defun garbage-collect-maybe (factor)
     "Call `garbage-collect' if enough allocation happened."

@@ -17,16 +17,6 @@
 
 ;;;; --- safe cons access ---------------------------------------------------
 
-(unless (fboundp 'car-safe)
-  (defun car-safe (object)
-    "Return the car of OBJECT if it is a cons cell, otherwise nil."
-    (if (consp object) (car object) nil)))
-
-(unless (fboundp 'cdr-safe)
-  (defun cdr-safe (object)
-    "Return the cdr of OBJECT if it is a cons cell, otherwise nil."
-    (if (consp object) (cdr object) nil)))
-
 ;;;; --- copy / shape -------------------------------------------------------
 
 (unless (fboundp 'copy-sequence)
@@ -167,14 +157,6 @@ implementation (see the upgrade comments above)."
 ;; (an earlier, unrelated step), leaving the child's own `cl--class'
 ;; unset and its constructor function undefined -- the root cause of
 ;; `(void-function magit-unpushed-section)'.
-(unless (fboundp 'copy-alist)
-  (defun copy-alist (alist)
-    "Return a copy of ALIST.
-Only the top-level list structure and each element's own cons cell are
-copied; each element's key and value are shared with ALIST, matching
-real Emacs's `copy-alist'."
-    (mapcar (lambda (elt) (if (consp elt) (cons (car elt) (cdr elt)) elt))
-            alist)))
 
 (unless (fboundp 'last)
   (defun last (list &optional n)
@@ -222,24 +204,6 @@ org-element-ast's node-property handling (`nbutlast props 2')."
 
 ;;;; --- positional access --------------------------------------------------
 
-(unless (fboundp 'nth)
-  (defun nth (n list)
-    "Return Nth element of LIST (0-indexed), or nil if out of range."
-    (let ((c list))
-      (while (and c (> n 0))
-        (setq c (cdr c))
-        (setq n (- n 1)))
-      (car c))))
-
-(unless (fboundp 'nthcdr)
-  (defun nthcdr (n list)
-    "Return the Nth cdr of LIST, or nil."
-    (let ((c list))
-      (while (and c (> n 0))
-        (setq c (cdr c))
-        (setq n (- n 1)))
-      c)))
-
 (unless (fboundp 'cadr)
   (defun cadr (list) "Return (car (cdr LIST))." (car (cdr list))))
 
@@ -252,105 +216,11 @@ org-element-ast's node-property handling (`nbutlast props 2')."
 
 ;;;; --- membership ---------------------------------------------------------
 
-(unless (fboundp 'memq)
-  (defun memq (element list)
-    "Return tail of LIST whose car is `eq' to ELEMENT, or nil."
-    (let ((c list)
-          (found nil))
-      (while (and c (not found))
-        (if (eq (car c) element) (setq found c)
-          (setq c (cdr c))))
-      found)))
-
-(unless (fboundp 'member)
-  (defun member (element list)
-    "Return tail of LIST whose car is `equal' to ELEMENT, or nil."
-    (let ((c list)
-          (found nil))
-      (while (and c (not found))
-        (if (equal (car c) element) (setq found c)
-          (setq c (cdr c))))
-      found)))
-
 
 ;;;; --- alist access -------------------------------------------------------
 
-(unless (fboundp 'assq)
-  (defun assq (key alist)
-    "Return first cons-cell in ALIST whose car is `eq' to KEY."
-    (let ((c alist)
-          (found nil))
-      (while (and c (not found))
-        (let ((cell (car c)))
-          (if (and (consp cell) (eq (car cell) key))
-              (setq found cell)
-            (setq c (cdr c)))))
-      found)))
-
-(unless (fboundp 'assoc)
-  (defun assoc (key alist &optional testfn)
-    "Return first cons-cell in ALIST whose car is `equal' to KEY.
-TESTFN, when supplied, is called as (TESTFN KEY CAR)."
-    (let ((c alist)
-          (found nil))
-      (while (and c (not found))
-        (let ((cell (car c)))
-          (if (and (consp cell)
-                   (if testfn
-                       (funcall testfn key (car cell))
-                     (equal key (car cell))))
-              (setq found cell)
-            (setq c (cdr c)))))
-      found)))
-
-(unless (fboundp 'rassq)
-  (defun rassq (value alist)
-    "Return first cons-cell in ALIST whose cdr is `eq' to VALUE."
-    (let ((c alist)
-          (found nil))
-      (while (and c (not found))
-        (let ((cell (car c)))
-          (if (and (consp cell) (eq (cdr cell) value))
-              (setq found cell)
-            (setq c (cdr c)))))
-      found)))
-
-(unless (fboundp 'rassoc)
-  (defun rassoc (value alist)
-    "Return first cons-cell in ALIST whose cdr is `equal' to VALUE."
-    (let ((c alist)
-          (found nil))
-      (while (and c (not found))
-        (let ((cell (car c)))
-          (if (and (consp cell) (equal (cdr cell) value))
-              (setq found cell)
-            (setq c (cdr c)))))
-      found)))
-
 
 ;;;; --- removal ------------------------------------------------------------
-
-(unless (fboundp 'delq)
-  (defun delq (element list)
-    "Return LIST with all `eq'-matching ELEMENT cells removed (copy)."
-    (let ((acc nil)
-          (cur list))
-      (while cur
-        (unless (eq (car cur) element)
-          (setq acc (cons (car cur) acc)))
-        (setq cur (cdr cur)))
-      (nreverse acc))))
-
-(unless (fboundp 'delete)
-  (defun delete (element list)
-    "Return LIST with all `equal'-matching ELEMENT cells removed (copy)."
-    (let ((acc nil)
-          (cur list))
-      (while cur
-        (unless (equal (car cur) element)
-          (setq acc (cons (car cur) acc)))
-        (setq cur (cdr cur)))
-      (nreverse acc))))
 
 (unless (fboundp 'remq)
   (defalias 'remq 'delq))
@@ -376,16 +246,6 @@ Nil arguments are ignored; the last argument may be any object."
 
 
 ;;;; --- length helpers -----------------------------------------------------
-
-(unless (fboundp 'safe-length)
-  (defun safe-length (list)
-    "Return the length of LIST, treating dotted-pair tails as terminators."
-    (let ((n 0)
-          (c list))
-      (while (consp c)
-        (setq n (+ n 1))
-        (setq c (cdr c)))
-      n)))
 
 
 ;;;; --- alist deletion --------------------------------------------------------

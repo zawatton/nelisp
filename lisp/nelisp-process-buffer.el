@@ -24,7 +24,6 @@
 (defvar nelisp-process-buffer--original-put (symbol-function 'process-put))
 (defvar nelisp-process-buffer--original-p (symbol-function 'processp))
 (defvar nelisp-process-buffer--original-status (symbol-function 'process-status))
-(defvar nelisp-process-buffer--original-live (symbol-function 'process-live-p))
 (defvar nelisp-process-buffer--original-buffer (symbol-function 'process-buffer))
 (defvar nelisp-process-buffer--original-exit (symbol-function 'process-exit-status))
 
@@ -227,9 +226,6 @@ NAME is the owning process name; GNU calls a stderr buffer's channel
      (lambda (process)
        (if (nelisp-process-buffer-p process) (aref process 2)
          (funcall nelisp-process-buffer--original-status process)))))
-  (defun process-live-p (process)
-    (if (nelisp-process-buffer-p process) (eq (aref process 2) 'open)
-      (funcall nelisp-process-buffer--original-live process)))
   (defun process-buffer (process)
     (nelisp-process-kind--call
      'process-buffer (list process)

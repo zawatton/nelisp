@@ -271,21 +271,6 @@ has no lazy `define-coding-system' registry to trigger."
 
 ;;;; --- derived modes / completion / navigation -----------------------
 
-(unless (fboundp 'derived-mode--flush)
-  (defun derived-mode--flush (mode)
-    "Flush the cached parent list of MODE and its followers."
-    (put mode 'derived-mode--all-parents nil)
-    (let ((followers (get mode 'derived-mode--followers)))
-      (when followers
-        (put mode 'derived-mode--followers nil)
-        (mapc #'derived-mode--flush followers)))))
-
-(unless (fboundp 'derived-mode-add-parents)
-  (defun derived-mode-add-parents (mode extra-parents)
-    "Add EXTRA-PARENTS (list of symbols) to the parents of MODE."
-    (put mode 'derived-mode-extra-parents extra-parents)
-    (derived-mode--flush mode)))
-
 (unless (fboundp 'easy-mmode-define-navigation)
   (defmacro easy-mmode-define-navigation (base re &optional name endfun _narrowfun
                                                &rest body)
@@ -663,14 +648,6 @@ BODY."
              (with-current-buffer standard-output
                (buffer-string)))
          (kill-buffer standard-output)))))
-
-;; `derived-mode-set-parent' (subr.el, Emacs 31): vc-dispatcher.el calls it at load
-;; time.  Same definition as GNU subr.el; `derived-mode--flush' is already bound.
-(unless (fboundp 'derived-mode-set-parent)
-  (defun derived-mode-set-parent (mode parent)
-    "Declare PARENT to be the parent of MODE."
-    (put mode 'derived-mode-parent parent)
-    (derived-mode--flush mode)))
 
 (provide 'emacs-parity-shims)
 

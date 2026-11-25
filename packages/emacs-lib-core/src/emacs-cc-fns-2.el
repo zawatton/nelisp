@@ -10,17 +10,6 @@
             i (1+ i)))
     h))
 
-(unless (fboundp 'internal--hash-table-index-size)
-  (defun internal--hash-table-index-size (hash-table)
-    "Index size of HASH-TABLE.  Internal use only."
-    (unless (hash-table-p hash-table)
-      (signal 'wrong-type-argument (list 'hash-table-p hash-table)))
-    (if (and (fboundp 'hash-table-size)
-             (condition-case nil (hash-table-size hash-table) (error nil)))
-        (hash-table-size hash-table)
-      (let ((n (hash-table-count hash-table)))
-        (max 8 (1+ (* n 2)))))))
-
 (unless (fboundp 'load-average)
   (defun load-average (&optional use-floats)
     "Return list of 1 minute, 5 minute and 15 minute load averages.

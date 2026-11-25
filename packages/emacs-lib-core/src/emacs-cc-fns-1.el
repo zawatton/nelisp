@@ -40,12 +40,6 @@ The data in the region is assumed to represent bytes.  Optional third argument N
     (let ((s (emacs-cc-fns-1--base64-encode (buffer-substring-no-properties beg end) t no-pad)))
       (delete-region beg end) (goto-char beg) (insert s) (length s))))
 
-(unless (fboundp 'base64url-encode-string)
-  (defun base64url-encode-string (string &optional no-pad)
-    "Base64url-encode STRING and return the result.  Optional second argument NO-PAD means do not add padding."
-    (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
-    (emacs-cc-fns-1--base64-encode string t no-pad)))
-
 (unless (fboundp 'base64-decode-region)
   (defun base64-decode-region (beg end &optional base64url ignore-invalid)
     "Base64-decode the region between BEG and END.  Return the length of the decoded data."
@@ -100,20 +94,10 @@ The data in the region is assumed to represent bytes.  Optional third argument N
                     start (if nl (1+ nl) end))))
           (list count longest mean))))))
 
-(unless (fboundp 'define-hash-table-test)
-  (defun define-hash-table-test (name test hash)
-    "Define a new hash table test NAME using TEST and HASH."
-    (unless (symbolp name) (signal 'wrong-type-argument (list 'symbolp name)))
-    (unless (and (functionp test) (functionp hash))
-      (signal 'wrong-type-argument (list 'functionp (if (functionp test) hash test))))
-    (put name 'hash-table-test (cons test hash)) name))
-
 (unless (fboundp 'hash-table-rehash-size)
   (defun hash-table-rehash-size (table) "Return the nominal rehash size of TABLE." (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table))) 1.5))
 (unless (fboundp 'hash-table-rehash-threshold)
   (defun hash-table-rehash-threshold (table) "Return the nominal rehash threshold of TABLE." (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table))) 0.8125))
-(unless (fboundp 'hash-table-size)
-  (defun hash-table-size (table) "Return the current allocation size of TABLE." (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table))) (+ 5 (hash-table-count table))))
 (defvar emacs-cc-fns-1--hash-table-weaknesses (make-hash-table :test 'eq))
 (defvar emacs-cc-fns-1--make-hash-table-original
   (and (fboundp 'make-hash-table) (symbol-function 'make-hash-table)))
@@ -134,8 +118,6 @@ The data in the region is assumed to represent bytes.  Optional third argument N
         (when weakness (puthash table weakness emacs-cc-fns-1--hash-table-weaknesses))
         table)))
   (put 'make-hash-table 'emacs-cc-fns-1-weakness-wrapper t))
-(unless (fboundp 'hash-table-weakness)
-  (defun hash-table-weakness (table) "Return the weakness of TABLE." (unless (hash-table-p table) (signal 'wrong-type-argument (list 'hash-table-p table))) (gethash table emacs-cc-fns-1--hash-table-weaknesses)))
 (unless (fboundp 'internal--hash-table-buckets)
   (defun internal--hash-table-buckets (hash-table) "Return (KEY . HASH) in HASH-TABLE, grouped by bucket." (unless (hash-table-p hash-table) (signal 'wrong-type-argument (list 'hash-table-p hash-table))) nil))
 (unless (fboundp 'internal--hash-table-histogram)

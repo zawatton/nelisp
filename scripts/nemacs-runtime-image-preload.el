@@ -866,15 +866,6 @@ image startup."
     (fset 'process-command
           '(lambda (process)
              (emacs-process-process-command process))))
-  (unless (fboundp 'emacs-process-process-live-p)
-    (fset 'emacs-process-process-live-p
-          '(lambda (process)
-             (memq (process-status process)
-                   '(run open listen connect stop)))))
-  (unless (fboundp 'process-live-p)
-    (fset 'process-live-p
-          '(lambda (process)
-             (emacs-process-process-live-p process))))
   (unless (fboundp 'emacs-process-process-id)
     (fset 'emacs-process-process-id
           '(lambda (process)

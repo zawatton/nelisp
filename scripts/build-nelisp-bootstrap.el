@@ -1683,7 +1683,9 @@ strings or comments, and calls with any non-literal argument, are kept."
     ;; use-global-map entry point, published later in this bundle.
     ("vendor/staged-emacs-lisp/subr.el"
      delete-consecutive-dups rassq-delete-all macrop
-     definition-prefixes register-definition-prefixes)
+     definition-prefixes register-definition-prefixes
+     derived-mode-set-parent derived-mode-add-parents derived-mode--flush
+     process-live-p buffer-narrowed-p)
     ;; Publish the Custom metadata needed during bootstrap.  The complete
     ;; generated autoload table remains available through the vendor path.
     ("vendor/emacs-lisp/loaddefs.el"
