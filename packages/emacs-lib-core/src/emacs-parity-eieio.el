@@ -468,17 +468,31 @@ port must too, or `(get VECTOR 'cl--class)' aborts with
         (list :kind 'derived-mode :type-name (cadr specializer))
       (funcall original argument))))
 
+(unless (fboundp 'cl-generic-define-context-rewriter)
+  (defmacro cl-generic-define-context-rewriter (name args &rest body)
+    "Register BODY as the context rewriter for NAME."
+    `(put ',name 'cl-generic--context-rewriter (lambda ,args ,@body))))
+
+;; frame.el normally registers this before startup.el.  The standalone
+;; bootstrap installs the frame substrate first and loads GNU frame.el later.
+(when emacs-parity-eieio--standalone-p
+  (cl-generic-define-context-rewriter window-system (value)
+    `(window-system ,(if (consp value) value `(eql ',value)))))
+
 (defun emacs-parity-eieio--parse-mode-context (original arguments name)
-  "Rewrite GNU major-mode context entries before ORIGINAL parses them."
+  "Apply registered context rewriters before ORIGINAL parses ARGUMENTS."
   (let (context rewritten)
     (dolist (argument arguments)
       (when (eq argument '&context) (setq context t))
-      (push (if (and context (consp argument)
-                     (eq (car argument) 'major-mode)
+      (let ((rewriter (and context (symbolp (car-safe argument))
+                           (get (car-safe argument) 'cl-generic--context-rewriter))))
+        (push (cond
+               ((and (consp argument) rewriter) (apply rewriter (cdr argument)))
+               ((and context (eq (car-safe argument) 'major-mode)
                      (symbolp (cadr argument)) (null (cddr argument)))
-                (list 'major-mode (list 'derived-mode (cadr argument)))
-              argument)
-            rewritten))
+                (list 'major-mode (list 'derived-mode (cadr argument))))
+               (t argument))
+              rewritten)))
     (funcall original (nreverse rewritten) name)))
 
 (defvar emacs-parity-eieio--mode-dispatch-values nil

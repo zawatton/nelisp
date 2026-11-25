@@ -159,7 +159,19 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      "emacs-lisp/term.el"
                      "emacs-lisp/epa-hook.el"
                      "emacs-lisp/bindings.el"
-                     "emacs-lisp/files.el"))
+                     "emacs-lisp/files.el"
+                     "emacs-lisp/menu-bar.el"
+                     "emacs-lisp/international/ja-dic-utl.el"
+                     "emacs-lisp/eshell/eshell.el"
+                     "emacs-lisp/eshell/em-basic.el"
+                     "emacs-lisp/progmodes/cc-fonts.elc"
+                     "emacs-lisp/calc/calc.el"))
+    (when (and (equal library "emacs-lisp/menu-bar.el")
+               (not (featurep 'menu-bar)))
+      ;; Earlier bootstrap consumers use provisional maps.  GNU initializes
+      ;; the complete menus with defvar, which requires unbound variables.
+      (makunbound 'menu-bar-edit-menu)
+      (makunbound 'menu-bar-options-menu))
     ;; Preserve the reader's native-row functions and the setenv that
     ;; shares the reader's environment store with getenv.
     (let ((pins (cond
@@ -198,6 +210,12 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   ;; Publish the default from GNU newcomment.el after the reader's early
   ;; buffer-local variable initialization has supplied a provisional value.
   (custom-reevaluate-setting 'comment-column)
+  (advice-add 'substitute-command-keys :around
+              #'emacs-keymap-builtins--substitute-command-keys)
+  ;; Avoid walking the expanded native Unicode keymap on the first Help lookup.
+  (let ((slot (emacs-keymap-full-slot (current-global-map))))
+    (when slot
+      (emacs-keymap-builtins--where-is-char-table #'ignore slot)))
   (nemacs-runtime-image-preload--reassert-process-bridge)
   (nemacs-runtime-image-preload--retry-stale-fx)
   ;; The reconvert compiles can record a fresh `none' behind them; one more
@@ -431,7 +449,7 @@ the default batch image while the vendor surface is still expanding."
   (nemacs-runtime-image-preload--install-frame-core)
   (nemacs-runtime-image-preload--install-tab-core)
   (nemacs-runtime-image-preload--install-support-core)
-  (nemacs-runtime-image-preload--install-utility-i18n-core)
+  (require 'charprop)
   t)
 
 (defun nemacs-runtime-image-preload--install-file-command (public target)
@@ -535,7 +553,7 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
   t)
 
 (defun nemacs-runtime-image-preload--install-shell-core ()
-  "Install minimal shell/eshell daily-driver facades."
+  "Install the prefixed shell entry points."
   (unless (featurep 'emacs-symbol)
     (require 'emacs-symbol))
   ;; `shell' and `shell-mode' are GNU shell.el's (autoloaded from
@@ -549,16 +567,6 @@ The former wrappers pointed `ielm' and `ielm-send-input' at the
      'emacs-shell-mode 'emacs-shell 'emacs-shell-mode)
     (nemacs-runtime-image-preload--install-module-command
      'emacs-shell-send-input 'emacs-shell 'emacs-shell-send-input))
-  (unless (featurep 'eshell)
-    (unless (boundp 'eshell-buffer-name)
-      (defvar eshell-buffer-name "*eshell*"))
-    (nemacs-runtime-image-preload--install-module-command
-     'eshell 'emacs-eshell 'eshell)
-    (nemacs-runtime-image-preload--install-module-command
-     'eshell-mode 'emacs-eshell 'eshell-mode)
-    (nemacs-runtime-image-preload--install-module-command
-     'eshell-send-input 'emacs-eshell 'eshell-send-input)
-    (provide 'eshell))
   t)
 
 (defun nemacs-runtime-image-preload--install-process-core ()
@@ -1490,48 +1498,6 @@ image startup."
   (unless (featurep 'emacs-symbol)
     (require 'emacs-symbol))
   (require 'case-table)
-  t)
-
-(defun nemacs-runtime-image-preload--install-translation-table-core
-    (feature decode encode)
-  "Provide FEATURE and register DECODE/ENCODE translation-table symbols."
-  (unless (featurep feature)
-    (put decode 'translation-table (make-hash-table :test 'equal))
-    (put encode 'translation-table (make-hash-table :test 'equal))
-    (provide feature))
-  t)
-
-(defun nemacs-runtime-image-preload--install-ja-dic-utl-core ()
-  "Install the lightweight `ja-dic-utl' helper surface without source `load'."
-  (unless (featurep 'ja-dic-utl)
-    (unless (boundp 'skkdic-okuri-ari) (defvar skkdic-okuri-ari nil))
-    (unless (boundp 'skkdic-okuri-nasi) (defvar skkdic-okuri-nasi nil))
-    (unless (boundp 'skkdic-prefix) (defvar skkdic-prefix nil))
-    (unless (boundp 'skkdic-postfix) (defvar skkdic-postfix nil))
-    (unless (boundp 'skkdic-okurigana-table)
-      (defvar skkdic-okurigana-table '((#x3042 . ?a) (#x304b . ?k))))
-    (unless (fboundp 'skkdic-merge-head-and-tail)
-      (fset 'skkdic-merge-head-and-tail
-            (lambda (heads tails _postfix)
-              (let (out)
-                (dolist (head heads)
-                  (dolist (tail tails)
-                    (push (concat head tail) out)))
-                (nreverse out)))))
-    (unless (fboundp 'skkdic-lookup-key)
-      (fset 'skkdic-lookup-key
-            (lambda (_seq _len &optional _postfix _prefer-noun) nil)))
-    (provide 'ja-dic-utl))
-  t)
-
-(defun nemacs-runtime-image-preload--install-utility-i18n-core ()
-  "Install utility/i18n surfaces and load the generated Unicode registry."
-  (require 'charprop)
-  (nemacs-runtime-image-preload--install-translation-table-core
-   'cp51932 'cp51932-decode 'cp51932-encode)
-  (nemacs-runtime-image-preload--install-translation-table-core
-   'eucjp-ms 'eucjp-ms-decode 'eucjp-ms-encode)
-  (nemacs-runtime-image-preload--install-ja-dic-utl-core)
   t)
 
 ;; Source-v1 runtime images replay top-level `setq' / `fset' reliably, while

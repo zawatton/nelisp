@@ -463,11 +463,7 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-replace.el"
     "emacs-ielm.el"
     "emacs-shell.el"
-    "emacs-eshell.el"
-    "eshell.el"
     "emacs-man.el"
-    "emacs-calc.el"
-    "calc.el"
     ;; Directory browser: the genuine GNU `dired.el' in the vendor tail is the
     ;; owner; the `emacs-dired-min' polyfill and its facade are no longer
     ;; bundled (they returned ec-layer buffers the runtime rejects).
@@ -1334,9 +1330,7 @@ concatenated bootstrap bundle must make the order explicit."
     ;; owning prefixed implementation to be present already.  On the REPL
     ;; bootstrap path a wrong order leaves functions defined but features
     ;; unprovided after an early top-level error.
-    (dolist (pair '(("emacs-calc.el" . "calc.el")
-                    ("emacs-eshell.el" . "eshell.el")
-                    ("emacs-faces.el" . "emacs-faces-builtins.el")
+    (dolist (pair '(("emacs-faces.el" . "emacs-faces-builtins.el")
                     ("emacs-frame.el" . "emacs-frame-builtins.el")
                     ("emacs-window.el" . "emacs-window-builtins.el")
                     ("emacs-keymap.el" . "emacs-keymap-builtins.el")
@@ -1649,32 +1643,11 @@ strings or comments, and calls with any non-literal argument, are kept."
 (defun nelisp-bootstrap--insert-bundle-file-body (file rel)
   "Insert FILE's bundle body text for relative name REL at point."
   (let ((start (point)))
-    (cond
-     ((equal rel "vendor/emacs-lisp/startup.el")
-      (dolist (form (nelisp-bootstrap--startup-forms file))
-        (insert (nelisp-bootstrap--repl-form-string form) "\n")))
-     ((nelisp-bootstrap--normalized-bundle-file-p file rel)
-      (insert (standalone-source-normalize-file-to-string file)))
-     (t
+    (if (nelisp-bootstrap--normalized-bundle-file-p file rel)
+        (insert (standalone-source-normalize-file-to-string file))
       (insert-file-contents file)
-      (goto-char (point-max))))
-    (unless (equal rel "vendor/emacs-lisp/startup.el")
-      (nelisp-bootstrap--fold-constant-regexp-opt start))))
-
-(defun nelisp-bootstrap--startup-forms (file)
-  "Read GNU startup FILE for the standalone bundle.
-NeLisp frontends own display argument handling.  Omit the GNU tty
-context method because the runtime lacks window-system specialization."
-  (with-temp-buffer
-    (insert-file-contents file)
-    (let (forms)
-      (condition-case nil
-          (while t
-            (let ((form (read (current-buffer))))
-              (unless (and (eq (car-safe form) 'cl-defmethod)
-                           (eq (cadr form) 'handle-args-function))
-                (push form forms))))
-        (end-of-file (nreverse forms))))))
+      (goto-char (point-max)))
+    (nelisp-bootstrap--fold-constant-regexp-opt start)))
 
 (defun nelisp-bootstrap--write-bundle (files output)
   "Write FILES into OUTPUT as one lexical-binding Elisp bundle."
@@ -1872,12 +1845,8 @@ Nested source-string evaluation is reserved for explicit diagnostics."
     (dolist (file files)
       (let ((rel (nelisp-bootstrap--logical-name file)))
         (insert "\n;;; >>> " rel "\n")
-        (dolist (source-form (if (equal rel "vendor/emacs-lisp/startup.el")
-                                 (nelisp-bootstrap--startup-forms file)
-                               (nelisp-bootstrap--read-forms-from-file file)))
-          (let* ((form (if (equal rel "vendor/emacs-lisp/startup.el")
-                           source-form
-                         (nelisp-bootstrap--standalone-repl-form source-form)))
+        (dolist (source-form (nelisp-bootstrap--read-forms-from-file file))
+          (let* ((form (nelisp-bootstrap--standalone-repl-form source-form))
                  (form-string (nelisp-bootstrap--repl-form-string form)))
             (if (nelisp-bootstrap--direct-repl-form-p rel form form-string)
                 (nelisp-bootstrap--insert-direct-repl-form form)
