@@ -1,6 +1,6 @@
 S0 systems                   (adobe-standard-encoding chinese-big5-hkscs chinese-gb18030 chinese-gbk cp1125 cp437 cp737 cp775 cp850 cp851 cp852 cp855 cp857 cp858 cp860 cp861 cp862 cp863 cp865 cp866 cp869 cp874 cyrillic-alternativnyj cyrillic-iso-8bit cyrillic-koi8 ebcdic-uk ebcdic-us georgian-academy georgian-ps greek-iso-8bit hebrew-iso-8bit hp-roman8 ibm038 ibm1047 ibm256 ibm273 ibm274 ibm275 ibm277 ibm278 ibm280 ibm281 ibm284 ibm285 ibm290 ibm297 iso-8859-11 iso-8859-6 iso-latin-1 iso-latin-10 iso-latin-2 iso-latin-3 iso-latin-4 iso-latin-5 iso-latin-6 iso-latin-7 iso-latin-8 iso-latin-9 japanese-cp932 koi8-t koi8-u korean-cp949 lao mac-roman mik next pt154 thai-tis620 us-ascii vietnamese-viscii vietnamese-vscii windows-1250 windows-1251 windows-1252 windows-1253 windows-1254 windows-1255 windows-1256 windows-1257 windows-1258)
-S adobe-standard-encoding    ("c0e2da668c08e2d8eb26a081f759fc7c" 256 ((0 32 nil) (32 256 adobe-standard-encoding)) adobe-standard-encoding-unix nil "a b" "x
-y" adobe-standard-encoding-dos "x  y")
+S adobe-standard-encoding    ("c0e2da668c08e2d8eb26a081f759fc7c" 256 ((0 32 nil) (32 256 adobe-standard-encoding)) adobe-standard-encoding-unix nil "a b" #("x
+y" 0 3 (charset adobe-standard-encoding)) adobe-standard-encoding-dos "x  y")
 S chinese-big5-hkscs         ("6e3c72733228bbf33848a7010496868c" 209 ((0 161 nil) (161 209 big5-hkscs)) chinese-big5-hkscs-unix t "a\244@b" "x
 y" chinese-big5-hkscs-dos "x
 y")
@@ -10,87 +10,87 @@ y")
 S chinese-gbk                ("2abe5bee58d3351ef477b624e63b55b4" 193 ((0 129 nil) (129 193 chinese-gbk)) chinese-gbk-unix t "a\322\273b" "x
 y" chinese-gbk-dos "x
 y")
-S cp1125                     ("6da1a4e1451cec2dc363e89448c38a93" 256 ((0 256 cp1125)) cp1125-unix t "a b" "x
-y" cp1125-dos "x
+S cp1125                     ("6da1a4e1451cec2dc363e89448c38a93" 256 ((0 256 cp1125)) cp1125-unix t "a b" #("x
+y" 0 3 (charset cp1125)) cp1125-dos "x
 y")
-S cp437                      ("e3a900e39da5631948353b12d1145dea" 256 ((0 256 cp437)) cp437-unix t "a b" "x
-y" cp437-dos "x
+S cp437                      ("e3a900e39da5631948353b12d1145dea" 256 ((0 256 cp437)) cp437-unix t "a b" #("x
+y" 0 3 (charset cp437)) cp437-dos "x
 y")
-S cp737                      ("36918fb090053a4b1700cefacd02eec6" 256 ((0 256 cp737)) cp737-unix t "a b" "x
-y" cp737-dos "x
+S cp737                      ("36918fb090053a4b1700cefacd02eec6" 256 ((0 256 cp737)) cp737-unix t "a b" #("x
+y" 0 3 (charset cp737)) cp737-dos "x
 y")
-S cp775                      ("2f5927e5fdc707988adda1d5e2218615" 256 ((0 256 cp775)) cp775-unix t "a b" "x
-y" cp775-dos "x
+S cp775                      ("2f5927e5fdc707988adda1d5e2218615" 256 ((0 256 cp775)) cp775-unix t "a b" #("x
+y" 0 3 (charset cp775)) cp775-dos "x
 y")
-S cp850                      ("98f3b78c7189afa246574430c28feeac" 256 ((0 256 ibm850)) cp850-unix t "a b" "x
-y" cp850-dos "x
+S cp850                      ("98f3b78c7189afa246574430c28feeac" 256 ((0 256 ibm850)) cp850-unix t "a b" #("x
+y" 0 3 (charset ibm850)) cp850-dos "x
 y")
-S cp851                      ("2bfa4f1ac6fe4ea7206ce14efde43e7a" 256 ((0 256 cp851)) cp851-unix t "a b" "x
-y" cp851-dos "x
+S cp851                      ("2bfa4f1ac6fe4ea7206ce14efde43e7a" 256 ((0 256 cp851)) cp851-unix t "a b" #("x
+y" 0 3 (charset cp851)) cp851-dos "x
 y")
-S cp852                      ("c07fef49f26ad9d669f79717b64db57b" 256 ((0 256 cp852)) cp852-unix t "a b" "x
-y" cp852-dos "x
+S cp852                      ("c07fef49f26ad9d669f79717b64db57b" 256 ((0 256 cp852)) cp852-unix t "a b" #("x
+y" 0 3 (charset cp852)) cp852-dos "x
 y")
-S cp855                      ("22d27901254557c6fc19883860797351" 256 ((0 256 cp855)) cp855-unix t "a b" "x
-y" cp855-dos "x
+S cp855                      ("22d27901254557c6fc19883860797351" 256 ((0 256 cp855)) cp855-unix t "a b" #("x
+y" 0 3 (charset cp855)) cp855-dos "x
 y")
-S cp857                      ("9ddce81969a8f3cb1b6400659035e65c" 256 ((0 256 cp857)) cp857-unix t "a b" "x
-y" cp857-dos "x
+S cp857                      ("9ddce81969a8f3cb1b6400659035e65c" 256 ((0 256 cp857)) cp857-unix t "a b" #("x
+y" 0 3 (charset cp857)) cp857-dos "x
 y")
-S cp858                      ("53362b3640d0b233e73ef97808e10604" 256 ((0 256 cp858)) cp858-unix t "a b" "x
-y" cp858-dos "x
+S cp858                      ("53362b3640d0b233e73ef97808e10604" 256 ((0 256 cp858)) cp858-unix t "a b" #("x
+y" 0 3 (charset cp858)) cp858-dos "x
 y")
-S cp860                      ("0ab13714593d353cf4b01626955823bd" 256 ((0 256 cp860)) cp860-unix t "a b" "x
-y" cp860-dos "x
+S cp860                      ("0ab13714593d353cf4b01626955823bd" 256 ((0 256 cp860)) cp860-unix t "a b" #("x
+y" 0 3 (charset cp860)) cp860-dos "x
 y")
-S cp861                      ("dcad5a9f837d5eccf1e35611d67a6458" 256 ((0 256 cp861)) cp861-unix t "a b" "x
-y" cp861-dos "x
+S cp861                      ("dcad5a9f837d5eccf1e35611d67a6458" 256 ((0 256 cp861)) cp861-unix t "a b" #("x
+y" 0 3 (charset cp861)) cp861-dos "x
 y")
-S cp862                      ("e2c9449cacf853cb21aa621591d696cc" 256 ((0 256 cp862)) cp862-unix t "a b" "x
-y" cp862-dos "x
+S cp862                      ("e2c9449cacf853cb21aa621591d696cc" 256 ((0 256 cp862)) cp862-unix t "a b" #("x
+y" 0 3 (charset cp862)) cp862-dos "x
 y")
-S cp863                      ("156bfccb40e407a927c6fb0d9967a8c3" 256 ((0 256 cp863)) cp863-unix t "a b" "x
-y" cp863-dos "x
+S cp863                      ("156bfccb40e407a927c6fb0d9967a8c3" 256 ((0 256 cp863)) cp863-unix t "a b" #("x
+y" 0 3 (charset cp863)) cp863-dos "x
 y")
-S cp865                      ("6c354dc4ee4404899ff88666fc14bd6f" 256 ((0 256 cp865)) cp865-unix t "a b" "x
-y" cp865-dos "x
+S cp865                      ("6c354dc4ee4404899ff88666fc14bd6f" 256 ((0 256 cp865)) cp865-unix t "a b" #("x
+y" 0 3 (charset cp865)) cp865-dos "x
 y")
-S cp866                      ("bab9992d0929cfcecf5d719e11d51794" 256 ((0 256 cp866)) cp866-unix t "a b" "x
-y" cp866-dos "x
+S cp866                      ("bab9992d0929cfcecf5d719e11d51794" 256 ((0 256 cp866)) cp866-unix t "a b" #("x
+y" 0 3 (charset cp866)) cp866-dos "x
 y")
-S cp869                      ("b7136e9b6e2a97dcb1a3cb04c4101aa5" 256 ((0 256 cp869)) cp869-unix t "a b" "x
-y" cp869-dos "x
+S cp869                      ("b7136e9b6e2a97dcb1a3cb04c4101aa5" 256 ((0 256 cp869)) cp869-unix t "a b" #("x
+y" 0 3 (charset cp869)) cp869-dos "x
 y")
-S cp874                      ("8bb8099728db9bc6b161de7ef69345df" 256 ((0 256 cp874)) cp874-unix t "a b" "x
-y" cp874-dos "x
+S cp874                      ("8bb8099728db9bc6b161de7ef69345df" 256 ((0 256 cp874)) cp874-unix t "a b" #("x
+y" 0 3 (charset cp874)) cp874-dos "x
 y")
-S cyrillic-alternativnyj     ("156304e32495c3c3ce825972a87c79a4" 256 ((0 256 alternativnyj)) cyrillic-alternativnyj-unix t "a b" "x
-y" cyrillic-alternativnyj-dos "x
+S cyrillic-alternativnyj     ("156304e32495c3c3ce825972a87c79a4" 256 ((0 256 alternativnyj)) cyrillic-alternativnyj-unix t "a b" #("x
+y" 0 3 (charset alternativnyj)) cyrillic-alternativnyj-dos "x
 y")
-S cyrillic-iso-8bit          ("e911faae1775db3e00f01e6004e61741" 256 ((0 256 iso-8859-5)) cyrillic-iso-8bit-unix t "a b" "x
-y" cyrillic-iso-8bit-dos "x
+S cyrillic-iso-8bit          ("e911faae1775db3e00f01e6004e61741" 256 ((0 256 iso-8859-5)) cyrillic-iso-8bit-unix t "a b" #("x
+y" 0 3 (charset iso-8859-5)) cyrillic-iso-8bit-dos "x
 y")
-S cyrillic-koi8              ("5497ebb63874b98620597d8fa143dfb3" 256 ((0 256 koi8-r)) cyrillic-koi8-unix t "a b" "x
-y" cyrillic-koi8-dos "x
+S cyrillic-koi8              ("5497ebb63874b98620597d8fa143dfb3" 256 ((0 256 koi8-r)) cyrillic-koi8-unix t "a b" #("x
+y" 0 3 (charset koi8-r)) cyrillic-koi8-dos "x
 y")
 S ebcdic-uk                  ("3fcf37671d441bbe6af8897a72bec26a" 256 ((0 256 ebcdic-uk)) ebcdic-uk-unix nil "\201 \202" #("x
 `" 1 4 (charset ebcdic-uk)) ebcdic-uk-mac "\247%\250")
 S ebcdic-us                  ("2d26178af32cba8f402a263fc5c6a8c7" 256 ((0 256 ebcdic-us)) ebcdic-us-unix nil "\201 \202" #("x
 `" 1 4 (charset ebcdic-us)) ebcdic-us-mac "\247%\250")
-S georgian-academy           ("17647d3ca4cc4575caa00054a524ee01" 256 ((0 256 georgian-academy)) georgian-academy-unix t "a b" "x
-y" georgian-academy-dos "x
+S georgian-academy           ("17647d3ca4cc4575caa00054a524ee01" 256 ((0 256 georgian-academy)) georgian-academy-unix t "a b" #("x
+y" 0 3 (charset georgian-academy)) georgian-academy-dos "x
 y")
-S georgian-ps                ("5d96d26550ccb1df1196bb245399bf26" 256 ((0 256 georgian-ps)) georgian-ps-unix t "a b" "x
-y" georgian-ps-dos "x
+S georgian-ps                ("5d96d26550ccb1df1196bb245399bf26" 256 ((0 256 georgian-ps)) georgian-ps-unix t "a b" #("x
+y" 0 3 (charset georgian-ps)) georgian-ps-dos "x
 y")
-S greek-iso-8bit             ("8dd7c0262796d868c16e25127e7a47d2" 256 ((0 256 iso-8859-7)) greek-iso-8bit-unix t "a b" "x
-y" greek-iso-8bit-dos "x
+S greek-iso-8bit             ("8dd7c0262796d868c16e25127e7a47d2" 256 ((0 256 iso-8859-7)) greek-iso-8bit-unix t "a b" #("x
+y" 0 3 (charset iso-8859-7)) greek-iso-8bit-dos "x
 y")
-S hebrew-iso-8bit            ("68ac3b375f0a3670d80d42042722b0c5" 256 ((0 256 iso-8859-8)) hebrew-iso-8bit-unix t "a b" "x
-y" hebrew-iso-8bit-dos "x
+S hebrew-iso-8bit            ("68ac3b375f0a3670d80d42042722b0c5" 256 ((0 256 iso-8859-8)) hebrew-iso-8bit-unix t "a b" #("x
+y" 0 3 (charset iso-8859-8)) hebrew-iso-8bit-dos "x
 y")
-S hp-roman8                  ("9585ad6879157e58beea1293fd9628cd" 256 ((0 256 hp-roman8)) hp-roman8-unix t "a b" "x
-y" hp-roman8-dos "x
+S hp-roman8                  ("9585ad6879157e58beea1293fd9628cd" 256 ((0 256 hp-roman8)) hp-roman8-unix t "a b" #("x
+y" 0 3 (charset hp-roman8)) hp-roman8-dos "x
 y")
 S ibm038                     ("4fdebda555d5b1c54a75497d360abe02" 256 ((0 256 ibm038)) ibm038-unix nil "\201 \202" #("x
 `" 1 4 (charset ibm038)) ibm038-mac "\247%\250")
@@ -120,107 +120,428 @@ S ibm290                     ("486faf70d626077b5842c54f38bd267f" 256 ((0 256 ibm
 `" 1 4 (charset ibm290)) ibm290-mac " % ")
 S ibm297                     ("acdce6ed9fe43dc3a7510d4db408159d" 256 ((0 256 ibm297)) ibm297-unix t "\201 \202" #("Ì
 µ" 0 4 (charset ibm297)) ibm297-mac "\247%\250")
-S iso-8859-11                ("991b60a1b53d3da09c534eade384a21f" 256 ((0 256 iso-8859-11)) iso-8859-11-unix t "a b" "x
-y" iso-8859-11-dos "x
+S iso-8859-11                ("991b60a1b53d3da09c534eade384a21f" 256 ((0 256 iso-8859-11)) iso-8859-11-unix t "a b" #("x
+y" 0 3 (charset iso-8859-11)) iso-8859-11-dos "x
 y")
-S iso-8859-6                 ("3b272c4d593744739818bd30fca309bf" 256 ((0 256 iso-8859-6)) iso-8859-6-unix t "a b" "x
-y" iso-8859-6-dos "x
+S iso-8859-6                 ("3b272c4d593744739818bd30fca309bf" 256 ((0 256 iso-8859-6)) iso-8859-6-unix t "a b" #("x
+y" 0 3 (charset iso-8859-6)) iso-8859-6-dos "x
 y")
-S iso-latin-1                ("4c6da4abdff227e710c9115fa65e9935" 256 ((0 256 iso-8859-1)) iso-latin-1-unix t "a b" "x
-y" iso-latin-1-dos "x
+S iso-latin-1                ("4c6da4abdff227e710c9115fa65e9935" 256 ((0 256 iso-8859-1)) iso-latin-1-unix t "a b" #("x
+y" 0 3 (charset iso-8859-1)) iso-latin-1-dos "x
 y")
-S iso-latin-10               ("9a6ad7bc6ba9de25bf6d206fb66a6b7a" 256 ((0 256 iso-8859-16)) iso-latin-10-unix t "a b" "x
-y" iso-latin-10-dos "x
+S iso-latin-10               ("9a6ad7bc6ba9de25bf6d206fb66a6b7a" 256 ((0 256 iso-8859-16)) iso-latin-10-unix t "a b" #("x
+y" 0 3 (charset iso-8859-16)) iso-latin-10-dos "x
 y")
-S iso-latin-2                ("5d001b7c11b138726b4abd6546e06fb7" 256 ((0 256 iso-8859-2)) iso-latin-2-unix t "a b" "x
-y" iso-latin-2-dos "x
+S iso-latin-2                ("5d001b7c11b138726b4abd6546e06fb7" 256 ((0 256 iso-8859-2)) iso-latin-2-unix t "a b" #("x
+y" 0 3 (charset iso-8859-2)) iso-latin-2-dos "x
 y")
-S iso-latin-3                ("1351adbf55f18c6eb1bde3785d280cdf" 256 ((0 256 iso-8859-3)) iso-latin-3-unix t "a b" "x
-y" iso-latin-3-dos "x
+S iso-latin-3                ("1351adbf55f18c6eb1bde3785d280cdf" 256 ((0 256 iso-8859-3)) iso-latin-3-unix t "a b" #("x
+y" 0 3 (charset iso-8859-3)) iso-latin-3-dos "x
 y")
-S iso-latin-4                ("e755a92983cd937a4dec0df6b7b91319" 256 ((0 256 iso-8859-4)) iso-latin-4-unix t "a b" "x
-y" iso-latin-4-dos "x
+S iso-latin-4                ("e755a92983cd937a4dec0df6b7b91319" 256 ((0 256 iso-8859-4)) iso-latin-4-unix t "a b" #("x
+y" 0 3 (charset iso-8859-4)) iso-latin-4-dos "x
 y")
-S iso-latin-5                ("2bdbd70b546798afbcee8c55e3a8bb99" 256 ((0 256 iso-8859-9)) iso-latin-5-unix t "a b" "x
-y" iso-latin-5-dos "x
+S iso-latin-5                ("2bdbd70b546798afbcee8c55e3a8bb99" 256 ((0 256 iso-8859-9)) iso-latin-5-unix t "a b" #("x
+y" 0 3 (charset iso-8859-9)) iso-latin-5-dos "x
 y")
-S iso-latin-6                ("e5a94a811f498a32f0f97b8125f0d4df" 256 ((0 256 iso-8859-10)) iso-latin-6-unix t "a b" "x
-y" iso-latin-6-dos "x
+S iso-latin-6                ("e5a94a811f498a32f0f97b8125f0d4df" 256 ((0 256 iso-8859-10)) iso-latin-6-unix t "a b" #("x
+y" 0 3 (charset iso-8859-10)) iso-latin-6-dos "x
 y")
-S iso-latin-7                ("09b7ea1dccd7f88f413ee1b51df4d16a" 256 ((0 256 iso-8859-13)) iso-latin-7-unix t "a b" "x
-y" iso-latin-7-dos "x
+S iso-latin-7                ("09b7ea1dccd7f88f413ee1b51df4d16a" 256 ((0 256 iso-8859-13)) iso-latin-7-unix t "a b" #("x
+y" 0 3 (charset iso-8859-13)) iso-latin-7-dos "x
 y")
-S iso-latin-8                ("b6db42101f01c6e614c441592e6619b5" 256 ((0 256 iso-8859-14)) iso-latin-8-unix t "a b" "x
-y" iso-latin-8-dos "x
+S iso-latin-8                ("b6db42101f01c6e614c441592e6619b5" 256 ((0 256 iso-8859-14)) iso-latin-8-unix t "a b" #("x
+y" 0 3 (charset iso-8859-14)) iso-latin-8-dos "x
 y")
-S iso-latin-9                ("55d52c171b5d5b01c9fca22e7574f107" 256 ((0 256 iso-8859-15)) iso-latin-9-unix t "a b" "x
-y" iso-latin-9-dos "x
+S iso-latin-9                ("55d52c171b5d5b01c9fca22e7574f107" 256 ((0 256 iso-8859-15)) iso-latin-9-unix t "a b" #("x
+y" 0 3 (charset iso-8859-15)) iso-latin-9-dos "x
 y")
 S japanese-cp932             ("da3a38e8724c52e9c300d0dcb3ec5fc0" 229 ((0 129 nil) (129 146 cp932-2-byte) (146 209 katakana-sjis) (209 229 cp932-2-byte)) japanese-cp932-unix nil "a\210\352b" "x
 y" japanese-cp932-dos "x
 y")
-S koi8-t                     ("e879f3a456b1c34cb87b1ded35e60993" 256 ((0 256 koi8-t)) koi8-t-unix t "a b" "x
-y" koi8-t-dos "x
+S koi8-t                     ("e879f3a456b1c34cb87b1ded35e60993" 256 ((0 256 koi8-t)) koi8-t-unix t "a b" #("x
+y" 0 3 (charset koi8-t)) koi8-t-dos "x
 y")
-S koi8-u                     ("1a08d90fabe2f45c656899beb4b3e812" 256 ((0 256 koi8-u)) koi8-u-unix t "a b" "x
-y" koi8-u-dos "x
+S koi8-u                     ("1a08d90fabe2f45c656899beb4b3e812" 256 ((0 256 koi8-u)) koi8-u-unix t "a b" #("x
+y" 0 3 (charset koi8-u)) koi8-u-dos "x
 y")
 S korean-cp949               ("699ea0a3acbfc440c615a6d9611e8c27" 195 ((0 129 nil) (129 195 cp949)) korean-cp949-unix t "a\354\351b" "x
 y" korean-cp949-dos "x
 y")
 S lao                        ("1fbc1d7394b8090ba07dc6dfaf6aaa3d" 256 ((0 33 nil) (33 256 lao)) lao-unix nil "   " #("໘
 ໙" 0 3 (charset lao)) lao-dos "    ")
-S mac-roman                  ("68d7140218cd51c7c6aa962511f1e158" 256 ((0 256 mac-roman)) mac-roman-unix t "a b" "x
-y" mac-roman-dos "x
+S mac-roman                  ("68d7140218cd51c7c6aa962511f1e158" 256 ((0 256 mac-roman)) mac-roman-unix t "a b" #("x
+y" 0 3 (charset mac-roman)) mac-roman-dos "x
 y")
-S mik                        ("2b7f09b031d55e659a5d76a6994de882" 256 ((0 256 mik)) mik-unix t "a b" "x
-y" mik-dos "x
+S mik                        ("2b7f09b031d55e659a5d76a6994de882" 256 ((0 256 mik)) mik-unix t "a b" #("x
+y" 0 3 (charset mik)) mik-dos "x
 y")
-S next                       ("e415b03dc7b6899ca20829beb6a8ffb0" 256 ((0 256 next)) next-unix t "a b" "x
-y" next-dos "x
+S next                       ("e415b03dc7b6899ca20829beb6a8ffb0" 256 ((0 256 next)) next-unix t "a b" #("x
+y" 0 3 (charset next)) next-dos "x
 y")
-S pt154                      ("662b1903fd3ae420a3bfe3b6ed470dcd" 256 ((0 256 ptcp154)) pt154-unix t "a b" "x
-y" pt154-dos "x
+S pt154                      ("662b1903fd3ae420a3bfe3b6ed470dcd" 256 ((0 256 ptcp154)) pt154-unix t "a b" #("x
+y" 0 3 (charset ptcp154)) pt154-dos "x
 y")
-S thai-tis620                ("497aa9f965436a281131557d7bfb7cf5" 256 ((0 256 tis620-2533)) thai-tis620-unix t "a b" "x
-y" thai-tis620-dos "x
+S thai-tis620                ("497aa9f965436a281131557d7bfb7cf5" 256 ((0 256 tis620-2533)) thai-tis620-unix t "a b" #("x
+y" 0 3 (charset tis620-2533)) thai-tis620-dos "x
 y")
 S us-ascii                   ("450a213bad951547a0b8585e5ac12a06" 256 ((0 256 nil)) us-ascii-unix t "a?b" "x
 y" us-ascii-dos "x
 y")
-S vietnamese-viscii          ("d14706ee928912f5d9ad3c2b176f1da1" 256 ((0 256 viscii)) vietnamese-viscii-unix t "a b" "x
-y" vietnamese-viscii-dos "x
+S vietnamese-viscii          ("d14706ee928912f5d9ad3c2b176f1da1" 256 ((0 256 viscii)) vietnamese-viscii-unix t "a b" #("x
+y" 0 3 (charset viscii)) vietnamese-viscii-dos "x
 y")
-S vietnamese-vscii           ("4609d35d669f572e7bb6e346a084f512" 256 ((0 256 vscii)) vietnamese-vscii-unix t "a b" "x
-y" vietnamese-vscii-dos "x
+S vietnamese-vscii           ("4609d35d669f572e7bb6e346a084f512" 256 ((0 256 vscii)) vietnamese-vscii-unix t "a b" #("x
+y" 0 3 (charset vscii)) vietnamese-vscii-dos "x
 y")
-S windows-1250               ("96aafb02b26d03dacf2c9c75c05179af" 256 ((0 256 windows-1250)) windows-1250-unix t "a b" "x
-y" windows-1250-dos "x
+S windows-1250               ("96aafb02b26d03dacf2c9c75c05179af" 256 ((0 256 windows-1250)) windows-1250-unix t "a b" #("x
+y" 0 3 (charset windows-1250)) windows-1250-dos "x
 y")
-S windows-1251               ("3cc66ace302eb459b129ad315a52ea36" 256 ((0 256 windows-1251)) windows-1251-unix t "a b" "x
-y" windows-1251-dos "x
+S windows-1251               ("3cc66ace302eb459b129ad315a52ea36" 256 ((0 256 windows-1251)) windows-1251-unix t "a b" #("x
+y" 0 3 (charset windows-1251)) windows-1251-dos "x
 y")
-S windows-1252               ("f7d31e55070299e2e55b4c27f5ebd15f" 256 ((0 256 windows-1252)) windows-1252-unix t "a b" "x
-y" windows-1252-dos "x
+S windows-1252               ("f7d31e55070299e2e55b4c27f5ebd15f" 256 ((0 256 windows-1252)) windows-1252-unix t "a b" #("x
+y" 0 3 (charset windows-1252)) windows-1252-dos "x
 y")
-S windows-1253               ("a9c34d8ff1ee3f9f50b08d6f69f287c7" 256 ((0 256 windows-1253)) windows-1253-unix t "a b" "x
-y" windows-1253-dos "x
+S windows-1253               ("a9c34d8ff1ee3f9f50b08d6f69f287c7" 256 ((0 256 windows-1253)) windows-1253-unix t "a b" #("x
+y" 0 3 (charset windows-1253)) windows-1253-dos "x
 y")
-S windows-1254               ("9ff565e767d7927e8a39c258f7e2a3b0" 256 ((0 256 windows-1254)) windows-1254-unix t "a b" "x
-y" windows-1254-dos "x
+S windows-1254               ("9ff565e767d7927e8a39c258f7e2a3b0" 256 ((0 256 windows-1254)) windows-1254-unix t "a b" #("x
+y" 0 3 (charset windows-1254)) windows-1254-dos "x
 y")
-S windows-1255               ("5e9f9420028814886dacc2c642f3a4b8" 256 ((0 256 windows-1255)) windows-1255-unix t "a b" "x
-y" windows-1255-dos "x
+S windows-1255               ("5e9f9420028814886dacc2c642f3a4b8" 256 ((0 256 windows-1255)) windows-1255-unix t "a b" #("x
+y" 0 3 (charset windows-1255)) windows-1255-dos "x
 y")
-S windows-1256               ("809ec9b3ab3a07b78f052c3f715773cf" 256 ((0 256 windows-1256)) windows-1256-unix t "a b" "x
-y" windows-1256-dos "x
+S windows-1256               ("809ec9b3ab3a07b78f052c3f715773cf" 256 ((0 256 windows-1256)) windows-1256-unix t "a b" #("x
+y" 0 3 (charset windows-1256)) windows-1256-dos "x
 y")
-S windows-1257               ("f325a7beebad9f3c6172cd4e69c82821" 256 ((0 256 windows-1257)) windows-1257-unix t "a b" "x
-y" windows-1257-dos "x
+S windows-1257               ("f325a7beebad9f3c6172cd4e69c82821" 256 ((0 256 windows-1257)) windows-1257-unix t "a b" #("x
+y" 0 3 (charset windows-1257)) windows-1257-dos "x
 y")
-S windows-1258               ("d6d387912c6dcb1647ce2fa4fa1e0b03" 256 ((0 256 windows-1258)) windows-1258-unix t "a b" "x
-y" windows-1258-dos "x
+S windows-1258               ("d6d387912c6dcb1647ce2fa4fa1e0b03" 256 ((0 256 windows-1258)) windows-1258-unix t "a b" #("x
+y" 0 3 (charset windows-1258)) windows-1258-dos "x
 y")
 A1 aliases                   (#("abcé" 0 4 (charset iso-8859-15)) "abc\351" #("é" 0 1 (charset iso-8859-1)) #("Б" 0 1 (charset windows-1251)))
 L1 load-path subdirs         ("leim" "language" "international")
 L2 japan-util                t
+E adobe-standard-encoding auto (((97 98 99) ((0 3 adobe-standard-encoding)) adobe-standard-encoding (65 32 32 66) adobe-standard-encoding) ((120 10 121) ((0 3 adobe-standard-encoding)) adobe-standard-encoding-dos (65 32 32 66) adobe-standard-encoding) ((96 10 37 180) ((0 4 adobe-standard-encoding)) adobe-standard-encoding-mac (65 32 32 66) adobe-standard-encoding) ((96 10) ((0 2 adobe-standard-encoding)) adobe-standard-encoding-mac (65 32 32 66) adobe-standard-encoding))
+E adobe-standard-encoding unix (((97 98 99) ((0 3 adobe-standard-encoding)) adobe-standard-encoding-unix (65 32 32 66) adobe-standard-encoding-unix) ((120 13 10 121) ((0 4 adobe-standard-encoding)) adobe-standard-encoding-unix (65 32 32 66) adobe-standard-encoding-unix) ((96 13 37 180) ((0 4 adobe-standard-encoding)) adobe-standard-encoding-unix (65 32 32 66) adobe-standard-encoding-unix) ((96 13) ((0 2 adobe-standard-encoding)) adobe-standard-encoding-unix (65 32 32 66) adobe-standard-encoding-unix))
+E adobe-standard-encoding dos (((97 98 99) ((0 3 adobe-standard-encoding)) adobe-standard-encoding-dos (65 32 32 32 66) adobe-standard-encoding-dos) ((120 10 121) ((0 3 adobe-standard-encoding)) adobe-standard-encoding-dos (65 32 32 32 66) adobe-standard-encoding-dos) ((96 13 37 37 180) ((0 5 adobe-standard-encoding)) adobe-standard-encoding-dos (65 32 32 32 66) adobe-standard-encoding-dos) ((96 13) ((0 1 adobe-standard-encoding) (1 2 nil)) adobe-standard-encoding-dos (65 32 32 32 66) adobe-standard-encoding-dos))
+E adobe-standard-encoding mac (((97 98 99) ((0 3 adobe-standard-encoding)) adobe-standard-encoding-mac (65 32 32 66) adobe-standard-encoding-mac) ((120 10 10 121) ((0 4 adobe-standard-encoding)) adobe-standard-encoding-mac (65 32 32 66) adobe-standard-encoding-mac) ((96 10 37 180) ((0 4 adobe-standard-encoding)) adobe-standard-encoding-mac (65 32 32 66) adobe-standard-encoding-mac) ((96 10) ((0 2 adobe-standard-encoding)) adobe-standard-encoding-mac (65 32 32 66) adobe-standard-encoding-mac))
+E chinese-big5-hkscs auto    (((97 98 99) ((0 3 nil)) chinese-big5-hkscs (65 13 10 66) chinese-big5-hkscs) ((120 10 121) ((0 3 nil)) chinese-big5-hkscs-dos (65 13 10 66) chinese-big5-hkscs) ((4194241 10 37 4194242) ((0 4 nil)) chinese-big5-hkscs-mac (65 13 10 66) chinese-big5-hkscs) ((4194241 10) ((0 2 nil)) chinese-big5-hkscs-mac (65 13 10 66) chinese-big5-hkscs))
+E chinese-big5-hkscs unix    (((97 98 99) ((0 3 nil)) chinese-big5-hkscs-unix (65 13 10 66) chinese-big5-hkscs-unix) ((120 13 10 121) ((0 4 nil)) chinese-big5-hkscs-unix (65 13 10 66) chinese-big5-hkscs-unix) ((4194241 13 37 4194242) ((0 4 nil)) chinese-big5-hkscs-unix (65 13 10 66) chinese-big5-hkscs-unix) ((4194241 13) ((0 2 nil)) chinese-big5-hkscs-unix (65 13 10 66) chinese-big5-hkscs-unix))
+E chinese-big5-hkscs dos     (((97 98 99) ((0 3 nil)) chinese-big5-hkscs-dos (65 13 13 10 66) chinese-big5-hkscs-dos) ((120 10 121) ((0 3 nil)) chinese-big5-hkscs-dos (65 13 13 10 66) chinese-big5-hkscs-dos) ((4194241 13 37 4194242) ((0 4 nil)) chinese-big5-hkscs-dos (65 13 13 10 66) chinese-big5-hkscs-dos) ((4194241 13) ((0 2 nil)) chinese-big5-hkscs-dos (65 13 13 10 66) chinese-big5-hkscs-dos))
+E chinese-big5-hkscs mac     (((97 98 99) ((0 3 nil)) chinese-big5-hkscs-mac (65 13 13 66) chinese-big5-hkscs-mac) ((120 10 10 121) ((0 4 nil)) chinese-big5-hkscs-mac (65 13 13 66) chinese-big5-hkscs-mac) ((4194241 10 37 4194242) ((0 4 nil)) chinese-big5-hkscs-mac (65 13 13 66) chinese-big5-hkscs-mac) ((4194241 10) ((0 2 nil)) chinese-big5-hkscs-mac (65 13 13 66) chinese-big5-hkscs-mac))
+E chinese-gb18030 auto       (((97 98 99) ((0 3 nil)) chinese-gb18030 (65 13 10 66) chinese-gb18030) ((120 10 121) ((0 3 nil)) chinese-gb18030-dos (65 13 10 66) chinese-gb18030) ((4194241 10 37 4194242) ((0 4 nil)) chinese-gb18030-mac (65 13 10 66) chinese-gb18030) ((4194241 10) ((0 2 nil)) chinese-gb18030-mac (65 13 10 66) chinese-gb18030))
+E chinese-gb18030 unix       (((97 98 99) ((0 3 nil)) chinese-gb18030-unix (65 13 10 66) chinese-gb18030-unix) ((120 13 10 121) ((0 4 nil)) chinese-gb18030-unix (65 13 10 66) chinese-gb18030-unix) ((4194241 13 37 4194242) ((0 4 nil)) chinese-gb18030-unix (65 13 10 66) chinese-gb18030-unix) ((4194241 13) ((0 2 nil)) chinese-gb18030-unix (65 13 10 66) chinese-gb18030-unix))
+E chinese-gb18030 dos        (((97 98 99) ((0 3 nil)) chinese-gb18030-dos (65 13 13 10 66) chinese-gb18030-dos) ((120 10 121) ((0 3 nil)) chinese-gb18030-dos (65 13 13 10 66) chinese-gb18030-dos) ((4194241 13 37 4194242) ((0 4 nil)) chinese-gb18030-dos (65 13 13 10 66) chinese-gb18030-dos) ((4194241 13) ((0 2 nil)) chinese-gb18030-dos (65 13 13 10 66) chinese-gb18030-dos))
+E chinese-gb18030 mac        (((97 98 99) ((0 3 nil)) chinese-gb18030-mac (65 13 13 66) chinese-gb18030-mac) ((120 10 10 121) ((0 4 nil)) chinese-gb18030-mac (65 13 13 66) chinese-gb18030-mac) ((4194241 10 37 4194242) ((0 4 nil)) chinese-gb18030-mac (65 13 13 66) chinese-gb18030-mac) ((4194241 10) ((0 2 nil)) chinese-gb18030-mac (65 13 13 66) chinese-gb18030-mac))
+E chinese-gbk auto           (((97 98 99) ((0 3 nil)) chinese-gbk (65 13 10 66) chinese-gbk) ((120 10 121) ((0 3 nil)) chinese-gbk-dos (65 13 10 66) chinese-gbk) ((4194241 10 37 4194242) ((0 4 nil)) chinese-gbk-mac (65 13 10 66) chinese-gbk) ((4194241 10) ((0 2 nil)) chinese-gbk-mac (65 13 10 66) chinese-gbk))
+E chinese-gbk unix           (((97 98 99) ((0 3 nil)) chinese-gbk-unix (65 13 10 66) chinese-gbk-unix) ((120 13 10 121) ((0 4 nil)) chinese-gbk-unix (65 13 10 66) chinese-gbk-unix) ((4194241 13 37 4194242) ((0 4 nil)) chinese-gbk-unix (65 13 10 66) chinese-gbk-unix) ((4194241 13) ((0 2 nil)) chinese-gbk-unix (65 13 10 66) chinese-gbk-unix))
+E chinese-gbk dos            (((97 98 99) ((0 3 nil)) chinese-gbk-dos (65 13 13 10 66) chinese-gbk-dos) ((120 10 121) ((0 3 nil)) chinese-gbk-dos (65 13 13 10 66) chinese-gbk-dos) ((4194241 13 37 4194242) ((0 4 nil)) chinese-gbk-dos (65 13 13 10 66) chinese-gbk-dos) ((4194241 13) ((0 2 nil)) chinese-gbk-dos (65 13 13 10 66) chinese-gbk-dos))
+E chinese-gbk mac            (((97 98 99) ((0 3 nil)) chinese-gbk-mac (65 13 13 66) chinese-gbk-mac) ((120 10 10 121) ((0 4 nil)) chinese-gbk-mac (65 13 13 66) chinese-gbk-mac) ((4194241 10 37 4194242) ((0 4 nil)) chinese-gbk-mac (65 13 13 66) chinese-gbk-mac) ((4194241 10) ((0 2 nil)) chinese-gbk-mac (65 13 13 66) chinese-gbk-mac))
+E cp1125 auto                (((97 98 99) ((0 3 nil)) cp1125 (65 13 10 66) cp1125) ((120 10 121) ((0 3 cp1125)) cp1125-dos (65 13 10 66) cp1125) ((9524 10 37 9516) ((0 4 cp1125)) cp1125-mac (65 13 10 66) cp1125) ((9524 10) ((0 2 cp1125)) cp1125-mac (65 13 10 66) cp1125))
+E cp1125 unix                (((97 98 99) ((0 3 nil)) cp1125-unix (65 13 10 66) cp1125-unix) ((120 13 10 121) ((0 4 nil)) cp1125-unix (65 13 10 66) cp1125-unix) ((9524 13 37 9516) ((0 4 cp1125)) cp1125-unix (65 13 10 66) cp1125-unix) ((9524 13) ((0 2 cp1125)) cp1125-unix (65 13 10 66) cp1125-unix))
+E cp1125 dos                 (((97 98 99) ((0 3 nil)) cp1125-dos (65 13 13 10 66) cp1125-dos) ((120 10 121) ((0 3 cp1125)) cp1125-dos (65 13 13 10 66) cp1125-dos) ((9524 13 37 9516) ((0 4 cp1125)) cp1125-dos (65 13 13 10 66) cp1125-dos) ((9524 13) ((0 1 cp1125) (1 2 nil)) cp1125-dos (65 13 13 10 66) cp1125-dos))
+E cp1125 mac                 (((97 98 99) ((0 3 nil)) cp1125-mac (65 13 13 66) cp1125-mac) ((120 10 10 121) ((0 4 cp1125)) cp1125-mac (65 13 13 66) cp1125-mac) ((9524 10 37 9516) ((0 4 cp1125)) cp1125-mac (65 13 13 66) cp1125-mac) ((9524 10) ((0 2 cp1125)) cp1125-mac (65 13 13 66) cp1125-mac))
+E cp437 auto                 (((97 98 99) ((0 3 nil)) cp437 (65 13 10 66) cp437) ((120 10 121) ((0 3 cp437)) cp437-dos (65 13 10 66) cp437) ((9524 10 37 9516) ((0 4 cp437)) cp437-mac (65 13 10 66) cp437) ((9524 10) ((0 2 cp437)) cp437-mac (65 13 10 66) cp437))
+E cp437 unix                 (((97 98 99) ((0 3 nil)) cp437-unix (65 13 10 66) cp437-unix) ((120 13 10 121) ((0 4 nil)) cp437-unix (65 13 10 66) cp437-unix) ((9524 13 37 9516) ((0 4 cp437)) cp437-unix (65 13 10 66) cp437-unix) ((9524 13) ((0 2 cp437)) cp437-unix (65 13 10 66) cp437-unix))
+E cp437 dos                  (((97 98 99) ((0 3 nil)) cp437-dos (65 13 13 10 66) cp437-dos) ((120 10 121) ((0 3 cp437)) cp437-dos (65 13 13 10 66) cp437-dos) ((9524 13 37 9516) ((0 4 cp437)) cp437-dos (65 13 13 10 66) cp437-dos) ((9524 13) ((0 1 cp437) (1 2 nil)) cp437-dos (65 13 13 10 66) cp437-dos))
+E cp437 mac                  (((97 98 99) ((0 3 nil)) cp437-mac (65 13 13 66) cp437-mac) ((120 10 10 121) ((0 4 cp437)) cp437-mac (65 13 13 66) cp437-mac) ((9524 10 37 9516) ((0 4 cp437)) cp437-mac (65 13 13 66) cp437-mac) ((9524 10) ((0 2 cp437)) cp437-mac (65 13 13 66) cp437-mac))
+E cp737 auto                 (((97 98 99) ((0 3 nil)) cp737 (65 13 10 66) cp737) ((120 10 121) ((0 3 cp737)) cp737-dos (65 13 10 66) cp737) ((9524 10 37 9516) ((0 4 cp737)) cp737-mac (65 13 10 66) cp737) ((9524 10) ((0 2 cp737)) cp737-mac (65 13 10 66) cp737))
+E cp737 unix                 (((97 98 99) ((0 3 nil)) cp737-unix (65 13 10 66) cp737-unix) ((120 13 10 121) ((0 4 nil)) cp737-unix (65 13 10 66) cp737-unix) ((9524 13 37 9516) ((0 4 cp737)) cp737-unix (65 13 10 66) cp737-unix) ((9524 13) ((0 2 cp737)) cp737-unix (65 13 10 66) cp737-unix))
+E cp737 dos                  (((97 98 99) ((0 3 nil)) cp737-dos (65 13 13 10 66) cp737-dos) ((120 10 121) ((0 3 cp737)) cp737-dos (65 13 13 10 66) cp737-dos) ((9524 13 37 9516) ((0 4 cp737)) cp737-dos (65 13 13 10 66) cp737-dos) ((9524 13) ((0 1 cp737) (1 2 nil)) cp737-dos (65 13 13 10 66) cp737-dos))
+E cp737 mac                  (((97 98 99) ((0 3 nil)) cp737-mac (65 13 13 66) cp737-mac) ((120 10 10 121) ((0 4 cp737)) cp737-mac (65 13 13 66) cp737-mac) ((9524 10 37 9516) ((0 4 cp737)) cp737-mac (65 13 13 66) cp737-mac) ((9524 10) ((0 2 cp737)) cp737-mac (65 13 13 66) cp737-mac))
+E cp775 auto                 (((97 98 99) ((0 3 nil)) cp775 (65 13 10 66) cp775) ((120 10 121) ((0 3 cp775)) cp775-dos (65 13 10 66) cp775) ((9524 10 37 9516) ((0 4 cp775)) cp775-mac (65 13 10 66) cp775) ((9524 10) ((0 2 cp775)) cp775-mac (65 13 10 66) cp775))
+E cp775 unix                 (((97 98 99) ((0 3 nil)) cp775-unix (65 13 10 66) cp775-unix) ((120 13 10 121) ((0 4 nil)) cp775-unix (65 13 10 66) cp775-unix) ((9524 13 37 9516) ((0 4 cp775)) cp775-unix (65 13 10 66) cp775-unix) ((9524 13) ((0 2 cp775)) cp775-unix (65 13 10 66) cp775-unix))
+E cp775 dos                  (((97 98 99) ((0 3 nil)) cp775-dos (65 13 13 10 66) cp775-dos) ((120 10 121) ((0 3 cp775)) cp775-dos (65 13 13 10 66) cp775-dos) ((9524 13 37 9516) ((0 4 cp775)) cp775-dos (65 13 13 10 66) cp775-dos) ((9524 13) ((0 1 cp775) (1 2 nil)) cp775-dos (65 13 13 10 66) cp775-dos))
+E cp775 mac                  (((97 98 99) ((0 3 nil)) cp775-mac (65 13 13 66) cp775-mac) ((120 10 10 121) ((0 4 cp775)) cp775-mac (65 13 13 66) cp775-mac) ((9524 10 37 9516) ((0 4 cp775)) cp775-mac (65 13 13 66) cp775-mac) ((9524 10) ((0 2 cp775)) cp775-mac (65 13 13 66) cp775-mac))
+E cp850 auto                 (((97 98 99) ((0 3 nil)) cp850 (65 13 10 66) cp850) ((120 10 121) ((0 3 ibm850)) cp850-dos (65 13 10 66) cp850) ((9524 10 37 9516) ((0 4 ibm850)) cp850-mac (65 13 10 66) cp850) ((9524 10) ((0 2 ibm850)) cp850-mac (65 13 10 66) cp850))
+E cp850 unix                 (((97 98 99) ((0 3 nil)) cp850-unix (65 13 10 66) cp850-unix) ((120 13 10 121) ((0 4 nil)) cp850-unix (65 13 10 66) cp850-unix) ((9524 13 37 9516) ((0 4 ibm850)) cp850-unix (65 13 10 66) cp850-unix) ((9524 13) ((0 2 ibm850)) cp850-unix (65 13 10 66) cp850-unix))
+E cp850 dos                  (((97 98 99) ((0 3 nil)) cp850-dos (65 13 13 10 66) cp850-dos) ((120 10 121) ((0 3 ibm850)) cp850-dos (65 13 13 10 66) cp850-dos) ((9524 13 37 9516) ((0 4 ibm850)) cp850-dos (65 13 13 10 66) cp850-dos) ((9524 13) ((0 1 ibm850) (1 2 nil)) cp850-dos (65 13 13 10 66) cp850-dos))
+E cp850 mac                  (((97 98 99) ((0 3 nil)) cp850-mac (65 13 13 66) cp850-mac) ((120 10 10 121) ((0 4 ibm850)) cp850-mac (65 13 13 66) cp850-mac) ((9524 10 37 9516) ((0 4 ibm850)) cp850-mac (65 13 13 66) cp850-mac) ((9524 10) ((0 2 ibm850)) cp850-mac (65 13 13 66) cp850-mac))
+E cp851 auto                 (((97 98 99) ((0 3 nil)) cp851 (65 13 10 66) cp851) ((120 10 121) ((0 3 cp851)) cp851-dos (65 13 10 66) cp851) ((9524 10 37 9516) ((0 4 cp851)) cp851-mac (65 13 10 66) cp851) ((9524 10) ((0 2 cp851)) cp851-mac (65 13 10 66) cp851))
+E cp851 unix                 (((97 98 99) ((0 3 nil)) cp851-unix (65 13 10 66) cp851-unix) ((120 13 10 121) ((0 4 nil)) cp851-unix (65 13 10 66) cp851-unix) ((9524 13 37 9516) ((0 4 cp851)) cp851-unix (65 13 10 66) cp851-unix) ((9524 13) ((0 2 cp851)) cp851-unix (65 13 10 66) cp851-unix))
+E cp851 dos                  (((97 98 99) ((0 3 nil)) cp851-dos (65 13 13 10 66) cp851-dos) ((120 10 121) ((0 3 cp851)) cp851-dos (65 13 13 10 66) cp851-dos) ((9524 13 37 9516) ((0 4 cp851)) cp851-dos (65 13 13 10 66) cp851-dos) ((9524 13) ((0 1 cp851) (1 2 nil)) cp851-dos (65 13 13 10 66) cp851-dos))
+E cp851 mac                  (((97 98 99) ((0 3 nil)) cp851-mac (65 13 13 66) cp851-mac) ((120 10 10 121) ((0 4 cp851)) cp851-mac (65 13 13 66) cp851-mac) ((9524 10 37 9516) ((0 4 cp851)) cp851-mac (65 13 13 66) cp851-mac) ((9524 10) ((0 2 cp851)) cp851-mac (65 13 13 66) cp851-mac))
+E cp852 auto                 (((97 98 99) ((0 3 nil)) cp852 (65 13 10 66) cp852) ((120 10 121) ((0 3 cp852)) cp852-dos (65 13 10 66) cp852) ((9524 10 37 9516) ((0 4 cp852)) cp852-mac (65 13 10 66) cp852) ((9524 10) ((0 2 cp852)) cp852-mac (65 13 10 66) cp852))
+E cp852 unix                 (((97 98 99) ((0 3 nil)) cp852-unix (65 13 10 66) cp852-unix) ((120 13 10 121) ((0 4 nil)) cp852-unix (65 13 10 66) cp852-unix) ((9524 13 37 9516) ((0 4 cp852)) cp852-unix (65 13 10 66) cp852-unix) ((9524 13) ((0 2 cp852)) cp852-unix (65 13 10 66) cp852-unix))
+E cp852 dos                  (((97 98 99) ((0 3 nil)) cp852-dos (65 13 13 10 66) cp852-dos) ((120 10 121) ((0 3 cp852)) cp852-dos (65 13 13 10 66) cp852-dos) ((9524 13 37 9516) ((0 4 cp852)) cp852-dos (65 13 13 10 66) cp852-dos) ((9524 13) ((0 1 cp852) (1 2 nil)) cp852-dos (65 13 13 10 66) cp852-dos))
+E cp852 mac                  (((97 98 99) ((0 3 nil)) cp852-mac (65 13 13 66) cp852-mac) ((120 10 10 121) ((0 4 cp852)) cp852-mac (65 13 13 66) cp852-mac) ((9524 10 37 9516) ((0 4 cp852)) cp852-mac (65 13 13 66) cp852-mac) ((9524 10) ((0 2 cp852)) cp852-mac (65 13 13 66) cp852-mac))
+E cp855 auto                 (((97 98 99) ((0 3 nil)) cp855 (65 13 10 66) cp855) ((120 10 121) ((0 3 cp855)) cp855-dos (65 13 10 66) cp855) ((9524 10 37 9516) ((0 4 cp855)) cp855-mac (65 13 10 66) cp855) ((9524 10) ((0 2 cp855)) cp855-mac (65 13 10 66) cp855))
+E cp855 unix                 (((97 98 99) ((0 3 nil)) cp855-unix (65 13 10 66) cp855-unix) ((120 13 10 121) ((0 4 nil)) cp855-unix (65 13 10 66) cp855-unix) ((9524 13 37 9516) ((0 4 cp855)) cp855-unix (65 13 10 66) cp855-unix) ((9524 13) ((0 2 cp855)) cp855-unix (65 13 10 66) cp855-unix))
+E cp855 dos                  (((97 98 99) ((0 3 nil)) cp855-dos (65 13 13 10 66) cp855-dos) ((120 10 121) ((0 3 cp855)) cp855-dos (65 13 13 10 66) cp855-dos) ((9524 13 37 9516) ((0 4 cp855)) cp855-dos (65 13 13 10 66) cp855-dos) ((9524 13) ((0 1 cp855) (1 2 nil)) cp855-dos (65 13 13 10 66) cp855-dos))
+E cp855 mac                  (((97 98 99) ((0 3 nil)) cp855-mac (65 13 13 66) cp855-mac) ((120 10 10 121) ((0 4 cp855)) cp855-mac (65 13 13 66) cp855-mac) ((9524 10 37 9516) ((0 4 cp855)) cp855-mac (65 13 13 66) cp855-mac) ((9524 10) ((0 2 cp855)) cp855-mac (65 13 13 66) cp855-mac))
+E cp857 auto                 (((97 98 99) ((0 3 nil)) cp857 (65 13 10 66) cp857) ((120 10 121) ((0 3 cp857)) cp857-dos (65 13 10 66) cp857) ((9524 10 37 9516) ((0 4 cp857)) cp857-mac (65 13 10 66) cp857) ((9524 10) ((0 2 cp857)) cp857-mac (65 13 10 66) cp857))
+E cp857 unix                 (((97 98 99) ((0 3 nil)) cp857-unix (65 13 10 66) cp857-unix) ((120 13 10 121) ((0 4 nil)) cp857-unix (65 13 10 66) cp857-unix) ((9524 13 37 9516) ((0 4 cp857)) cp857-unix (65 13 10 66) cp857-unix) ((9524 13) ((0 2 cp857)) cp857-unix (65 13 10 66) cp857-unix))
+E cp857 dos                  (((97 98 99) ((0 3 nil)) cp857-dos (65 13 13 10 66) cp857-dos) ((120 10 121) ((0 3 cp857)) cp857-dos (65 13 13 10 66) cp857-dos) ((9524 13 37 9516) ((0 4 cp857)) cp857-dos (65 13 13 10 66) cp857-dos) ((9524 13) ((0 1 cp857) (1 2 nil)) cp857-dos (65 13 13 10 66) cp857-dos))
+E cp857 mac                  (((97 98 99) ((0 3 nil)) cp857-mac (65 13 13 66) cp857-mac) ((120 10 10 121) ((0 4 cp857)) cp857-mac (65 13 13 66) cp857-mac) ((9524 10 37 9516) ((0 4 cp857)) cp857-mac (65 13 13 66) cp857-mac) ((9524 10) ((0 2 cp857)) cp857-mac (65 13 13 66) cp857-mac))
+E cp858 auto                 (((97 98 99) ((0 3 nil)) cp858 (65 13 10 66) cp858) ((120 10 121) ((0 3 cp858)) cp858-dos (65 13 10 66) cp858) ((9524 10 37 9516) ((0 4 cp858)) cp858-mac (65 13 10 66) cp858) ((9524 10) ((0 2 cp858)) cp858-mac (65 13 10 66) cp858))
+E cp858 unix                 (((97 98 99) ((0 3 nil)) cp858-unix (65 13 10 66) cp858-unix) ((120 13 10 121) ((0 4 nil)) cp858-unix (65 13 10 66) cp858-unix) ((9524 13 37 9516) ((0 4 cp858)) cp858-unix (65 13 10 66) cp858-unix) ((9524 13) ((0 2 cp858)) cp858-unix (65 13 10 66) cp858-unix))
+E cp858 dos                  (((97 98 99) ((0 3 nil)) cp858-dos (65 13 13 10 66) cp858-dos) ((120 10 121) ((0 3 cp858)) cp858-dos (65 13 13 10 66) cp858-dos) ((9524 13 37 9516) ((0 4 cp858)) cp858-dos (65 13 13 10 66) cp858-dos) ((9524 13) ((0 1 cp858) (1 2 nil)) cp858-dos (65 13 13 10 66) cp858-dos))
+E cp858 mac                  (((97 98 99) ((0 3 nil)) cp858-mac (65 13 13 66) cp858-mac) ((120 10 10 121) ((0 4 cp858)) cp858-mac (65 13 13 66) cp858-mac) ((9524 10 37 9516) ((0 4 cp858)) cp858-mac (65 13 13 66) cp858-mac) ((9524 10) ((0 2 cp858)) cp858-mac (65 13 13 66) cp858-mac))
+E cp860 auto                 (((97 98 99) ((0 3 nil)) cp860 (65 13 10 66) cp860) ((120 10 121) ((0 3 cp860)) cp860-dos (65 13 10 66) cp860) ((9524 10 37 9516) ((0 4 cp860)) cp860-mac (65 13 10 66) cp860) ((9524 10) ((0 2 cp860)) cp860-mac (65 13 10 66) cp860))
+E cp860 unix                 (((97 98 99) ((0 3 nil)) cp860-unix (65 13 10 66) cp860-unix) ((120 13 10 121) ((0 4 nil)) cp860-unix (65 13 10 66) cp860-unix) ((9524 13 37 9516) ((0 4 cp860)) cp860-unix (65 13 10 66) cp860-unix) ((9524 13) ((0 2 cp860)) cp860-unix (65 13 10 66) cp860-unix))
+E cp860 dos                  (((97 98 99) ((0 3 nil)) cp860-dos (65 13 13 10 66) cp860-dos) ((120 10 121) ((0 3 cp860)) cp860-dos (65 13 13 10 66) cp860-dos) ((9524 13 37 9516) ((0 4 cp860)) cp860-dos (65 13 13 10 66) cp860-dos) ((9524 13) ((0 1 cp860) (1 2 nil)) cp860-dos (65 13 13 10 66) cp860-dos))
+E cp860 mac                  (((97 98 99) ((0 3 nil)) cp860-mac (65 13 13 66) cp860-mac) ((120 10 10 121) ((0 4 cp860)) cp860-mac (65 13 13 66) cp860-mac) ((9524 10 37 9516) ((0 4 cp860)) cp860-mac (65 13 13 66) cp860-mac) ((9524 10) ((0 2 cp860)) cp860-mac (65 13 13 66) cp860-mac))
+E cp861 auto                 (((97 98 99) ((0 3 nil)) cp861 (65 13 10 66) cp861) ((120 10 121) ((0 3 cp861)) cp861-dos (65 13 10 66) cp861) ((9524 10 37 9516) ((0 4 cp861)) cp861-mac (65 13 10 66) cp861) ((9524 10) ((0 2 cp861)) cp861-mac (65 13 10 66) cp861))
+E cp861 unix                 (((97 98 99) ((0 3 nil)) cp861-unix (65 13 10 66) cp861-unix) ((120 13 10 121) ((0 4 nil)) cp861-unix (65 13 10 66) cp861-unix) ((9524 13 37 9516) ((0 4 cp861)) cp861-unix (65 13 10 66) cp861-unix) ((9524 13) ((0 2 cp861)) cp861-unix (65 13 10 66) cp861-unix))
+E cp861 dos                  (((97 98 99) ((0 3 nil)) cp861-dos (65 13 13 10 66) cp861-dos) ((120 10 121) ((0 3 cp861)) cp861-dos (65 13 13 10 66) cp861-dos) ((9524 13 37 9516) ((0 4 cp861)) cp861-dos (65 13 13 10 66) cp861-dos) ((9524 13) ((0 1 cp861) (1 2 nil)) cp861-dos (65 13 13 10 66) cp861-dos))
+E cp861 mac                  (((97 98 99) ((0 3 nil)) cp861-mac (65 13 13 66) cp861-mac) ((120 10 10 121) ((0 4 cp861)) cp861-mac (65 13 13 66) cp861-mac) ((9524 10 37 9516) ((0 4 cp861)) cp861-mac (65 13 13 66) cp861-mac) ((9524 10) ((0 2 cp861)) cp861-mac (65 13 13 66) cp861-mac))
+E cp862 auto                 (((97 98 99) ((0 3 nil)) cp862 (65 13 10 66) cp862) ((120 10 121) ((0 3 cp862)) cp862-dos (65 13 10 66) cp862) ((9524 10 37 9516) ((0 4 cp862)) cp862-mac (65 13 10 66) cp862) ((9524 10) ((0 2 cp862)) cp862-mac (65 13 10 66) cp862))
+E cp862 unix                 (((97 98 99) ((0 3 nil)) cp862-unix (65 13 10 66) cp862-unix) ((120 13 10 121) ((0 4 nil)) cp862-unix (65 13 10 66) cp862-unix) ((9524 13 37 9516) ((0 4 cp862)) cp862-unix (65 13 10 66) cp862-unix) ((9524 13) ((0 2 cp862)) cp862-unix (65 13 10 66) cp862-unix))
+E cp862 dos                  (((97 98 99) ((0 3 nil)) cp862-dos (65 13 13 10 66) cp862-dos) ((120 10 121) ((0 3 cp862)) cp862-dos (65 13 13 10 66) cp862-dos) ((9524 13 37 9516) ((0 4 cp862)) cp862-dos (65 13 13 10 66) cp862-dos) ((9524 13) ((0 1 cp862) (1 2 nil)) cp862-dos (65 13 13 10 66) cp862-dos))
+E cp862 mac                  (((97 98 99) ((0 3 nil)) cp862-mac (65 13 13 66) cp862-mac) ((120 10 10 121) ((0 4 cp862)) cp862-mac (65 13 13 66) cp862-mac) ((9524 10 37 9516) ((0 4 cp862)) cp862-mac (65 13 13 66) cp862-mac) ((9524 10) ((0 2 cp862)) cp862-mac (65 13 13 66) cp862-mac))
+E cp863 auto                 (((97 98 99) ((0 3 nil)) cp863 (65 13 10 66) cp863) ((120 10 121) ((0 3 cp863)) cp863-dos (65 13 10 66) cp863) ((9524 10 37 9516) ((0 4 cp863)) cp863-mac (65 13 10 66) cp863) ((9524 10) ((0 2 cp863)) cp863-mac (65 13 10 66) cp863))
+E cp863 unix                 (((97 98 99) ((0 3 nil)) cp863-unix (65 13 10 66) cp863-unix) ((120 13 10 121) ((0 4 nil)) cp863-unix (65 13 10 66) cp863-unix) ((9524 13 37 9516) ((0 4 cp863)) cp863-unix (65 13 10 66) cp863-unix) ((9524 13) ((0 2 cp863)) cp863-unix (65 13 10 66) cp863-unix))
+E cp863 dos                  (((97 98 99) ((0 3 nil)) cp863-dos (65 13 13 10 66) cp863-dos) ((120 10 121) ((0 3 cp863)) cp863-dos (65 13 13 10 66) cp863-dos) ((9524 13 37 9516) ((0 4 cp863)) cp863-dos (65 13 13 10 66) cp863-dos) ((9524 13) ((0 1 cp863) (1 2 nil)) cp863-dos (65 13 13 10 66) cp863-dos))
+E cp863 mac                  (((97 98 99) ((0 3 nil)) cp863-mac (65 13 13 66) cp863-mac) ((120 10 10 121) ((0 4 cp863)) cp863-mac (65 13 13 66) cp863-mac) ((9524 10 37 9516) ((0 4 cp863)) cp863-mac (65 13 13 66) cp863-mac) ((9524 10) ((0 2 cp863)) cp863-mac (65 13 13 66) cp863-mac))
+E cp865 auto                 (((97 98 99) ((0 3 nil)) cp865 (65 13 10 66) cp865) ((120 10 121) ((0 3 cp865)) cp865-dos (65 13 10 66) cp865) ((9524 10 37 9516) ((0 4 cp865)) cp865-mac (65 13 10 66) cp865) ((9524 10) ((0 2 cp865)) cp865-mac (65 13 10 66) cp865))
+E cp865 unix                 (((97 98 99) ((0 3 nil)) cp865-unix (65 13 10 66) cp865-unix) ((120 13 10 121) ((0 4 nil)) cp865-unix (65 13 10 66) cp865-unix) ((9524 13 37 9516) ((0 4 cp865)) cp865-unix (65 13 10 66) cp865-unix) ((9524 13) ((0 2 cp865)) cp865-unix (65 13 10 66) cp865-unix))
+E cp865 dos                  (((97 98 99) ((0 3 nil)) cp865-dos (65 13 13 10 66) cp865-dos) ((120 10 121) ((0 3 cp865)) cp865-dos (65 13 13 10 66) cp865-dos) ((9524 13 37 9516) ((0 4 cp865)) cp865-dos (65 13 13 10 66) cp865-dos) ((9524 13) ((0 1 cp865) (1 2 nil)) cp865-dos (65 13 13 10 66) cp865-dos))
+E cp865 mac                  (((97 98 99) ((0 3 nil)) cp865-mac (65 13 13 66) cp865-mac) ((120 10 10 121) ((0 4 cp865)) cp865-mac (65 13 13 66) cp865-mac) ((9524 10 37 9516) ((0 4 cp865)) cp865-mac (65 13 13 66) cp865-mac) ((9524 10) ((0 2 cp865)) cp865-mac (65 13 13 66) cp865-mac))
+E cp866 auto                 (((97 98 99) ((0 3 nil)) cp866 (65 13 10 66) cp866) ((120 10 121) ((0 3 cp866)) cp866-dos (65 13 10 66) cp866) ((9524 10 37 9516) ((0 4 cp866)) cp866-mac (65 13 10 66) cp866) ((9524 10) ((0 2 cp866)) cp866-mac (65 13 10 66) cp866))
+E cp866 unix                 (((97 98 99) ((0 3 nil)) cp866-unix (65 13 10 66) cp866-unix) ((120 13 10 121) ((0 4 nil)) cp866-unix (65 13 10 66) cp866-unix) ((9524 13 37 9516) ((0 4 cp866)) cp866-unix (65 13 10 66) cp866-unix) ((9524 13) ((0 2 cp866)) cp866-unix (65 13 10 66) cp866-unix))
+E cp866 dos                  (((97 98 99) ((0 3 nil)) cp866-dos (65 13 13 10 66) cp866-dos) ((120 10 121) ((0 3 cp866)) cp866-dos (65 13 13 10 66) cp866-dos) ((9524 13 37 9516) ((0 4 cp866)) cp866-dos (65 13 13 10 66) cp866-dos) ((9524 13) ((0 1 cp866) (1 2 nil)) cp866-dos (65 13 13 10 66) cp866-dos))
+E cp866 mac                  (((97 98 99) ((0 3 nil)) cp866-mac (65 13 13 66) cp866-mac) ((120 10 10 121) ((0 4 cp866)) cp866-mac (65 13 13 66) cp866-mac) ((9524 10 37 9516) ((0 4 cp866)) cp866-mac (65 13 13 66) cp866-mac) ((9524 10) ((0 2 cp866)) cp866-mac (65 13 13 66) cp866-mac))
+E cp869 auto                 (((97 98 99) ((0 3 nil)) cp869 (65 13 10 66) cp869) ((120 10 121) ((0 3 cp869)) cp869-dos (65 13 10 66) cp869) ((9524 10 37 9516) ((0 4 cp869)) cp869-mac (65 13 10 66) cp869) ((9524 10) ((0 2 cp869)) cp869-mac (65 13 10 66) cp869))
+E cp869 unix                 (((97 98 99) ((0 3 nil)) cp869-unix (65 13 10 66) cp869-unix) ((120 13 10 121) ((0 4 nil)) cp869-unix (65 13 10 66) cp869-unix) ((9524 13 37 9516) ((0 4 cp869)) cp869-unix (65 13 10 66) cp869-unix) ((9524 13) ((0 2 cp869)) cp869-unix (65 13 10 66) cp869-unix))
+E cp869 dos                  (((97 98 99) ((0 3 nil)) cp869-dos (65 13 13 10 66) cp869-dos) ((120 10 121) ((0 3 cp869)) cp869-dos (65 13 13 10 66) cp869-dos) ((9524 13 37 9516) ((0 4 cp869)) cp869-dos (65 13 13 10 66) cp869-dos) ((9524 13) ((0 1 cp869) (1 2 nil)) cp869-dos (65 13 13 10 66) cp869-dos))
+E cp869 mac                  (((97 98 99) ((0 3 nil)) cp869-mac (65 13 13 66) cp869-mac) ((120 10 10 121) ((0 4 cp869)) cp869-mac (65 13 13 66) cp869-mac) ((9524 10 37 9516) ((0 4 cp869)) cp869-mac (65 13 13 66) cp869-mac) ((9524 10) ((0 2 cp869)) cp869-mac (65 13 13 66) cp869-mac))
+E cp874 auto                 (((97 98 99) ((0 3 nil)) cp874 (65 13 10 66) cp874) ((120 10 121) ((0 3 cp874)) cp874-dos (65 13 10 66) cp874) ((3617 10 37 3618) ((0 4 cp874)) cp874-mac (65 13 10 66) cp874) ((3617 10) ((0 2 cp874)) cp874-mac (65 13 10 66) cp874))
+E cp874 unix                 (((97 98 99) ((0 3 nil)) cp874-unix (65 13 10 66) cp874-unix) ((120 13 10 121) ((0 4 nil)) cp874-unix (65 13 10 66) cp874-unix) ((3617 13 37 3618) ((0 4 cp874)) cp874-unix (65 13 10 66) cp874-unix) ((3617 13) ((0 2 cp874)) cp874-unix (65 13 10 66) cp874-unix))
+E cp874 dos                  (((97 98 99) ((0 3 nil)) cp874-dos (65 13 13 10 66) cp874-dos) ((120 10 121) ((0 3 cp874)) cp874-dos (65 13 13 10 66) cp874-dos) ((3617 13 37 3618) ((0 4 cp874)) cp874-dos (65 13 13 10 66) cp874-dos) ((3617 13) ((0 1 cp874) (1 2 nil)) cp874-dos (65 13 13 10 66) cp874-dos))
+E cp874 mac                  (((97 98 99) ((0 3 nil)) cp874-mac (65 13 13 66) cp874-mac) ((120 10 10 121) ((0 4 cp874)) cp874-mac (65 13 13 66) cp874-mac) ((3617 10 37 3618) ((0 4 cp874)) cp874-mac (65 13 13 66) cp874-mac) ((3617 10) ((0 2 cp874)) cp874-mac (65 13 13 66) cp874-mac))
+E cyrillic-alternativnyj auto (((97 98 99) ((0 3 nil)) cyrillic-alternativnyj (65 13 10 66) cyrillic-alternativnyj) ((120 10 121) ((0 3 alternativnyj)) cyrillic-alternativnyj-dos (65 13 10 66) cyrillic-alternativnyj) ((9524 10 37 9516) ((0 4 alternativnyj)) cyrillic-alternativnyj-mac (65 13 10 66) cyrillic-alternativnyj) ((9524 10) ((0 2 alternativnyj)) cyrillic-alternativnyj-mac (65 13 10 66) cyrillic-alternativnyj))
+E cyrillic-alternativnyj unix (((97 98 99) ((0 3 nil)) cyrillic-alternativnyj-unix (65 13 10 66) cyrillic-alternativnyj-unix) ((120 13 10 121) ((0 4 nil)) cyrillic-alternativnyj-unix (65 13 10 66) cyrillic-alternativnyj-unix) ((9524 13 37 9516) ((0 4 alternativnyj)) cyrillic-alternativnyj-unix (65 13 10 66) cyrillic-alternativnyj-unix) ((9524 13) ((0 2 alternativnyj)) cyrillic-alternativnyj-unix (65 13 10 66) cyrillic-alternativnyj-unix))
+E cyrillic-alternativnyj dos (((97 98 99) ((0 3 nil)) cyrillic-alternativnyj-dos (65 13 13 10 66) cyrillic-alternativnyj-dos) ((120 10 121) ((0 3 alternativnyj)) cyrillic-alternativnyj-dos (65 13 13 10 66) cyrillic-alternativnyj-dos) ((9524 13 37 9516) ((0 4 alternativnyj)) cyrillic-alternativnyj-dos (65 13 13 10 66) cyrillic-alternativnyj-dos) ((9524 13) ((0 1 alternativnyj) (1 2 nil)) cyrillic-alternativnyj-dos (65 13 13 10 66) cyrillic-alternativnyj-dos))
+E cyrillic-alternativnyj mac (((97 98 99) ((0 3 nil)) cyrillic-alternativnyj-mac (65 13 13 66) cyrillic-alternativnyj-mac) ((120 10 10 121) ((0 4 alternativnyj)) cyrillic-alternativnyj-mac (65 13 13 66) cyrillic-alternativnyj-mac) ((9524 10 37 9516) ((0 4 alternativnyj)) cyrillic-alternativnyj-mac (65 13 13 66) cyrillic-alternativnyj-mac) ((9524 10) ((0 2 alternativnyj)) cyrillic-alternativnyj-mac (65 13 13 66) cyrillic-alternativnyj-mac))
+E cyrillic-iso-8bit auto     (((97 98 99) ((0 3 nil)) cyrillic-iso-8bit (65 13 10 66) cyrillic-iso-8bit) ((120 10 121) ((0 3 iso-8859-5)) cyrillic-iso-8bit-dos (65 13 10 66) cyrillic-iso-8bit) ((1057 10 37 1058) ((0 4 iso-8859-5)) cyrillic-iso-8bit-mac (65 13 10 66) cyrillic-iso-8bit) ((1057 10) ((0 2 iso-8859-5)) cyrillic-iso-8bit-mac (65 13 10 66) cyrillic-iso-8bit))
+E cyrillic-iso-8bit unix     (((97 98 99) ((0 3 nil)) cyrillic-iso-8bit-unix (65 13 10 66) cyrillic-iso-8bit-unix) ((120 13 10 121) ((0 4 nil)) cyrillic-iso-8bit-unix (65 13 10 66) cyrillic-iso-8bit-unix) ((1057 13 37 1058) ((0 4 iso-8859-5)) cyrillic-iso-8bit-unix (65 13 10 66) cyrillic-iso-8bit-unix) ((1057 13) ((0 2 iso-8859-5)) cyrillic-iso-8bit-unix (65 13 10 66) cyrillic-iso-8bit-unix))
+E cyrillic-iso-8bit dos      (((97 98 99) ((0 3 nil)) cyrillic-iso-8bit-dos (65 13 13 10 66) cyrillic-iso-8bit-dos) ((120 10 121) ((0 3 iso-8859-5)) cyrillic-iso-8bit-dos (65 13 13 10 66) cyrillic-iso-8bit-dos) ((1057 13 37 1058) ((0 4 iso-8859-5)) cyrillic-iso-8bit-dos (65 13 13 10 66) cyrillic-iso-8bit-dos) ((1057 13) ((0 1 iso-8859-5) (1 2 nil)) cyrillic-iso-8bit-dos (65 13 13 10 66) cyrillic-iso-8bit-dos))
+E cyrillic-iso-8bit mac      (((97 98 99) ((0 3 nil)) cyrillic-iso-8bit-mac (65 13 13 66) cyrillic-iso-8bit-mac) ((120 10 10 121) ((0 4 iso-8859-5)) cyrillic-iso-8bit-mac (65 13 13 66) cyrillic-iso-8bit-mac) ((1057 10 37 1058) ((0 4 iso-8859-5)) cyrillic-iso-8bit-mac (65 13 13 66) cyrillic-iso-8bit-mac) ((1057 10) ((0 2 iso-8859-5)) cyrillic-iso-8bit-mac (65 13 13 66) cyrillic-iso-8bit-mac))
+E cyrillic-koi8 auto         (((97 98 99) ((0 3 nil)) cyrillic-koi8 (65 13 10 66) cyrillic-koi8) ((120 10 121) ((0 3 koi8-r)) cyrillic-koi8-dos (65 13 10 66) cyrillic-koi8) ((1072 10 37 1073) ((0 4 koi8-r)) cyrillic-koi8-mac (65 13 10 66) cyrillic-koi8) ((1072 10) ((0 2 koi8-r)) cyrillic-koi8-mac (65 13 10 66) cyrillic-koi8))
+E cyrillic-koi8 unix         (((97 98 99) ((0 3 nil)) cyrillic-koi8-unix (65 13 10 66) cyrillic-koi8-unix) ((120 13 10 121) ((0 4 nil)) cyrillic-koi8-unix (65 13 10 66) cyrillic-koi8-unix) ((1072 13 37 1073) ((0 4 koi8-r)) cyrillic-koi8-unix (65 13 10 66) cyrillic-koi8-unix) ((1072 13) ((0 2 koi8-r)) cyrillic-koi8-unix (65 13 10 66) cyrillic-koi8-unix))
+E cyrillic-koi8 dos          (((97 98 99) ((0 3 nil)) cyrillic-koi8-dos (65 13 13 10 66) cyrillic-koi8-dos) ((120 10 121) ((0 3 koi8-r)) cyrillic-koi8-dos (65 13 13 10 66) cyrillic-koi8-dos) ((1072 13 37 1073) ((0 4 koi8-r)) cyrillic-koi8-dos (65 13 13 10 66) cyrillic-koi8-dos) ((1072 13) ((0 1 koi8-r) (1 2 nil)) cyrillic-koi8-dos (65 13 13 10 66) cyrillic-koi8-dos))
+E cyrillic-koi8 mac          (((97 98 99) ((0 3 nil)) cyrillic-koi8-mac (65 13 13 66) cyrillic-koi8-mac) ((120 10 10 121) ((0 4 koi8-r)) cyrillic-koi8-mac (65 13 13 66) cyrillic-koi8-mac) ((1072 10 37 1073) ((0 4 koi8-r)) cyrillic-koi8-mac (65 13 13 66) cyrillic-koi8-mac) ((1072 10) ((0 2 koi8-r)) cyrillic-koi8-mac (65 13 13 66) cyrillic-koi8-mac))
+E ebcdic-uk auto             (((47 98 99) ((0 3 ebcdic-uk)) ebcdic-uk (193 13 37 194) ebcdic-uk) ((120 10 142 96) ((0 1 nil) (1 4 ebcdic-uk)) ebcdic-uk-mac (193 13 37 194) ebcdic-uk) ((65 10 66) ((0 3 ebcdic-uk)) ebcdic-uk-dos (193 13 37 194) ebcdic-uk) ((65 10) ((0 2 ebcdic-uk)) ebcdic-uk-mac (193 13 37 194) ebcdic-uk))
+E ebcdic-uk unix             (((47 98 99) ((0 3 ebcdic-uk)) ebcdic-uk-unix (193 13 37 194) ebcdic-uk-unix) ((120 13 142 96) ((0 1 nil) (1 4 ebcdic-uk)) ebcdic-uk-unix (193 13 37 194) ebcdic-uk-unix) ((65 13 10 66) ((0 4 ebcdic-uk)) ebcdic-uk-unix (193 13 37 194) ebcdic-uk-unix) ((65 13) ((0 2 ebcdic-uk)) ebcdic-uk-unix (193 13 37 194) ebcdic-uk-unix))
+E ebcdic-uk dos              (((47 98 99) ((0 3 ebcdic-uk)) ebcdic-uk-dos (193 13 13 37 194) ebcdic-uk-dos) ((120 13 142 96) ((0 1 nil) (1 4 ebcdic-uk)) ebcdic-uk-dos (193 13 13 37 194) ebcdic-uk-dos) ((65 10 66) ((0 3 ebcdic-uk)) ebcdic-uk-dos (193 13 13 37 194) ebcdic-uk-dos) ((65 13) ((0 1 ebcdic-uk) (1 2 nil)) ebcdic-uk-dos (193 13 13 37 194) ebcdic-uk-dos))
+E ebcdic-uk mac              (((47 98 99) ((0 3 ebcdic-uk)) ebcdic-uk-mac (193 13 13 194) ebcdic-uk-mac) ((120 10 142 96) ((0 1 nil) (1 4 ebcdic-uk)) ebcdic-uk-mac (193 13 13 194) ebcdic-uk-mac) ((65 10 10 66) ((0 4 ebcdic-uk)) ebcdic-uk-mac (193 13 13 194) ebcdic-uk-mac) ((65 10) ((0 2 ebcdic-uk)) ebcdic-uk-mac (193 13 13 194) ebcdic-uk-mac))
+E ebcdic-us auto             (((47 98 99) ((0 3 ebcdic-us)) ebcdic-us (193 13 37 194) ebcdic-us) ((120 10 142 96) ((0 1 nil) (1 4 ebcdic-us)) ebcdic-us-mac (193 13 37 194) ebcdic-us) ((65 10 66) ((0 3 ebcdic-us)) ebcdic-us-dos (193 13 37 194) ebcdic-us) ((65 10) ((0 2 ebcdic-us)) ebcdic-us-mac (193 13 37 194) ebcdic-us))
+E ebcdic-us unix             (((47 98 99) ((0 3 ebcdic-us)) ebcdic-us-unix (193 13 37 194) ebcdic-us-unix) ((120 13 142 96) ((0 1 nil) (1 4 ebcdic-us)) ebcdic-us-unix (193 13 37 194) ebcdic-us-unix) ((65 13 10 66) ((0 4 ebcdic-us)) ebcdic-us-unix (193 13 37 194) ebcdic-us-unix) ((65 13) ((0 2 ebcdic-us)) ebcdic-us-unix (193 13 37 194) ebcdic-us-unix))
+E ebcdic-us dos              (((47 98 99) ((0 3 ebcdic-us)) ebcdic-us-dos (193 13 13 37 194) ebcdic-us-dos) ((120 13 142 96) ((0 1 nil) (1 4 ebcdic-us)) ebcdic-us-dos (193 13 13 37 194) ebcdic-us-dos) ((65 10 66) ((0 3 ebcdic-us)) ebcdic-us-dos (193 13 13 37 194) ebcdic-us-dos) ((65 13) ((0 1 ebcdic-us) (1 2 nil)) ebcdic-us-dos (193 13 13 37 194) ebcdic-us-dos))
+E ebcdic-us mac              (((47 98 99) ((0 3 ebcdic-us)) ebcdic-us-mac (193 13 13 194) ebcdic-us-mac) ((120 10 142 96) ((0 1 nil) (1 4 ebcdic-us)) ebcdic-us-mac (193 13 13 194) ebcdic-us-mac) ((65 10 10 66) ((0 4 ebcdic-us)) ebcdic-us-mac (193 13 13 194) ebcdic-us-mac) ((65 10) ((0 2 ebcdic-us)) ebcdic-us-mac (193 13 13 194) ebcdic-us-mac))
+E georgian-academy auto      (((97 98 99) ((0 3 nil)) georgian-academy (65 13 10 66) georgian-academy) ((120 10 121) ((0 3 georgian-academy)) georgian-academy-dos (65 13 10 66) georgian-academy) ((4305 10 37 4306) ((0 4 georgian-academy)) georgian-academy-mac (65 13 10 66) georgian-academy) ((4305 10) ((0 2 georgian-academy)) georgian-academy-mac (65 13 10 66) georgian-academy))
+E georgian-academy unix      (((97 98 99) ((0 3 nil)) georgian-academy-unix (65 13 10 66) georgian-academy-unix) ((120 13 10 121) ((0 4 nil)) georgian-academy-unix (65 13 10 66) georgian-academy-unix) ((4305 13 37 4306) ((0 4 georgian-academy)) georgian-academy-unix (65 13 10 66) georgian-academy-unix) ((4305 13) ((0 2 georgian-academy)) georgian-academy-unix (65 13 10 66) georgian-academy-unix))
+E georgian-academy dos       (((97 98 99) ((0 3 nil)) georgian-academy-dos (65 13 13 10 66) georgian-academy-dos) ((120 10 121) ((0 3 georgian-academy)) georgian-academy-dos (65 13 13 10 66) georgian-academy-dos) ((4305 13 37 4306) ((0 4 georgian-academy)) georgian-academy-dos (65 13 13 10 66) georgian-academy-dos) ((4305 13) ((0 1 georgian-academy) (1 2 nil)) georgian-academy-dos (65 13 13 10 66) georgian-academy-dos))
+E georgian-academy mac       (((97 98 99) ((0 3 nil)) georgian-academy-mac (65 13 13 66) georgian-academy-mac) ((120 10 10 121) ((0 4 georgian-academy)) georgian-academy-mac (65 13 13 66) georgian-academy-mac) ((4305 10 37 4306) ((0 4 georgian-academy)) georgian-academy-mac (65 13 13 66) georgian-academy-mac) ((4305 10) ((0 2 georgian-academy)) georgian-academy-mac (65 13 13 66) georgian-academy-mac))
+E georgian-ps auto           (((97 98 99) ((0 3 nil)) georgian-ps (65 13 10 66) georgian-ps) ((120 10 121) ((0 3 georgian-ps)) georgian-ps-dos (65 13 10 66) georgian-ps) ((4305 10 37 4306) ((0 4 georgian-ps)) georgian-ps-mac (65 13 10 66) georgian-ps) ((4305 10) ((0 2 georgian-ps)) georgian-ps-mac (65 13 10 66) georgian-ps))
+E georgian-ps unix           (((97 98 99) ((0 3 nil)) georgian-ps-unix (65 13 10 66) georgian-ps-unix) ((120 13 10 121) ((0 4 nil)) georgian-ps-unix (65 13 10 66) georgian-ps-unix) ((4305 13 37 4306) ((0 4 georgian-ps)) georgian-ps-unix (65 13 10 66) georgian-ps-unix) ((4305 13) ((0 2 georgian-ps)) georgian-ps-unix (65 13 10 66) georgian-ps-unix))
+E georgian-ps dos            (((97 98 99) ((0 3 nil)) georgian-ps-dos (65 13 13 10 66) georgian-ps-dos) ((120 10 121) ((0 3 georgian-ps)) georgian-ps-dos (65 13 13 10 66) georgian-ps-dos) ((4305 13 37 4306) ((0 4 georgian-ps)) georgian-ps-dos (65 13 13 10 66) georgian-ps-dos) ((4305 13) ((0 1 georgian-ps) (1 2 nil)) georgian-ps-dos (65 13 13 10 66) georgian-ps-dos))
+E georgian-ps mac            (((97 98 99) ((0 3 nil)) georgian-ps-mac (65 13 13 66) georgian-ps-mac) ((120 10 10 121) ((0 4 georgian-ps)) georgian-ps-mac (65 13 13 66) georgian-ps-mac) ((4305 10 37 4306) ((0 4 georgian-ps)) georgian-ps-mac (65 13 13 66) georgian-ps-mac) ((4305 10) ((0 2 georgian-ps)) georgian-ps-mac (65 13 13 66) georgian-ps-mac))
+E greek-iso-8bit auto        (((97 98 99) ((0 3 nil)) greek-iso-8bit (65 13 10 66) greek-iso-8bit) ((120 10 121) ((0 3 iso-8859-7)) greek-iso-8bit-dos (65 13 10 66) greek-iso-8bit) ((913 10 37 914) ((0 4 iso-8859-7)) greek-iso-8bit-mac (65 13 10 66) greek-iso-8bit) ((913 10) ((0 2 iso-8859-7)) greek-iso-8bit-mac (65 13 10 66) greek-iso-8bit))
+E greek-iso-8bit unix        (((97 98 99) ((0 3 nil)) greek-iso-8bit-unix (65 13 10 66) greek-iso-8bit-unix) ((120 13 10 121) ((0 4 nil)) greek-iso-8bit-unix (65 13 10 66) greek-iso-8bit-unix) ((913 13 37 914) ((0 4 iso-8859-7)) greek-iso-8bit-unix (65 13 10 66) greek-iso-8bit-unix) ((913 13) ((0 2 iso-8859-7)) greek-iso-8bit-unix (65 13 10 66) greek-iso-8bit-unix))
+E greek-iso-8bit dos         (((97 98 99) ((0 3 nil)) greek-iso-8bit-dos (65 13 13 10 66) greek-iso-8bit-dos) ((120 10 121) ((0 3 iso-8859-7)) greek-iso-8bit-dos (65 13 13 10 66) greek-iso-8bit-dos) ((913 13 37 914) ((0 4 iso-8859-7)) greek-iso-8bit-dos (65 13 13 10 66) greek-iso-8bit-dos) ((913 13) ((0 1 iso-8859-7) (1 2 nil)) greek-iso-8bit-dos (65 13 13 10 66) greek-iso-8bit-dos))
+E greek-iso-8bit mac         (((97 98 99) ((0 3 nil)) greek-iso-8bit-mac (65 13 13 66) greek-iso-8bit-mac) ((120 10 10 121) ((0 4 iso-8859-7)) greek-iso-8bit-mac (65 13 13 66) greek-iso-8bit-mac) ((913 10 37 914) ((0 4 iso-8859-7)) greek-iso-8bit-mac (65 13 13 66) greek-iso-8bit-mac) ((913 10) ((0 2 iso-8859-7)) greek-iso-8bit-mac (65 13 13 66) greek-iso-8bit-mac))
+E hebrew-iso-8bit auto       (((97 98 99) ((0 3 nil)) hebrew-iso-8bit (65 13 10 66) hebrew-iso-8bit) ((120 10 121) ((0 3 iso-8859-8)) hebrew-iso-8bit-dos (65 13 10 66) hebrew-iso-8bit) ((4194241 10 37 4194242) ((0 1 nil) (1 4 iso-8859-8)) hebrew-iso-8bit-mac (65 13 10 66) hebrew-iso-8bit) ((4194241 10) ((0 1 nil) (1 2 iso-8859-8)) hebrew-iso-8bit-mac (65 13 10 66) hebrew-iso-8bit))
+E hebrew-iso-8bit unix       (((97 98 99) ((0 3 nil)) hebrew-iso-8bit-unix (65 13 10 66) hebrew-iso-8bit-unix) ((120 13 10 121) ((0 4 nil)) hebrew-iso-8bit-unix (65 13 10 66) hebrew-iso-8bit-unix) ((4194241 13 37 4194242) ((0 1 nil) (1 4 iso-8859-8)) hebrew-iso-8bit-unix (65 13 10 66) hebrew-iso-8bit-unix) ((4194241 13) ((0 1 nil) (1 2 iso-8859-8)) hebrew-iso-8bit-unix (65 13 10 66) hebrew-iso-8bit-unix))
+E hebrew-iso-8bit dos        (((97 98 99) ((0 3 nil)) hebrew-iso-8bit-dos (65 13 13 10 66) hebrew-iso-8bit-dos) ((120 10 121) ((0 3 iso-8859-8)) hebrew-iso-8bit-dos (65 13 13 10 66) hebrew-iso-8bit-dos) ((4194241 13 37 4194242) ((0 1 nil) (1 4 iso-8859-8)) hebrew-iso-8bit-dos (65 13 13 10 66) hebrew-iso-8bit-dos) ((4194241 13) ((0 2 nil)) hebrew-iso-8bit-dos (65 13 13 10 66) hebrew-iso-8bit-dos))
+E hebrew-iso-8bit mac        (((97 98 99) ((0 3 nil)) hebrew-iso-8bit-mac (65 13 13 66) hebrew-iso-8bit-mac) ((120 10 10 121) ((0 4 iso-8859-8)) hebrew-iso-8bit-mac (65 13 13 66) hebrew-iso-8bit-mac) ((4194241 10 37 4194242) ((0 1 nil) (1 4 iso-8859-8)) hebrew-iso-8bit-mac (65 13 13 66) hebrew-iso-8bit-mac) ((4194241 10) ((0 1 nil) (1 2 iso-8859-8)) hebrew-iso-8bit-mac (65 13 13 66) hebrew-iso-8bit-mac))
+E hp-roman8 auto             (((97 98 99) ((0 3 nil)) hp-roman8 (65 13 10 66) hp-roman8) ((120 10 121) ((0 3 hp-roman8)) hp-roman8-dos (65 13 10 66) hp-roman8) ((234 10 37 244) ((0 4 hp-roman8)) hp-roman8-mac (65 13 10 66) hp-roman8) ((234 10) ((0 2 hp-roman8)) hp-roman8-mac (65 13 10 66) hp-roman8))
+E hp-roman8 unix             (((97 98 99) ((0 3 nil)) hp-roman8-unix (65 13 10 66) hp-roman8-unix) ((120 13 10 121) ((0 4 nil)) hp-roman8-unix (65 13 10 66) hp-roman8-unix) ((234 13 37 244) ((0 4 hp-roman8)) hp-roman8-unix (65 13 10 66) hp-roman8-unix) ((234 13) ((0 2 hp-roman8)) hp-roman8-unix (65 13 10 66) hp-roman8-unix))
+E hp-roman8 dos              (((97 98 99) ((0 3 nil)) hp-roman8-dos (65 13 13 10 66) hp-roman8-dos) ((120 10 121) ((0 3 hp-roman8)) hp-roman8-dos (65 13 13 10 66) hp-roman8-dos) ((234 13 37 244) ((0 4 hp-roman8)) hp-roman8-dos (65 13 13 10 66) hp-roman8-dos) ((234 13) ((0 1 hp-roman8) (1 2 nil)) hp-roman8-dos (65 13 13 10 66) hp-roman8-dos))
+E hp-roman8 mac              (((97 98 99) ((0 3 nil)) hp-roman8-mac (65 13 13 66) hp-roman8-mac) ((120 10 10 121) ((0 4 hp-roman8)) hp-roman8-mac (65 13 13 66) hp-roman8-mac) ((234 10 37 244) ((0 4 hp-roman8)) hp-roman8-mac (65 13 13 66) hp-roman8-mac) ((234 10) ((0 2 hp-roman8)) hp-roman8-mac (65 13 13 66) hp-roman8-mac))
+E ibm038 auto                (((47 98 99) ((0 3 ibm038)) ibm038 (193 13 37 194) ibm038) ((120 10 142 96) ((0 1 nil) (1 4 ibm038)) ibm038-mac (193 13 37 194) ibm038) ((65 10 66) ((0 3 ibm038)) ibm038-dos (193 13 37 194) ibm038) ((65 10) ((0 2 ibm038)) ibm038-mac (193 13 37 194) ibm038))
+E ibm038 unix                (((47 98 99) ((0 3 ibm038)) ibm038-unix (193 13 37 194) ibm038-unix) ((120 13 142 96) ((0 1 nil) (1 4 ibm038)) ibm038-unix (193 13 37 194) ibm038-unix) ((65 13 10 66) ((0 4 ibm038)) ibm038-unix (193 13 37 194) ibm038-unix) ((65 13) ((0 2 ibm038)) ibm038-unix (193 13 37 194) ibm038-unix))
+E ibm038 dos                 (((47 98 99) ((0 3 ibm038)) ibm038-dos (193 13 13 37 194) ibm038-dos) ((120 13 142 96) ((0 1 nil) (1 4 ibm038)) ibm038-dos (193 13 13 37 194) ibm038-dos) ((65 10 66) ((0 3 ibm038)) ibm038-dos (193 13 13 37 194) ibm038-dos) ((65 13) ((0 1 ibm038) (1 2 nil)) ibm038-dos (193 13 13 37 194) ibm038-dos))
+E ibm038 mac                 (((47 98 99) ((0 3 ibm038)) ibm038-mac (193 13 13 194) ibm038-mac) ((120 10 142 96) ((0 1 nil) (1 4 ibm038)) ibm038-mac (193 13 13 194) ibm038-mac) ((65 10 10 66) ((0 4 ibm038)) ibm038-mac (193 13 13 194) ibm038-mac) ((65 10) ((0 2 ibm038)) ibm038-mac (193 13 13 194) ibm038-mac))
+E ibm1047 auto               (((47 194 196) ((0 3 ibm1047)) ibm1047 (193 13 37 194) ibm1047) ((204 10 142 96) ((0 4 ibm1047)) ibm1047-mac (193 13 37 194) ibm1047) ((65 10 66) ((0 3 ibm1047)) ibm1047-dos (193 13 37 194) ibm1047) ((65 10) ((0 2 ibm1047)) ibm1047-mac (193 13 37 194) ibm1047))
+E ibm1047 unix               (((47 194 196) ((0 3 ibm1047)) ibm1047-unix (193 13 37 194) ibm1047-unix) ((204 13 142 96) ((0 4 ibm1047)) ibm1047-unix (193 13 37 194) ibm1047-unix) ((65 13 10 66) ((0 4 ibm1047)) ibm1047-unix (193 13 37 194) ibm1047-unix) ((65 13) ((0 2 ibm1047)) ibm1047-unix (193 13 37 194) ibm1047-unix))
+E ibm1047 dos                (((47 194 196) ((0 3 ibm1047)) ibm1047-dos (193 13 13 37 194) ibm1047-dos) ((204 13 142 96) ((0 4 ibm1047)) ibm1047-dos (193 13 13 37 194) ibm1047-dos) ((65 10 66) ((0 3 ibm1047)) ibm1047-dos (193 13 13 37 194) ibm1047-dos) ((65 13) ((0 1 ibm1047) (1 2 nil)) ibm1047-dos (193 13 13 37 194) ibm1047-dos))
+E ibm1047 mac                (((47 194 196) ((0 3 ibm1047)) ibm1047-mac (193 13 13 194) ibm1047-mac) ((204 10 142 96) ((0 4 ibm1047)) ibm1047-mac (193 13 13 194) ibm1047-mac) ((65 10 10 66) ((0 4 ibm1047)) ibm1047-mac (193 13 13 194) ibm1047-mac) ((65 10) ((0 2 ibm1047)) ibm1047-mac (193 13 13 194) ibm1047-mac))
+E ibm256 auto                (((47 194 196) ((0 3 ibm256)) ibm256 (193 13 37 194) ibm256) ((204 10 142 96) ((0 4 ibm256)) ibm256-mac (193 13 37 194) ibm256) ((65 10 66) ((0 3 ibm256)) ibm256-dos (193 13 37 194) ibm256) ((65 10) ((0 2 ibm256)) ibm256-mac (193 13 37 194) ibm256))
+E ibm256 unix                (((47 194 196) ((0 3 ibm256)) ibm256-unix (193 13 37 194) ibm256-unix) ((204 13 142 96) ((0 4 ibm256)) ibm256-unix (193 13 37 194) ibm256-unix) ((65 13 10 66) ((0 4 ibm256)) ibm256-unix (193 13 37 194) ibm256-unix) ((65 13) ((0 2 ibm256)) ibm256-unix (193 13 37 194) ibm256-unix))
+E ibm256 dos                 (((47 194 196) ((0 3 ibm256)) ibm256-dos (193 13 13 37 194) ibm256-dos) ((204 13 142 96) ((0 4 ibm256)) ibm256-dos (193 13 13 37 194) ibm256-dos) ((65 10 66) ((0 3 ibm256)) ibm256-dos (193 13 13 37 194) ibm256-dos) ((65 13) ((0 1 ibm256) (1 2 nil)) ibm256-dos (193 13 13 37 194) ibm256-dos))
+E ibm256 mac                 (((47 194 196) ((0 3 ibm256)) ibm256-mac (193 13 13 194) ibm256-mac) ((204 10 142 96) ((0 4 ibm256)) ibm256-mac (193 13 13 194) ibm256-mac) ((65 10 10 66) ((0 4 ibm256)) ibm256-mac (193 13 13 194) ibm256-mac) ((65 10) ((0 2 ibm256)) ibm256-mac (193 13 13 194) ibm256-mac))
+E ibm273 auto                (((47 194 91) ((0 3 ibm273)) ibm273 (193 13 37 194) ibm273) ((204 10 142 96) ((0 4 ibm273)) ibm273-mac (193 13 37 194) ibm273) ((65 10 66) ((0 3 ibm273)) ibm273-dos (193 13 37 194) ibm273) ((65 10) ((0 2 ibm273)) ibm273-mac (193 13 37 194) ibm273))
+E ibm273 unix                (((47 194 91) ((0 3 ibm273)) ibm273-unix (193 13 37 194) ibm273-unix) ((204 13 142 96) ((0 4 ibm273)) ibm273-unix (193 13 37 194) ibm273-unix) ((65 13 10 66) ((0 4 ibm273)) ibm273-unix (193 13 37 194) ibm273-unix) ((65 13) ((0 2 ibm273)) ibm273-unix (193 13 37 194) ibm273-unix))
+E ibm273 dos                 (((47 194 91) ((0 3 ibm273)) ibm273-dos (193 13 13 37 194) ibm273-dos) ((204 13 142 96) ((0 4 ibm273)) ibm273-dos (193 13 13 37 194) ibm273-dos) ((65 10 66) ((0 3 ibm273)) ibm273-dos (193 13 13 37 194) ibm273-dos) ((65 13) ((0 1 ibm273) (1 2 nil)) ibm273-dos (193 13 13 37 194) ibm273-dos))
+E ibm273 mac                 (((47 194 91) ((0 3 ibm273)) ibm273-mac (193 13 13 194) ibm273-mac) ((204 10 142 96) ((0 4 ibm273)) ibm273-mac (193 13 13 194) ibm273-mac) ((65 10 10 66) ((0 4 ibm273)) ibm273-mac (193 13 13 194) ibm273-mac) ((65 10) ((0 2 ibm273)) ibm273-mac (193 13 13 194) ibm273-mac))
+E ibm274 auto                (((47 98 99) ((0 3 ibm274)) ibm274 (193 13 37 194) ibm274) ((120 10 142 96) ((0 1 nil) (1 4 ibm274)) ibm274-mac (193 13 37 194) ibm274) ((65 10 66) ((0 3 ibm274)) ibm274-dos (193 13 37 194) ibm274) ((65 10) ((0 2 ibm274)) ibm274-mac (193 13 37 194) ibm274))
+E ibm274 unix                (((47 98 99) ((0 3 ibm274)) ibm274-unix (193 13 37 194) ibm274-unix) ((120 13 142 96) ((0 1 nil) (1 4 ibm274)) ibm274-unix (193 13 37 194) ibm274-unix) ((65 13 10 66) ((0 4 ibm274)) ibm274-unix (193 13 37 194) ibm274-unix) ((65 13) ((0 2 ibm274)) ibm274-unix (193 13 37 194) ibm274-unix))
+E ibm274 dos                 (((47 98 99) ((0 3 ibm274)) ibm274-dos (193 13 13 37 194) ibm274-dos) ((120 13 142 96) ((0 1 nil) (1 4 ibm274)) ibm274-dos (193 13 13 37 194) ibm274-dos) ((65 10 66) ((0 3 ibm274)) ibm274-dos (193 13 13 37 194) ibm274-dos) ((65 13) ((0 1 ibm274) (1 2 nil)) ibm274-dos (193 13 13 37 194) ibm274-dos))
+E ibm274 mac                 (((47 98 99) ((0 3 ibm274)) ibm274-mac (193 13 13 194) ibm274-mac) ((120 10 142 96) ((0 1 nil) (1 4 ibm274)) ibm274-mac (193 13 13 194) ibm274-mac) ((65 10 10 66) ((0 4 ibm274)) ibm274-mac (193 13 13 194) ibm274-mac) ((65 10) ((0 2 ibm274)) ibm274-mac (193 13 13 194) ibm274-mac))
+E ibm275 auto                (((47 98 99) ((0 3 ibm275)) ibm275 (193 13 37 194) ibm275) ((120 10 142 227) ((0 1 nil) (1 4 ibm275)) ibm275-mac (193 13 37 194) ibm275) ((65 10 66) ((0 3 ibm275)) ibm275-dos (193 13 37 194) ibm275) ((65 10) ((0 2 ibm275)) ibm275-mac (193 13 37 194) ibm275))
+E ibm275 unix                (((47 98 99) ((0 3 ibm275)) ibm275-unix (193 13 37 194) ibm275-unix) ((120 13 142 227) ((0 1 nil) (1 4 ibm275)) ibm275-unix (193 13 37 194) ibm275-unix) ((65 13 10 66) ((0 4 ibm275)) ibm275-unix (193 13 37 194) ibm275-unix) ((65 13) ((0 2 ibm275)) ibm275-unix (193 13 37 194) ibm275-unix))
+E ibm275 dos                 (((47 98 99) ((0 3 ibm275)) ibm275-dos (193 13 13 37 194) ibm275-dos) ((120 13 142 227) ((0 1 nil) (1 4 ibm275)) ibm275-dos (193 13 13 37 194) ibm275-dos) ((65 10 66) ((0 3 ibm275)) ibm275-dos (193 13 13 37 194) ibm275-dos) ((65 13) ((0 1 ibm275) (1 2 nil)) ibm275-dos (193 13 13 37 194) ibm275-dos))
+E ibm275 mac                 (((47 98 99) ((0 3 ibm275)) ibm275-mac (193 13 13 194) ibm275-mac) ((120 10 142 227) ((0 1 nil) (1 4 ibm275)) ibm275-mac (193 13 13 194) ibm275-mac) ((65 10 10 66) ((0 4 ibm275)) ibm275-mac (193 13 13 194) ibm275-mac) ((65 10) ((0 2 ibm275)) ibm275-mac (193 13 13 194) ibm275-mac))
+E ibm277 auto                (((47 194 196) ((0 3 ibm277)) ibm277 (193 13 37 194) ibm277) ((204 10 142 96) ((0 4 ibm277)) ibm277-mac (193 13 37 194) ibm277) ((65 10 66) ((0 3 ibm277)) ibm277-dos (193 13 37 194) ibm277) ((65 10) ((0 2 ibm277)) ibm277-mac (193 13 37 194) ibm277))
+E ibm277 unix                (((47 194 196) ((0 3 ibm277)) ibm277-unix (193 13 37 194) ibm277-unix) ((204 13 142 96) ((0 4 ibm277)) ibm277-unix (193 13 37 194) ibm277-unix) ((65 13 10 66) ((0 4 ibm277)) ibm277-unix (193 13 37 194) ibm277-unix) ((65 13) ((0 2 ibm277)) ibm277-unix (193 13 37 194) ibm277-unix))
+E ibm277 dos                 (((47 194 196) ((0 3 ibm277)) ibm277-dos (193 13 13 37 194) ibm277-dos) ((204 13 142 96) ((0 4 ibm277)) ibm277-dos (193 13 13 37 194) ibm277-dos) ((65 10 66) ((0 3 ibm277)) ibm277-dos (193 13 13 37 194) ibm277-dos) ((65 13) ((0 1 ibm277) (1 2 nil)) ibm277-dos (193 13 13 37 194) ibm277-dos))
+E ibm277 mac                 (((47 194 196) ((0 3 ibm277)) ibm277-mac (193 13 13 194) ibm277-mac) ((204 10 142 96) ((0 4 ibm277)) ibm277-mac (193 13 13 194) ibm277-mac) ((65 10 10 66) ((0 4 ibm277)) ibm277-mac (193 13 13 194) ibm277-mac) ((65 10) ((0 2 ibm277)) ibm277-mac (193 13 13 194) ibm277-mac))
+E ibm278 auto                (((47 194 35) ((0 3 ibm278)) ibm278 (193 13 37 194) ibm278) ((204 10 142 233) ((0 4 ibm278)) ibm278-mac (193 13 37 194) ibm278) ((65 10 66) ((0 3 ibm278)) ibm278-dos (193 13 37 194) ibm278) ((65 10) ((0 2 ibm278)) ibm278-mac (193 13 37 194) ibm278))
+E ibm278 unix                (((47 194 35) ((0 3 ibm278)) ibm278-unix (193 13 37 194) ibm278-unix) ((204 13 142 233) ((0 4 ibm278)) ibm278-unix (193 13 37 194) ibm278-unix) ((65 13 10 66) ((0 4 ibm278)) ibm278-unix (193 13 37 194) ibm278-unix) ((65 13) ((0 2 ibm278)) ibm278-unix (193 13 37 194) ibm278-unix))
+E ibm278 dos                 (((47 194 35) ((0 3 ibm278)) ibm278-dos (193 13 13 37 194) ibm278-dos) ((204 13 142 233) ((0 4 ibm278)) ibm278-dos (193 13 13 37 194) ibm278-dos) ((65 10 66) ((0 3 ibm278)) ibm278-dos (193 13 13 37 194) ibm278-dos) ((65 13) ((0 1 ibm278) (1 2 nil)) ibm278-dos (193 13 13 37 194) ibm278-dos))
+E ibm278 mac                 (((47 194 35) ((0 3 ibm278)) ibm278-mac (193 13 13 194) ibm278-mac) ((204 10 142 233) ((0 4 ibm278)) ibm278-mac (193 13 13 194) ibm278-mac) ((65 10 10 66) ((0 4 ibm278)) ibm278-mac (193 13 13 194) ibm278-mac) ((65 10) ((0 2 ibm278)) ibm278-mac (193 13 13 194) ibm278-mac))
+E ibm280 auto                (((47 194 196) ((0 3 ibm280)) ibm280 (193 13 37 194) ibm280) ((204 10 142 249) ((0 4 ibm280)) ibm280-mac (193 13 37 194) ibm280) ((65 10 66) ((0 3 ibm280)) ibm280-dos (193 13 37 194) ibm280) ((65 10) ((0 2 ibm280)) ibm280-mac (193 13 37 194) ibm280))
+E ibm280 unix                (((47 194 196) ((0 3 ibm280)) ibm280-unix (193 13 37 194) ibm280-unix) ((204 13 142 249) ((0 4 ibm280)) ibm280-unix (193 13 37 194) ibm280-unix) ((65 13 10 66) ((0 4 ibm280)) ibm280-unix (193 13 37 194) ibm280-unix) ((65 13) ((0 2 ibm280)) ibm280-unix (193 13 37 194) ibm280-unix))
+E ibm280 dos                 (((47 194 196) ((0 3 ibm280)) ibm280-dos (193 13 13 37 194) ibm280-dos) ((204 13 142 249) ((0 4 ibm280)) ibm280-dos (193 13 13 37 194) ibm280-dos) ((65 10 66) ((0 3 ibm280)) ibm280-dos (193 13 13 37 194) ibm280-dos) ((65 13) ((0 1 ibm280) (1 2 nil)) ibm280-dos (193 13 13 37 194) ibm280-dos))
+E ibm280 mac                 (((47 194 196) ((0 3 ibm280)) ibm280-mac (193 13 13 194) ibm280-mac) ((204 10 142 249) ((0 4 ibm280)) ibm280-mac (193 13 13 194) ibm280-mac) ((65 10 10 66) ((0 4 ibm280)) ibm280-mac (193 13 13 194) ibm280-mac) ((65 10) ((0 2 ibm280)) ibm280-mac (193 13 13 194) ibm280-mac))
+E ibm281 auto                (((47 98 99) ((0 3 ibm281)) ibm281 (193 13 37 194) ibm281) ((120 10 142 96) ((0 1 nil) (1 4 ibm281)) ibm281-mac (193 13 37 194) ibm281) ((65 10 66) ((0 3 ibm281)) ibm281-dos (193 13 37 194) ibm281) ((65 10) ((0 2 ibm281)) ibm281-mac (193 13 37 194) ibm281))
+E ibm281 unix                (((47 98 99) ((0 3 ibm281)) ibm281-unix (193 13 37 194) ibm281-unix) ((120 13 142 96) ((0 1 nil) (1 4 ibm281)) ibm281-unix (193 13 37 194) ibm281-unix) ((65 13 10 66) ((0 4 ibm281)) ibm281-unix (193 13 37 194) ibm281-unix) ((65 13) ((0 2 ibm281)) ibm281-unix (193 13 37 194) ibm281-unix))
+E ibm281 dos                 (((47 98 99) ((0 3 ibm281)) ibm281-dos (193 13 13 37 194) ibm281-dos) ((120 13 142 96) ((0 1 nil) (1 4 ibm281)) ibm281-dos (193 13 13 37 194) ibm281-dos) ((65 10 66) ((0 3 ibm281)) ibm281-dos (193 13 13 37 194) ibm281-dos) ((65 13) ((0 1 ibm281) (1 2 nil)) ibm281-dos (193 13 13 37 194) ibm281-dos))
+E ibm281 mac                 (((47 98 99) ((0 3 ibm281)) ibm281-mac (193 13 13 194) ibm281-mac) ((120 10 142 96) ((0 1 nil) (1 4 ibm281)) ibm281-mac (193 13 13 194) ibm281-mac) ((65 10 10 66) ((0 4 ibm281)) ibm281-mac (193 13 13 194) ibm281-mac) ((65 10) ((0 2 ibm281)) ibm281-mac (193 13 13 194) ibm281-mac))
+E ibm284 auto                (((47 194 196) ((0 3 ibm284)) ibm284 (193 13 37 194) ibm284) ((204 10 142 96) ((0 4 ibm284)) ibm284-mac (193 13 37 194) ibm284) ((65 10 66) ((0 3 ibm284)) ibm284-dos (193 13 37 194) ibm284) ((65 10) ((0 2 ibm284)) ibm284-mac (193 13 37 194) ibm284))
+E ibm284 unix                (((47 194 196) ((0 3 ibm284)) ibm284-unix (193 13 37 194) ibm284-unix) ((204 13 142 96) ((0 4 ibm284)) ibm284-unix (193 13 37 194) ibm284-unix) ((65 13 10 66) ((0 4 ibm284)) ibm284-unix (193 13 37 194) ibm284-unix) ((65 13) ((0 2 ibm284)) ibm284-unix (193 13 37 194) ibm284-unix))
+E ibm284 dos                 (((47 194 196) ((0 3 ibm284)) ibm284-dos (193 13 13 37 194) ibm284-dos) ((204 13 142 96) ((0 4 ibm284)) ibm284-dos (193 13 13 37 194) ibm284-dos) ((65 10 66) ((0 3 ibm284)) ibm284-dos (193 13 13 37 194) ibm284-dos) ((65 13) ((0 1 ibm284) (1 2 nil)) ibm284-dos (193 13 13 37 194) ibm284-dos))
+E ibm284 mac                 (((47 194 196) ((0 3 ibm284)) ibm284-mac (193 13 13 194) ibm284-mac) ((204 10 142 96) ((0 4 ibm284)) ibm284-mac (193 13 13 194) ibm284-mac) ((65 10 10 66) ((0 4 ibm284)) ibm284-mac (193 13 13 194) ibm284-mac) ((65 10) ((0 2 ibm284)) ibm284-mac (193 13 13 194) ibm284-mac))
+E ibm285 auto                (((47 194 196) ((0 3 ibm285)) ibm285 (193 13 37 194) ibm285) ((204 10 142 96) ((0 4 ibm285)) ibm285-mac (193 13 37 194) ibm285) ((65 10 66) ((0 3 ibm285)) ibm285-dos (193 13 37 194) ibm285) ((65 10) ((0 2 ibm285)) ibm285-mac (193 13 37 194) ibm285))
+E ibm285 unix                (((47 194 196) ((0 3 ibm285)) ibm285-unix (193 13 37 194) ibm285-unix) ((204 13 142 96) ((0 4 ibm285)) ibm285-unix (193 13 37 194) ibm285-unix) ((65 13 10 66) ((0 4 ibm285)) ibm285-unix (193 13 37 194) ibm285-unix) ((65 13) ((0 2 ibm285)) ibm285-unix (193 13 37 194) ibm285-unix))
+E ibm285 dos                 (((47 194 196) ((0 3 ibm285)) ibm285-dos (193 13 13 37 194) ibm285-dos) ((204 13 142 96) ((0 4 ibm285)) ibm285-dos (193 13 13 37 194) ibm285-dos) ((65 10 66) ((0 3 ibm285)) ibm285-dos (193 13 13 37 194) ibm285-dos) ((65 13) ((0 1 ibm285) (1 2 nil)) ibm285-dos (193 13 13 37 194) ibm285-dos))
+E ibm285 mac                 (((47 194 196) ((0 3 ibm285)) ibm285-mac (193 13 13 194) ibm285-mac) ((204 10 142 96) ((0 4 ibm285)) ibm285-mac (193 13 13 194) ibm285-mac) ((65 10 10 66) ((0 4 ibm285)) ibm285-mac (193 13 13 194) ibm285-mac) ((65 10) ((0 2 ibm285)) ibm285-mac (193 13 13 194) ibm285-mac))
+E ibm290 auto                (((47 98 99) ((0 3 ibm290)) ibm290 (193 13 37 194) ibm290) ((120 10 142 96) ((0 1 nil) (1 4 ibm290)) ibm290-mac (193 13 37 194) ibm290) ((65 10 66) ((0 3 ibm290)) ibm290-dos (193 13 37 194) ibm290) ((65 10) ((0 2 ibm290)) ibm290-mac (193 13 37 194) ibm290))
+E ibm290 unix                (((47 98 99) ((0 3 ibm290)) ibm290-unix (193 13 37 194) ibm290-unix) ((120 13 142 96) ((0 1 nil) (1 4 ibm290)) ibm290-unix (193 13 37 194) ibm290-unix) ((65 13 10 66) ((0 4 ibm290)) ibm290-unix (193 13 37 194) ibm290-unix) ((65 13) ((0 2 ibm290)) ibm290-unix (193 13 37 194) ibm290-unix))
+E ibm290 dos                 (((47 98 99) ((0 3 ibm290)) ibm290-dos (193 13 13 37 194) ibm290-dos) ((120 13 142 96) ((0 1 nil) (1 4 ibm290)) ibm290-dos (193 13 13 37 194) ibm290-dos) ((65 10 66) ((0 3 ibm290)) ibm290-dos (193 13 13 37 194) ibm290-dos) ((65 13) ((0 1 ibm290) (1 2 nil)) ibm290-dos (193 13 13 37 194) ibm290-dos))
+E ibm290 mac                 (((47 98 99) ((0 3 ibm290)) ibm290-mac (193 13 13 194) ibm290-mac) ((120 10 142 96) ((0 1 nil) (1 4 ibm290)) ibm290-mac (193 13 13 194) ibm290-mac) ((65 10 10 66) ((0 4 ibm290)) ibm290-mac (193 13 13 194) ibm290-mac) ((65 10) ((0 2 ibm290)) ibm290-mac (193 13 13 194) ibm290-mac))
+E ibm297 auto                (((47 194 196) ((0 3 ibm297)) ibm297 (193 13 37 194) ibm297) ((204 10 142 181) ((0 4 ibm297)) ibm297-mac (193 13 37 194) ibm297) ((65 10 66) ((0 3 ibm297)) ibm297-dos (193 13 37 194) ibm297) ((65 10) ((0 2 ibm297)) ibm297-mac (193 13 37 194) ibm297))
+E ibm297 unix                (((47 194 196) ((0 3 ibm297)) ibm297-unix (193 13 37 194) ibm297-unix) ((204 13 142 181) ((0 4 ibm297)) ibm297-unix (193 13 37 194) ibm297-unix) ((65 13 10 66) ((0 4 ibm297)) ibm297-unix (193 13 37 194) ibm297-unix) ((65 13) ((0 2 ibm297)) ibm297-unix (193 13 37 194) ibm297-unix))
+E ibm297 dos                 (((47 194 196) ((0 3 ibm297)) ibm297-dos (193 13 13 37 194) ibm297-dos) ((204 13 142 181) ((0 4 ibm297)) ibm297-dos (193 13 13 37 194) ibm297-dos) ((65 10 66) ((0 3 ibm297)) ibm297-dos (193 13 13 37 194) ibm297-dos) ((65 13) ((0 1 ibm297) (1 2 nil)) ibm297-dos (193 13 13 37 194) ibm297-dos))
+E ibm297 mac                 (((47 194 196) ((0 3 ibm297)) ibm297-mac (193 13 13 194) ibm297-mac) ((204 10 142 181) ((0 4 ibm297)) ibm297-mac (193 13 13 194) ibm297-mac) ((65 10 10 66) ((0 4 ibm297)) ibm297-mac (193 13 13 194) ibm297-mac) ((65 10) ((0 2 ibm297)) ibm297-mac (193 13 13 194) ibm297-mac))
+E iso-8859-11 auto           (((97 98 99) ((0 3 nil)) iso-8859-11 (65 13 10 66) iso-8859-11) ((120 10 121) ((0 3 iso-8859-11)) iso-8859-11-dos (65 13 10 66) iso-8859-11) ((3617 10 37 3618) ((0 4 iso-8859-11)) iso-8859-11-mac (65 13 10 66) iso-8859-11) ((3617 10) ((0 2 iso-8859-11)) iso-8859-11-mac (65 13 10 66) iso-8859-11))
+E iso-8859-11 unix           (((97 98 99) ((0 3 nil)) iso-8859-11-unix (65 13 10 66) iso-8859-11-unix) ((120 13 10 121) ((0 4 nil)) iso-8859-11-unix (65 13 10 66) iso-8859-11-unix) ((3617 13 37 3618) ((0 4 iso-8859-11)) iso-8859-11-unix (65 13 10 66) iso-8859-11-unix) ((3617 13) ((0 2 iso-8859-11)) iso-8859-11-unix (65 13 10 66) iso-8859-11-unix))
+E iso-8859-11 dos            (((97 98 99) ((0 3 nil)) iso-8859-11-dos (65 13 13 10 66) iso-8859-11-dos) ((120 10 121) ((0 3 iso-8859-11)) iso-8859-11-dos (65 13 13 10 66) iso-8859-11-dos) ((3617 13 37 3618) ((0 4 iso-8859-11)) iso-8859-11-dos (65 13 13 10 66) iso-8859-11-dos) ((3617 13) ((0 1 iso-8859-11) (1 2 nil)) iso-8859-11-dos (65 13 13 10 66) iso-8859-11-dos))
+E iso-8859-11 mac            (((97 98 99) ((0 3 nil)) iso-8859-11-mac (65 13 13 66) iso-8859-11-mac) ((120 10 10 121) ((0 4 iso-8859-11)) iso-8859-11-mac (65 13 13 66) iso-8859-11-mac) ((3617 10 37 3618) ((0 4 iso-8859-11)) iso-8859-11-mac (65 13 13 66) iso-8859-11-mac) ((3617 10) ((0 2 iso-8859-11)) iso-8859-11-mac (65 13 13 66) iso-8859-11-mac))
+E iso-8859-6 auto            (((97 98 99) ((0 3 nil)) iso-8859-6 (65 13 10 66) iso-8859-6) ((120 10 121) ((0 3 iso-8859-6)) iso-8859-6-dos (65 13 10 66) iso-8859-6) ((1569 10 37 1570) ((0 4 iso-8859-6)) iso-8859-6-mac (65 13 10 66) iso-8859-6) ((1569 10) ((0 2 iso-8859-6)) iso-8859-6-mac (65 13 10 66) iso-8859-6))
+E iso-8859-6 unix            (((97 98 99) ((0 3 nil)) iso-8859-6-unix (65 13 10 66) iso-8859-6-unix) ((120 13 10 121) ((0 4 nil)) iso-8859-6-unix (65 13 10 66) iso-8859-6-unix) ((1569 13 37 1570) ((0 4 iso-8859-6)) iso-8859-6-unix (65 13 10 66) iso-8859-6-unix) ((1569 13) ((0 2 iso-8859-6)) iso-8859-6-unix (65 13 10 66) iso-8859-6-unix))
+E iso-8859-6 dos             (((97 98 99) ((0 3 nil)) iso-8859-6-dos (65 13 13 10 66) iso-8859-6-dos) ((120 10 121) ((0 3 iso-8859-6)) iso-8859-6-dos (65 13 13 10 66) iso-8859-6-dos) ((1569 13 37 1570) ((0 4 iso-8859-6)) iso-8859-6-dos (65 13 13 10 66) iso-8859-6-dos) ((1569 13) ((0 1 iso-8859-6) (1 2 nil)) iso-8859-6-dos (65 13 13 10 66) iso-8859-6-dos))
+E iso-8859-6 mac             (((97 98 99) ((0 3 nil)) iso-8859-6-mac (65 13 13 66) iso-8859-6-mac) ((120 10 10 121) ((0 4 iso-8859-6)) iso-8859-6-mac (65 13 13 66) iso-8859-6-mac) ((1569 10 37 1570) ((0 4 iso-8859-6)) iso-8859-6-mac (65 13 13 66) iso-8859-6-mac) ((1569 10) ((0 2 iso-8859-6)) iso-8859-6-mac (65 13 13 66) iso-8859-6-mac))
+E iso-latin-1 auto           (((97 98 99) ((0 3 nil)) iso-latin-1 (65 13 10 66) iso-latin-1) ((120 10 121) ((0 3 iso-8859-1)) iso-latin-1-dos (65 13 10 66) iso-latin-1) ((193 10 37 194) ((0 4 iso-8859-1)) iso-latin-1-mac (65 13 10 66) iso-latin-1) ((193 10) ((0 2 iso-8859-1)) iso-latin-1-mac (65 13 10 66) iso-latin-1))
+E iso-latin-1 unix           (((97 98 99) ((0 3 nil)) iso-latin-1-unix (65 13 10 66) iso-latin-1-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-1-unix (65 13 10 66) iso-latin-1-unix) ((193 13 37 194) ((0 4 iso-8859-1)) iso-latin-1-unix (65 13 10 66) iso-latin-1-unix) ((193 13) ((0 2 iso-8859-1)) iso-latin-1-unix (65 13 10 66) iso-latin-1-unix))
+E iso-latin-1 dos            (((97 98 99) ((0 3 nil)) iso-latin-1-dos (65 13 13 10 66) iso-latin-1-dos) ((120 10 121) ((0 3 iso-8859-1)) iso-latin-1-dos (65 13 13 10 66) iso-latin-1-dos) ((193 13 37 194) ((0 4 iso-8859-1)) iso-latin-1-dos (65 13 13 10 66) iso-latin-1-dos) ((193 13) ((0 1 iso-8859-1) (1 2 nil)) iso-latin-1-dos (65 13 13 10 66) iso-latin-1-dos))
+E iso-latin-1 mac            (((97 98 99) ((0 3 nil)) iso-latin-1-mac (65 13 13 66) iso-latin-1-mac) ((120 10 10 121) ((0 4 iso-8859-1)) iso-latin-1-mac (65 13 13 66) iso-latin-1-mac) ((193 10 37 194) ((0 4 iso-8859-1)) iso-latin-1-mac (65 13 13 66) iso-latin-1-mac) ((193 10) ((0 2 iso-8859-1)) iso-latin-1-mac (65 13 13 66) iso-latin-1-mac))
+E iso-latin-10 auto          (((97 98 99) ((0 3 nil)) iso-latin-10 (65 13 10 66) iso-latin-10) ((120 10 121) ((0 3 iso-8859-16)) iso-latin-10-dos (65 13 10 66) iso-latin-10) ((193 10 37 194) ((0 4 iso-8859-16)) iso-latin-10-mac (65 13 10 66) iso-latin-10) ((193 10) ((0 2 iso-8859-16)) iso-latin-10-mac (65 13 10 66) iso-latin-10))
+E iso-latin-10 unix          (((97 98 99) ((0 3 nil)) iso-latin-10-unix (65 13 10 66) iso-latin-10-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-10-unix (65 13 10 66) iso-latin-10-unix) ((193 13 37 194) ((0 4 iso-8859-16)) iso-latin-10-unix (65 13 10 66) iso-latin-10-unix) ((193 13) ((0 2 iso-8859-16)) iso-latin-10-unix (65 13 10 66) iso-latin-10-unix))
+E iso-latin-10 dos           (((97 98 99) ((0 3 nil)) iso-latin-10-dos (65 13 13 10 66) iso-latin-10-dos) ((120 10 121) ((0 3 iso-8859-16)) iso-latin-10-dos (65 13 13 10 66) iso-latin-10-dos) ((193 13 37 194) ((0 4 iso-8859-16)) iso-latin-10-dos (65 13 13 10 66) iso-latin-10-dos) ((193 13) ((0 1 iso-8859-16) (1 2 nil)) iso-latin-10-dos (65 13 13 10 66) iso-latin-10-dos))
+E iso-latin-10 mac           (((97 98 99) ((0 3 nil)) iso-latin-10-mac (65 13 13 66) iso-latin-10-mac) ((120 10 10 121) ((0 4 iso-8859-16)) iso-latin-10-mac (65 13 13 66) iso-latin-10-mac) ((193 10 37 194) ((0 4 iso-8859-16)) iso-latin-10-mac (65 13 13 66) iso-latin-10-mac) ((193 10) ((0 2 iso-8859-16)) iso-latin-10-mac (65 13 13 66) iso-latin-10-mac))
+E iso-latin-2 auto           (((97 98 99) ((0 3 nil)) iso-latin-2 (65 13 10 66) iso-latin-2) ((120 10 121) ((0 3 iso-8859-2)) iso-latin-2-dos (65 13 10 66) iso-latin-2) ((193 10 37 194) ((0 4 iso-8859-2)) iso-latin-2-mac (65 13 10 66) iso-latin-2) ((193 10) ((0 2 iso-8859-2)) iso-latin-2-mac (65 13 10 66) iso-latin-2))
+E iso-latin-2 unix           (((97 98 99) ((0 3 nil)) iso-latin-2-unix (65 13 10 66) iso-latin-2-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-2-unix (65 13 10 66) iso-latin-2-unix) ((193 13 37 194) ((0 4 iso-8859-2)) iso-latin-2-unix (65 13 10 66) iso-latin-2-unix) ((193 13) ((0 2 iso-8859-2)) iso-latin-2-unix (65 13 10 66) iso-latin-2-unix))
+E iso-latin-2 dos            (((97 98 99) ((0 3 nil)) iso-latin-2-dos (65 13 13 10 66) iso-latin-2-dos) ((120 10 121) ((0 3 iso-8859-2)) iso-latin-2-dos (65 13 13 10 66) iso-latin-2-dos) ((193 13 37 194) ((0 4 iso-8859-2)) iso-latin-2-dos (65 13 13 10 66) iso-latin-2-dos) ((193 13) ((0 1 iso-8859-2) (1 2 nil)) iso-latin-2-dos (65 13 13 10 66) iso-latin-2-dos))
+E iso-latin-2 mac            (((97 98 99) ((0 3 nil)) iso-latin-2-mac (65 13 13 66) iso-latin-2-mac) ((120 10 10 121) ((0 4 iso-8859-2)) iso-latin-2-mac (65 13 13 66) iso-latin-2-mac) ((193 10 37 194) ((0 4 iso-8859-2)) iso-latin-2-mac (65 13 13 66) iso-latin-2-mac) ((193 10) ((0 2 iso-8859-2)) iso-latin-2-mac (65 13 13 66) iso-latin-2-mac))
+E iso-latin-3 auto           (((97 98 99) ((0 3 nil)) iso-latin-3 (65 13 10 66) iso-latin-3) ((120 10 121) ((0 3 iso-8859-3)) iso-latin-3-dos (65 13 10 66) iso-latin-3) ((193 10 37 194) ((0 4 iso-8859-3)) iso-latin-3-mac (65 13 10 66) iso-latin-3) ((193 10) ((0 2 iso-8859-3)) iso-latin-3-mac (65 13 10 66) iso-latin-3))
+E iso-latin-3 unix           (((97 98 99) ((0 3 nil)) iso-latin-3-unix (65 13 10 66) iso-latin-3-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-3-unix (65 13 10 66) iso-latin-3-unix) ((193 13 37 194) ((0 4 iso-8859-3)) iso-latin-3-unix (65 13 10 66) iso-latin-3-unix) ((193 13) ((0 2 iso-8859-3)) iso-latin-3-unix (65 13 10 66) iso-latin-3-unix))
+E iso-latin-3 dos            (((97 98 99) ((0 3 nil)) iso-latin-3-dos (65 13 13 10 66) iso-latin-3-dos) ((120 10 121) ((0 3 iso-8859-3)) iso-latin-3-dos (65 13 13 10 66) iso-latin-3-dos) ((193 13 37 194) ((0 4 iso-8859-3)) iso-latin-3-dos (65 13 13 10 66) iso-latin-3-dos) ((193 13) ((0 1 iso-8859-3) (1 2 nil)) iso-latin-3-dos (65 13 13 10 66) iso-latin-3-dos))
+E iso-latin-3 mac            (((97 98 99) ((0 3 nil)) iso-latin-3-mac (65 13 13 66) iso-latin-3-mac) ((120 10 10 121) ((0 4 iso-8859-3)) iso-latin-3-mac (65 13 13 66) iso-latin-3-mac) ((193 10 37 194) ((0 4 iso-8859-3)) iso-latin-3-mac (65 13 13 66) iso-latin-3-mac) ((193 10) ((0 2 iso-8859-3)) iso-latin-3-mac (65 13 13 66) iso-latin-3-mac))
+E iso-latin-4 auto           (((97 98 99) ((0 3 nil)) iso-latin-4 (65 13 10 66) iso-latin-4) ((120 10 121) ((0 3 iso-8859-4)) iso-latin-4-dos (65 13 10 66) iso-latin-4) ((193 10 37 194) ((0 4 iso-8859-4)) iso-latin-4-mac (65 13 10 66) iso-latin-4) ((193 10) ((0 2 iso-8859-4)) iso-latin-4-mac (65 13 10 66) iso-latin-4))
+E iso-latin-4 unix           (((97 98 99) ((0 3 nil)) iso-latin-4-unix (65 13 10 66) iso-latin-4-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-4-unix (65 13 10 66) iso-latin-4-unix) ((193 13 37 194) ((0 4 iso-8859-4)) iso-latin-4-unix (65 13 10 66) iso-latin-4-unix) ((193 13) ((0 2 iso-8859-4)) iso-latin-4-unix (65 13 10 66) iso-latin-4-unix))
+E iso-latin-4 dos            (((97 98 99) ((0 3 nil)) iso-latin-4-dos (65 13 13 10 66) iso-latin-4-dos) ((120 10 121) ((0 3 iso-8859-4)) iso-latin-4-dos (65 13 13 10 66) iso-latin-4-dos) ((193 13 37 194) ((0 4 iso-8859-4)) iso-latin-4-dos (65 13 13 10 66) iso-latin-4-dos) ((193 13) ((0 1 iso-8859-4) (1 2 nil)) iso-latin-4-dos (65 13 13 10 66) iso-latin-4-dos))
+E iso-latin-4 mac            (((97 98 99) ((0 3 nil)) iso-latin-4-mac (65 13 13 66) iso-latin-4-mac) ((120 10 10 121) ((0 4 iso-8859-4)) iso-latin-4-mac (65 13 13 66) iso-latin-4-mac) ((193 10 37 194) ((0 4 iso-8859-4)) iso-latin-4-mac (65 13 13 66) iso-latin-4-mac) ((193 10) ((0 2 iso-8859-4)) iso-latin-4-mac (65 13 13 66) iso-latin-4-mac))
+E iso-latin-5 auto           (((97 98 99) ((0 3 nil)) iso-latin-5 (65 13 10 66) iso-latin-5) ((120 10 121) ((0 3 iso-8859-9)) iso-latin-5-dos (65 13 10 66) iso-latin-5) ((193 10 37 194) ((0 4 iso-8859-9)) iso-latin-5-mac (65 13 10 66) iso-latin-5) ((193 10) ((0 2 iso-8859-9)) iso-latin-5-mac (65 13 10 66) iso-latin-5))
+E iso-latin-5 unix           (((97 98 99) ((0 3 nil)) iso-latin-5-unix (65 13 10 66) iso-latin-5-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-5-unix (65 13 10 66) iso-latin-5-unix) ((193 13 37 194) ((0 4 iso-8859-9)) iso-latin-5-unix (65 13 10 66) iso-latin-5-unix) ((193 13) ((0 2 iso-8859-9)) iso-latin-5-unix (65 13 10 66) iso-latin-5-unix))
+E iso-latin-5 dos            (((97 98 99) ((0 3 nil)) iso-latin-5-dos (65 13 13 10 66) iso-latin-5-dos) ((120 10 121) ((0 3 iso-8859-9)) iso-latin-5-dos (65 13 13 10 66) iso-latin-5-dos) ((193 13 37 194) ((0 4 iso-8859-9)) iso-latin-5-dos (65 13 13 10 66) iso-latin-5-dos) ((193 13) ((0 1 iso-8859-9) (1 2 nil)) iso-latin-5-dos (65 13 13 10 66) iso-latin-5-dos))
+E iso-latin-5 mac            (((97 98 99) ((0 3 nil)) iso-latin-5-mac (65 13 13 66) iso-latin-5-mac) ((120 10 10 121) ((0 4 iso-8859-9)) iso-latin-5-mac (65 13 13 66) iso-latin-5-mac) ((193 10 37 194) ((0 4 iso-8859-9)) iso-latin-5-mac (65 13 13 66) iso-latin-5-mac) ((193 10) ((0 2 iso-8859-9)) iso-latin-5-mac (65 13 13 66) iso-latin-5-mac))
+E iso-latin-6 auto           (((97 98 99) ((0 3 nil)) iso-latin-6 (65 13 10 66) iso-latin-6) ((120 10 121) ((0 3 iso-8859-10)) iso-latin-6-dos (65 13 10 66) iso-latin-6) ((193 10 37 194) ((0 4 iso-8859-10)) iso-latin-6-mac (65 13 10 66) iso-latin-6) ((193 10) ((0 2 iso-8859-10)) iso-latin-6-mac (65 13 10 66) iso-latin-6))
+E iso-latin-6 unix           (((97 98 99) ((0 3 nil)) iso-latin-6-unix (65 13 10 66) iso-latin-6-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-6-unix (65 13 10 66) iso-latin-6-unix) ((193 13 37 194) ((0 4 iso-8859-10)) iso-latin-6-unix (65 13 10 66) iso-latin-6-unix) ((193 13) ((0 2 iso-8859-10)) iso-latin-6-unix (65 13 10 66) iso-latin-6-unix))
+E iso-latin-6 dos            (((97 98 99) ((0 3 nil)) iso-latin-6-dos (65 13 13 10 66) iso-latin-6-dos) ((120 10 121) ((0 3 iso-8859-10)) iso-latin-6-dos (65 13 13 10 66) iso-latin-6-dos) ((193 13 37 194) ((0 4 iso-8859-10)) iso-latin-6-dos (65 13 13 10 66) iso-latin-6-dos) ((193 13) ((0 1 iso-8859-10) (1 2 nil)) iso-latin-6-dos (65 13 13 10 66) iso-latin-6-dos))
+E iso-latin-6 mac            (((97 98 99) ((0 3 nil)) iso-latin-6-mac (65 13 13 66) iso-latin-6-mac) ((120 10 10 121) ((0 4 iso-8859-10)) iso-latin-6-mac (65 13 13 66) iso-latin-6-mac) ((193 10 37 194) ((0 4 iso-8859-10)) iso-latin-6-mac (65 13 13 66) iso-latin-6-mac) ((193 10) ((0 2 iso-8859-10)) iso-latin-6-mac (65 13 13 66) iso-latin-6-mac))
+E iso-latin-7 auto           (((97 98 99) ((0 3 nil)) iso-latin-7 (65 13 10 66) iso-latin-7) ((120 10 121) ((0 3 iso-8859-13)) iso-latin-7-dos (65 13 10 66) iso-latin-7) ((302 10 37 256) ((0 4 iso-8859-13)) iso-latin-7-mac (65 13 10 66) iso-latin-7) ((302 10) ((0 2 iso-8859-13)) iso-latin-7-mac (65 13 10 66) iso-latin-7))
+E iso-latin-7 unix           (((97 98 99) ((0 3 nil)) iso-latin-7-unix (65 13 10 66) iso-latin-7-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-7-unix (65 13 10 66) iso-latin-7-unix) ((302 13 37 256) ((0 4 iso-8859-13)) iso-latin-7-unix (65 13 10 66) iso-latin-7-unix) ((302 13) ((0 2 iso-8859-13)) iso-latin-7-unix (65 13 10 66) iso-latin-7-unix))
+E iso-latin-7 dos            (((97 98 99) ((0 3 nil)) iso-latin-7-dos (65 13 13 10 66) iso-latin-7-dos) ((120 10 121) ((0 3 iso-8859-13)) iso-latin-7-dos (65 13 13 10 66) iso-latin-7-dos) ((302 13 37 256) ((0 4 iso-8859-13)) iso-latin-7-dos (65 13 13 10 66) iso-latin-7-dos) ((302 13) ((0 1 iso-8859-13) (1 2 nil)) iso-latin-7-dos (65 13 13 10 66) iso-latin-7-dos))
+E iso-latin-7 mac            (((97 98 99) ((0 3 nil)) iso-latin-7-mac (65 13 13 66) iso-latin-7-mac) ((120 10 10 121) ((0 4 iso-8859-13)) iso-latin-7-mac (65 13 13 66) iso-latin-7-mac) ((302 10 37 256) ((0 4 iso-8859-13)) iso-latin-7-mac (65 13 13 66) iso-latin-7-mac) ((302 10) ((0 2 iso-8859-13)) iso-latin-7-mac (65 13 13 66) iso-latin-7-mac))
+E iso-latin-8 auto           (((97 98 99) ((0 3 nil)) iso-latin-8 (65 13 10 66) iso-latin-8) ((120 10 121) ((0 3 iso-8859-14)) iso-latin-8-dos (65 13 10 66) iso-latin-8) ((193 10 37 194) ((0 4 iso-8859-14)) iso-latin-8-mac (65 13 10 66) iso-latin-8) ((193 10) ((0 2 iso-8859-14)) iso-latin-8-mac (65 13 10 66) iso-latin-8))
+E iso-latin-8 unix           (((97 98 99) ((0 3 nil)) iso-latin-8-unix (65 13 10 66) iso-latin-8-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-8-unix (65 13 10 66) iso-latin-8-unix) ((193 13 37 194) ((0 4 iso-8859-14)) iso-latin-8-unix (65 13 10 66) iso-latin-8-unix) ((193 13) ((0 2 iso-8859-14)) iso-latin-8-unix (65 13 10 66) iso-latin-8-unix))
+E iso-latin-8 dos            (((97 98 99) ((0 3 nil)) iso-latin-8-dos (65 13 13 10 66) iso-latin-8-dos) ((120 10 121) ((0 3 iso-8859-14)) iso-latin-8-dos (65 13 13 10 66) iso-latin-8-dos) ((193 13 37 194) ((0 4 iso-8859-14)) iso-latin-8-dos (65 13 13 10 66) iso-latin-8-dos) ((193 13) ((0 1 iso-8859-14) (1 2 nil)) iso-latin-8-dos (65 13 13 10 66) iso-latin-8-dos))
+E iso-latin-8 mac            (((97 98 99) ((0 3 nil)) iso-latin-8-mac (65 13 13 66) iso-latin-8-mac) ((120 10 10 121) ((0 4 iso-8859-14)) iso-latin-8-mac (65 13 13 66) iso-latin-8-mac) ((193 10 37 194) ((0 4 iso-8859-14)) iso-latin-8-mac (65 13 13 66) iso-latin-8-mac) ((193 10) ((0 2 iso-8859-14)) iso-latin-8-mac (65 13 13 66) iso-latin-8-mac))
+E iso-latin-9 auto           (((97 98 99) ((0 3 nil)) iso-latin-9 (65 13 10 66) iso-latin-9) ((120 10 121) ((0 3 iso-8859-15)) iso-latin-9-dos (65 13 10 66) iso-latin-9) ((193 10 37 194) ((0 4 iso-8859-15)) iso-latin-9-mac (65 13 10 66) iso-latin-9) ((193 10) ((0 2 iso-8859-15)) iso-latin-9-mac (65 13 10 66) iso-latin-9))
+E iso-latin-9 unix           (((97 98 99) ((0 3 nil)) iso-latin-9-unix (65 13 10 66) iso-latin-9-unix) ((120 13 10 121) ((0 4 nil)) iso-latin-9-unix (65 13 10 66) iso-latin-9-unix) ((193 13 37 194) ((0 4 iso-8859-15)) iso-latin-9-unix (65 13 10 66) iso-latin-9-unix) ((193 13) ((0 2 iso-8859-15)) iso-latin-9-unix (65 13 10 66) iso-latin-9-unix))
+E iso-latin-9 dos            (((97 98 99) ((0 3 nil)) iso-latin-9-dos (65 13 13 10 66) iso-latin-9-dos) ((120 10 121) ((0 3 iso-8859-15)) iso-latin-9-dos (65 13 13 10 66) iso-latin-9-dos) ((193 13 37 194) ((0 4 iso-8859-15)) iso-latin-9-dos (65 13 13 10 66) iso-latin-9-dos) ((193 13) ((0 1 iso-8859-15) (1 2 nil)) iso-latin-9-dos (65 13 13 10 66) iso-latin-9-dos))
+E iso-latin-9 mac            (((97 98 99) ((0 3 nil)) iso-latin-9-mac (65 13 13 66) iso-latin-9-mac) ((120 10 10 121) ((0 4 iso-8859-15)) iso-latin-9-mac (65 13 13 66) iso-latin-9-mac) ((193 10 37 194) ((0 4 iso-8859-15)) iso-latin-9-mac (65 13 13 66) iso-latin-9-mac) ((193 10) ((0 2 iso-8859-15)) iso-latin-9-mac (65 13 13 66) iso-latin-9-mac))
+E japanese-cp932 auto        (((97 98 99) ((0 3 nil)) japanese-cp932 (65 13 10 66) japanese-cp932) ((120 10 121) ((0 3 nil)) japanese-cp932-dos (65 13 10 66) japanese-cp932) ((65409 10 37 65410) ((0 4 katakana-sjis)) japanese-cp932-mac (65 13 10 66) japanese-cp932) ((65409 10) ((0 2 katakana-sjis)) japanese-cp932-mac (65 13 10 66) japanese-cp932))
+E japanese-cp932 unix        (((97 98 99) ((0 3 nil)) japanese-cp932-unix (65 13 10 66) japanese-cp932-unix) ((120 13 10 121) ((0 4 nil)) japanese-cp932-unix (65 13 10 66) japanese-cp932-unix) ((65409 13 37 65410) ((0 4 katakana-sjis)) japanese-cp932-unix (65 13 10 66) japanese-cp932-unix) ((65409 13) ((0 2 katakana-sjis)) japanese-cp932-unix (65 13 10 66) japanese-cp932-unix))
+E japanese-cp932 dos         (((97 98 99) ((0 3 nil)) japanese-cp932-dos (65 13 13 10 66) japanese-cp932-dos) ((120 10 121) ((0 3 nil)) japanese-cp932-dos (65 13 13 10 66) japanese-cp932-dos) ((65409 13 37 65410) ((0 4 katakana-sjis)) japanese-cp932-dos (65 13 13 10 66) japanese-cp932-dos) ((65409 13) ((0 1 katakana-sjis) (1 2 nil)) japanese-cp932-dos (65 13 13 10 66) japanese-cp932-dos))
+E japanese-cp932 mac         (((97 98 99) ((0 3 nil)) japanese-cp932-mac (65 13 13 66) japanese-cp932-mac) ((120 10 10 121) ((0 4 nil)) japanese-cp932-mac (65 13 13 66) japanese-cp932-mac) ((65409 10 37 65410) ((0 4 katakana-sjis)) japanese-cp932-mac (65 13 13 66) japanese-cp932-mac) ((65409 10) ((0 2 katakana-sjis)) japanese-cp932-mac (65 13 13 66) japanese-cp932-mac))
+E koi8-t auto                (((97 98 99) ((0 3 nil)) koi8-t (65 13 10 66) koi8-t) ((120 10 121) ((0 3 koi8-t)) koi8-t-dos (65 13 10 66) koi8-t) ((1072 10 37 1073) ((0 4 koi8-t)) koi8-t-mac (65 13 10 66) koi8-t) ((1072 10) ((0 2 koi8-t)) koi8-t-mac (65 13 10 66) koi8-t))
+E koi8-t unix                (((97 98 99) ((0 3 nil)) koi8-t-unix (65 13 10 66) koi8-t-unix) ((120 13 10 121) ((0 4 nil)) koi8-t-unix (65 13 10 66) koi8-t-unix) ((1072 13 37 1073) ((0 4 koi8-t)) koi8-t-unix (65 13 10 66) koi8-t-unix) ((1072 13) ((0 2 koi8-t)) koi8-t-unix (65 13 10 66) koi8-t-unix))
+E koi8-t dos                 (((97 98 99) ((0 3 nil)) koi8-t-dos (65 13 13 10 66) koi8-t-dos) ((120 10 121) ((0 3 koi8-t)) koi8-t-dos (65 13 13 10 66) koi8-t-dos) ((1072 13 37 1073) ((0 4 koi8-t)) koi8-t-dos (65 13 13 10 66) koi8-t-dos) ((1072 13) ((0 1 koi8-t) (1 2 nil)) koi8-t-dos (65 13 13 10 66) koi8-t-dos))
+E koi8-t mac                 (((97 98 99) ((0 3 nil)) koi8-t-mac (65 13 13 66) koi8-t-mac) ((120 10 10 121) ((0 4 koi8-t)) koi8-t-mac (65 13 13 66) koi8-t-mac) ((1072 10 37 1073) ((0 4 koi8-t)) koi8-t-mac (65 13 13 66) koi8-t-mac) ((1072 10) ((0 2 koi8-t)) koi8-t-mac (65 13 13 66) koi8-t-mac))
+E koi8-u auto                (((97 98 99) ((0 3 nil)) koi8-u (65 13 10 66) koi8-u) ((120 10 121) ((0 3 koi8-u)) koi8-u-dos (65 13 10 66) koi8-u) ((1072 10 37 1073) ((0 4 koi8-u)) koi8-u-mac (65 13 10 66) koi8-u) ((1072 10) ((0 2 koi8-u)) koi8-u-mac (65 13 10 66) koi8-u))
+E koi8-u unix                (((97 98 99) ((0 3 nil)) koi8-u-unix (65 13 10 66) koi8-u-unix) ((120 13 10 121) ((0 4 nil)) koi8-u-unix (65 13 10 66) koi8-u-unix) ((1072 13 37 1073) ((0 4 koi8-u)) koi8-u-unix (65 13 10 66) koi8-u-unix) ((1072 13) ((0 2 koi8-u)) koi8-u-unix (65 13 10 66) koi8-u-unix))
+E koi8-u dos                 (((97 98 99) ((0 3 nil)) koi8-u-dos (65 13 13 10 66) koi8-u-dos) ((120 10 121) ((0 3 koi8-u)) koi8-u-dos (65 13 13 10 66) koi8-u-dos) ((1072 13 37 1073) ((0 4 koi8-u)) koi8-u-dos (65 13 13 10 66) koi8-u-dos) ((1072 13) ((0 1 koi8-u) (1 2 nil)) koi8-u-dos (65 13 13 10 66) koi8-u-dos))
+E koi8-u mac                 (((97 98 99) ((0 3 nil)) koi8-u-mac (65 13 13 66) koi8-u-mac) ((120 10 10 121) ((0 4 koi8-u)) koi8-u-mac (65 13 13 66) koi8-u-mac) ((1072 10 37 1073) ((0 4 koi8-u)) koi8-u-mac (65 13 13 66) koi8-u-mac) ((1072 10) ((0 2 koi8-u)) koi8-u-mac (65 13 13 66) koi8-u-mac))
+E korean-cp949 auto          (((97 98 99) ((0 3 nil)) korean-cp949 (65 13 10 66) korean-cp949) ((120 10 121) ((0 3 nil)) korean-cp949-dos (65 13 10 66) korean-cp949) ((4194241 10 37 4194242) ((0 4 nil)) korean-cp949-mac (65 13 10 66) korean-cp949) ((4194241 10) ((0 2 nil)) korean-cp949-mac (65 13 10 66) korean-cp949))
+E korean-cp949 unix          (((97 98 99) ((0 3 nil)) korean-cp949-unix (65 13 10 66) korean-cp949-unix) ((120 13 10 121) ((0 4 nil)) korean-cp949-unix (65 13 10 66) korean-cp949-unix) ((4194241 13 37 4194242) ((0 4 nil)) korean-cp949-unix (65 13 10 66) korean-cp949-unix) ((4194241 13) ((0 2 nil)) korean-cp949-unix (65 13 10 66) korean-cp949-unix))
+E korean-cp949 dos           (((97 98 99) ((0 3 nil)) korean-cp949-dos (65 13 13 10 66) korean-cp949-dos) ((120 10 121) ((0 3 nil)) korean-cp949-dos (65 13 13 10 66) korean-cp949-dos) ((4194241 13 37 4194242) ((0 4 nil)) korean-cp949-dos (65 13 13 10 66) korean-cp949-dos) ((4194241 13) ((0 2 nil)) korean-cp949-dos (65 13 13 10 66) korean-cp949-dos))
+E korean-cp949 mac           (((97 98 99) ((0 3 nil)) korean-cp949-mac (65 13 13 66) korean-cp949-mac) ((120 10 10 121) ((0 4 nil)) korean-cp949-mac (65 13 13 66) korean-cp949-mac) ((4194241 10 37 4194242) ((0 4 nil)) korean-cp949-mac (65 13 13 66) korean-cp949-mac) ((4194241 10) ((0 2 nil)) korean-cp949-mac (65 13 13 66) korean-cp949-mac))
+E lao auto                   (((3777 3778 3779) ((0 3 lao)) lao (32 32 32 32) lao) ((3800 10 3801) ((0 3 lao)) lao-dos (32 32 32 32) lao) ((4194241 10 3717 4194242) ((0 2 nil) (2 4 lao)) lao-mac (32 32 32 32) lao) ((4194241 10) ((0 2 nil)) lao-mac (32 32 32 32) lao))
+E lao unix                   (((3777 3778 3779) ((0 3 lao)) lao-unix (32 32 32 32) lao-unix) ((3800 13 10 3801) ((0 4 lao)) lao-unix (32 32 32 32) lao-unix) ((4194241 13 3717 4194242) ((0 2 nil) (2 4 lao)) lao-unix (32 32 32 32) lao-unix) ((4194241 13) ((0 2 nil)) lao-unix (32 32 32 32) lao-unix))
+E lao dos                    (((3777 3778 3779) ((0 3 lao)) lao-dos (32 32 32 32 32) lao-dos) ((3800 10 3801) ((0 3 lao)) lao-dos (32 32 32 32 32) lao-dos) ((4194241 13 3717 3717 4194242) ((0 2 nil) (2 5 lao)) lao-dos (32 32 32 32 32) lao-dos) ((4194241 13) ((0 2 nil)) lao-dos (32 32 32 32 32) lao-dos))
+E lao mac                    (((3777 3778 3779) ((0 3 lao)) lao-mac (32 32 32 32) lao-mac) ((3800 10 10 3801) ((0 4 lao)) lao-mac (32 32 32 32) lao-mac) ((4194241 10 3717 4194242) ((0 2 nil) (2 4 lao)) lao-mac (32 32 32 32) lao-mac) ((4194241 10) ((0 2 nil)) lao-mac (32 32 32 32) lao-mac))
+E mac-roman auto             (((97 98 99) ((0 3 nil)) mac-roman (65 13 10 66) mac-roman) ((120 10 121) ((0 3 mac-roman)) mac-roman-dos (65 13 10 66) mac-roman) ((161 10 37 172) ((0 4 mac-roman)) mac-roman-mac (65 13 10 66) mac-roman) ((161 10) ((0 2 mac-roman)) mac-roman-mac (65 13 10 66) mac-roman))
+E mac-roman unix             (((97 98 99) ((0 3 nil)) mac-roman-unix (65 13 10 66) mac-roman-unix) ((120 13 10 121) ((0 4 nil)) mac-roman-unix (65 13 10 66) mac-roman-unix) ((161 13 37 172) ((0 4 mac-roman)) mac-roman-unix (65 13 10 66) mac-roman-unix) ((161 13) ((0 2 mac-roman)) mac-roman-unix (65 13 10 66) mac-roman-unix))
+E mac-roman dos              (((97 98 99) ((0 3 nil)) mac-roman-dos (65 13 13 10 66) mac-roman-dos) ((120 10 121) ((0 3 mac-roman)) mac-roman-dos (65 13 13 10 66) mac-roman-dos) ((161 13 37 172) ((0 4 mac-roman)) mac-roman-dos (65 13 13 10 66) mac-roman-dos) ((161 13) ((0 1 mac-roman) (1 2 nil)) mac-roman-dos (65 13 13 10 66) mac-roman-dos))
+E mac-roman mac              (((97 98 99) ((0 3 nil)) mac-roman-mac (65 13 13 66) mac-roman-mac) ((120 10 10 121) ((0 4 mac-roman)) mac-roman-mac (65 13 13 66) mac-roman-mac) ((161 10 37 172) ((0 4 mac-roman)) mac-roman-mac (65 13 13 66) mac-roman-mac) ((161 10) ((0 2 mac-roman)) mac-roman-mac (65 13 13 66) mac-roman-mac))
+E mik auto                   (((97 98 99) ((0 3 nil)) mik (65 13 10 66) mik) ((120 10 121) ((0 3 mik)) mik-dos (65 13 10 66) mik) ((9524 10 37 9516) ((0 4 mik)) mik-mac (65 13 10 66) mik) ((9524 10) ((0 2 mik)) mik-mac (65 13 10 66) mik))
+E mik unix                   (((97 98 99) ((0 3 nil)) mik-unix (65 13 10 66) mik-unix) ((120 13 10 121) ((0 4 nil)) mik-unix (65 13 10 66) mik-unix) ((9524 13 37 9516) ((0 4 mik)) mik-unix (65 13 10 66) mik-unix) ((9524 13) ((0 2 mik)) mik-unix (65 13 10 66) mik-unix))
+E mik dos                    (((97 98 99) ((0 3 nil)) mik-dos (65 13 13 10 66) mik-dos) ((120 10 121) ((0 3 mik)) mik-dos (65 13 13 10 66) mik-dos) ((9524 13 37 9516) ((0 4 mik)) mik-dos (65 13 13 10 66) mik-dos) ((9524 13) ((0 1 mik) (1 2 nil)) mik-dos (65 13 13 10 66) mik-dos))
+E mik mac                    (((97 98 99) ((0 3 nil)) mik-mac (65 13 13 66) mik-mac) ((120 10 10 121) ((0 4 mik)) mik-mac (65 13 13 66) mik-mac) ((9524 10 37 9516) ((0 4 mik)) mik-mac (65 13 13 66) mik-mac) ((9524 10) ((0 2 mik)) mik-mac (65 13 13 66) mik-mac))
+E next auto                  (((97 98 99) ((0 3 nil)) next (65 13 10 66) next) ((120 10 121) ((0 3 next)) next-dos (65 13 10 66) next) ((715 10 37 180) ((0 4 next)) next-mac (65 13 10 66) next) ((715 10) ((0 2 next)) next-mac (65 13 10 66) next))
+E next unix                  (((97 98 99) ((0 3 nil)) next-unix (65 13 10 66) next-unix) ((120 13 10 121) ((0 4 nil)) next-unix (65 13 10 66) next-unix) ((715 13 37 180) ((0 4 next)) next-unix (65 13 10 66) next-unix) ((715 13) ((0 2 next)) next-unix (65 13 10 66) next-unix))
+E next dos                   (((97 98 99) ((0 3 nil)) next-dos (65 13 13 10 66) next-dos) ((120 10 121) ((0 3 next)) next-dos (65 13 13 10 66) next-dos) ((715 13 37 180) ((0 4 next)) next-dos (65 13 13 10 66) next-dos) ((715 13) ((0 1 next) (1 2 nil)) next-dos (65 13 13 10 66) next-dos))
+E next mac                   (((97 98 99) ((0 3 nil)) next-mac (65 13 13 66) next-mac) ((120 10 10 121) ((0 4 next)) next-mac (65 13 13 66) next-mac) ((715 10 37 180) ((0 4 next)) next-mac (65 13 13 66) next-mac) ((715 10) ((0 2 next)) next-mac (65 13 13 66) next-mac))
+E pt154 auto                 (((97 98 99) ((0 3 nil)) pt154 (65 13 10 66) pt154) ((120 10 121) ((0 3 ptcp154)) pt154-dos (65 13 10 66) pt154) ((1041 10 37 1042) ((0 4 ptcp154)) pt154-mac (65 13 10 66) pt154) ((1041 10) ((0 2 ptcp154)) pt154-mac (65 13 10 66) pt154))
+E pt154 unix                 (((97 98 99) ((0 3 nil)) pt154-unix (65 13 10 66) pt154-unix) ((120 13 10 121) ((0 4 nil)) pt154-unix (65 13 10 66) pt154-unix) ((1041 13 37 1042) ((0 4 ptcp154)) pt154-unix (65 13 10 66) pt154-unix) ((1041 13) ((0 2 ptcp154)) pt154-unix (65 13 10 66) pt154-unix))
+E pt154 dos                  (((97 98 99) ((0 3 nil)) pt154-dos (65 13 13 10 66) pt154-dos) ((120 10 121) ((0 3 ptcp154)) pt154-dos (65 13 13 10 66) pt154-dos) ((1041 13 37 1042) ((0 4 ptcp154)) pt154-dos (65 13 13 10 66) pt154-dos) ((1041 13) ((0 1 ptcp154) (1 2 nil)) pt154-dos (65 13 13 10 66) pt154-dos))
+E pt154 mac                  (((97 98 99) ((0 3 nil)) pt154-mac (65 13 13 66) pt154-mac) ((120 10 10 121) ((0 4 ptcp154)) pt154-mac (65 13 13 66) pt154-mac) ((1041 10 37 1042) ((0 4 ptcp154)) pt154-mac (65 13 13 66) pt154-mac) ((1041 10) ((0 2 ptcp154)) pt154-mac (65 13 13 66) pt154-mac))
+E thai-tis620 auto           (((97 98 99) ((0 3 nil)) thai-tis620 (65 13 10 66) thai-tis620) ((120 10 121) ((0 3 tis620-2533)) thai-tis620-dos (65 13 10 66) thai-tis620) ((3617 10 37 3618) ((0 4 tis620-2533)) thai-tis620-mac (65 13 10 66) thai-tis620) ((3617 10) ((0 2 tis620-2533)) thai-tis620-mac (65 13 10 66) thai-tis620))
+E thai-tis620 unix           (((97 98 99) ((0 3 nil)) thai-tis620-unix (65 13 10 66) thai-tis620-unix) ((120 13 10 121) ((0 4 nil)) thai-tis620-unix (65 13 10 66) thai-tis620-unix) ((3617 13 37 3618) ((0 4 tis620-2533)) thai-tis620-unix (65 13 10 66) thai-tis620-unix) ((3617 13) ((0 2 tis620-2533)) thai-tis620-unix (65 13 10 66) thai-tis620-unix))
+E thai-tis620 dos            (((97 98 99) ((0 3 nil)) thai-tis620-dos (65 13 13 10 66) thai-tis620-dos) ((120 10 121) ((0 3 tis620-2533)) thai-tis620-dos (65 13 13 10 66) thai-tis620-dos) ((3617 13 37 3618) ((0 4 tis620-2533)) thai-tis620-dos (65 13 13 10 66) thai-tis620-dos) ((3617 13) ((0 1 tis620-2533) (1 2 nil)) thai-tis620-dos (65 13 13 10 66) thai-tis620-dos))
+E thai-tis620 mac            (((97 98 99) ((0 3 nil)) thai-tis620-mac (65 13 13 66) thai-tis620-mac) ((120 10 10 121) ((0 4 tis620-2533)) thai-tis620-mac (65 13 13 66) thai-tis620-mac) ((3617 10 37 3618) ((0 4 tis620-2533)) thai-tis620-mac (65 13 13 66) thai-tis620-mac) ((3617 10) ((0 2 tis620-2533)) thai-tis620-mac (65 13 13 66) thai-tis620-mac))
+E us-ascii auto              (((97 98 99) ((0 3 nil)) us-ascii (65 13 10 66) us-ascii) ((120 10 121) ((0 3 nil)) us-ascii-dos (65 13 10 66) us-ascii) ((4194241 10 37 4194242) ((0 4 nil)) us-ascii-mac (65 13 10 66) us-ascii) ((4194241 10) ((0 2 nil)) us-ascii-mac (65 13 10 66) us-ascii))
+E us-ascii unix              (((97 98 99) ((0 3 nil)) us-ascii-unix (65 13 10 66) us-ascii-unix) ((120 13 10 121) ((0 4 nil)) us-ascii-unix (65 13 10 66) us-ascii-unix) ((4194241 13 37 4194242) ((0 4 nil)) us-ascii-unix (65 13 10 66) us-ascii-unix) ((4194241 13) ((0 2 nil)) us-ascii-unix (65 13 10 66) us-ascii-unix))
+E us-ascii dos               (((97 98 99) ((0 3 nil)) us-ascii-dos (65 13 13 10 66) us-ascii-dos) ((120 10 121) ((0 3 nil)) us-ascii-dos (65 13 13 10 66) us-ascii-dos) ((4194241 13 37 4194242) ((0 4 nil)) us-ascii-dos (65 13 13 10 66) us-ascii-dos) ((4194241 13) ((0 2 nil)) us-ascii-dos (65 13 13 10 66) us-ascii-dos))
+E us-ascii mac               (((97 98 99) ((0 3 nil)) us-ascii-mac (65 13 13 66) us-ascii-mac) ((120 10 10 121) ((0 4 nil)) us-ascii-mac (65 13 13 66) us-ascii-mac) ((4194241 10 37 4194242) ((0 4 nil)) us-ascii-mac (65 13 13 66) us-ascii-mac) ((4194241 10) ((0 2 nil)) us-ascii-mac (65 13 13 66) us-ascii-mac))
+E vietnamese-viscii auto     (((97 98 99) ((0 3 viscii)) vietnamese-viscii (65 13 10 66) vietnamese-viscii) ((120 10 121) ((0 3 viscii)) vietnamese-viscii-dos (65 13 10 66) vietnamese-viscii) ((193 10 37 194) ((0 4 viscii)) vietnamese-viscii-mac (65 13 10 66) vietnamese-viscii) ((193 10) ((0 2 viscii)) vietnamese-viscii-mac (65 13 10 66) vietnamese-viscii))
+E vietnamese-viscii unix     (((97 98 99) ((0 3 viscii)) vietnamese-viscii-unix (65 13 10 66) vietnamese-viscii-unix) ((120 13 10 121) ((0 4 viscii)) vietnamese-viscii-unix (65 13 10 66) vietnamese-viscii-unix) ((193 13 37 194) ((0 4 viscii)) vietnamese-viscii-unix (65 13 10 66) vietnamese-viscii-unix) ((193 13) ((0 2 viscii)) vietnamese-viscii-unix (65 13 10 66) vietnamese-viscii-unix))
+E vietnamese-viscii dos      (((97 98 99) ((0 3 viscii)) vietnamese-viscii-dos (65 13 13 10 66) vietnamese-viscii-dos) ((120 10 121) ((0 3 viscii)) vietnamese-viscii-dos (65 13 13 10 66) vietnamese-viscii-dos) ((193 13 37 194) ((0 4 viscii)) vietnamese-viscii-dos (65 13 13 10 66) vietnamese-viscii-dos) ((193 13) ((0 1 viscii) (1 2 nil)) vietnamese-viscii-dos (65 13 13 10 66) vietnamese-viscii-dos))
+E vietnamese-viscii mac      (((97 98 99) ((0 3 viscii)) vietnamese-viscii-mac (65 13 13 66) vietnamese-viscii-mac) ((120 10 10 121) ((0 4 viscii)) vietnamese-viscii-mac (65 13 13 66) vietnamese-viscii-mac) ((193 10 37 194) ((0 4 viscii)) vietnamese-viscii-mac (65 13 13 66) vietnamese-viscii-mac) ((193 10) ((0 2 viscii)) vietnamese-viscii-mac (65 13 13 66) vietnamese-viscii-mac))
+E vietnamese-vscii auto      (((97 98 99) ((0 3 vscii)) vietnamese-vscii (65 13 10 66) vietnamese-vscii) ((120 10 121) ((0 3 vscii)) vietnamese-vscii-dos (65 13 10 66) vietnamese-vscii) ((7846 10 37 7848) ((0 4 vscii)) vietnamese-vscii-mac (65 13 10 66) vietnamese-vscii) ((7846 10) ((0 2 vscii)) vietnamese-vscii-mac (65 13 10 66) vietnamese-vscii))
+E vietnamese-vscii unix      (((97 98 99) ((0 3 vscii)) vietnamese-vscii-unix (65 13 10 66) vietnamese-vscii-unix) ((120 13 10 121) ((0 4 vscii)) vietnamese-vscii-unix (65 13 10 66) vietnamese-vscii-unix) ((7846 13 37 7848) ((0 4 vscii)) vietnamese-vscii-unix (65 13 10 66) vietnamese-vscii-unix) ((7846 13) ((0 2 vscii)) vietnamese-vscii-unix (65 13 10 66) vietnamese-vscii-unix))
+E vietnamese-vscii dos       (((97 98 99) ((0 3 vscii)) vietnamese-vscii-dos (65 13 13 10 66) vietnamese-vscii-dos) ((120 10 121) ((0 3 vscii)) vietnamese-vscii-dos (65 13 13 10 66) vietnamese-vscii-dos) ((7846 13 37 7848) ((0 4 vscii)) vietnamese-vscii-dos (65 13 13 10 66) vietnamese-vscii-dos) ((7846 13) ((0 1 vscii) (1 2 nil)) vietnamese-vscii-dos (65 13 13 10 66) vietnamese-vscii-dos))
+E vietnamese-vscii mac       (((97 98 99) ((0 3 vscii)) vietnamese-vscii-mac (65 13 13 66) vietnamese-vscii-mac) ((120 10 10 121) ((0 4 vscii)) vietnamese-vscii-mac (65 13 13 66) vietnamese-vscii-mac) ((7846 10 37 7848) ((0 4 vscii)) vietnamese-vscii-mac (65 13 13 66) vietnamese-vscii-mac) ((7846 10) ((0 2 vscii)) vietnamese-vscii-mac (65 13 13 66) vietnamese-vscii-mac))
+E windows-1250 auto          (((97 98 99) ((0 3 nil)) windows-1250 (65 13 10 66) windows-1250) ((120 10 121) ((0 3 windows-1250)) windows-1250-dos (65 13 10 66) windows-1250) ((193 10 37 194) ((0 4 windows-1250)) windows-1250-mac (65 13 10 66) windows-1250) ((193 10) ((0 2 windows-1250)) windows-1250-mac (65 13 10 66) windows-1250))
+E windows-1250 unix          (((97 98 99) ((0 3 nil)) windows-1250-unix (65 13 10 66) windows-1250-unix) ((120 13 10 121) ((0 4 nil)) windows-1250-unix (65 13 10 66) windows-1250-unix) ((193 13 37 194) ((0 4 windows-1250)) windows-1250-unix (65 13 10 66) windows-1250-unix) ((193 13) ((0 2 windows-1250)) windows-1250-unix (65 13 10 66) windows-1250-unix))
+E windows-1250 dos           (((97 98 99) ((0 3 nil)) windows-1250-dos (65 13 13 10 66) windows-1250-dos) ((120 10 121) ((0 3 windows-1250)) windows-1250-dos (65 13 13 10 66) windows-1250-dos) ((193 13 37 194) ((0 4 windows-1250)) windows-1250-dos (65 13 13 10 66) windows-1250-dos) ((193 13) ((0 1 windows-1250) (1 2 nil)) windows-1250-dos (65 13 13 10 66) windows-1250-dos))
+E windows-1250 mac           (((97 98 99) ((0 3 nil)) windows-1250-mac (65 13 13 66) windows-1250-mac) ((120 10 10 121) ((0 4 windows-1250)) windows-1250-mac (65 13 13 66) windows-1250-mac) ((193 10 37 194) ((0 4 windows-1250)) windows-1250-mac (65 13 13 66) windows-1250-mac) ((193 10) ((0 2 windows-1250)) windows-1250-mac (65 13 13 66) windows-1250-mac))
+E windows-1251 auto          (((97 98 99) ((0 3 nil)) windows-1251 (65 13 10 66) windows-1251) ((120 10 121) ((0 3 windows-1251)) windows-1251-dos (65 13 10 66) windows-1251) ((1041 10 37 1042) ((0 4 windows-1251)) windows-1251-mac (65 13 10 66) windows-1251) ((1041 10) ((0 2 windows-1251)) windows-1251-mac (65 13 10 66) windows-1251))
+E windows-1251 unix          (((97 98 99) ((0 3 nil)) windows-1251-unix (65 13 10 66) windows-1251-unix) ((120 13 10 121) ((0 4 nil)) windows-1251-unix (65 13 10 66) windows-1251-unix) ((1041 13 37 1042) ((0 4 windows-1251)) windows-1251-unix (65 13 10 66) windows-1251-unix) ((1041 13) ((0 2 windows-1251)) windows-1251-unix (65 13 10 66) windows-1251-unix))
+E windows-1251 dos           (((97 98 99) ((0 3 nil)) windows-1251-dos (65 13 13 10 66) windows-1251-dos) ((120 10 121) ((0 3 windows-1251)) windows-1251-dos (65 13 13 10 66) windows-1251-dos) ((1041 13 37 1042) ((0 4 windows-1251)) windows-1251-dos (65 13 13 10 66) windows-1251-dos) ((1041 13) ((0 1 windows-1251) (1 2 nil)) windows-1251-dos (65 13 13 10 66) windows-1251-dos))
+E windows-1251 mac           (((97 98 99) ((0 3 nil)) windows-1251-mac (65 13 13 66) windows-1251-mac) ((120 10 10 121) ((0 4 windows-1251)) windows-1251-mac (65 13 13 66) windows-1251-mac) ((1041 10 37 1042) ((0 4 windows-1251)) windows-1251-mac (65 13 13 66) windows-1251-mac) ((1041 10) ((0 2 windows-1251)) windows-1251-mac (65 13 13 66) windows-1251-mac))
+E windows-1252 auto          (((97 98 99) ((0 3 nil)) windows-1252 (65 13 10 66) windows-1252) ((120 10 121) ((0 3 windows-1252)) windows-1252-dos (65 13 10 66) windows-1252) ((193 10 37 194) ((0 4 windows-1252)) windows-1252-mac (65 13 10 66) windows-1252) ((193 10) ((0 2 windows-1252)) windows-1252-mac (65 13 10 66) windows-1252))
+E windows-1252 unix          (((97 98 99) ((0 3 nil)) windows-1252-unix (65 13 10 66) windows-1252-unix) ((120 13 10 121) ((0 4 nil)) windows-1252-unix (65 13 10 66) windows-1252-unix) ((193 13 37 194) ((0 4 windows-1252)) windows-1252-unix (65 13 10 66) windows-1252-unix) ((193 13) ((0 2 windows-1252)) windows-1252-unix (65 13 10 66) windows-1252-unix))
+E windows-1252 dos           (((97 98 99) ((0 3 nil)) windows-1252-dos (65 13 13 10 66) windows-1252-dos) ((120 10 121) ((0 3 windows-1252)) windows-1252-dos (65 13 13 10 66) windows-1252-dos) ((193 13 37 194) ((0 4 windows-1252)) windows-1252-dos (65 13 13 10 66) windows-1252-dos) ((193 13) ((0 1 windows-1252) (1 2 nil)) windows-1252-dos (65 13 13 10 66) windows-1252-dos))
+E windows-1252 mac           (((97 98 99) ((0 3 nil)) windows-1252-mac (65 13 13 66) windows-1252-mac) ((120 10 10 121) ((0 4 windows-1252)) windows-1252-mac (65 13 13 66) windows-1252-mac) ((193 10 37 194) ((0 4 windows-1252)) windows-1252-mac (65 13 13 66) windows-1252-mac) ((193 10) ((0 2 windows-1252)) windows-1252-mac (65 13 13 66) windows-1252-mac))
+E windows-1253 auto          (((97 98 99) ((0 3 nil)) windows-1253 (65 13 10 66) windows-1253) ((120 10 121) ((0 3 windows-1253)) windows-1253-dos (65 13 10 66) windows-1253) ((913 10 37 914) ((0 4 windows-1253)) windows-1253-mac (65 13 10 66) windows-1253) ((913 10) ((0 2 windows-1253)) windows-1253-mac (65 13 10 66) windows-1253))
+E windows-1253 unix          (((97 98 99) ((0 3 nil)) windows-1253-unix (65 13 10 66) windows-1253-unix) ((120 13 10 121) ((0 4 nil)) windows-1253-unix (65 13 10 66) windows-1253-unix) ((913 13 37 914) ((0 4 windows-1253)) windows-1253-unix (65 13 10 66) windows-1253-unix) ((913 13) ((0 2 windows-1253)) windows-1253-unix (65 13 10 66) windows-1253-unix))
+E windows-1253 dos           (((97 98 99) ((0 3 nil)) windows-1253-dos (65 13 13 10 66) windows-1253-dos) ((120 10 121) ((0 3 windows-1253)) windows-1253-dos (65 13 13 10 66) windows-1253-dos) ((913 13 37 914) ((0 4 windows-1253)) windows-1253-dos (65 13 13 10 66) windows-1253-dos) ((913 13) ((0 1 windows-1253) (1 2 nil)) windows-1253-dos (65 13 13 10 66) windows-1253-dos))
+E windows-1253 mac           (((97 98 99) ((0 3 nil)) windows-1253-mac (65 13 13 66) windows-1253-mac) ((120 10 10 121) ((0 4 windows-1253)) windows-1253-mac (65 13 13 66) windows-1253-mac) ((913 10 37 914) ((0 4 windows-1253)) windows-1253-mac (65 13 13 66) windows-1253-mac) ((913 10) ((0 2 windows-1253)) windows-1253-mac (65 13 13 66) windows-1253-mac))
+E windows-1254 auto          (((97 98 99) ((0 3 nil)) windows-1254 (65 13 10 66) windows-1254) ((120 10 121) ((0 3 windows-1254)) windows-1254-dos (65 13 10 66) windows-1254) ((193 10 37 194) ((0 4 windows-1254)) windows-1254-mac (65 13 10 66) windows-1254) ((193 10) ((0 2 windows-1254)) windows-1254-mac (65 13 10 66) windows-1254))
+E windows-1254 unix          (((97 98 99) ((0 3 nil)) windows-1254-unix (65 13 10 66) windows-1254-unix) ((120 13 10 121) ((0 4 nil)) windows-1254-unix (65 13 10 66) windows-1254-unix) ((193 13 37 194) ((0 4 windows-1254)) windows-1254-unix (65 13 10 66) windows-1254-unix) ((193 13) ((0 2 windows-1254)) windows-1254-unix (65 13 10 66) windows-1254-unix))
+E windows-1254 dos           (((97 98 99) ((0 3 nil)) windows-1254-dos (65 13 13 10 66) windows-1254-dos) ((120 10 121) ((0 3 windows-1254)) windows-1254-dos (65 13 13 10 66) windows-1254-dos) ((193 13 37 194) ((0 4 windows-1254)) windows-1254-dos (65 13 13 10 66) windows-1254-dos) ((193 13) ((0 1 windows-1254) (1 2 nil)) windows-1254-dos (65 13 13 10 66) windows-1254-dos))
+E windows-1254 mac           (((97 98 99) ((0 3 nil)) windows-1254-mac (65 13 13 66) windows-1254-mac) ((120 10 10 121) ((0 4 windows-1254)) windows-1254-mac (65 13 13 66) windows-1254-mac) ((193 10 37 194) ((0 4 windows-1254)) windows-1254-mac (65 13 13 66) windows-1254-mac) ((193 10) ((0 2 windows-1254)) windows-1254-mac (65 13 13 66) windows-1254-mac))
+E windows-1255 auto          (((97 98 99) ((0 3 nil)) windows-1255 (65 13 10 66) windows-1255) ((120 10 121) ((0 3 windows-1255)) windows-1255-dos (65 13 10 66) windows-1255) ((1457 10 37 1458) ((0 4 windows-1255)) windows-1255-mac (65 13 10 66) windows-1255) ((1457 10) ((0 2 windows-1255)) windows-1255-mac (65 13 10 66) windows-1255))
+E windows-1255 unix          (((97 98 99) ((0 3 nil)) windows-1255-unix (65 13 10 66) windows-1255-unix) ((120 13 10 121) ((0 4 nil)) windows-1255-unix (65 13 10 66) windows-1255-unix) ((1457 13 37 1458) ((0 4 windows-1255)) windows-1255-unix (65 13 10 66) windows-1255-unix) ((1457 13) ((0 2 windows-1255)) windows-1255-unix (65 13 10 66) windows-1255-unix))
+E windows-1255 dos           (((97 98 99) ((0 3 nil)) windows-1255-dos (65 13 13 10 66) windows-1255-dos) ((120 10 121) ((0 3 windows-1255)) windows-1255-dos (65 13 13 10 66) windows-1255-dos) ((1457 13 37 1458) ((0 4 windows-1255)) windows-1255-dos (65 13 13 10 66) windows-1255-dos) ((1457 13) ((0 1 windows-1255) (1 2 nil)) windows-1255-dos (65 13 13 10 66) windows-1255-dos))
+E windows-1255 mac           (((97 98 99) ((0 3 nil)) windows-1255-mac (65 13 13 66) windows-1255-mac) ((120 10 10 121) ((0 4 windows-1255)) windows-1255-mac (65 13 13 66) windows-1255-mac) ((1457 10 37 1458) ((0 4 windows-1255)) windows-1255-mac (65 13 13 66) windows-1255-mac) ((1457 10) ((0 2 windows-1255)) windows-1255-mac (65 13 13 66) windows-1255-mac))
+E windows-1256 auto          (((97 98 99) ((0 3 nil)) windows-1256 (65 13 10 66) windows-1256) ((120 10 121) ((0 3 windows-1256)) windows-1256-dos (65 13 10 66) windows-1256) ((1569 10 37 1570) ((0 4 windows-1256)) windows-1256-mac (65 13 10 66) windows-1256) ((1569 10) ((0 2 windows-1256)) windows-1256-mac (65 13 10 66) windows-1256))
+E windows-1256 unix          (((97 98 99) ((0 3 nil)) windows-1256-unix (65 13 10 66) windows-1256-unix) ((120 13 10 121) ((0 4 nil)) windows-1256-unix (65 13 10 66) windows-1256-unix) ((1569 13 37 1570) ((0 4 windows-1256)) windows-1256-unix (65 13 10 66) windows-1256-unix) ((1569 13) ((0 2 windows-1256)) windows-1256-unix (65 13 10 66) windows-1256-unix))
+E windows-1256 dos           (((97 98 99) ((0 3 nil)) windows-1256-dos (65 13 13 10 66) windows-1256-dos) ((120 10 121) ((0 3 windows-1256)) windows-1256-dos (65 13 13 10 66) windows-1256-dos) ((1569 13 37 1570) ((0 4 windows-1256)) windows-1256-dos (65 13 13 10 66) windows-1256-dos) ((1569 13) ((0 1 windows-1256) (1 2 nil)) windows-1256-dos (65 13 13 10 66) windows-1256-dos))
+E windows-1256 mac           (((97 98 99) ((0 3 nil)) windows-1256-mac (65 13 13 66) windows-1256-mac) ((120 10 10 121) ((0 4 windows-1256)) windows-1256-mac (65 13 13 66) windows-1256-mac) ((1569 10 37 1570) ((0 4 windows-1256)) windows-1256-mac (65 13 13 66) windows-1256-mac) ((1569 10) ((0 2 windows-1256)) windows-1256-mac (65 13 13 66) windows-1256-mac))
+E windows-1257 auto          (((97 98 99) ((0 3 nil)) windows-1257 (65 13 10 66) windows-1257) ((120 10 121) ((0 3 windows-1257)) windows-1257-dos (65 13 10 66) windows-1257) ((302 10 37 256) ((0 4 windows-1257)) windows-1257-mac (65 13 10 66) windows-1257) ((302 10) ((0 2 windows-1257)) windows-1257-mac (65 13 10 66) windows-1257))
+E windows-1257 unix          (((97 98 99) ((0 3 nil)) windows-1257-unix (65 13 10 66) windows-1257-unix) ((120 13 10 121) ((0 4 nil)) windows-1257-unix (65 13 10 66) windows-1257-unix) ((302 13 37 256) ((0 4 windows-1257)) windows-1257-unix (65 13 10 66) windows-1257-unix) ((302 13) ((0 2 windows-1257)) windows-1257-unix (65 13 10 66) windows-1257-unix))
+E windows-1257 dos           (((97 98 99) ((0 3 nil)) windows-1257-dos (65 13 13 10 66) windows-1257-dos) ((120 10 121) ((0 3 windows-1257)) windows-1257-dos (65 13 13 10 66) windows-1257-dos) ((302 13 37 256) ((0 4 windows-1257)) windows-1257-dos (65 13 13 10 66) windows-1257-dos) ((302 13) ((0 1 windows-1257) (1 2 nil)) windows-1257-dos (65 13 13 10 66) windows-1257-dos))
+E windows-1257 mac           (((97 98 99) ((0 3 nil)) windows-1257-mac (65 13 13 66) windows-1257-mac) ((120 10 10 121) ((0 4 windows-1257)) windows-1257-mac (65 13 13 66) windows-1257-mac) ((302 10 37 256) ((0 4 windows-1257)) windows-1257-mac (65 13 13 66) windows-1257-mac) ((302 10) ((0 2 windows-1257)) windows-1257-mac (65 13 13 66) windows-1257-mac))
+E windows-1258 auto          (((97 98 99) ((0 3 nil)) windows-1258 (65 13 10 66) windows-1258) ((120 10 121) ((0 3 windows-1258)) windows-1258-dos (65 13 10 66) windows-1258) ((193 10 37 194) ((0 4 windows-1258)) windows-1258-mac (65 13 10 66) windows-1258) ((193 10) ((0 2 windows-1258)) windows-1258-mac (65 13 10 66) windows-1258))
+E windows-1258 unix          (((97 98 99) ((0 3 nil)) windows-1258-unix (65 13 10 66) windows-1258-unix) ((120 13 10 121) ((0 4 nil)) windows-1258-unix (65 13 10 66) windows-1258-unix) ((193 13 37 194) ((0 4 windows-1258)) windows-1258-unix (65 13 10 66) windows-1258-unix) ((193 13) ((0 2 windows-1258)) windows-1258-unix (65 13 10 66) windows-1258-unix))
+E windows-1258 dos           (((97 98 99) ((0 3 nil)) windows-1258-dos (65 13 13 10 66) windows-1258-dos) ((120 10 121) ((0 3 windows-1258)) windows-1258-dos (65 13 13 10 66) windows-1258-dos) ((193 13 37 194) ((0 4 windows-1258)) windows-1258-dos (65 13 13 10 66) windows-1258-dos) ((193 13) ((0 1 windows-1258) (1 2 nil)) windows-1258-dos (65 13 13 10 66) windows-1258-dos))
+E windows-1258 mac           (((97 98 99) ((0 3 nil)) windows-1258-mac (65 13 13 66) windows-1258-mac) ((120 10 10 121) ((0 4 windows-1258)) windows-1258-mac (65 13 13 66) windows-1258-mac) ((193 10 37 194) ((0 4 windows-1258)) windows-1258-mac (65 13 13 66) windows-1258-mac) ((193 10) ((0 2 windows-1258)) windows-1258-mac (65 13 13 66) windows-1258-mac))
+E inhibited                  ((65 13 10 66) ((0 4 ebcdic-us)) ebcdic-us-dos (193 13 37 194) ebcdic-us-dos)

@@ -4,7 +4,12 @@
 ;; `charset' property runs), encoding the result back, an unencodable
 ;; character, EOL variants and `last-coding-system-used'.  Spec = GNU 31.1
 ;; (par-coding-charset.gnu).
-(defmacro row (n f) `(princ (format "%-28s %S\n" ,n (condition-case e ,f (error (list 'ERR (car e) (cadr e)))))))
+;; Keep charset annotations visible even when every decoded char is ASCII.
+(defmacro row (n f)
+  `(let ((print-charset-text-property t))
+     (princ (format "%-28s %S\n" ,n
+                    (condition-case e ,f
+                      (error (list 'ERR (car e) (cadr e))))))))
 (defvar pcc-all (let ((s (make-string 256 0))) (dotimes (i 256) (aset s i i)) (string-to-unibyte s)))
 (defun pcc-runs (s)
   (let ((pos 0) (out nil))
@@ -32,3 +37,22 @@
 (row "L1 load-path subdirs" (mapcar (lambda (d) (file-name-nondirectory (directory-file-name d)))
                                     (seq-filter (lambda (d) (string-match-p "/\\(language\\|international\\|leim\\)/?\\'" d)) load-path)))
 (row "L2 japan-util" (and (locate-library "japan-util") t))
+
+(defun pcc-eol-row (cs bytes)
+  (let* ((d (decode-coding-string bytes cs))
+         (decoded-with last-coding-system-used)
+         (encoded (encode-coding-string "A\r\nB" cs)))
+    (list (string-to-list d) (pcc-runs d) decoded-with
+          (string-to-list encoded) last-coding-system-used)))
+
+;; EBCDIC's LF is byte 37.  Byte 10 decodes to a different character.
+(dolist (cs pcc-systems)
+  (dolist (eol '(nil unix dos mac))
+    (let ((coding (if eol (coding-system-change-eol-conversion cs eol) cs)))
+      (row (format "E %s %s" cs (or eol 'auto))
+           (mapcar (lambda (bytes) (pcc-eol-row coding bytes))
+                   (list "abc" "x\r\ny" (unibyte-string 193 13 37 194)
+                         (unibyte-string 193 13)))))))
+(row "E inhibited" (let ((inhibit-eol-conversion t))
+                     (pcc-eol-row 'ebcdic-us-dos
+                                  (unibyte-string 193 13 37 194))))

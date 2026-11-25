@@ -14,6 +14,7 @@
 (defvar emacs-cc-charset--slots)
 (defvar emacs-cc-coding--hash)
 (defvar emacs-cc-coding--attr-slots)
+(defvar inhibit-eol-conversion)
 (declare-function emacs-cc-charset--from-id "emacs-cc-charset-1")
 (declare-function emacs-cc-charset--decode "emacs-cc-charset-1")
 (declare-function emacs-cc-charset--encode "emacs-cc-charset-1")
@@ -76,52 +77,69 @@ list of IDs sorted by dimension (smaller first)."
               (setq i (1+ i)))))
         (puthash attrs val emacs-cc-coding-4--valids))))
 
-(defun emacs-cc-coding-4--eol (coding bytes)
-  "EOL type of CODING for decoding BYTES: `unix', `dos', `mac', or nil.
-An undecided EOL (a vector) is detected as detect_eol and
-adjust_coding_eol_type do: a bare LF means unix, else CR LF means dos,
-else a CR means mac; nil when BYTES has no EOL at all."
+(defun emacs-cc-coding-4--eol (coding)
+  "Return the requested EOL type, or nil for detection."
   (let ((eol (coding-system-eol-type coding)))
-    (cond
-     ((eq eol 1) 'dos)
-     ((eq eol 2) 'mac)
-     ((integerp eol) 'unix)
-     ((string-match-p "\\(?:\\`\\|[^\r]\\)\n" bytes) 'unix)
-     ((string-match-p "\r\n" bytes) 'dos)
-     ((string-match-p "\r" bytes) 'mac)
-     (t nil))))
+    (cond ((or inhibit-eol-conversion (eq eol 0)) 'unix)
+          ((eq eol 1) 'dos)
+          ((eq eol 2) 'mac))))
 
-(defun emacs-cc-coding-4--decode-bytes (bytes attrs)
+(defun emacs-cc-coding-4--detect-eol (chars)
+  "Detect EOL in decoded CHARS as coding.c decode_eol does."
+  (let ((eol nil))
+    (while (and chars (not (eq eol 'unix)))
+      (cond ((= (car chars) ?\n) (setq eol 'unix))
+            ((= (car chars) ?\r)
+             (if (eq (cadr chars) ?\n)
+                 (setq eol 'dos chars (cdr chars))
+               (unless eol (setq eol 'mac)))))
+      (setq chars (cdr chars)))
+    eol))
+
+(defun emacs-cc-coding-4--decode-bytes (bytes attrs dos)
   "decode_coding_charset over the unibyte string BYTES.
 Return (CHARS . RUNS): the decoded characters and the charset runs
-\((FROM TO . CHARSET-NAME) ...) produce_charset turns into properties."
+\\((FROM TO . CHARSET-ID) ...) produce_charset turns into properties.
+DOS enables the decoder's lookahead after a source CR byte."
   (let* ((valids (emacs-cc-coding-4--charset-valids attrs))
-         (n (length bytes)) (i 0) (chars nil) (runs nil)
+         (n (length bytes)) (i 0) (pending nil) (chars nil) (runs nil)
          (offset 0) (last-id emacs-cc-charset--id-ascii) (last-offset 0))
-    (while (< i n)
-      (let* ((b (aref bytes i)) (val (aref valids b)) (c -1) (charset nil) (len 1))
+    (while (or pending (< i n))
+      (let* ((start i)
+             (b (or pending (prog1 (aref bytes i) (setq i (1+ i)))))
+             (val (aref valids b)) (c -1) (charset nil) (len 1)
+             (trailing-cr nil))
+        (cond
+         (pending (setq pending nil))
+         ((and dos (= b ?\r))
+          (if (= i n)
+              ;; The final CR is flushed as raw text after the annotation.
+              (setq val nil trailing-cr t)
+            (setq pending (aref bytes i) i (1+ i)))))
         (dolist (id (if (integerp val) (list val) val))
           (when (< c 0)
             (let* ((cs (emacs-cc-charset--from-id id))
                    (dim (emacs-cc-coding-4--cs cs 'dimension)))
-              (when (<= (+ i dim) n)
-                (let ((code 0) (k 0))
-                  (while (< k dim)
+              (when (<= (+ i (1- dim)) n)
+                (let ((code b) (k 0))
+                  (while (< k (1- dim))
                     (setq code (logior (ash code 8) (aref bytes (+ i k))) k (1+ k)))
                   (setq c (emacs-cc-charset--decode cs code))
                   (when (>= c 0) (setq charset cs len dim)))))))
-        (if (< c 0)
-            ;; invalid_code: the byte itself, as a raw-byte character.
-            (progn (push (if (< b 128) b (+ b #x3FFF00)) chars)
-                   (setq i (1+ i)))
+        (cond
+         ((>= c 0)
           (let ((id (emacs-cc-coding-4--cs charset 'id)))
             (when (and (/= id emacs-cc-charset--id-ascii) (/= last-id id))
               (unless (= last-id emacs-cc-charset--id-ascii)
                 (push (cons last-offset (cons offset last-id)) runs))
               (setq last-id id last-offset offset)))
           (push c chars)
-          (setq i (+ i len)))
-        (setq offset (1+ offset))))
+          (setq i (+ i (1- len)) offset (1+ offset)))
+         ((< start n)
+          ;; invalid_code rewinds the source cursor and reads a raw byte.
+          (setq b (aref bytes start) i (1+ start))
+          (push (if (< b 128) b (+ b #x3FFF00)) chars)
+          (unless trailing-cr (setq offset (1+ offset)))))))
     (unless (= last-id emacs-cc-charset--id-ascii)
       (push (cons last-offset (cons offset last-id)) runs))
     (cons (nreverse chars) (nreverse runs))))
@@ -134,37 +152,58 @@ Return (CHARS . RUNS): the decoded characters and the charset runs
       (setq i (1+ i)))
     ok))
 
-(defun emacs-cc-coding-4--decode (string coding attrs)
-  "Decode STRING with the charset-type CODING (attribute vector ATTRS).
-Return (TEXT . EOL-USED)."
+(defun emacs-cc-coding-4--decode (string coding attrs nocopy buffer)
+  "Decode STRING with charset-type CODING and return (TEXT . EOL-USED)."
   (let* ((bytes (if (multibyte-string-p string)
                     (encode-coding-string string 'raw-text)
                   string))
-         (eol (emacs-cc-coding-4--eol coding bytes)))
-    ;; decode_coding_charset treats CR LF (dos) and CR (mac) as one LF; the
-    ;; EOL bytes are ASCII in every charset coding system.
-    (cond ((eq eol 'dos) (setq bytes (replace-regexp-in-string "\r\n" "\n" bytes t t)))
-          ((eq eol 'mac) (setq bytes (replace-regexp-in-string "\r" "\n" bytes t t))))
-    (let* ((res (if (and (emacs-cc-coding-4--attr attrs 'ascii-compat)
-                         (emacs-cc-coding-4--ascii-p bytes))
-                    ;; decode_coding_object: ASCII-only text of an
-                    ;; ASCII-compatible system is produced as is, without
-                    ;; the decoder and so without charset annotations.
-                    (cons (string-to-list bytes) nil)
-                  (emacs-cc-coding-4--decode-bytes bytes attrs)))
-           (text (if (car res) (apply #'string (car res)) (make-string 0 0 t))))
-      (dolist (run (cdr res))
-        (put-text-property (car run) (cadr run) 'charset
-                           (emacs-cc-charset--name
-                            (emacs-cc-charset--from-id (cddr run)))
-                           text))
-      (cons text eol))))
+         (fixed-eol (emacs-cc-coding-4--eol coding)))
+    (if (and (not buffer)
+             (emacs-cc-coding-4--attr attrs 'ascii-compat)
+             (emacs-cc-coding-4--ascii-p bytes)
+             (or (eq fixed-eol 'unix) (not (string-match-p "\r" bytes))))
+        ;; code_convert_string's ASCII identity path bypasses annotations
+        ;; and EOL detection.
+        (cons (if nocopy string (string-to-multibyte bytes)) nil)
+      (let* ((res (emacs-cc-coding-4--decode-bytes bytes attrs (eq fixed-eol 'dos)))
+             (chars (car res))
+             (runs (cdr res))
+             (eol (or fixed-eol (emacs-cc-coding-4--detect-eol chars)))
+             (text nil)
+             (removed nil))
+        ;; decode_eol edits the annotated output.  Track the removed CR
+        ;; positions so annotation boundaries follow the surviving chars.
+        (cond
+         ((eq eol 'mac)
+          (setq chars (mapcar (lambda (c) (if (= c ?\r) ?\n c)) chars)))
+         ((eq eol 'dos)
+          (let ((i 0) (out nil))
+            (while chars
+              (if (and (= (car chars) ?\r) (eq (cadr chars) ?\n))
+                  (push i removed)
+                (push (car chars) out))
+              (setq i (1+ i) chars (cdr chars)))
+            (setq chars (nreverse out) removed (nreverse removed)))))
+        (setq text (string-to-multibyte (apply #'string chars)))
+        (let ((shift 0))
+          (dolist (run runs)
+            (let ((from (car run)) (to (cadr run)))
+              (while (and removed (< (car removed) from))
+                (setq removed (cdr removed) shift (1+ shift)))
+              (setq from (- from shift))
+              (while (and removed (< (car removed) to))
+                (setq removed (cdr removed) shift (1+ shift)))
+              (put-text-property from (- to shift) 'charset
+                                 (emacs-cc-charset--name
+                                  (emacs-cc-charset--from-id (cddr run)))
+                                 text))))
+        (cons text eol)))))
 
 (defun emacs-cc-coding-4--encode (string coding attrs)
   "encode_coding_charset: encode STRING with charset-type CODING."
-  (let* ((eol (coding-system-eol-type coding))
-         (text (cond ((eq eol 1) (replace-regexp-in-string "\n" "\r\n" string t t))
-                     ((eq eol 2) (replace-regexp-in-string "\n" "\r" string t t))
+  (let* ((eol (emacs-cc-coding-4--eol coding))
+         (text (cond ((eq eol 'dos) (replace-regexp-in-string "\n" "\r\n" string t t))
+                     ((eq eol 'mac) (replace-regexp-in-string "\n" "\r" string t t))
                      (t string)))
          (ascii-compat (emacs-cc-coding-4--attr attrs 'ascii-compat))
          (clist (emacs-cc-coding-4--attr attrs 'charset-list))
@@ -204,7 +243,7 @@ Return (TEXT . EOL-USED)."
       (if (not attrs)
           (apply #'emacs-cc-coding-4--decode-next string coding-system rest)
         (let* ((buffer (nth 1 rest))
-               (res (emacs-cc-coding-4--decode string coding-system attrs))
+               (res (emacs-cc-coding-4--decode string coding-system attrs (car rest) buffer))
                (text (car res)))
           (setq last-coding-system-used
                 (emacs-cc-coding-4--eol-name coding-system (cdr res)))
