@@ -1,0 +1,54 @@
+#+TITLE: 246 Single-owner rule for GNU names (prelude vs emacs-lib vs vendor)
+#+STATUS: ACCEPTED
+#+DATE: 2026-11-25
+
+* Problem
+
+The same GNU name is often defined in more than one layer. Some
+definitions sit in the NeLisp core (scripts/nelisp-stdlib-prelude.el,
+lisp/, src/), others in the Emacs compatibility layer
+(packages/emacs-lib-core/src/), and many of these are fboundp-guarded
+fallbacks. A static count on 2026-11-25 found 560 names defined in both
+the core and emacs-lib.
+
+Which definition is live then depends on load order and guards. Two
+cases from that period show the problem:
+- The category tables mixed the prelude define-category with the
+  emacs-lib standard-category-table.
+- A charprop stub hid the genuine registry.
+
+* Rule
+
+1. *One definition per name.* GNU decides where a name lives:
+   - *GNU Lisp* (lisp/**/*.el): only the verbatim vendor file defines
+     it. Never reimplement it in NeLisp code.
+   - *GNU C, language core*: eval.c, data.c, fns.c, alloc.c, lread.c,
+     print.c, bytecode.c, floatfns.c, and the string, number and list
+     parts of editfns.c. These are ported into the NeLisp core
+     (prelude / lisp/).
+   - *GNU C, editor substrate*: buffer.c, editfns.c (buffer parts),
+     fileio.c, dired.c, keymap.c, syntax.c, search.c (buffer
+     regexps), casefiddle.c, coding.c, charset.c, window.c, frame.c,
+     process.c, textprop.c, minibuf.c, and similar. These are ported
+     into emacs-lib.
+   - *Exception.* A C facility that a core consumer needs (the reader,
+     the regex engine, the printer) lives in the core, even when GNU
+     keeps it in chartab.c, category.c or casetab.c. emacs-lib must
+     not redefine it; it may only call it.
+2. *No fallbacks.* No fboundp/boundp-guarded copy of a name owned by
+   another layer. Host-Emacs fallbacks are no longer needed because
+   emacs-lib is not run on host GNU Emacs, so delete them.
+3. *Wrapping.* A layer that needs different behaviour uses the
+   owner's hook or variable, or an advice-free extension point, and
+   documents it in the owner. It does not redefine the name.
+4. *Gate.* The count of names defined in more than one layer is
+   reported as gate G2-dup and must only go down. A new duplicate is
+   a failure.
+
+* Measuring
+
+The gate status script counts, at the definition level, the names
+defined in both the core and emacs-lib. It also counts the GNU
+vendor-file names whose live definition is not the vendor file (G2).
+Both counts are expected to reach 0, except for an explicit,
+justified allowlist.
