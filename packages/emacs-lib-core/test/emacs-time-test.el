@@ -255,15 +255,11 @@ explicitly unbound clock cell remains unbound after the same reload."
 
 (ert-deftest emacs-time-test/calendar-absolute-days-match-emacs ()
   "Calendar absolute days round-trip through Gregorian dates."
-  (emacs-time-test--with-reloaded-module
-   '(truncate float-time current-time nl-current-unix-time
-              calendar-absolute-from-gregorian
-              calendar-gregorian-from-absolute)
-   (lambda ()
-     (should (= 719163 (calendar-absolute-from-gregorian '(1 1 1970))))
-     (should (= 739807 (calendar-absolute-from-gregorian '(7 10 2026))))
-     (should (equal '(7 10 2026)
-                    (calendar-gregorian-from-absolute 739807))))))
+  (require 'calendar)
+  (should (= 719163 (calendar-absolute-from-gregorian '(1 1 1970))))
+  (should (= 739807 (calendar-absolute-from-gregorian '(7 10 2026))))
+  (should (equal '(7 10 2026)
+                 (calendar-gregorian-from-absolute 739807))))
 
 (ert-deftest emacs-time-test/gnu-time-date-day-conversions ()
   (require 'time-date)

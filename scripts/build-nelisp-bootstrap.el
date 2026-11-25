@@ -1726,6 +1726,10 @@ strings or comments, and calls with any non-literal argument, are kept."
      version-list-< version-list-= version-list-<= version-list-not-zero
      version< version<= version=
      add-to-ordered-list member-ignore-case shell-quote-argument
+     define-prefix-command suppress-keymap global-set-key global-key-binding
+     local-set-key global-unset-key local-unset-key
+     process-lines-handling-status process-lines process-lines-ignore-status
+     call-process-shell-command
      subst-char-in-string combine-and-quote-strings split-string-and-unquote
      event--posn-at-point event-start event-end posnp posn-window posn-area
      posn-point event-click-count

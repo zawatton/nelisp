@@ -2041,22 +2041,6 @@ shape used by frontends."
   (emacs-edit-yank-direct arg)
   nil)
 
-(when (emacs-edit-builtins--install-function-p 'yank)
-  (defun yank (&optional arg)
-    "Phase E polyfill: insert the most recent kill at point.
-ARG selects which kill-ring entry: 1 (default) = head; N>1 = N-th
-older entry; `-' = `yank-pop'-style (deferred).  Negative / `-'
-arg currently coerced to head-yank.
-
-When ARG is nil (= head yank) and `interprogram-paste-function'
-returns a non-nil string, that string is pushed onto `kill-ring'
-first so the GUI clipboard wins over the local kill-ring head
-(= matches Emacs' `current-kill' behaviour).
-
-Track E.2: records the inserted span on `buffer-undo-list'."
-    (interactive "*P")
-    (emacs-edit--yank arg)))
-
 (defun emacs-edit-yank-pop-direct (&optional arg)
   "Replace the most recent yank with another kill-ring entry.
 Return an edit plist containing `:beg', `:end', `:text', `:delete-len',
@@ -3346,74 +3330,6 @@ Called with two arguments, the start and end of the region."))
   (defvar copy-region-blink-predicate nil
     "Predicate deciding whether `kill-ring-save' blinks the other end.
 nil here: `region-indistinguishable-p' is not ported."))
-
-(defun current-kill (n &optional do-not-move)
-  "Rotate the yanking point by N places and return the kill there.
-With N zero and `interprogram-paste-function' returning a string or a list
-of strings, add those to the front of the kill ring and return the newest.
-If DO-NOT-MOVE is non-nil, return the Nth kill forward without moving the
-yanking point."
-  (let ((interprogram-paste (and (= n 0)
-                                 interprogram-paste-function
-                                 (functionp interprogram-paste-function)
-                                 (funcall interprogram-paste-function))))
-    (if interprogram-paste
-        (progn
-          ;; Disable both hooks while pushing: the cut function would make
-          ;; Emacs re-own a selection it just read, and the paste function
-          ;; would be called again by `kill-new'.
-          (let ((interprogram-cut-function nil)
-                (interprogram-paste-function nil))
-            (if (listp interprogram-paste)
-                (mapc #'kill-new (reverse interprogram-paste))
-              (kill-new interprogram-paste)))
-          (car kill-ring))
-      (or kill-ring (error "Kill ring is empty"))
-      (let ((nth-kill-element
-             (nthcdr (mod (- n (length kill-ring-yank-pointer))
-                          (length kill-ring))
-                     kill-ring)))
-        (unless do-not-move
-          (setq kill-ring-yank-pointer nth-kill-element)
-          (when (and yank-pop-change-selection
-                     (> n 0)
-                     interprogram-cut-function
-                     (functionp interprogram-cut-function))
-            (funcall interprogram-cut-function (car nth-kill-element))))
-        (car nth-kill-element)))))
-
-(defun kill-append (string before-p)
-  "Append STRING to the latest kill in the kill ring.
-If BEFORE-P is non-nil, prepend it instead."
-  (let ((cur (car kill-ring)))
-    (kill-new (if before-p (concat string cur) (concat cur string))
-              (or (null cur)
-                  (= (length cur) 0)
-                  (null (get-text-property 0 'yank-handler cur)))))
-  ;; The undo-boundary merge GNU Emacs does here needs `buffer-undo-list'
-  ;; surgery; it runs only when the user opts in, and the default is nil,
-  ;; so the default behaviour matches without inventing that surgery.
-  (when (and kill-append-merge-undo
-             (boundp 'buffer-undo-list)
-             (not (and (boundp 'buffer-read-only) buffer-read-only)))
-    (let ((prev buffer-undo-list))
-      (when (and (consp prev) (null (car prev)))
-        (setq buffer-undo-list (cdr prev)))))
-  nil)
-
-(defun kill-ring-save (beg end &optional region)
-  "Save BEG..END as if killed, without killing it.
-With REGION non-nil, ignore BEG and END and save the current region."
-  (interactive "r")
-  (if region
-      (copy-region-as-kill (region-beginning) (region-end))
-    (copy-region-as-kill beg end))
-  ;; GNU Emacs blinks the other end of the region here when called
-  ;; interactively.  That needs `sit-for' plus redisplay, and
-  ;; `copy-region-blink-predicate' is nil here, so there is nothing to do.
-  (when (fboundp 'deactivate-mark)
-    (deactivate-mark))
-  nil)
 
 (unless (fboundp 'kill-forward-chars)
   (defun kill-forward-chars (arg)

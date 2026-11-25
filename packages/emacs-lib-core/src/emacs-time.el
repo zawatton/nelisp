@@ -22,9 +22,6 @@
 
 ;;; Code:
 
-(defconst emacs-time--unix-epoch-absolute-day 719163
-  "Emacs calendar absolute day for 1970-01-01.")
-
 (defun emacs-time--standalone-runtime-p ()
   "Return non-nil when NeLisp standalone runtime markers are available."
   (or (fboundp 'nl-current-unix-time)
@@ -133,20 +130,6 @@ not route through the standalone `float-time', which ignores its argument."
 (unless (emacs-time--function-cell-live-p 'display-time-mode)
   (defalias 'display-time-mode #'ignore))
 
-(defun emacs-time--civil-from-days (days)
-  "Return (YEAR MONTH DAY) for DAYS since 1970-01-01."
-  (let* ((z (+ days 719468))
-         (era (/ (if (>= z 0) z (- z 146096)) 146097))
-         (doe (- z (* era 146097)))
-         (yoe (/ (- doe (/ doe 1460) (/ doe 36524) (/ doe 146096)) 365))
-         (y (+ yoe (* era 400)))
-         (doy (- doe (+ (* 365 yoe) (/ yoe 4) (- (/ yoe 100)))))
-         (mp (/ (+ (* 5 doy) 2) 153))
-         (day (+ (- doy (/ (+ (* 153 mp) 2) 5)) 1))
-         (month (+ mp (if (< mp 10) 3 -9)))
-         (year (+ y (if (<= month 2) 1 0))))
-    (list year month day)))
-
 (unless (fboundp 'decoded-time-second)
   (defun decoded-time-second (time) (nth 0 time)))
 
@@ -164,49 +147,6 @@ not route through the standalone `float-time', which ignores its argument."
 
 (unless (fboundp 'decoded-time-year)
   (defun decoded-time-year (time) (nth 5 time)))
-
-(unless (fboundp 'calendar-extract-month)
-  (defun calendar-extract-month (date) (nth 0 date)))
-
-(unless (fboundp 'calendar-extract-day)
-  (defun calendar-extract-day (date) (nth 1 date)))
-
-(unless (fboundp 'calendar-extract-year)
-  (defun calendar-extract-year (date) (nth 2 date)))
-
-(unless (and (emacs-time--host-runtime-p)
-             (fboundp 'calendar-absolute-from-gregorian))
-  (defun calendar-absolute-from-gregorian (date)
-    "Return an absolute day number for Gregorian DATE = (MONTH DAY YEAR)."
-    (pcase-let ((`(,month ,day ,year) date))
-      (let* ((y (if (<= month 2) (1- year) year))
-             (m (if (<= month 2) (+ month 12) month)))
-        (+ day
-           (/ (+ (* 153 (- m 3)) 2) 5)
-           (* 365 y)
-           (/ y 4)
-           (- (/ y 100))
-           (/ y 400)
-           -306)))))
-
-(unless (and (emacs-time--host-runtime-p)
-             (fboundp 'calendar-gregorian-from-absolute))
-  (defun calendar-gregorian-from-absolute (absolute)
-    "Return Gregorian (MONTH DAY YEAR) for ABSOLUTE day number."
-    (pcase-let ((`(,year ,month ,day)
-                 (emacs-time--civil-from-days
-                  (- absolute emacs-time--unix-epoch-absolute-day))))
-      (list month day year))))
-
-(unless (fboundp 'calendar-sum)
-  (defmacro calendar-sum (index initial condition expression)
-    "Accumulate EXPRESSION while CONDITION holds, iterating INDEX."
-    `(let ((,index ,initial)
-           (calendar-sum--acc 0))
-       (while ,condition
-         (setq calendar-sum--acc (+ calendar-sum--acc ,expression))
-         (setq ,index (1+ ,index)))
-       calendar-sum--acc)))
 
 (unless (fboundp 'time-since)
   (defun time-since (time)

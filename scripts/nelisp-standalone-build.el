@@ -52805,7 +52805,7 @@ resolved fine.  Same feature, different answer per entry point."
    "\n;; --- GNU Emacs 31.1 subr.el: kbd and the global keymap tree ---\n"
    (nelisp-vendor-source-subr-keymap)
    "\n"
-   (nelisp-vendor-source-forms "vendor/staged-emacs-lisp/subr.el" '(kbd))
+   (nelisp-vendor-source-forms "vendor/staged-emacs-lisp/subr.el" '(kbd suppress-keymap))
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"
     '(esc-map ctl-x-4-map ctl-x-4-prefix ctl-x-5-map ctl-x-5-prefix
@@ -52814,8 +52814,7 @@ resolved fine.  Same feature, different answer per entry point."
    (nelisp-vendor-source-forms "vendor/staged-emacs-lisp/subr.el" '(global-map))
    "\n;; --- Standalone global keymap substrate ---\n"
    "(defun current-global-map () global-map)\n"
-   "(defun global-set-key (key definition)\n"
-   "  (define-key (current-global-map) key definition))\n"
+   (nelisp-vendor-source-forms "vendor/staged-emacs-lisp/subr.el" '(global-set-key))
    ;; GNU keymap.el preloads this exact macro used by mode definitions.
    "\n;; --- GNU Emacs 31.1 keymap.el: defvar-keymap ---\n"
    (nelisp-vendor-source-form

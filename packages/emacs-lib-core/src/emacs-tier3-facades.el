@@ -242,16 +242,6 @@
 
 ;;;; url
 
-(unless (fboundp 'url-retrieve)
-  (defun url-retrieve (&rest _args)
-    "Tier 3 facade: signal unsupported URL retrieval."
-    (emacs-tier3-facades--unsupported 'url 'url-retrieve)))
-
-(unless (fboundp 'url-retrieve-synchronously)
-  (defun url-retrieve-synchronously (&rest _args)
-    "Tier 3 facade: signal unsupported synchronous URL retrieval."
-    (emacs-tier3-facades--unsupported 'url 'url-retrieve-synchronously)))
-
 (unless (fboundp 'url-copy-file)
   (defun url-copy-file (&rest _args)
     "Tier 3 facade: signal unsupported URL file copying."

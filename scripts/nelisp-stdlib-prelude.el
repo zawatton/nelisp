@@ -18002,30 +18002,6 @@ when reading a key-sequence to be looked-up in this keymap."
         (setq map (cdr map)))
       result)))
 
-;; Staged verbatim from GNU Emacs 31.1 lisp/subr.el:1319 (preloaded, not
-;; autoloaded, immediately before `make-composed-keymap' in real
-;; subr.el too).  Needed for real: both `term.el''s own top-level
-;; `(defvar term-raw-map (let ((map (make-keymap))) ... (suppress-keymap
-;; map) ...))'-style construction and `woman.el''s (via real `man.el''s
-;; own top-level `Man-mode-map' construction, reached through `woman.el''s
-;; unconditional `(require 'man)') both call this directly while
-;; building their mode's base keymap, at each file's own top level.
-(unless (fboundp 'suppress-keymap)
-  (defun suppress-keymap (map &optional nodigits)
-    "Make MAP override all normally self-inserting keys to be undefined.
-Normally, as an exception, digits and minus-sign are set to make prefix args,
-but optional second arg NODIGITS non-nil treats them like other chars.
-
-(fn MAP &optional NODIGITS)"
-    (define-key map [remap self-insert-command] #'undefined)
-    (or nodigits
-        (let (loop)
-          (define-key map "-" #'negative-argument)
-          (setq loop ?0)
-          (while (<= loop ?9)
-            (define-key map (char-to-string loop) #'digit-argument)
-            (setq loop (1+ loop)))))))
-
 ;; Staged verbatim from GNU Emacs 31.1 lisp/subr.el:1333 (preloaded, not
 ;; autoloaded -- `project.el''s own `project--other-place-prefix' calls
 ;; this directly, inside a command, so it is never itself a load-time

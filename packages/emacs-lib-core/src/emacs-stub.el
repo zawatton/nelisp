@@ -1723,11 +1723,6 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
     (ignore command)
     ""))
 
-(unless (fboundp 'call-process-shell-command)
-  (defun call-process-shell-command (&rest _args)
-    "Standalone fallback: report external shell command failure."
-    1))
-
 (unless (fboundp 'syntax-propertize-rules)
   (defmacro syntax-propertize-rules (&rest _rules)
     "Standalone fallback: return an inert syntax propertizer."
