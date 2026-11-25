@@ -2447,10 +2447,6 @@
           (lambda (message &rest args)
             (apply 'emacs-special-buffers-lwarn 'emacs 'warning message args)))
 
-    (fset 'message
-          (lambda (format-string &rest args)
-            (apply 'emacs-special-buffers-message format-string args)))
-
     (fset 'display-warning
           (lambda (type message &optional level buffer-name)
             (emacs-special-buffers-display-warning type message level buffer-name)))

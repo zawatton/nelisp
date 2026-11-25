@@ -152,27 +152,16 @@ subsystem, which the standalone lacks (project.el calls
   '(parse-colon-path cd-absolute cd file-local-copy)
   "GNU files.el definitions that replace standalone partial providers.")
 
-;; Preloaded GNU loaddefs.el entries for PCL-CVS: GNU's default
-;; `find-directory-functions' starts with `cvs-dired-noselect', which
-;; loaddefs.el defines in full; the commands it calls autoload from the
-;; vendored pcvs.el.  Appended after the files.el forms.
-(defconst gen-dl--loaddefs-names
-  '(cvs-examine cvs-status cvs-quickdir
-    cvs-dired-action cvs-dired-use-hook cvs-dired-noselect))
-
 (let* ((root (file-name-directory
               (directory-file-name
                (file-name-directory (or load-file-name buffer-file-name)))))
        (src (expand-file-name "vendor/staged-emacs-lisp/files.el" root))
-       (loaddefs-src (expand-file-name "vendor/emacs-lisp/loaddefs.el" root))
        (out (expand-file-name "packages/emacs-lib-core/src/emacs-files-gnu.el" root))
        chunks)
-  (dolist (spec (list (cons src (cons 0 gen-dl--names))
-                      (cons loaddefs-src (cons 20000000 gen-dl--loaddefs-names))))
   (with-temp-buffer
-    (insert-file-contents (car spec))
+    (insert-file-contents src)
     (emacs-lisp-mode)
-    (dolist (name (cddr spec))
+    (dolist (name gen-dl--names)
       (goto-char (point-min))
       (let ((re (format "^(\\(?:defmacro\\|defvar-local\\|defvar\\|defcustom\\|defconst\\|defsubst\\|defun\\) %s\\(?:[ \n]\\|$\\)\\|^(autoload '%s "
                         (regexp-quote (symbol-name name))
@@ -191,13 +180,13 @@ subsystem, which the standalone lacks (project.el calls
                 (setq form
                       (format "(when (emacs-files-gnu--install-provider-p '%s)\n%s\n)"
                               name form)))
-              (push (cons (+ beg (cadr spec)) form) chunks))
+              (push (cons beg form) chunks))
             ;; Keep the `put' forms that follow the definition directly.
             (while (looking-at "\n+(put '[^ ]+ '[^ ]+ [^\n]*)")
               (let ((pb (progn (skip-chars-forward "\n") (point))))
                 (forward-sexp 1)
-                (push (cons (+ pb (cadr spec)) (buffer-substring pb (point))) chunks)))))
-         (unless found (message "skip %s" name)))))))
+                (push (cons pb (buffer-substring pb (point))) chunks)))))
+         (unless found (message "skip %s" name))))))
   ;; GNU files.el's own key bindings for its commands (top-level
   ;; define-key forms on the C-x maps and esc-map) and its
   ;; (provide 'files '(remote-wildcards)), copied verbatim.

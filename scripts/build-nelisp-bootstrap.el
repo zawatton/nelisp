@@ -1122,23 +1122,6 @@ local path; other names with a directory part are vendor files."
         (setq out (if last-cc
                       (nelisp-bootstrap--insert-after c-vars last-cc out)
                     (append out (list c-vars))))))
-    ;; `calendar.el' eagerly loads vendor calendar UI files such as
-    ;; `cal-menu.el'.  Those sources call `defface', `suppress-keymap',
-    ;; `make-mode-line-mouse-map', and `define-derived-mode' at top
-    ;; level, so keep the calendar wrapper behind the builtin bridges
-    ;; that define those names.  The diary chain additionally evaluates
-    ;; `(defcustom diary-file (locate-user-emacs-file "diary" "diary") ...)'
-    ;; at top level, so it must also come after the file substrate that
-    ;; owns `locate-user-emacs-file'.  `emacs-fileio.el' lands strictly
-    ;; after `emacs-mode-builtins.el', so anchoring here satisfies both
-    ;; constraints and only ever moves calendar later.
-    (let ((calendar (nelisp-bootstrap--package-file "calendar.el"))
-          (calendar-anchor (nelisp-bootstrap--package-file "emacs-fileio.el")))
-      (when (and (member calendar out)
-                 (member calendar-anchor out))
-        (setq out (nelisp-bootstrap--insert-after
-                   calendar calendar-anchor
-                   (delete calendar out)))))
     (dolist (name nelisp-bootstrap-tail-extra-files)
       (let ((file (nelisp-bootstrap--package-file name)))
         (when (file-readable-p file)
@@ -1308,7 +1291,6 @@ concatenated bootstrap bundle must make the order explicit."
                     "emacs-os-detect.el"
                     "emacs-easy-mmode.el"
                     "emacs-time.el"
-                    "calendar.el"
                     "emacs-numeric.el"
                     "emacs-subr-extras.el"
                     "emacs-edebug-stubs.el"
@@ -1751,6 +1733,7 @@ strings or comments, and calls with any non-literal argument, are kept."
     ;; use-global-map entry point, published later in this bundle.
     ("vendor/staged-emacs-lisp/subr.el"
      delete-consecutive-dups rassq-delete-all macrop
+     replace-buffer-contents subregexp-context-p
      definition-prefixes register-definition-prefixes
      derived-mode-set-parent derived-mode-add-parents derived-mode--flush
      process-live-p buffer-narrowed-p
@@ -1777,7 +1760,10 @@ strings or comments, and calls with any non-literal argument, are kept."
     ;; Publish the Custom metadata needed during bootstrap.  The complete
     ;; generated autoload table remains available through the vendor path.
     ("vendor/emacs-lisp/loaddefs.el"
-     customize-package-emacs-version-alist))
+     customize-package-emacs-version-alist
+     calendar treesit-install-language-grammar
+     cvs-examine cvs-status cvs-quickdir
+     cvs-dired-action cvs-dired-use-hook cvs-dired-noselect))
   "Definitions read verbatim from GNU files before the editor substrate.")
 
 (defun nelisp-bootstrap--early-gnu-source (file relative-file)
@@ -2108,15 +2094,10 @@ Nested source-string evaluation is reserved for explicit diagnostics."
     ;; helper functions are retained above only as reference; they have no
     ;; other callers.)
     ;;
-    ;; Two targeted exceptions are applied below:
-    ;; `nelisp-bootstrap--hoist-standalone-definers' moves the few files whose
-    ;; late position the standalone cannot survive, and
-    ;; `nelisp-bootstrap--sink-bare-name-vendor-loaders' moves the few whose
-    ;; early position it cannot survive.  See their docstrings.
-    (let* ((files (nelisp-bootstrap--sink-bare-name-vendor-loaders
-                   (nelisp-bootstrap--hoist-standalone-definers
-                    (nelisp-bootstrap--complete-file-list
-                     (nelisp-bootstrap--collect-loaded-src-files)))))
+    ;; Hoist standalone macro providers before their consumers.
+    (let* ((files (nelisp-bootstrap--hoist-standalone-definers
+                   (nelisp-bootstrap--complete-file-list
+                    (nelisp-bootstrap--collect-loaded-src-files))))
            (output (expand-file-name nelisp-bootstrap-output-file))
            (repl-output
             (expand-file-name
@@ -2182,47 +2163,6 @@ error lines against 3 for the raw order)."
                         (length (member generator out))))
             (setq out (nelisp-bootstrap--insert-before
                        file generator (remove file out)))))))))
-
-(defconst nelisp-bootstrap--bare-name-vendor-loaders
-  '("calendar.el")
-  "Files that `load' a vendor library by bare name, without a directory.
-`nelisp-bootstrap--sink-bare-name-vendor-loaders' moves them after
-`emacs-load.el'.")
-
-(defun nelisp-bootstrap--sink-bare-name-vendor-loaders (files)
-  "Return FILES with bare-name vendor loaders moved after `emacs-load.el'.
-The standalone reader's native `load' resolves nothing: measured 2026-09-04
-against `target/nelisp' at v1.2.0, it does not search `load-path' (a `let'
-binding of it cannot work either -- `load-path' is bound there but not
-`special-variable-p', so the binding is lexical -- and neither does a global
-`setq'), does not use `default-directory', and does not append `.el'.  Only an
-exact existing path loads.  Bare-name resolution appears only when
-`emacs-load.el' installs its own `load', which goes through `locate-library'.
-
-So a file that loads a vendor library which itself does a bare-name `load' has
-to come after `emacs-load.el'.  `src/calendar.el' pulls in
-`vendor/emacs-lisp/calendar/calendar.el', whose line 130 is
-`(load \"cal-loaddefs\" nil t)'; in raw load-history order it ran at bundle line
-53,093 while `emacs-load.el' ended at 75,136, so the native `load' took the
-call and the boot reported (file-missing \"cal-loaddefs\") even though
-`cal-loaddefs.el' sits beside `calendar.el'.
-
-Moving the small leaf shim is deliberate: hoisting `emacs-load.el' instead
-would put the `load' replacement ahead of ~50,000 lines that were measured
-loading under the native one."
-  (let* ((loader (nelisp-bootstrap--package-file "emacs-load.el"))
-         (out files))
-    (if (not (member loader out))
-        out
-      (dolist (name nelisp-bootstrap--bare-name-vendor-loaders out)
-        (let ((file (nelisp-bootstrap--package-file name)))
-          (when (and (member file out)
-                     ;; A longer `member' tail means an earlier position, so
-                     ;; this is "FILE currently precedes `emacs-load.el'".
-                     (> (length (member file out))
-                        (length (member loader out))))
-            (setq out (nelisp-bootstrap--insert-after
-                       file loader (remove file out)))))))))
 
 (provide 'build-nelisp-bootstrap)
 

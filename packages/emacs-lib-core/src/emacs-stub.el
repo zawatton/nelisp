@@ -1416,11 +1416,8 @@ machine-readable stdout.  Nil and empty messages emit a blank line unless
           (princ "\n"))))
       text)))
 
-;; The standalone runtime may already expose a silent `message' binding.
-;; Replace that binding in noninteractive standalone sessions; host Emacs keeps
-;; its native echo-area/batch-stderr implementation.
-(when (or (emacs-stub--standalone-batch-message-p)
-          (not (fboundp 'message)))
+;; Keep the core message binding when the runtime already provides it.
+(unless (fboundp 'message)
   (defalias 'message #'emacs-stub--message))
 
 (unless (fboundp 'error)

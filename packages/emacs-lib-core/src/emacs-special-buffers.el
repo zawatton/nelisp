@@ -397,7 +397,6 @@ stderr output independently of `message-log-max'."
        (fboundp 'nelisp--write-stdout-bytes)))
 
 (when (emacs-special-buffers--standalone-p)
-  (fset 'message #'emacs-special-buffers-message)
   (fset 'display-warning #'emacs-special-buffers-display-warning)
   (fset 'lwarn #'emacs-special-buffers-lwarn)
   (fset 'warn #'emacs-special-buffers-warn))
