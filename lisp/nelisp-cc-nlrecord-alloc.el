@@ -36,7 +36,9 @@
       (let* ((n (if (< slot-count 0) 0 slot-count))
              (type-word (nl_record_type_own type-tag-ptr))
              (box (alloc-bytes (+ 16 (* n 8)) 8)))
-        (and (ptr-write-u64 box 0 (+ 12 (* n 256)))
+        (seq (ptr-write-u64 (data-addr nl_gc_policy) 40
+                            (+ (heap-read-u64 (data-addr nl_gc_policy) 40) (+ 16 (* n 8))))
+             (ptr-write-u64 box 0 (+ 12 (* n 256)))
              (ptr-write-u64 box 8 type-word)
              (nl_alloc_record_fill (+ box 16) 0 n) box))))
   "AOT source for compact records: a 16-byte prefix and n inline WORDs.

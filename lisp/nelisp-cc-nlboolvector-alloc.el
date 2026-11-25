@@ -171,7 +171,10 @@
     ;; ---------------------------------------------------------------
 
     (defun nl_bv_write_box (box data bytelen n)
-      (and (ptr-write-u64 box 0 n)
+      (and (ptr-write-u64 (data-addr nl_gc_policy) 40
+                          (+ (heap-read-u64 (data-addr nl_gc_policy) 40)
+                             (+ 16 (* 8 (/ (+ bytelen 7) 8)))))
+           (ptr-write-u64 box 0 n)
            (ptr-write-u64 box 8 data)
            (ptr-write-u64 box 16 bytelen)
            (ptr-write-u64 box 24 1)

@@ -13,6 +13,14 @@
         (while (< k cap)
           (seq (ptr-write-u64 (+ data-ptr (* k 8)) 0 3)
                (setq k (+ k 1)))) data-ptr))
+    ;; Callers that overwrite every slot can skip the initial nil fill.
+    (defun nl_alloc_vector_uninit (n)
+      (let* ((bytes (+ 8 (* n 8)))
+             (box (alloc-bytes bytes 8))
+             (policy (data-addr nl_gc_policy)))
+        (seq (ptr-write-u64 policy 40 (+ (heap-read-u64 policy 40) bytes))
+             (ptr-write-u64 box 0 (+ 8 (* n 256)))
+             box)))
     (defun nl_alloc_vector (capacity)
       (let* ((n (if (< capacity 0) 0 capacity)))
         (if (= n 0)
@@ -21,9 +29,8 @@
             ;; initialization writes the same header, with no heap pointer.
             (let* ((box (data-addr nl_empty_vector)))
               (seq (ptr-write-u64 box 0 8) box))
-          (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)))
-            (seq (ptr-write-u64 box 0 (+ 8 (* n 256)))
-                 (nl_alloc_vector_fill (+ box 8) 0 n) box))))))
+          (let* ((box (nl_alloc_vector_uninit n)))
+            (seq (nl_alloc_vector_fill (+ box 8) 0 n) box))))))
   "Native compiler source for compact vector backing allocation.")
 (provide 'nelisp-cc-nlvector-alloc)
 ;;; nelisp-cc-nlvector-alloc.el ends here

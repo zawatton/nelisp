@@ -1,0 +1,6 @@
+(percentage-higher t)
+(threshold-fires t)
+(percentage-restored t)
+(cons-charged t)
+(vector-charged t)
+(bool-vector-charged t)
