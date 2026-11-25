@@ -51358,7 +51358,7 @@ never on the build host.  Keep the original Lisp factory as the reference."
                       (concat (substring source 0 position)
                               accessor-source tail
                               file-attrs-header file-attrs-tail
-                              messages-buffer-text
+                              messages-buffer-text cl-sequence-source
                               vendor-src
                               (nelisp-standalone--after-load-runtime-src)
                               metadata-source))))))
