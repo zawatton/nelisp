@@ -1,0 +1,5 @@
+(order (a b c) (c a b) (c b a))
+(in-place t "xbx" "xbx")
+(shell-quoting "safe-path" "a\\ b\\'c")
+(string-list ("A" "z") ("plain" "two words" "a\"b" "a\\b"))
+(owners "subr" "subr" "subr" "subr" "subr" "subr")
