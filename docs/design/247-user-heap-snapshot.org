@@ -1,0 +1,201 @@
+#+TITLE: User heap snapshots for package startup
+#+STATUS: DRAFT
+
+* Scope
+
+A heavy init takes roughly 100 s on NeLisp and 8 s on GNU Emacs 31.1
+(reported baseline). Save the cost of reading and evaluating package files
+by preloading them in a disposable process, then cold-load that heap in a
+new process. The user's ordinary init can still =require= those packages.
+A load-history entry is part of the result, along with definitions and
+feature membership. Replaying a source-v1 =.nlri= still evaluates source.
+
+NeLisp already has the required storage primitives.
+=make bake-runtime-dump= builds a flat heap with
+=nelisp--arena-dump-image-stream=, and =--cold-load-from= selects it
+before Lisp startup. =scripts/nemacs-runtime-dump-reinit.el= handles
+random reseeding after the driver's cold-boot reinit. The existing
+=bake-org-runtime-dump= target bakes Org directly during a base build.
+This design extends a previously built base and gives the derived heap
+its own validity and startup contract. See Docs 240–243 for the format
+and launch costs. Keep new orchestration in Lisp and the launcher, with
+one owner per GNU name (Doc 246).
+
+* GNU Emacs 31.1 reference
+
+GNU =dump-emacs-portable= is a batch-only operation outside Android, on
+the main thread with no other Lisp threads. It collects reachable Lisp
+objects from roots, writes relocation data, and binds
+=command-line-processed= to nil. =loadup.el= is the build recipe: it
+preloads libraries, suppresses undo for the build, normalizes build
+settings and load paths, clears build-only startup state and calls the
+dumper. A custom call to =dump-emacs-portable= bypasses that recipe.
+=src/emacs.c= selects =--dump-file= early, then initializes a new
+process. The loader checks the dump magic, completeness and executable
+fingerprint. It has no general package-source freshness check.
+
+| State | GNU 31.1 | NeLisp preload image contract |
+|-------+----------+-------------------------------|
+| Buffers | =dump_buffer= persists reachable text, Lisp fields, markers and overlays, with display fields, local minor-mode list and window references reset. =init_buffer= handles the invocation directory. | Keep base buffers and package-owned pure data only. Refuse visiting or modified user buffers and audit markers, indirect buffers and other retained references. Start with session scratch and selected-buffer state from normal startup. |
+| Processes | =dump_vectorlike= writes process pseudovectors with nilled fields. =init_process_emacs= initializes new process bookkeeping. Children, pipes and sockets do not migrate. | Refuse live children, servers and connections. Clear process registries and reject retained process objects until there is a defined representation for them. Start session jobs from normal init. |
+| Timers | Lisp timers are vectors in Lisp roots and can survive. =init_atimer= creates fresh OS timer facilities and resets native timer chains. Lisp deadlines and callbacks are distinct from OS timer state. | Refuse pending normal and idle timers at the preload boundary. Schedule session timers after restore using fresh clocks. |
+| File handles | Files and OS descriptors are per-process. =dump_vectorlike= rejects unsupported reachable foreign objects such as SQLite and user pointers. =init_standard_fds= and =init_fileio= do fresh setup. | Refuse live handles, raw mappings, locks, watches and opaque foreign state until audited. Reopen explicitly in session code. Validate snapshot files using local I/O before handlers are installed. |
+| Hooks | Ordinary Lisp hook values can survive. The dumper clears =post-gc-hook= for the saved state. =src/emacs.c= runs =after-pdump-load-hook=, and =startup.el= runs =before-init-hook= and =after-init-hook= in the new process. | Keep declarative package hook registrations with their closures after validating reachability. Run startup hooks once per launch in GNU order. Put effects that should happen every launch in ordinary init or its hooks. |
+| Frames and windows | GNU dumps nilled frame, window and terminal pseudovectors and rejects window configurations. =init_display= and =init_window= establish fresh runtime state. | Bake headless before attaching a frontend. Keep declarative parameters. Create session frames, windows, display caches and selections from normal startup. |
+| Environment | The dumper clears =process-environment=. =set_initial_environment= builds the new environment and startup derives paths, locale and other settings for the current invocation. | Reuse driver reinit for argv, cwd, process environment, FFI bookkeeping and environment-derived directories. Track or constrain environment reads during preload, including values copied into closures or globals. |
+| Random state | =main= calls =init_random= on startup. Explicit Lisp data derived from random values can still be dumped. | Reuse =nemacs-runtime-dump-reinit= to reseed before package code or init runs. Exclude configurations depending on random work at preload time unless they explicitly accept frozen results. |
+| Features and load history | =features= and =load-history= are Lisp globals (in =fns.c= and =lread.c=). Loaded packages and their source provenance survive, enabling =require=, =symbol-file= and unload bookkeeping. | Preserve membership, order, complete history entries and object identity. Do not synthesize =provide= entries or silently replay packages. Audit autoloads, advice, load hooks and package registries. |
+| File-name handlers | =file-name-handler-alist= is a Lisp root in =fileio.c=. Handler definitions and registrations can persist. Live transport state follows process and descriptor rules. | Preserve pure handler definitions and registration order. Require local inputs for the first release. Reject active remote sessions. User init sees its normal handler behavior. |
+| Window system | =main= does early backend setup from the new invocation. =startup.el= handles backend options and calls =window-system-initialization= after early init. Realized fonts are unsupported dump objects. | Derive backend/terminal state from live arguments and environment. Test TTY, batch, daemon and each supported graphical frontend independently before enabling them. |
+
+Sources at the =emacs-31.1= tag:
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/pdumper.c][pdumper.c]] (=Fdump_emacs_portable=, =dump_buffer=, =dump_vectorlike=, =pdumper_load=),
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/lisp/loadup.el][loadup.el]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/lisp/startup.el][startup.el]] (=normal-top-level=, =command-line=, =command-line-1=, =startup--load-user-init-file=),
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/emacs.c][emacs.c]] (=main= and =load_pdump=),
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/buffer.c][buffer.c]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/process.c][process.c]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/atimer.c][atimer.c]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/keyboard.c][keyboard.c]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/callproc.c][callproc.c]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/fileio.c][fileio.c]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/fns.c][fns.c]],
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/lread.c][lread.c]]
+and [[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/sysdep.c][sysdep.c]].
+
+* Startup contract
+
+A proposed launcher option, ~--user-snapshot=DIR~, selects an explicit
+user image. Like GNU =--dump-file=, it selects the heap before startup
+and then runs the usual startup pipeline. GNU processes
+early options, loads site-start when allowed, early init, package
+activation, frontend initialization, =before-init-hook=, the normal init
+and its follow-up hooks, then command-line actions. Keep
+=command-line-processed= and the NeLisp =nemacs-initialized= flag clear
+in the saved heap. Have the launcher consume the image selector before
+entering =nemacs-init= and the existing =nemacs-gnu-startup.el= adapter.
+Pass original GNU options through, preserving argument order and the
+=--= boundary. The vendor copy of =startup.el= stays verbatim.
+
+On GNU 31.1, a batch image built with =(require 'org)= and a marker
+=baked= retained Org and its =symbol-file= provenance across invocations.
+A PTY run with =-nw --no-site-file --init-directory DIR= recorded
+=(init early baked)= from the image and two init files. Adding =-q=,
+=-Q= or =--batch= recorded only =(baked)=. All four processed their
+command line and observed the launch environment. The Org history row
+contained both =(provide . org)= and =(defun . org-mode)=. A new Org
+buffer recognized its heading. The stock GNU image under =-Q --batch=
+had neither the feature nor that history row before loading Org. An explicitly
+selected image therefore still exposes baked definitions under =-Q=.
+Neither =-u USER= nor =--init-directory DIR= selects a different heap.
+These flags still select init according to GNU startup.
+
+An automatic cache, if added, is scoped to a validated profile and is
+bypassed for clean startup, changed user/init directory, incompatible
+backend or other unmodeled options. Its fallback is a fresh base startup
+before any user code has run. An explicit stale image produces an error
+with the invalidation reason.
+
+The first supported checkpoint is a dedicated preload file or function,
+called headlessly after restoring the base but before normal startup.
+Keep session effects in the existing init files. Review preload order
+against early-init changes to =load-path=, package activation, advice,
+and =eval-after-load=, whose timing can change if a feature is already
+present. Do not claim transparency for arbitrary init. A checkpoint after
+part of init requires an explicit split into a preload part and a per-run
+part plus matching startup state. Capturing a full arbitrary init and
+skipping its evaluation would change GNU semantics, lose startup effects
+and risk executing hooks twice.
+
+* Invalidation and publication
+
+Bind a versioned manifest to the exact executable digest, platform and
+image format, the base image digest, and the preload recipe. Record all
+resolved package files and transitive loads (including autoloads and
+compiled variants), ordered load paths, package descriptors and selected
+versions, relevant environment/profile settings, and other declared
+inputs. Record path, symlink target, size, high-resolution mtime and
+content digest. Record resolution dependencies, including absent
+candidates and directory entries where a new preferred candidate would
+change loading. =load-history= alone misses arbitrary reads, unsuccessful
+searches and overwritten entries.
+
+A mismatch or an unreadable input refuses the image. Mtime and size
+help identify changed inputs, but equality alone misses same-size edits
+with preserved timestamps. For strict validity, compare digests and
+resolution records on launch or use an independently verified immutable
+package generation. Reject input changes observed during the bake. When
+dependency coverage is uncertain, refuse to publish a reusable image.
+Benchmark validation independently; avoid optimizing it by accepting
+stale input.
+
+Use a user-owned 0700 directory and private files. Never search writable
+shared directories or deserialize a manifest by evaluating Lisp. Treat
+images as executable state containing private heap data, potentially
+including environment strings, history or credentials retained indirectly.
+Permit only trusted local preload code, use a controlled environment at
+bake time, and document the limits of root-level scrubbing. Tie the
+manifest to the image digest and verify both before mapping the heap.
+Use a validated open file or an equivalent identity-preserving handoff to
+avoid path substitution; do not let cache validation reopen an
+untrusted pathname. Build in a staging directory and atomically publish
+a complete generation. Concurrent launches retain the generation they
+validated. A failed bake or crash leaves the previous generation intact.
+
+* Stages and verification
+
+1. Exercise the existing writer and loader in separate processes:
+   build the base, cold-load it, require Org, capture =features= and
+   the full relevant =load-history= rows after the load completes,
+   save a second heap, then restore it before invoking =org-mode= on
+   a new buffer with a heading. Check the captured state before any
+   test-side =require=. Use the unextended base as a negative control
+   for the same probe. Compare the GNU-visible Org row against
+   =emacs-31.1 -Q --batch -l= and preserve existing parity rows.
+2. Ship an explicit headless producer and launch option after validating
+   safe object ownership and manifest coverage. Prove refusals for
+   corrupt and mismatched images, changed source (including deliberately
+   preserved mtime), added shadowing libraries, failed bake, and live
+   handles/timers. The launch test should observe an init marker, fresh
+   environment/cwd/RNG, and correct file and eval action order. Use GNU
+   custom pdumps for the startup parity cases and a plain GNU base for
+   clean-start controls.
+3. Expand the supported preload surface only with tests for package
+   activation, autoload ordering, advice, handlers and frontend state.
+   Consider automatic profile selection once bypass paths and fallback
+   match unaccelerated startup. An unresolved resource or startup-order
+   dependency keeps a profile on the ordinary startup path.
+
+Measure GNU normal and custom dump, NeLisp normal, base cold boot and user
+image on the same machine and workload. Alternate variants over at least
+10 repetitions per condition and report median and p95 for warm cache
+and controlled cold-cache runs. Time validation, heap mapping/reinit,
+early init, normal init, after-init and first usable Org buffer
+separately. Record package loads actually avoided, peak RSS, page faults,
+image size, bake time and the number of starts needed to amortize baking.
+Compare an Org-only workload and a reproducible heavy local init. Verify
+behavior and work performed under equal CLI flags before comparing
+timings. Use the reported GNU time (~8 s) as the initial target for the
+heavy workload, and account for any remaining time in session init. Main risks are missed dependencies, preloading that changes
+init order, unsupported reachable state, and validation or page faults
+consuming the savings.
+
+* NeLisp feasibility evidence
+
+With the supplied standalone executable and its baked artifact image,
+cold boot loaded the checked-in =nemacs-runtime-dump-reinit= from source.
+The existing writer saved a second heap containing a Lisp marker and a
+separate process cold-loaded that heap and read the marker. This exercises
+the writer, reinit and restore boundary with ordinary Lisp state. The
+artifact image alone does not supply the Org dependencies. With the vendor
+Org directory on =load-path=, =(require 'org)= stopped at missing
+~version<~.
+
+The bootstrap bundle generated successfully with GNU 31.1. The standalone
+rebuild exceeded the 300 s deadline, and the runtime and C-core base bakes
+using the supplied executable and current bootstrap stopped in
+=substitute-key-definition= with ~wrong-type-argument (stringp [f1])~.
+NeLisp invocations in these probes ran with a virtual memory cap of
+8,388,608 KiB and deadlines. The editor base, second-stage Org restore
+and its NeLisp parity row remain unverified. This draft ships the design
+only.
