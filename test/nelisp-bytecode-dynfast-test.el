@@ -13,9 +13,6 @@
 (defun dfa--cons (a d)
   (let ((id (cl-incf dfa--next 4))) (puthash id (cons a d) dfa--cells) id))
 
-(defun dfa--list (&rest xs)
-  (let ((tail 3)) (dolist (x (reverse xs)) (setq tail (dfa--cons x tail))) tail))
-
 (defconst dfa--aux 20000)
 (defconst dfa--env 16384)
 
@@ -34,15 +31,14 @@ Return plist :rc :unwinds (remaining event names) :writes :dirty :lean-calls."
                     (setf (nth i cells) id) (setq tail id)))
       (setq head tail))
     (puthash (+ dfa--aux 8) head words)
-    (puthash dfa--aux
-             (if handlers
-                 (dfa--list 7 0 0 0 (nth handlers cells))
-               3)
-             words)
+    (puthash dfa--aux (if handlers 30006 3) words)
+    (when handlers
+      (puthash 30032 (nth handlers cells) words))
     (let ((entry-ok (lambda (name) (not (memq name missing)))))
       (cl-letf (((symbol-function 'heap-read-u64)
                  (lambda (p o) (let ((v (gethash (+ p o) words 'absent)))
                                  (when (eq v 'absent) (error "Invalid read %s" (+ p o))) v)))
+                ((symbol-function 'ptr-read-u64) (lambda (p o) (heap-read-u64 p o)))
                 ((symbol-function 'ptr-write-u64)
                  (lambda (p o w) (puthash (+ p o) w words) (push (list (+ p o) w) writes) 1))
                 ((symbol-function 'wf_bytecode_w_consp)
