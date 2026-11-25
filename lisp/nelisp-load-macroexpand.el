@@ -12,11 +12,10 @@
       (let* ((def (car form)) (sym def) (cell nil)
              (resolve t) (expander nil) (expand nil))
         (while (and resolve (symbolp def))
-          (setq sym def cell (assq sym environment))
+          (setq sym def cell (and environment (assq sym environment)))
           (if cell
               (setq resolve nil)
-            ;; The runtime's unbound symbol-function needs this guard.
-            (setq def (and (fboundp sym) (symbol-function sym)))
+            (setq def (symbol-function sym))
             ;; Native builtins use their own symbol as the function cell.
             (when (or (null def) (eq def sym)) (setq resolve nil))))
         (if cell

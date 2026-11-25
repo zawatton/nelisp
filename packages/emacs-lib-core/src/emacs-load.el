@@ -4208,7 +4208,12 @@ A successful load files RESOLVED in `load-history' and runs its
 after-load forms, as GNU `load' does (lread.c build_load_history)."
     (let ((result (nelisp--load-resolved-file-1 resolved noerror)))
       (when (and result (fboundp 'nelisp--after-load-feature))
-        (nelisp--after-load-feature resolved))
+        (nelisp--after-load-feature resolved)
+        ;; Resume the enclosing file before its next form can locally
+        ;; bind current-load-list, as cl-generic does after cl-loaddefs.
+        (when (and load-file-name (boundp 'nelisp--lh-parked)
+                   (assoc load-file-name nelisp--lh-parked))
+          (nelisp--lh-select load-file-name)))
       result))
   (defun nelisp--load-resolved-file-1 (resolved noerror)
     "Load exact absolute RESOLVED path, honoring NOERROR for open failures."

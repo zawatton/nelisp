@@ -46,7 +46,8 @@
         (mapcar #'intern (split-string env "," t))
       '(macroexp--cons macroexp--all-forms macroexpand-1 macroexp--all-clauses
         macroexp-macroexpand macroexp--expand-all function-get
-        backquote-process backquote-listify byte-run--parse-body defun)))
+        backquote-process backquote-listify byte-run--parse-body defun
+        macroexp--compiler-macro pcase--expand pcase--u gv-get)))
   "Functions the build tries to translate, in id order.
 Names in `nelisp-aot-bytecode-subr-names' come from the staged GNU subr.el, the
 others from vendor macroexp.el.
@@ -59,6 +60,13 @@ or the baked backquote provider (see
 `nelisp-aot-bytecode-subr-source-function').
 They are defined after the macroexp provider, so their install forms are emitted
 late (`nelisp-aot-bytecode-late-install-source').")
+
+(defconst nelisp-aot-bytecode-expander-names '(pcase--expand pcase--u gv-get)
+  "Rows whose byte-code objects come from pcase and gv.")
+
+(defconst nelisp-aot-bytecode-replay-only-names
+  (cons 'macroexp--compiler-macro nelisp-aot-bytecode-expander-names)
+  "Extra expander rows installed after the runtime language providers load.")
 
 (defvar nelisp-aot-bytecode-subr-source-function nil
   "Function of one argument NAME returning the boot text that defines NAME in
@@ -76,7 +84,9 @@ The text is the one the standalone build compiles."
         (push (cons name text) nelisp-aot-bytecode--subr-texts)
         text))))
 
-(defun nelisp-aot-bytecode--late-name-p (name) (and (memq name nelisp-aot-bytecode-subr-names) t))
+(defun nelisp-aot-bytecode--late-name-p (name)
+  (or (memq name nelisp-aot-bytecode-subr-names)
+      (memq name nelisp-aot-bytecode-expander-names)))
 
 (define-error 'nelisp-aot-refused "AOT translation refused")
 
@@ -885,13 +895,37 @@ renumbered densely.  Block 0 and condition-case handler blocks are kept."
   "The translated rows as a list (nil when nothing was translated)."
   (let ((r (nelisp-aot-bytecode-rows))) (if (eq r 'none) nil r)))
 
-(defun nelisp-aot-bytecode--install-rows (rows)
+(defun nelisp-aot-bytecode--install-rows (rows &optional table)
+  "Emit registration for ROWS, optionally into Lisp variable TABLE."
   (mapconcat
    (lambda (row)
      (let ((mf (nth 2 row)))
-       (format "(nelisp--aot-install '%s %d %S %S %S)\n"
-               (nth 1 row) (nth 0 row) (nth 1 mf) (nth 2 mf) (nth 3 mf))))
+       (format "(nelisp--aot-install '%s %d %S %S %S%s)\n"
+               (nth 1 row) (nth 0 row) (nth 1 mf) (nth 2 mf) (nth 3 mf)
+               (if table (format " %s" table) ""))))
    rows ""))
+
+(defun nelisp-aot-bytecode--replay-source (rows)
+  "Emit the identity refresh for byte-code definitions reloaded by the bundle."
+  (concat
+   "(defun nelisp--aot-refresh-expander-rows ()\n  (when (vectorp nelisp--aot-table)\n    (let ((table (copy-sequence nelisp--aot-table)))\n"
+   (mapconcat
+    (lambda (row)
+      (let ((name (nth 1 row)) (id (nth 0 row)))
+        (cond
+         ((eq name 'backquote-process)
+          ;; Keep the replay image on the VM for this recursive expander.
+          (format "    (aset table %d nil)\n" id))
+         ((memq name nelisp-aot-bytecode-replay-only-names)
+          (nelisp-aot-bytecode--install-rows (list row) 'table))
+         (t
+          (format "    (let ((ref (aref table %d)))\n      (when (byte-code-function-p ref)\n        (nelisp--aot-install '%s %d (aref ref 0) (aref ref 1) (aref ref 2) table)))\n"
+                  id name id)))))
+    rows "")
+   ;; The native cache holds raw addresses into the current table.
+   "      (nelisp--aot-cache-invalidate)\n"
+   "      (setq nelisp--aot-table table)\n"
+   "      t)))\n"))
 
 (defun nelisp-aot-bytecode--seal-source (k)
   "Boot text capturing `autoload-do-load' and `autoload', then sealing the table.
@@ -907,7 +941,8 @@ mirrors them for the inline call-site fast path (`wf_aot_adl')."
   "Boot text installing the late rows (subr.el functions) and sealing the table.
 Empty when there is no late row (the seal is then part of the install source)."
   (let* ((rows (nelisp-aot-bytecode--live-rows)) (k (length rows))
-         (late (cl-remove-if-not (lambda (r) (nelisp-aot-bytecode--late-name-p (nth 1 r))) rows)))
+         (late (cl-remove-if-not (lambda (r) (memq (nth 1 r) nelisp-aot-bytecode-subr-names))
+                                 rows)))
     (if (null late) ""
       (concat "\n;; --- nelisp AOT of GNU bytecode: late rows and seal ---\n"
               (nelisp-aot-bytecode--install-rows late)
@@ -942,23 +977,27 @@ Empty when there is no late row (the seal is then part of the install source)."
      "                  (setq i (1+ i)))\n"
      "                ok)))\n"
      "        (t (equal a b))))\n"
-     "(defun nelisp--aot-install (name id arity code consts)\n"
+     "(defun nelisp--aot-install (name id arity code consts &optional table)\n"
      "  (let ((f (and (fboundp name) (symbol-function name))))\n"
      ;; A macro row: the expander is the function inside (macro . FN).
      "    (when (eq (car-safe f) 'macro) (setq f (cdr f)))\n"
      "    (if (and (byte-code-function-p f) (eq (aref f 0) arity) (equal (aref f 1) code)\n"
      "             (nelisp--aot-equal (aref f 2) consts))\n"
-     "        (progn (aset nelisp--aot-table id f) t)\n"
+     "        (progn (aset (or table nelisp--aot-table) id f) t)\n"
      "      nil)))\n"
      ;; The counters start as fixnum 0 and the object slots as nil.
      (if rows
          (format "(let ((i 0)) (while (< i %d) (aset nelisp--aot-table i nil) (setq i (1+ i))))\n" k)
        "")
      (nelisp-aot-bytecode--install-rows
-      (cl-remove-if (lambda (r) (nelisp-aot-bytecode--late-name-p (nth 1 r))) rows))
+      (cl-remove-if (lambda (r)
+                      (or (nelisp-aot-bytecode--late-name-p (nth 1 r))
+                          (memq (nth 1 r) nelisp-aot-bytecode-replay-only-names)))
+                    rows))
+     (nelisp-aot-bytecode--replay-source rows)
      ;; Seal: until it is t the call-arm filter stays all-maybe (see wf_aot_mask_sync).
      ;; With late rows the seal moves to `nelisp-aot-bytecode-late-install-source'.
-     (if (cl-some (lambda (r) (nelisp-aot-bytecode--late-name-p (nth 1 r))) rows) ""
+     (if (cl-some (lambda (r) (memq (nth 1 r) nelisp-aot-bytecode-subr-names)) rows) ""
        (nelisp-aot-bytecode--seal-source k))
      ;; Debug aid: NELISP_AOT_DEFER=1 builds an image whose AOT table is detached
      ;; (everything runs on the VM); scripts re-enable it from `nelisp--aot-table-saved'.
@@ -1185,7 +1224,13 @@ See `wf_aot_swp' and `wf_aot_fb'."
   "Return the DSL defuns: fixed helpers, call chain and generated functions."
   (let* ((rows (nelisp-aot-bytecode--live-rows)) (k (length rows)))
     (append
-     (nelisp-aot--subst-l '((defun wf_aot_eq (a b)
+     (nelisp-aot--subst-l '((defun wf_aot_cache_invalidate (_pad)
+         ;; The Lisp publisher replaces the table immediately after this.
+         (seq (ptr-write-u64 (data-addr nl_aot_state) 24 0)
+              (ptr-write-u64 (data-addr nl_aot_state) 96 0)
+              (ptr-write-u64 (data-addr nl_aot_state) 176 0)
+              7))
+       (defun wf_aot_eq (a b)
          ;; Mirrors the VM fast loop's `eq' arm (raw 61): `eq' on two words through
          ;; the allocation-free word compare (no 32-byte view is allocated for a
          ;; mixed fixnum/box pair).

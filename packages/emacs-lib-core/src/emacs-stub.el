@@ -2503,7 +2503,8 @@ normal macro-writing contract."
 ;; `(&rest _) nil' macro, so a plain `unless fboundp' guard never installed
 ;; the working version below (`cl-callf' then expanded to nil and silently
 ;; skipped the write, e.g. eieio's slots-list -> vector conversion).
-(when (fboundp 'nl-ffi-call)
+(when (and (fboundp 'nl-ffi-call)
+           (not (and (featurep 'gv) (fboundp 'gv-deref))))
   (unless (and (fboundp 'gv-letplace) (not (fboundp 'nelisp--record-set)))
     (defmacro gv-letplace (vars place &rest body)
       "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
@@ -2997,10 +2998,11 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
         (list 'let (list (list value-sym expr))
               (cons 'cond rev))))))
 
-(when (or (fboundp 'nl-write-file)
-          (fboundp 'nelisp--write-stdout-bytes)
-          (not (boundp 'emacs-version))
-          (get 'push 'emacs-stub-bulk))
+(when (and (not (and (featurep 'gv) (fboundp 'gv-deref)))
+           (or (fboundp 'nl-write-file)
+               (fboundp 'nelisp--write-stdout-bytes)
+               (not (boundp 'emacs-version))
+               (get 'push 'emacs-stub-bulk)))
   (defmacro push (item place)
     "Compatibility macro: cons ITEM onto PLACE.
 PLACE may be a symbol (expands to `setq', as before) or a generalized

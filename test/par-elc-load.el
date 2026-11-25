@@ -77,7 +77,13 @@
                   '(128 129 233 255 256 257 767 768 769 1023 1024
                     4095 4096 4097 12354 19968 55295 55296 65535
                     65536 65537 128512 1114111 4194303))))
-  (par-elc--check 'char-fold-regexp (char-fold-to-regexp "A")))
+  (par-elc--check 'char-fold-regexp (char-fold-to-regexp "A"))
+  (par-elc--check 'cl-lib-symbol-file
+    ;; cl-lib loads cl-loaddefs in the middle of the file before defining
+    ;; a generic method. Earlier definitions still belong to cl-lib.elc.
+    (let ((file (expand-file-name "emacs-lisp/cl-lib.elc" root)))
+      (load file nil t t)
+      (equal (symbol-file 'cl-pushnew 'defun) file))))
 
 (let ((file (make-temp-file "par-elc-load-" nil ".elc"))
       (documentation-dynamic-reload nil))

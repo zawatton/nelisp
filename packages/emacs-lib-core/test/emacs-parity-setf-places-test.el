@@ -27,9 +27,13 @@
             (fmakunbound 'nelisp--record-set))
           (load emacs-parity-setf-places-test--source nil nil)
           (should (eq host-setf (symbol-function 'setf)))
-          ;; Add the standalone marker and exercise the actual shim.
+          ;; A standalone marker must also preserve an available GNU gv.
           (fset 'nl-write-file (lambda (&rest _) nil))
           (load emacs-parity-setf-places-test--source nil nil)
+          (should (eq host-setf (symbol-function 'setf)))
+          ;; Exercise the fallback used before GNU gv is available.
+          (cl-letf (((symbol-value 'features) (remq 'gv features)))
+            (load emacs-parity-setf-places-test--source nil nil))
           (should-not (eq host-setf (symbol-function 'setf)))
           (eval '(defmacro emacs-parity-setf-places-test:offset (request)
                    (list 'aref request 3)) t)

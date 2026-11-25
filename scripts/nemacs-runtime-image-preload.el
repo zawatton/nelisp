@@ -72,6 +72,12 @@
   "Load FILE robustly on both host Emacs and standalone runtime images."
   (load file nil 'no-message t t))
 
+(defun nemacs-runtime-image-preload--load-compiled-file (source)
+  "Load GNU SOURCE's byte-code companion when available."
+  (let ((compiled (concat source "c")))
+    (nemacs-runtime-image-preload--load-source-file
+     (if (file-readable-p compiled) compiled source))))
+
 (defun nemacs-runtime-image--ensure-core-after-bootstrap (repo-root)
   "Make the batch entry visible after a bootstrap load.
 
@@ -203,8 +209,11 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
           (push (cons name (symbol-function name)) saved)))
       (unwind-protect
           (condition-case err
-              (nemacs-runtime-image-preload--load-source-file
-               (concat repo-root "/vendor/" library))
+              (let ((source (concat repo-root "/vendor/" library)))
+                (if (member library '("emacs-lisp/emacs-lisp/cl-seq.el"
+                                      "emacs-lisp/emacs-lisp/cl-extra.el"))
+                    (nemacs-runtime-image-preload--load-compiled-file source)
+                  (nemacs-runtime-image-preload--load-source-file source)))
             (error
              (message "Error preloading GNU library %s" library)
              (signal (car err) (cdr err))))
@@ -227,11 +236,30 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
 
 (defun nemacs-runtime-image-finish-batch-preload (repo-root)
   "Install the batch libraries and bridges after the bootstrap has loaded."
-  ;; A frozen reader can retain its early cl-pushnew after bundle replay.
-  ;; Use the resolved source loader to publish cl-lib in that case.
-  (let ((source (concat repo-root "/vendor/emacs-lisp/emacs-lisp/cl-lib.el")))
-    (unless (equal (symbol-file 'cl-pushnew 'defun) source)
-      (nemacs-runtime-image-preload--load-source-file source)))
+  ;; The early bundle slot is before Custom. GNU cl-lib.elc calls
+  ;; custom-declare-variable directly, so defer it until Custom is live.
+  (let* ((source (concat repo-root "/vendor/emacs-lisp/emacs-lisp/cl-lib.el"))
+         (compiled (concat source "c"))
+         (provider (if (file-readable-p compiled) compiled source))
+         (owner (symbol-file 'cl-pushnew 'defun)))
+    (unless (equal owner provider)
+      (nemacs-runtime-image-preload--load-source-file provider)))
+  ;; These .elc files use the full loader installed by the bundle.
+  (let ((cl-macs (concat repo-root "/vendor/emacs-lisp/emacs-lisp/cl-macs.elc"))
+        (subr-x (concat repo-root "/vendor/emacs-lisp/emacs-lisp/subr-x.elc")))
+    (when (file-readable-p cl-macs)
+      ;; This one selected CL helper has an FXIR row. Verify the source
+      ;; definition against it before preserving it across the .elc load.
+      (let ((name 'cl--loop-handle-accum)
+            (source (symbol-function 'cl--loop-handle-accum)))
+        (unless (and (fboundp 'nelisp-nc--convert)
+                     (or (not (nemacs-runtime-image-preload--row-needs-convert-p name))
+                         (nemacs-runtime-image-preload--reconvert-row name)))
+          (setq source nil))
+        (nemacs-runtime-image-preload--load-source-file cl-macs)
+        (when (interpreted-function-p source) (fset name source))))
+    (when (file-readable-p subr-x)
+      (nemacs-runtime-image-preload--load-source-file subr-x)))
   (nemacs-runtime-image-preload--install-process-core)
   (require 'nemacs-main)
   (load (concat repo-root "/scripts/nemacs-runtime-frame-tab-preload.el")
@@ -259,6 +287,8 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   ;; bounded pass (itself at most 4 rounds) repairs those.
   (when (nemacs-runtime-image-preload--reconvert-native-rows)
     (nemacs-runtime-image-preload--retry-stale-fx))
+  (when (fboundp 'nelisp--aot-refresh-expander-rows)
+    (nelisp--aot-refresh-expander-rows))
   t)
 
 (defun nemacs-runtime-image-preload--retry-stale-fx-pass ()

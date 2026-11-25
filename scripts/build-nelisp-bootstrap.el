@@ -771,6 +771,16 @@ loads the verbatim source on first use; these libraries are command/macro
 packages rather than bootstrap dependencies. Keeping them out of eager replay
 preserves the boot budget without changing their source or feature code.")
 
+(defconst nelisp-bootstrap--compiled-expander-files
+  '("backquote.el" "macroexp.el" "pcase.el" "gv.el")
+  "GNU language providers to load as byte code at their bundle position.")
+
+(defun nelisp-bootstrap--compiled-expander-p (relative)
+  "Return non-nil if RELATIVE names a GNU expander with a byte-code load."
+  (and (string-prefix-p "vendor/emacs-lisp/emacs-lisp/" relative)
+       (member (file-name-nondirectory relative)
+               nelisp-bootstrap--compiled-expander-files)))
+
 (defun nelisp-bootstrap--eager-runtime-files (files)
   "Return FILES with bootstrap-critical GNU declarations loaded first.
 
@@ -1579,16 +1589,25 @@ overrides them for workflow tests."
 
 (defun nelisp-bootstrap--emit-post-file-bundle-forms (file)
   "Return extra bundle forms that should follow FILE."
-  (if (equal (nelisp-bootstrap--logical-name file) "src/emacs-keymap-builtins.el")
+  (cond
+   ((equal (nelisp-bootstrap--logical-name file)
+           "vendor/emacs-lisp/emacs-lisp/gv.el")
+    ;; The reader needs its provisional push/pop before gv is available.
+    ;; Publish GNU's generalized-place versions as soon as gv can expand them.
+    (list (nelisp-vendor-source-forms
+           "vendor/staged-emacs-lisp/subr.el" '(push pop)
+           (nelisp-bootstrap--keymap-subr-file))))
+   ((equal (nelisp-bootstrap--logical-name file) "src/emacs-keymap-builtins.el")
       ;; Keep the GNU forms verbatim and extend the earlier subr.el entry.
       (let ((source-file (nelisp-bootstrap--keymap-subr-file)))
         (list
          (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))\n"
                  source-file)
          (nelisp-vendor-source-subr-keymap source-file)
-         "\n(when (fboundp 'nelisp--lh-extend-segment) (nelisp--lh-extend-segment))\n"))
+         "\n(when (fboundp 'nelisp--lh-extend-segment) (nelisp--lh-extend-segment))\n")))
+   (t
     (mapcar (lambda (form) (concat (prin1-to-string form) "\n"))
-            (nelisp-bootstrap--post-file-forms file))))
+            (nelisp-bootstrap--post-file-forms file)))))
 
 (defvar nelisp-bootstrap-normalized-bundle-files
   '("vendor/emacs-lisp/vc/vc-hooks.el"
@@ -1728,6 +1747,22 @@ strings or comments, and calls with any non-literal argument, are kept."
     (cond
      ((assoc rel nelisp-bootstrap--early-gnu-definitions)
       (insert (nelisp-bootstrap--early-gnu-source file rel)))
+     ((nelisp-bootstrap--compiled-expander-p rel)
+      ;; Give the byte-code loader its own history and after-load boundary.
+      ;; The verbatim source bundle is also usable in checkouts without .elc.
+      (let ((compiled (concat file "c")))
+        (insert (format "(if (file-readable-p %S)\n    (progn\n      (when (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n      (let ((load-file-name nil))\n"
+                        compiled))
+        (if (equal (file-name-nondirectory file) "macroexp.el")
+            (insert
+             (format
+              "(let (native)\n  (when (boundp 'nelisp-nc--converted)\n    (dolist (name '(macroexpand-all macroexpand--all-toplevel))\n      (when (memq name nelisp-nc--converted)\n        (push (cons name (symbol-function name)) native))))\n  (load %S nil 'no-message t t)\n  (dolist (entry native) (fset (car entry) (cdr entry))))"
+              compiled))
+          (insert (format "(load %S nil 'no-message t t)" compiled)))
+        (insert "))\n  (progn\n"))
+      (insert-file-contents file)
+      (goto-char (point-max))
+      (insert "))\n"))
      ((equal rel "vendor/emacs-lisp/progmodes/elisp-mode.el")
       ;; Preserve the file loader's macroexpansion boundary.  Concatenating
       ;; this source eagerly expands flymake-log and loads Flymake at boot.
@@ -1804,7 +1839,10 @@ strings or comments, and calls with any non-literal argument, are kept."
             (insert form))
           (when (nelisp-bootstrap--gnu-vendor-file-p file)
             (insert "\n(setq load-file-name nil)\n")
-            (insert (format "(if (fboundp 'do-after-load-evaluation) (do-after-load-evaluation %S))\n"
+            (insert (format "(if (and (fboundp 'do-after-load-evaluation)%s) (do-after-load-evaluation %S))\n"
+                            (if (nelisp-bootstrap--compiled-expander-p rel)
+                                (format " (not (file-readable-p %S))" (concat file "c"))
+                              "")
                             (expand-file-name file))))
           (insert "\n;;; <<< " rel "\n")))
       (insert "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n")

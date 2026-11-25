@@ -18,17 +18,14 @@
 ;; have signalled `unsupported place'.  Guarded to the standalone substrate so
 ;; a host Emacs (which has the real gv-based `setf') is left untouched.
 
-(when (or (and (boundp 'nelisp-cl-macros--accessor-info)
-              (fboundp 'nelisp--record-set))
-          ;; The standalone bootstrap loads this compatibility source before
-          ;; the record mutator is installed.  Still install the macro there:
-          ;; its expansion-time accessor branch checks the table later, while
-          ;; delaying installation leaves the prelude `setf' in place forever.
-          ;; `nl-write-file' is a standalone-only runtime marker.  Do not
-          ;; infer the substrate merely from an eval helper: consumers may
-          ;; provide that helper while still using host GNU `setf'.
-          (and (fboundp 'nelisp--eval-source-string)
-               (fboundp 'nl-write-file)))
+(when (and (not (and (featurep 'gv) (fboundp 'gv-deref)))
+           (or (and (boundp 'nelisp-cl-macros--accessor-info)
+                    (fboundp 'nelisp--record-set))
+               ;; Some standalone bootstraps load this before installing
+               ;; the record mutator. An eval helper alone is also used
+               ;; by GNU hosts, so check the standalone marker.
+               (and (fboundp 'nelisp--eval-source-string)
+                    (fboundp 'nl-write-file))))
   (defmacro setf (&rest pairs)
     "Generalised assignment (NeLisp; prelude places + cl-getf/if/gethash/...)."
     (when (null pairs) (signal 'error (list "setf: empty body")))

@@ -42722,6 +42722,9 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "nelisp--region-i64-set") :word . (nl_region_i64_set_w (wf_arg_word args 0) (wf_arg_word args 1) (wf_arg_word args 2)))
     ((:lit "nelisp--region-stats") :word . (nl_region_stats_w 0))
     ((:lit "nelisp--function-epoch") :word . (nl_function_epoch_w 0))
+    ;; Raw runtime state access: invalidate cached AOT table addresses before
+    ;; Lisp installs a replacement vector (minimal native surface, clause 3).
+    ((:lit "nelisp--aot-cache-invalidate") :word . (wf_aot_cache_invalidate 0))
     ;; nl-unix-time-usec: microseconds since the epoch as a single INTEGER via
     ;; gettimeofday(2) (__NR_gettimeofday=96): sec*1e6 + usec.  Pure integer math
     ;; after the syscall (no f64), which is the half that works -- f64 production
@@ -44036,7 +44039,8 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--intern-table-symbols nelisp--native-env nelisp--pool-root-coverage
       nelisp--pop-frame nelisp--push-frame nelisp--size-census nelisp--target-arch-code
       nelisp--target-os-code nelisp-process-async-ready-p nl-current-unix-time
-      nl-local-utc-offset nl-unix-time-usec nelisp--monotonic-ns nelisp--boot-phase-ns nelisp--region-stats nelisp--function-epoch)
+      nl-local-utc-offset nl-unix-time-usec nelisp--monotonic-ns nelisp--boot-phase-ns nelisp--region-stats nelisp--function-epoch
+      nelisp--aot-cache-invalidate)
     ((0 . 1)
       buffer-size forward-line forward-word char-after char-before line-beginning-position line-end-position pos-bol pos-eol
       exit float-time nelisp--exit-process)
@@ -50925,6 +50929,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--region-open" "nelisp--region-close" "nelisp--region-move" "nelisp--region-live-p"
     "nelisp--region-size" "nelisp--region-u8-ref" "nelisp--region-u8-set" "nelisp--region-i64-ref"
     "nelisp--region-i64-set" "nelisp--region-stats" "nelisp--function-epoch"
+    "nelisp--aot-cache-invalidate"
     "exit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
@@ -53193,7 +53198,9 @@ prelude adoption gates accept them."
           ('backquote-listify (nelisp-boot-image-provider 'backquote))
           ;; byte-run.el's compiled `defun' expander and `byte-run--parse-body'.
           ('byte-run--parse-body (nelisp-boot-image-provider 'byte-run))
-          ('defun (nelisp-boot-image-provider 'byte-run)))))
+          ('defun (nelisp-boot-image-provider 'byte-run))
+          ((or 'pcase--u 'pcase--expand) (nelisp-boot-image-provider 'pcase))
+          ('gv-get (nelisp-boot-image-provider 'gv)))))
 
 (defun nelisp-standalone--vendor-define-error-source (relative-file name)
   "Return the exact source text of RELATIVE-FILE's `(define-error \\='NAME ...)'.

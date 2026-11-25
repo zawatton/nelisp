@@ -2,7 +2,8 @@
 ;; GNU supplies macroexpand in eval.c.  The macroexp.el library supplies
 ;; macroexpand-1 and macroexpand-all earlier in the source bundle.
 
-(when (fboundp 'nelisp--write-stdout-bytes)
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (not (featurep 'nelisp-load-macroexpand)))
 
 (defun macroexpand (form &optional environment)
   "Repeatedly expand FORM until its head is no longer a macro call."

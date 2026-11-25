@@ -243,6 +243,7 @@ nelisp--region-i64-ref	native-must-stay	Clause 3: raw memory access to the bound
 nelisp--region-i64-set	native-must-stay	Clause 3: raw memory access to the bounded (256 MiB budget) region table, nl_region_open_w and companions (c552d6bbb Doc 241-243); no Lisp form can address raw memory. No Lisp reference applicable
 nelisp--region-stats	native-must-stay	Clause 3: raw memory access to the bounded (256 MiB budget) region table, nl_region_open_w and companions (c552d6bbb Doc 241-243); no Lisp form can address raw memory. No Lisp reference applicable
 nelisp--function-epoch	native-review	Doc 238 B0 read-only global function epoch counter (c552d6bbb); runtime state read, no clause recorded. Review against Doc 211 6
+nelisp--aot-cache-invalidate	native-must-stay	Clause 3: zero the native AOT cache epoch and raw table addresses before replacing the Lisp registration vector. Lisp cannot address this runtime state directly.
 exit	native-review	No classification row; review against Doc 211 §6.
 consp	native-must-stay	type predicate on tag bits
 atom	native-must-stay	type predicate on tag bits

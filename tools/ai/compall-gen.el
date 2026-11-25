@@ -278,6 +278,11 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
 (defvar compall-gen--bytecode t
   "Non-nil gives byte-code functions rows (compiled from their source definition).")
 
+(defconst compall-gen--vendor-expander-names
+  '(macroexpand--all-toplevel cl--loop-handle-accum)
+  "GNU byte-code expanders compiled from their staged source for native rows.
+Their boot provider keeps the verified native closure across GNU .elc replay.")
+
 (let* ((out (or (getenv "COMPALL_OUT") "lisp/nelisp-fxir-native-data.el"))
        (max-ir (if (getenv "COMPALL_MAX_IR") (string-to-number (getenv "COMPALL_MAX_IR"))
                  compall-gen-max-ir))
@@ -353,14 +358,19 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
     (setq compall-gen--pinned pin))
   (dolist (name names)
     (let* ((bc (byte-code-function-p (symbol-function name)))
-           (forms (gethash name src))
+           (vendor (memq name compall-gen--vendor-expander-names))
+           (forms (or (gethash name src) (and vendor (gethash name vsrc))))
            ;; A byte-code function (adopted by the build's byte-code pass) is compiled
            ;; from its one source definition: with a row the pass keeps it as source.
-           (probe (and bc compall-gen--bytecode (= (length forms) 1) (make-symbol "compall-gen-probe")))
+           ;; GNU expander rows also use that source when the reader's staged
+           ;; closure already has load-time macro expansions in its body.
+           (probe (and (or bc vendor) compall-gen--bytecode
+                       (= (length forms) 1) (make-symbol "compall-gen-probe")))
            ;; Lisp-backed primitives report as subrs to function-info. Use
            ;; their canonical backing closure, including its live fx key.
-           (fn (if bc (and probe (compall-gen--closure-of (car forms) probe))
-                 (compall-gen--fn (symbol-function name))))
+           (fn (cond (probe (compall-gen--closure-of (car forms) probe))
+                     (bc nil)
+                     (t (compall-gen--fn (symbol-function name)))))
            (rec (and fn (compall-gen--fx-record (or probe name) fn)))
            (c (and (vectorp rec) (not (memq (aref rec 1) '(-1 -2)))
                    (ignore-errors (nelisp-fxir-recompile fn))))

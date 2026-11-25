@@ -1,3 +1,4 @@
+macroexpand--all-toplevel
 nelisp-point
 nelisp-point-min
 nelisp-point-max

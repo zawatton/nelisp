@@ -61,9 +61,10 @@
   (defvar initial-frame-alist nil
     "Initial frame parameter alist."))
 
-(when (or (fboundp 'nl-write-file)
-          (fboundp 'nelisp--write-stdout-bytes)
-          (not (boundp 'emacs-version)))
+(when (and (not (and (featurep 'gv) (fboundp 'gv-deref)))
+           (or (fboundp 'nl-write-file)
+               (fboundp 'nelisp--write-stdout-bytes)
+               (not (boundp 'emacs-version))))
   (defmacro push (item place)
     "Standalone compatibility macro: cons ITEM onto PLACE.
 PLACE may be a symbol (`setq') or a generalized place the substrate's
