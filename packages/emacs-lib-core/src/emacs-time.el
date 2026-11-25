@@ -257,15 +257,6 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
      (t 0)))
   (put 'truncate 'emacs-stub-bulk nil))
 
-(defun emacs-time--truncate-seconds (seconds)
-  "Truncate SECONDS without recursing through huge standalone floats."
-  (cond
-   ((integerp seconds) seconds)
-   ((and (numberp seconds) (> seconds 1000000))
-    (or (emacs-time--standalone-unix-time)
-        (truncate seconds)))
-   (t (truncate seconds))))
-
 (defun emacs-time--to-number (tv)
   "Convert an Emacs time value TV to a comparable number of seconds.
 Handles an integer / float (seconds), a (TICKS . HZ) pair, and the
@@ -380,37 +371,6 @@ The remainder is nonnegative and strictly less than the frequency."
                          (emacs-time--quotient micro 1000000) (emacs-time--quotient fraction frequency))))
         (list seconds (emacs-time--remainder fraction frequency) frequency))))
    (t (emacs-time--invalid-time))))
-
-(defun emacs-time--seconds-and-days (tv)
-  "Return (SECS DAYS REM) for time value TV.
-SECS is the truncated Unix epoch seconds, DAYS is the whole-day offset from
-1970-01-01, and REM is the second offset within that day."
-  (let* ((secs (emacs-time--truncate-seconds (emacs-time--to-number tv)))
-         (days (if (>= secs 0)
-                   (/ secs 86400)
-                 (/ (- secs 86399) 86400)))
-         (rem (- secs (* days 86400))))
-    (list secs days rem)))
-
-(unless (and (emacs-time--host-runtime-p)
-             (fboundp 'time-to-days))
-  (defun time-to-days (&optional time)
-    "Return the absolute day number for TIME.
-This follows Emacs calendar absolute-day convention, where 1970-01-01 is
-day 719163."
-    (+ emacs-time--unix-epoch-absolute-day
-       (nth 1 (emacs-time--seconds-and-days time)))))
-
-(unless (and (emacs-time--host-runtime-p)
-             (fboundp 'days-to-time))
-  (defun days-to-time (days)
-    "Return a time value for Emacs absolute day DAYS."
-    (list (* (- days emacs-time--unix-epoch-absolute-day) 86400) 0 0 0)))
-
-(unless (fboundp 'seconds-to-time)
-  (defun seconds-to-time (seconds)
-    "Return a time value for SECONDS."
-    (list seconds 0 0 0)))
 
 (unless (boundp 'display-time-mode)
   (defvar display-time-mode nil

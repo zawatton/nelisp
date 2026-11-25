@@ -272,21 +272,24 @@ explicitly unbound clock cell remains unbound after the same reload."
        (should-not emacs-time--current-time-zone-cache)))))
 
 (ert-deftest emacs-time-test/calendar-absolute-days-match-emacs ()
-  "Calendar helpers use Emacs absolute days, not Unix-epoch day offsets."
+  "Calendar absolute days round-trip through Gregorian dates."
   (emacs-time-test--with-reloaded-module
    '(truncate float-time current-time nl-current-unix-time
-              time-to-days days-to-time
               calendar-absolute-from-gregorian
               calendar-gregorian-from-absolute)
    (lambda ()
      (should (= 719163 (calendar-absolute-from-gregorian '(1 1 1970))))
      (should (= 739807 (calendar-absolute-from-gregorian '(7 10 2026))))
      (should (equal '(7 10 2026)
-                    (calendar-gregorian-from-absolute 739807)))
-     (should (= 739807 (time-to-days
-                       (time-convert (encode-time 0 0 0 10 7 2026 t) 'integer))))
-     (should (equal '(0 0 0 10 7 2026 5 nil 0)
-                    (decode-time (emacs-time--to-number (days-to-time 739807)) t))))))
+                    (calendar-gregorian-from-absolute 739807))))))
+
+(ert-deftest emacs-time-test/gnu-time-date-day-conversions ()
+  (require 'time-date)
+  (let ((time (encode-time 0 0 12 10 7 2026)))
+    (should (= 739807 (time-to-days time))))
+  (let ((offset (- 739807 719163)))
+    (should (equal '(0 0 0 10 7 2026 5 nil 0)
+                   (decode-time (days-to-time offset) t)))))
 
 (ert-deftest emacs-time-test/to-number-converts-time-forms ()
   "emacs-time--to-number converts all Emacs time-value shapes to seconds."
