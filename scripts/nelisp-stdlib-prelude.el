@@ -4682,7 +4682,6 @@ TYPE flowing into whatever the caller does next."
                (if (nelisp--cl-seq-member (if key (funcall key item) item) list kw)
                    list
                  (cons item list)))))))
-(unless (fboundp 'cl-mapcan) (defun cl-mapcan (fn &rest lists) (apply #'append (apply #'cl-mapcar fn lists))))
 ;; `cl-subst' and `cl--do-subst' are GNU cl-lib.el definitions (not cl-seq.el),
 ;; so the cl-seq bootstrap does not supply them; ported verbatim.  The keyword
 ;; path goes through the GNU cl-seq.el `cl-sublis'.
@@ -10036,79 +10035,10 @@ function as needed."
 ;;   `cl-defstruct' — line 352
 ;; ---------------------------------------------------------------------------
 
-(defun cl-mapcar (fn seq &rest more-seqs)
-  "Apply FN to corresponding elements of SEQ and MORE-SEQS, returning a list.
-The walk stops at the shortest sequence.  Like Emacs `cl-mapcar'."
-  (let ((all (cons seq more-seqs))
-        (result nil)
-        (done nil))
-    (while (not done)
-      (let ((heads nil) (tails nil) (any-empty nil) (cur all))
-        (while (and cur (not any-empty))
-          (let ((s (car cur)))
-            (if (null s)
-                (setq any-empty t)
-              (setq heads (cons (car s) heads))
-              (setq tails (cons (cdr s) tails))))
-          (setq cur (cdr cur)))
-        (if any-empty
-            (setq done t)
-          (setq result (cons (apply fn (nreverse heads)) result))
-          (setq all (nreverse tails)))))
-    (nreverse result)))
-
-(defun cl-mapc (fn seq &rest more-seqs)
-  "Apply FN to corresponding elements of SEQ and MORE-SEQS for side effect.
-Returns SEQ (= first sequence) like Emacs `cl-mapc'."
-  (let ((all (cons seq more-seqs))
-        (done nil))
-    (while (not done)
-      (let ((heads nil) (tails nil) (any-empty nil) (cur all))
-        (while (and cur (not any-empty))
-          (let ((s (car cur)))
-            (if (null s)
-                (setq any-empty t)
-              (setq heads (cons (car s) heads))
-              (setq tails (cons (cdr s) tails))))
-          (setq cur (cdr cur)))
-        (if any-empty
-            (setq done t)
-          (apply fn (nreverse heads))
-          (setq all (nreverse tails)))))
-    seq))
-
-
-
-
-
-
-
 (defmacro defsubst (name args &rest body)
   "Define NAME as an inline function.  Standalone NeLisp has no
 byte-compiler so defsubst is a strict synonym for `defun'."
   (cons 'defun (cons name (cons args body))))
-
-(defun cl-every (pred seq)
-  "Return non-nil iff (PRED ELT) is non-nil for every ELT in SEQ."
-  (let ((all t) (cur seq))
-    (while (and all cur)
-      (unless (funcall pred (car cur)) (setq all nil))
-      (setq cur (cdr cur)))
-    all))
-
-(defun cl-some (pred seq)
-  "Return the first non-nil (PRED ELT) over SEQ, else nil.
-Used by the AOT compiler's `--emit-defun' gp prologue gate
-\(`(cl-some #'consp param-regs)').  Its absence made every defun-emit on
-standalone NeLisp hit a void-function — which, under the void-function-
-miss bug, returns garbage instead of signalling and corrupts the compile."
-  (let ((res nil) (cur seq))
-    (while (and cur (not res))
-      (setq res (funcall pred (car cur)))
-      (setq cur (cdr cur)))
-    res))
-
-;; ---------------------------------------------------------------------------
 
 ;; ---------------------------------------------------------------------------
 ;; Wave A21-fix (2026-05-24) — cl-case / cl-position / cl-set-difference /
@@ -16328,30 +16258,36 @@ If RANGE is a cons (FROM . TO), the function returns the value for FROM.
         (t (signal 'error (list (format-message
                                  "Invalid RANGE argument to `char-table-range'"))))))
 
+(defvar nelisp--chartab-legacy-set-range-function nil
+  "Function for setting ranges in emacs-lib's non-native char-tables.")
+
 (defun nelisp--chartab-set-char-table-range (char-table range value)
   "Set the value in CHAR-TABLE for a range of characters RANGE to VALUE.
 RANGE should be t (for all characters), nil (for the default value),
 a cons of character codes (for characters in the range),
 or a character code.  Return VALUE.
 
-\(fn CHAR-TABLE RANGE VALUE)"
+\\(fn CHAR-TABLE RANGE VALUE)"
   ;; chartab.c:608-641.
-  (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
   (nelisp--chartab-check char-table)
-  (cond ((eq range t)
-         (let ((slots (nelisp--char-table-vector char-table)) (i 1))
-           (aset slots 0 value)
-           (while (<= i 64) (aset slots i value) (setq i (1+ i)))))
-        ((null range)
-         (funcall nelisp--chartab-native-set-range char-table nil value))
-        ((and (integerp range) (>= range 0) (<= range #x3fffff))
-         (nelisp--char-table-set char-table range value))
-        ((consp range)
-         (nelisp--chartab-check-char (car range))
-         (nelisp--chartab-check-char (cdr range))
-         (nelisp--char-table-set-range char-table (car range) (cdr range) value))
-        (t (signal 'error (list (format-message
-                                 "Invalid RANGE argument to `set-char-table-range'")))))
+  (if (and nelisp--chartab-legacy-set-range-function
+           (or (vectorp char-table) (recordp char-table)))
+      (funcall nelisp--chartab-legacy-set-range-function char-table range value)
+    (setq nelisp--chartab-lisp-epoch (1+ nelisp--chartab-lisp-epoch))
+    (cond ((eq range t)
+           (let ((slots (nelisp--char-table-vector char-table)) (i 1))
+             (aset slots 0 value)
+             (while (<= i 64) (aset slots i value) (setq i (1+ i)))))
+          ((null range)
+           (funcall nelisp--chartab-native-set-range char-table nil value))
+          ((and (integerp range) (>= range 0) (<= range #x3fffff))
+           (nelisp--char-table-set char-table range value))
+          ((consp range)
+           (nelisp--chartab-check-char (car range))
+           (nelisp--chartab-check-char (cdr range))
+           (nelisp--char-table-set-range char-table (car range) (cdr range) value))
+          (t (signal 'error (list (format-message
+                                   "Invalid RANGE argument to `set-char-table-range'"))))))
   value)
 
 (defun nelisp--chartab-call (function range val)

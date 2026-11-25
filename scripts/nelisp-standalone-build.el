@@ -51269,8 +51269,22 @@ never on the build host.  Keep the original Lisp factory as the reference."
                      "vendor/staged-emacs-lisp/simple.el"
                      '(buffer-disable-undo messages-buffer-mode-map
                        messages-buffer-mode messages-buffer))))
+           ;; The FX compiler calls `cl-some' while publishing function
+           ;; cells. Stage the GNU definitions before it can recursively
+           ;; trigger a cl-extra autoload, retaining vendor lexical binding.
+           (cl-sequence-source
+            (concat "\n(eval '(progn\n"
+                    (nelisp-vendor-source-forms
+                     "vendor/staged-emacs-lisp/cl-lib.el" '(cl-mapcar))
+                    "\n"
+                    (nelisp-vendor-source-forms
+                     "vendor/staged-emacs-lisp/cl-extra.el"
+                     '(cl--mapcar-many cl-map cl-mapc cl-mapcan
+                       cl-some cl-every cl-notany cl-notevery))
+                    "\n) t)\n"))
            (files-source
            (concat file-attrs-header file-attrs-forms-text messages-buffer-text
+                   cl-sequence-source
                    vendor-src
                    (nelisp-standalone--after-load-runtime-src)))
            (metadata-source

@@ -31,6 +31,8 @@
      . "f58f3f9b88755549a7713b59045059affda99c2e22251e22e5c40fbe017f2394")
     ("vendor/staged-emacs-lisp/cl-preloaded.el"
      . "73c114b7a8899ae278fdd1eae29c902703f20bc0662f99c3edb391362a35514c")
+    ("vendor/staged-emacs-lisp/cl-lib.el"
+     . "43cff37ef2ec238e7668a1d1bce949a25b217d61316a985cb06f457418f46ba4")
     ("vendor/staged-emacs-lisp/cl-extra.el"
      . "4aca78d4d9c161ba688bf0253f0c4445415d5c0fcb9a8f573cc6ab1270583d42")
     ("vendor/staged-emacs-lisp/custom.el"
