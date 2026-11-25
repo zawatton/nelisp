@@ -326,13 +326,6 @@ binary64 timestamp or its tick frequency through floating point."
   "Return the exact nonnegative remainder for a positive DIVISOR."
   (cdr (emacs-time--divmod dividend divisor)))
 
-(defun emacs-time--gcd (a b)
-  "Return the greatest common divisor of nonnegative integers A and B."
-  (while (/= b 0)
-    (let ((remainder (emacs-time--remainder a b)))
-      (setq a b b remainder)))
-  a)
-
 (defun emacs-time--float-ticks (time)
   "Return the exact binary64 tick representation of finite float TIME."
   (when (isnan time) (emacs-time--invalid-time))
@@ -387,113 +380,6 @@ The remainder is nonnegative and strictly less than the frequency."
                          (emacs-time--quotient micro 1000000) (emacs-time--quotient fraction frequency))))
         (list seconds (emacs-time--remainder fraction frequency) frequency))))
    (t (emacs-time--invalid-time))))
-
-(defun emacs-time--scale (remainder rate frequency)
-  "Return floor(REMAINDER * RATE / FREQUENCY) without a large product."
-  (if (or (= remainder 0) (<= rate (emacs-time--quotient most-positive-fixnum remainder)))
-      (emacs-time--quotient (* remainder rate) frequency)
-    (let ((quotient 0) (residue 0)
-          (part-quotient 0) (part-residue remainder))
-      (while (> rate 0)
-        (when (= (emacs-time--remainder rate 2) 1)
-          (setq quotient (+ quotient part-quotient))
-          (if (>= residue (- frequency part-residue))
-              (setq residue (- residue (- frequency part-residue))
-                    quotient (1+ quotient))
-            (setq residue (+ residue part-residue))))
-        (setq rate (emacs-time--quotient rate 2))
-        (when (> rate 0)
-          (setq part-quotient (* part-quotient 2))
-          (if (>= part-residue (- frequency part-residue))
-              (setq part-residue (- part-residue (- frequency part-residue))
-                    part-quotient (1+ part-quotient))
-            (setq part-residue (* part-residue 2)))))
-      quotient)))
-
-(defun emacs-time--as-list (parts)
-  "Return the four-field timestamp represented by PARTS."
-  (let* ((seconds (car parts))
-         (picos (emacs-time--scale (nth 1 parts) 1000000000000 (nth 2 parts))))
-    (list (emacs-time--quotient seconds 65536) (emacs-time--remainder seconds 65536)
-          (emacs-time--quotient picos 1000000) (emacs-time--remainder picos 1000000))))
-
-(defun emacs-time--as-ticks (parts frequency)
-  "Return PARTS as a timestamp with the specified FREQUENCY."
-  (cons (+ (* (car parts) frequency)
-           (emacs-time--scale (nth 1 parts) frequency (nth 2 parts)))
-        frequency))
-
-(unless (and (fboundp 'time-convert)
-             (not (get 'time-convert 'emacs-stub-bulk)))
-  (defun time-convert (time &optional form)
-    "Convert TIME to FORM, rounding toward minus infinity.
-FORM is integer, list, t for a suitable tick frequency, or a positive
-integer frequency.  A nil FORM follows `current-time-list'."
-    (if (and (floatp time)
-             (or (eq form t)
-                 (and (null form) (boundp 'current-time-list)
-                      (not current-time-list))))
-        (emacs-time--float-ticks time)
-      (let ((parts (emacs-time--unpack time)))
-        (cond
-         ((eq form 'integer) (car parts))
-         ;; Local extension kept from the original polyfill: `float' form.
-         ((eq form 'float)
-          (if (floatp time) time
-            (+ (float (car parts)) (/ (float (nth 1 parts)) (nth 2 parts)))))
-         ((or (eq form 'list)
-              (and (null form)
-                   (or (not (boundp 'current-time-list)) current-time-list)))
-          (emacs-time--as-list parts))
-         ((or (eq form t) (null form))
-          (emacs-time--as-ticks parts (nth 2 parts)))
-         ((and (integerp form) (> form 0))
-          (emacs-time--as-ticks parts form))
-         (t (signal 'error (list "Invalid time frequency" form)))))))
-  (put 'time-convert 'emacs-stub-bulk nil))
-
-(defun emacs-time--combine (a b subtract)
-  "Add timestamps A and B, or subtract B if SUBTRACT is non-nil."
-  (let* ((shared-time (and (null a) (null b) (current-time)))
-         (left (emacs-time--unpack (or a shared-time)))
-         (right (emacs-time--unpack (or b shared-time)))
-         (lhz (nth 2 left)) (rhz (nth 2 right))
-         (lr (nth 1 left)) (rr (nth 1 right)))
-    ;; Try the smaller original frequency first, preserving it when both
-    ;; operands have an exact representation at that rate.  Otherwise reduce
-    ;; the operands and take the least common multiple.
-    (unless (= lhz rhz)
-      (cond
-       ((and (< lhz rhz) (= (emacs-time--remainder rhz lhz) 0)
-             (= (emacs-time--remainder rr (emacs-time--quotient rhz lhz)) 0))
-        (setq rr (emacs-time--quotient rr (emacs-time--quotient rhz lhz)) rhz lhz))
-       ((and (< rhz lhz) (= (emacs-time--remainder lhz rhz) 0)
-             (= (emacs-time--remainder lr (emacs-time--quotient lhz rhz)) 0))
-        (setq lr (emacs-time--quotient lr (emacs-time--quotient lhz rhz)) lhz rhz))
-       (t
-        (let ((lgcd (emacs-time--gcd lr lhz))
-              (rgcd (emacs-time--gcd rr rhz)))
-          (setq lhz (emacs-time--quotient lhz lgcd) lr (emacs-time--quotient lr lgcd)
-                rhz (emacs-time--quotient rhz rgcd) rr (emacs-time--quotient rr rgcd))))))
-    (let* ((frequency (* (emacs-time--quotient lhz (emacs-time--gcd lhz rhz)) rhz))
-           (fraction (+ (* lr (emacs-time--quotient frequency lhz))
-                        (* (if subtract (- rr) rr) (emacs-time--quotient frequency rhz))))
-           (seconds (+ (car left) (if subtract (- (car right)) (car right))
-                       (emacs-time--quotient fraction frequency)))
-           (parts (list seconds (emacs-time--remainder fraction frequency) frequency)))
-      (cond
-       ((and subtract (integerp a) (integerp b) (= a b))
-        (if (and (boundp 'current-time-list) (not current-time-list))
-            (cons 0 1000000000)
-          (list 0 0 0 0)))
-       ((= frequency 1) seconds)
-       ((or (and (consp a) (integerp (cdr a)))
-            (and (consp b) (integerp (cdr b)))
-            (and (floatp a) (floatp b))
-            (/= (emacs-time--remainder 1000000000000 frequency) 0)
-            (and (boundp 'current-time-list) (not current-time-list)))
-        (emacs-time--as-ticks parts frequency))
-       (t (emacs-time--as-list parts))))))
 
 (defun emacs-time--seconds-and-days (tv)
   "Return (SECS DAYS REM) for time value TV.
@@ -562,40 +448,6 @@ or a fixed offset in seconds or an (OFFSET NAME) list."
          (year (+ y (if (<= month 2) 1 0))))
     (list year month day)))
 
-(unless (fboundp 'decode-time)
-  (defun decode-time (&optional time zone form)
-    "Decode TIME into an Emacs-style calendar list.
-ZONE and FORM are accepted for API compatibility and ignored.  The return
-shape is (SEC MIN HOUR DAY MONTH YEAR DOW DST ZONE) using UTC-like fields."
-    (ignore zone form)
-    (pcase-let* ((`(,_secs ,days ,rem) (emacs-time--seconds-and-days time))
-                 (`(,year ,month ,day) (emacs-time--civil-from-days days))
-                 (hour (/ rem 3600))
-                 (minute (/ (% rem 3600) 60))
-                 (second (% rem 60))
-                 (dow (% (+ days 4) 7)))
-      (when (< dow 0)
-        (setq dow (+ dow 7)))
-      (list second minute hour day month year dow nil 0))))
-
-;; Native `encode-time' returns a valid time value (an integer); the old shim
-;; returned (UNIX 0 0 0), which is not one (audit 2026-09-29).
-(unless (fboundp 'encode-time)
-  (defun encode-time (&rest args)
-    "Encode decoded time ARGS into the standalone time representation."
-    (let* ((values (if (and (= (length args) 1) (consp (car args)))
-                       (car args)
-                     args))
-           (sec (or (nth 0 values) 0))
-           (min (or (nth 1 values) 0))
-           (hour (or (nth 2 values) 0))
-           (day (or (nth 3 values) 1))
-           (month (or (nth 4 values) 1))
-           (year (or (nth 5 values) 1970))
-           (absolute (calendar-absolute-from-gregorian (list month day year)))
-           (unix-days (- absolute emacs-time--unix-epoch-absolute-day)))
-      (list (+ (* unix-days 86400) (* hour 3600) (* min 60) sec) 0 0 0))))
-
 (unless (fboundp 'decoded-time-second)
   (defun decoded-time-second (time) (nth 0 time)))
 
@@ -656,24 +508,6 @@ shape is (SEC MIN HOUR DAY MONTH YEAR DOW DST ZONE) using UTC-like fields."
          (setq calendar-sum--acc (+ calendar-sum--acc ,expression))
          (setq ,index (1+ ,index)))
        calendar-sum--acc)))
-
-(unless (and (fboundp 'time-less-p) (not (get 'time-less-p 'emacs-stub-bulk)))
-  (defun time-less-p (t1 t2)
-    "Return non-nil if time value T1 is less than time value T2.
-Compares the seconds magnitudes via `emacs-time--to-number'; full
-picosecond-exact comparison is not modeled."
-    (< (emacs-time--to-number t1) (emacs-time--to-number t2)))
-  (put 'time-less-p 'emacs-stub-bulk nil))
-
-(unless (fboundp 'time-subtract)
-  (defun time-subtract (t1 t2)
-    "Return the difference of timestamps T1 and T2 as a time value."
-    (emacs-time--combine t1 t2 t)))
-
-(unless (fboundp 'time-add)
-  (defun time-add (t1 t2)
-    "Return the sum of timestamps T1 and T2 as a time value."
-    (emacs-time--combine t1 t2 nil)))
 
 (unless (fboundp 'time-since)
   (defun time-since (time)

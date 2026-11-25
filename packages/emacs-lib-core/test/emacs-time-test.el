@@ -275,7 +275,7 @@ explicitly unbound clock cell remains unbound after the same reload."
   "Calendar helpers use Emacs absolute days, not Unix-epoch day offsets."
   (emacs-time-test--with-reloaded-module
    '(truncate float-time current-time nl-current-unix-time
-              time-to-days days-to-time encode-time decode-time
+              time-to-days days-to-time
               calendar-absolute-from-gregorian
               calendar-gregorian-from-absolute)
    (lambda ()
@@ -283,9 +283,10 @@ explicitly unbound clock cell remains unbound after the same reload."
      (should (= 739807 (calendar-absolute-from-gregorian '(7 10 2026))))
      (should (equal '(7 10 2026)
                     (calendar-gregorian-from-absolute 739807)))
-     (should (= 739807 (time-to-days (encode-time 0 0 0 10 7 2026))))
+     (should (= 739807 (time-to-days
+                       (time-convert (encode-time 0 0 0 10 7 2026 t) 'integer))))
      (should (equal '(0 0 0 10 7 2026 5 nil 0)
-                    (decode-time (days-to-time 739807)))))))
+                    (decode-time (emacs-time--to-number (days-to-time 739807)) t))))))
 
 (ert-deftest emacs-time-test/to-number-converts-time-forms ()
   "emacs-time--to-number converts all Emacs time-value shapes to seconds."
@@ -296,19 +297,12 @@ explicitly unbound clock cell remains unbound after the same reload."
   (should (= 65536.5 (emacs-time--to-number '(1 0 500000))))
   (should (= 1783641600 (emacs-time--to-number '(1783641600 0 0 0)))))
 
-(ert-deftest emacs-time-test/time-convert-polyfill ()
-  "time-convert covers integer, float, list, and tick-rate forms."
-  (emacs-time-test--with-reloaded-module
-   '(truncate float-time current-time nl-current-unix-time time-convert)
-   (lambda ()
-     (put 'time-convert 'emacs-stub-bulk t)
-     (load emacs-time-test--module-file t t)
-     (should (= 12 (time-convert 12.9 'integer)))
-     (should (= 12.5 (time-convert 12.5 'float)))
-     ;; GNU: (HIGH LOW USEC PSEC) for 12.5 seconds.
-     (should (equal '(0 12 500000 0) (time-convert 12.5 'list)))
-     (should (equal '(5 . 2) (time-convert 2.5 2)))
-     (should (equal '(12000 . 1000) (time-convert 12 1000))))))
+(ert-deftest emacs-time-test/time-convert-timestamp-forms ()
+  (should (= 12 (time-convert 12.9 'integer)))
+  (should-error (time-convert 12.5 'float))
+  (should (equal '(0 12 500000 0) (time-convert 12.5 'list)))
+  (should (equal '(5 . 2) (time-convert 2.5 2)))
+  (should (equal '(12000 . 1000) (time-convert 12 1000))))
 
 (ert-deftest emacs-time-test/time-less-p-orders-time-values ()
   "time-less-p orders integers, floats, (HIGH LOW) and (TICKS . HZ) values."
@@ -386,12 +380,13 @@ explicitly unbound clock cell remains unbound after the same reload."
 (ert-deftest emacs-time-test/exact-float-timestamp-combination ()
   ;; GNU results retain the exact binary64 frequency, including mixed
   ;; microsecond list timestamps used by Org's cache deadline.
-  (should (equal (emacs-time--combine '(27334 1551 136583 0) 0.04 nil)
-                 '(4033789913025355663293582149459 . 2251799813685248000000)))
-  (should (equal (emacs-time--combine '(1 . 3) 0.1 nil)
-                 '(46837436124653159 . 108086391056891904)))
-  (should (equal (emacs-time--combine '(-1 . 3) 0.1 t)
-                 '(-46837436124653159 . 108086391056891904))))
+  (let ((current-time-list nil))
+    (should (equal (time-add '(27334 1551 136583 0) 0.04)
+                   '(4033789913025355663293582149459 . 2251799813685248000000)))
+    (should (equal (time-add '(1 . 3) 0.1)
+                   '(46837436124653159 . 108086391056891904)))
+    (should (equal (time-subtract '(-1 . 3) 0.1)
+                   '(-46837436124653159 . 108086391056891904)))))
 
 (provide 'emacs-time-test)
 

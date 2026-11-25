@@ -1274,18 +1274,6 @@ exist yet (approximating Emacs' creatable-path semantics)."
     (when (fboundp 'message) (apply #'message message args))
     nil))
 
-(unless (fboundp 'format-time-string)
-  (defun format-time-string (format-string &optional time zone)
-    "Minimal stand-in: ignores FORMAT-STRING directives and returns the
-time as an integer-seconds string.  Adequate for non-display uses (e.g.
-cache timestamps); NOT a faithful strftime."
-    (ignore format-string zone)
-    (format "%d" (cond ((numberp time) (truncate time))
-                       ((fboundp 'float-time)
-                        (condition-case nil (truncate (float-time time))
-                          (error 0)))
-                       (t 0)))))
-
 (unless (fboundp 'delete-directory)
   (defun delete-directory (directory &optional recursive trash)
     "Minimal stand-in: no-op when the runtime lacks a directory-remove
