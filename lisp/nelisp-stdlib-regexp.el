@@ -587,35 +587,53 @@ Stops at \\| , \\) , or end."
             (setq i j))))))
     (cons (nreverse nodes) i)))
 
+(defun nlre--parse-interval-count (pat k n default)
+  "Read an interval count at K, or use DEFAULT when there are no digits.
+Return (COUNT . POSITION) with POSITION at the next non-digit."
+  (let ((count nil))
+    (while (and (< k n) (<= ?0 (aref pat k) ?9))
+      (setq count (+ (* (or count 0) 10) (- (aref pat k) ?0))
+            k (1+ k))
+      (when (> count #xffff)
+        (signal 'invalid-regexp '("Invalid content of \\{\\}"))))
+    (when (= k n)
+      (signal 'invalid-regexp '("Unmatched \\{")))
+    (cons (or count default) k)))
+
 (defun nlre--parse-brace (atom pat k n)
-  "Parse \\{min[,[max]]\\} repetition of ATOM starting at K (after \\{).
-Return (REVERSED-EXPANSION-NODES . newpos)."
-  (let ((minv 0) (maxv nil) (have-comma nil) (digits ""))
-    (while (and (< k n) (let ((c (aref pat k))) (and (>= c ?0) (<= c ?9))))
-      (setq digits (concat digits (substring pat k (1+ k))) k (1+ k)))
-    (setq minv (if (= (length digits) 0) 0 (string-to-number digits)))
-    (when (and (< k n) (eq (aref pat k) ?,))
-      (setq have-comma t k (1+ k))
-      (setq digits "")
-      (while (and (< k n) (let ((c (aref pat k))) (and (>= c ?0) (<= c ?9))))
-        (setq digits (concat digits (substring pat k (1+ k))) k (1+ k)))
-      (when (> (length digits) 0) (setq maxv (string-to-number digits))))
-    (unless have-comma (setq maxv minv))
-    ;; consume closing \}
-    (when (and (< (1+ k) n) (eq (aref pat k) ?\\) (eq (aref pat (1+ k)) ?}))
-      (setq k (+ k 2)))
-    ;; build expansion (reversed, to prepend onto nodes accumulator)
-    (let ((out nil) (i 0))
-      (while (< i minv) (setq out (cons atom out) i (1+ i)))
-      (if (null maxv)
-          (setq out (cons (list :star atom) out))
-        (let ((extra (- maxv minv)))
-          ;; The optional tail is one loop: an empty iteration ends it.
-          ;; Independent :opt nodes wrongly allow empty then nonempty
-          ;; iterations, changing both greediness and the final capture.
-          (when (> extra 0)
-            (setq out (cons (list :bounded atom extra) out)))))
-      (cons out k))))
+  "Parse an interval in PAT starting at K (after \\{).
+Return (REVERSED-EXPANSION-NODES . NEWPOS).  With no ATOM, validate
+the interval and parse the opening brace as a literal."
+  (let* ((start k)
+         (lower (nlre--parse-interval-count pat k n 0))
+         (minv (car lower))
+         (upper (if (eq (aref pat (cdr lower)) ?,)
+                    (nlre--parse-interval-count pat (1+ (cdr lower)) n nil)
+                  lower))
+         (maxv (car upper))
+         (close (cdr upper)))
+    (unless (and (or (null maxv) (<= minv maxv))
+                 (eq (aref pat close) ?\\))
+      (signal 'invalid-regexp '("Invalid content of \\{\\}")))
+    (when (= (1+ close) n)
+      (signal 'invalid-regexp '("Trailing backslash")))
+    (unless (eq (aref pat (1+ close)) ?})
+      (signal 'invalid-regexp '("Invalid content of \\{\\}")))
+    (setq k (+ close 2))
+    (if (null atom)
+        (cons (list :lit ?{) start)
+      ;; build expansion (reversed, to prepend onto nodes accumulator)
+      (let ((out nil) (i 0))
+        (while (< i minv) (setq out (cons atom out) i (1+ i)))
+        (if (null maxv)
+            (setq out (cons (list :star atom) out))
+          (let ((extra (- maxv minv)))
+            ;; The optional tail is one loop: an empty iteration ends it.
+            ;; Independent :opt nodes wrongly allow empty then nonempty
+            ;; iterations, changing both greediness and the final capture.
+            (when (> extra 0)
+              (setq out (cons (list :bounded atom extra) out)))))
+        (cons out k)))))
 
 (defun nlre--parse-atom (pat i n)
   "Parse a single atom at I; return (NODE . newpos)."
@@ -663,6 +681,7 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
                 ;; GNU's one-byte capture opcodes omit registers above
                 ;; 255, while their logical numbers still affect later groups.
                 (cons (if (or shy (> gn 255)) inner (list :group gn inner)) j)))))
+         ((eq d ?{) (nlre--parse-brace nil pat (+ i 2) n))
          ((eq d ?w) (cons (list :word nil) (+ i 2)))
          ((eq d ?W) (cons (list :word t) (+ i 2)))
          ((eq d ?b) (cons (list :wordb nil) (+ i 2)))
@@ -737,6 +756,9 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
                                      "space" "blank" "punct" "cntrl" "graph" "print"))
                   (setq classes (cons name classes))))
               (setq i (+ j 2))))
+           ((and (< (1+ i) n) (eq (aref pat (1+ i)) ?-)
+                 (= (+ i 2) n))
+            (signal 'invalid-regexp '("Premature end of regular expression")))
            ((and (< (+ i 2) n) (eq (aref pat (1+ i)) ?-) (not (eq (aref pat (+ i 2)) ?\])))
             (setq ranges (cons (cons c (aref pat (+ i 2))) ranges) i (+ i 3)))
            (t (setq ranges (cons (cons c c) ranges) i (1+ i))))))

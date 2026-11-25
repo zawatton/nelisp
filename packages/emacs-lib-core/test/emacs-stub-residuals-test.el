@@ -213,24 +213,22 @@ Restore the original host bindings afterwards."
   (should (boundp 'help-for-help-use-variable-pitch)))
 
 (ert-deftest emacs-stub-residuals-test/message-routes-to-standalone-stderr ()
-  "A simulated standalone reload makes `message' write one stderr line."
+  "The fallback writes one stderr line and the core binding stays in place."
   (let ((source (emacs-stub-residuals-test--source-file "emacs-stub"))
         (saved-message (symbol-function 'message))
         (noninteractive t)
         (stdout nil)
         (stderr nil))
-    (unwind-protect
-        (cl-letf (((symbol-function 'nelisp--write-stdout-bytes)
-                   (lambda (text) (setq stdout (concat stdout text))))
-                  ((symbol-function 'nelisp--write-stderr-line)
-                   (lambda (text) (setq stderr (concat stderr text "\n")))))
-          (load source nil 'no-message)
-          (setq stdout nil
-                stderr nil)
-          (should (equal "PROBE-MSG 1" (message "PROBE-MSG %d" 1)))
-          (should (null stdout))
-          (should (equal "PROBE-MSG 1\n" stderr)))
-      (fset 'message saved-message))))
+    (cl-letf (((symbol-function 'nelisp--write-stdout-bytes)
+               (lambda (text) (setq stdout (concat stdout text))))
+              ((symbol-function 'nelisp--write-stderr-line)
+               (lambda (text) (setq stderr (concat stderr text "\n")))))
+      (load source nil 'no-message)
+      (should (eq saved-message (symbol-function 'message)))
+      (setq stdout nil stderr nil)
+      (should (equal "PROBE-MSG 1" (emacs-stub--message "PROBE-MSG %d" 1)))
+      (should (null stdout))
+      (should (equal "PROBE-MSG 1\n" stderr)))))
 
 (ert-deftest emacs-stub-residuals-test/custom-current-group-alist-and-fn-availability ()
   (should (boundp 'custom-current-group-alist))

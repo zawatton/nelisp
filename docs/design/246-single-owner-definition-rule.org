@@ -65,10 +65,7 @@ nested definitions in addition to the 45 previously reported.
 
 | GNU name | Reason for the current owner |
 |----------+------------------------------|
-| =calendar= | The autoload resolves through the calendar loader, which supplies menu variables and a path for the bare =cal-loaddefs= load before calling GNU Calendar. |
 | =open-network-stream= | The adapter owns socket and process integration. The GNU function's TLS and STARTTLS paths require the GNU GnuTLS process negotiation and NSM connection lifecycle. |
-| =message= | The Scheme source temporarily rebinds =message= inside a macro expansion. The global runtime function supplies the editor's message output. |
-| =cvs-dired-noselect= | The generated Files bundle supplies the GNU autoload-time CVS directory predicate without loading CVS and registering its hooks for ordinary directory visits. |
 | =define-fringe-bitmap= | GNU's Lisp definition is the no-fringe fallback. The NeLisp frame substrate supplies the renderer's bitmap registry. |
 | =shell-command= | The shell bridge routes synchronous and asynchronous output into NeLisp process buffers and frontends. |
 | =shell-command-on-region= | The shell bridge supplies region input, replacement and output routing for the NeLisp process and GUI backends. |
@@ -78,8 +75,6 @@ nested definitions in addition to the 45 previously reported.
 | =make-syntax-table= | The editor syntax bridge supplies the constructor for its char-table representation and its bootstrap standard table. |
 | =remove-from-invisibility-spec= | The editor bridge updates the invisibility slot in the explicit editor-adapter buffer as well as in the native buffer. |
 | =add-to-invisibility-spec= | The editor bridge reads and updates the invisibility slot in the explicit editor-adapter buffer as well as in the native buffer. |
-| =subregexp-context-p= | The GNU implementation interprets specific regexp parser error strings. The NeLisp implementation uses the NeLisp parser and character-class handling. |
-| =replace-buffer-contents= | The current =replace-region-contents= substrate accepts a nil source as empty text. GNU's wrapper passes nil for an unknown buffer name and relies on the primitive to reject it before editing. |
 | =sit-for= | The command loop supplies the NeLisp input, timer and redisplay wait loop that GNU obtains through its event backend. |
 | =process-put= | The process-kind dispatch updates properties for adapter processes and Lisp buffer channels. |
 | =process-get= | The process-kind dispatch reads properties for adapter processes and Lisp buffer channels. |
@@ -90,8 +85,6 @@ nested definitions in addition to the 45 previously reported.
 | =event-basic-type= | The keymap event layer supplies bases for frontend event symbols without GNU's C event reader interning their symbol metadata. |
 | =event-modifiers= | The keymap event layer supplies modifier parsing in place of GNU's C event-symbol parser. |
 | =define-key-after= | The keymap bridge handles NeLisp keymap representations and the empty-menu path exercised by =woman.el=. |
-| =treesit-install-language-grammar= | The autoload resolves through the tree-sitter facade, which keeps the parser and grammar installation APIs behind the optional backend. |
-| =treesit-font-lock-rules= | The facade supplies the optional tree-sitter backend boundary. Org's require path loads this facade, so switching to the full GNU library needs a load-time comparison. |
 
 * Round 4 exception review (user decision, 2026-11-26)
 

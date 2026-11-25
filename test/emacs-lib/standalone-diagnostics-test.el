@@ -568,31 +568,23 @@ files)))
     (should-not (member "Large struct docstring that is metadata only."
                         normalized))))
 
-(ert-deftest standalone-diagnostics-test/calendar-binds-elided-popup-menus-before-load ()
-  "The standalone calendar wrapper supplies variables elided from cal-menu."
-  (with-temp-buffer
-    (insert-file-contents
-     (standalone-diagnostics-test--src-file "calendar.el"))
-    (let* ((context (search-forward
-                     "(defvar cal-menu-context-mouse-menu nil)" nil t))
-           (global (search-forward
-                    "(defvar cal-menu-global-mouse-menu nil)" nil t))
-           (vendor-load (search-forward "(load file nil t)" nil t)))
-      (should (integerp context))
-      (should (integerp global))
-      (should (integerp vendor-load))
-      (should (< context global))
-      (should (< global vendor-load)))))
+(ert-deftest standalone-diagnostics-test/calendar-popup-menu-declarations-survive-normalization ()
+  "The cal-menu variables survive because GNU Calendar reads them during load."
+  (let ((file (expand-file-name "vendor/emacs-lisp/calendar/cal-menu.el"
+                                nemacs-test-paths-repo-root)))
+    (let ((normalized (standalone-source-normalize-file-to-string file)))
+      (dolist (name '(cal-menu-context-mouse-menu cal-menu-global-mouse-menu))
+        (should (string-match-p (regexp-quote (format "(defvar %s nil)" name))
+                                normalized))))))
 
-(ert-deftest standalone-diagnostics-test/calendar-package-owns-source ()
-  "The nelisp-emacs-foundation package is the only owner of the calendar wrapper.
-A second copy under another packages/*/src would be resolved arbitrarily."
-  (should (equal (mapcar #'file-truename
-                         (nemacs-test-paths-source-owners "calendar.el"))
-                 (list (file-truename
-                        (expand-file-name
-                         "packages/emacs-lib-core/src/calendar.el"
-                         nemacs-test-paths-repo-root))))))
+(ert-deftest standalone-diagnostics-test/calendar-autoload-comes-from-gnu-loaddefs ()
+  (let* ((source "vendor/emacs-lisp/loaddefs.el")
+         (file (expand-file-name source nemacs-test-paths-repo-root))
+         (forms (read (concat "(" (nelisp-bootstrap--early-gnu-source file source)
+                              ")"))))
+    (should-not (nemacs-test-paths-source-owners "calendar.el"))
+    (should (member '(autoload 'calendar "calendar")
+                    (mapcar (lambda (form) (seq-take form 3)) forms)))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-repl-emits-cl-defstruct-directly ()
   (let ((nelisp-bootstrap-repl-nested-eval-source t))
