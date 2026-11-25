@@ -22976,11 +22976,11 @@ eval applyfn.")
                          (let* ((mark (nl_root_mark env))
                                 ;; The starter set of `wf_bytecode_execute_frame' (keep in step).
                                 (state (if (= (if (< first-op 64)
-                                                  (if (/= (logand -1945274392959254529 (shl 1 first-op)) 0) 1 0)
+                                                  (if (/= (logand -1943304068122279937 (shl 1 first-op)) 0) 1 0)
                                                 (if (< first-op 128)
                                                     (if (/= (logand 2146960515 (shl 1 (- first-op 64))) 0) 1 0)
                                                   (if (< first-op 192)
-                                                      (if (/= (logand 55169526056092542 (shl 1 (- first-op 128))) 0) 1 0)
+                                                      (if (/= (logand 55169526056108926 (shl 1 (- first-op 128))) 0) 1 0)
                                                     1))) 1)
                                            (wf_bytecode_w_fast_run code-data code-len mem depth
                                                                    (+ (nl_word_payload constants) 8)
@@ -25696,14 +25696,32 @@ bytes are written into a fresh 8-byte buffer instead."
                   (setq n (- n 1)))))
          0)))
     (defun wf_bytecode_unwind_push (env aux kind payload)
-      ;; An event is (KIND . PAYLOAD), most recent first. A kind-0
-      ;; event represents an existing dynamic frame. Allocation cannot collect.
-      (seq (if (/= (ptr-read-u64 aux 96) 1) (wf_bytecode_w_aux_spill env aux) 0)
-           (ptr-write-u64 (+ aux 8) 0
-                          (wf_bytecode_w_cons2
-                           (wf_bytecode_w_cons2 (+ (shl kind 2) 1) payload)
-                           (ptr-read-u64 aux 8)))
-           0))
+      ;; Cleanup is {fixnum 1, PAYLOAD} in the in-place specpdl. Other
+      ;; events retain the list ABI used by the binding-link walkers.
+      (if (= kind 1)
+          (let* ((count (sar (ptr-read-u64 aux 96) 2)))
+            (seq
+             (if (>= count 24) (seq (wf_bytecode_w_aux_spill env aux) (setq count 0)) 0)
+             (let* ((slot (+ aux (+ 104 (* count 16)))))
+               (seq (ptr-write-u64 slot 0 5)
+                    (ptr-write-u64 slot 8 payload)
+                    (ptr-write-u64 aux 96 (+ (shl (+ count 1) 2) 1))
+                    0))))
+        (seq
+         (if (/= (ptr-read-u64 aux 96) 1) (wf_bytecode_w_aux_spill env aux) 0)
+         (ptr-write-u64 aux 8 (wf_bytecode_w_cons2
+                             (wf_bytecode_w_cons2 (+ (shl kind 2) 1) payload)
+                             (ptr-read-u64 aux 8)))
+         0)))
+    (defun wf_bytecode_unwind_inline_cleanup (env aux slot)
+      ;; The cleanup runs after the event ceases to be visible to binding
+      ;; walkers. The temporary AUX word keeps its payload rooted across GC.
+      (seq (ptr-write-u64 aux 72 (ptr-read-u64 slot 8))
+           (ptr-write-u64 slot 0 3)
+           (ptr-write-u64 slot 8 3)
+           (ptr-write-u64 aux 96 (- (ptr-read-u64 aux 96) 4))
+           (let* ((rc (wf_bytecode_unwind_cleanup env (ptr-read-u64 aux 72))))
+             (seq (ptr-write-u64 aux 72 3) rc))))
     (defun wf_bytecode_unwind_cleanup (env cleanup)
       (let* ((flag (ptr-read-u64 268435472 0)))
         (if (= flag 0)
@@ -25847,8 +25865,12 @@ bytes are written into a fresh 8-byte buffer instead."
              (rc 0) (left remaining) (go 1))
         (seq
          ;; w3spec: the in-place records are newer than every list event.
-         (while (> (sar (ptr-read-u64 aux 96) 2) 0)
-           (setq left (- left (m5_fx_pop_event env aux left))))
+         (while (if (= go 1) (> (ptr-read-u64 aux 96) 1) 0)
+           (let* ((slot (+ aux (+ 88 (* (sar (ptr-read-u64 aux 96) 2) 16)))))
+             (if (= (ptr-read-u64 slot 0) 5)
+                 (if (= (wf_bytecode_unwind_inline_cleanup env aux slot) 0) 0
+                   (seq (setq rc 1) (setq go 0)))
+               (setq left (- left (m5_fx_pop_event env aux left))))))
          (while (= go 1)
            (if (= (ptr-read-u64 unwinds 0) target)
                (setq go 0)
@@ -25887,52 +25909,44 @@ bytes are written into a fresh 8-byte buffer instead."
          rc)))
     (defun wf_bytecode_unwind_to (env aux target bindings)
       (wf_bytecode_unwind_step env aux target bindings))
-    (defun wf_bytecode_handlers_push (env aux tag destination sp _bindings)
-      ;; A rooted vector holds TAG, DESTINATION, SP, UNWINDS, PREVIOUS.
-      ;; The unwind tail is the specpdl depth. A catch also needs a node
-      ;; in the shared catch chain, kept in AUX's pool after it is popped.
-      (let* ((spilled (if (/= (ptr-read-u64 aux 96) 1) (wf_bytecode_w_aux_spill env aux) 0))
-             (pool (+ aux 56))
-             (free (sar (ptr-read-u64 pool 0) 2))
-             (node (if (< destination 0) 0
-                     (if (= free 0) (nl_root_frame env 3) free))))
-        (if (if (>= destination 0) (= node 0) 0)
-            1
-          (let* ((h (nl_alloc_vector_uninit 5))
-                 (tagw (nl_word_canon tag)))
-            (seq
-             (ptr-write-u64 h 8 tagw)
-             (ptr-write-u64 h 16 (+ (shl destination 2) 1))
-             (ptr-write-u64 h 24 (+ (shl sp 2) 1))
-             (ptr-write-u64 h 32 (ptr-read-u64 aux 8))
-             (ptr-write-u64 h 40 (ptr-read-u64 aux 0))
-             (ptr-write-u64 aux 0 (+ h 6))
-             (if (>= destination 0)
-                 (let* ((head (nl_ct_head_slot env)))
-                   (seq
-                    (if (/= free 0)
-                        (ptr-write-u64 pool 0 (+ (shl (ptr-read-u64 free 8) 2) 1))
-                      0)
-                    (ptr-write-u64 node 0 1)
-                    (ptr-write-u64 node 8 (ptr-read-u64 head 0))
-                    (ptr-write-u64 node 16 tagw)
-                    (ptr-write-u64 head 0 node)))
-               0)
-             0)))))
+    (defun wf_bytecode_handlers_push (env aux tag destination sp)
+      ;; A reusable seven-WORD frame carries both a local handler and, for
+      ;; catch, a node in the shared catch chain. +8 is the raw catch link
+      ;; (as in nl_ct_active_prepare_w); +16 TAG and +40 the unwind tail
+      ;; are traced. Local handler links are encoded as fixnums.
+      (let* ((free (sar (ptr-read-u64 aux 56) 2))
+             (node (if (= free 0) (nl_root_frame env 7) free)))
+        (if (= node 0) 1
+          (seq
+           (if (/= (ptr-read-u64 aux 96) 1) (wf_bytecode_w_aux_spill env aux) 0)
+           (if (/= free 0)
+               (ptr-write-u64 aux 56 (+ (shl (ptr-read-u64 free 8) 2) 1)) 0)
+           (ptr-write-u64 node 0 1)
+           (ptr-write-u64 node 16 (nl_word_canon tag))
+           (ptr-write-u64 node 24 (+ (shl destination 2) 1))
+           (ptr-write-u64 node 32 (+ (shl sp 2) 1))
+           (ptr-write-u64 node 40 (ptr-read-u64 aux 8))
+           (ptr-write-u64 node 48 (ptr-read-u64 aux 0))
+           (if (>= destination 0)
+               (let* ((head (nl_ct_head_slot env)))
+                 (seq (ptr-write-u64 node 8 (ptr-read-u64 head 0))
+                      (ptr-write-u64 head 0 node)))
+             (ptr-write-u64 node 8 3))
+           (ptr-write-u64 aux 0 (+ (shl node 2) 1))
+           0))))
     (defun wf_bytecode_handlers_pop (env aux)
       (let* ((handler (ptr-read-u64 aux 0)))
         (if (= handler 3) 1
-          (let* ((h (- handler 6)))
+          (let* ((node (sar handler 2)))
             (seq
-             (if (>= (ptr-read-u64 h 16) 0)
-                 (let* ((head (nl_ct_head_slot env))
-                        (node (ptr-read-u64 head 0)))
-                   (seq (ptr-write-u64 head 0 (ptr-read-u64 node 8))
-                        (ptr-write-u64 node 16 3)
-                        (ptr-write-u64 node 8 (sar (ptr-read-u64 aux 56) 2))
-                        (ptr-write-u64 aux 56 (+ (shl node 2) 1))))
-               0)
-             (ptr-write-u64 aux 0 (ptr-read-u64 h 40))
+             (if (>= (ptr-read-u64 node 24) 0)
+                 (ptr-write-u64 (nl_ct_head_slot env) 0 (ptr-read-u64 node 8)) 0)
+             (ptr-write-u64 aux 0 (ptr-read-u64 node 48))
+             (ptr-write-u64 node 16 3)
+             (ptr-write-u64 node 40 3)
+             (ptr-write-u64 node 48 3)
+             (ptr-write-u64 node 8 (sar (ptr-read-u64 aux 56) 2))
+             (ptr-write-u64 aux 56 handler)
              0)))))
     (defun wf_bytecode_handlers_drop_to (env aux previous)
       ;; Remove every crossed handler after reaching its unwind tail.
@@ -25948,7 +25962,7 @@ bytes are written into a fresh 8-byte buffer instead."
       (let* ((handler (ptr-read-u64 aux 0))
              (unwinds (ptr-read-u64 aux 8)))
         (seq
-         (while (if (= handler 3) 0 (= (ptr-read-u64 handler 26) unwinds))
+         (while (if (= handler 3) 0 (= (ptr-read-u64 (sar handler 2) 40) unwinds))
            (seq (wf_bytecode_handlers_pop env aux)
                 (setq handler (ptr-read-u64 aux 0))))
          0)))
@@ -26025,18 +26039,18 @@ bytes are written into a fresh 8-byte buffer instead."
              (unwind-rc 0) (new-bindings 0) (result 0))
         (seq
          (while (if (= found 0) (/= cursor 3) 0)
-           (let* ((h (- cursor 6))
-                  (dest (sar (ptr-read-u64 h 16) 2)))
+           (let* ((h (sar cursor 2))
+                  (dest (sar (ptr-read-u64 h 24) 2)))
              (if (if (>= dest 0)
                      (if (= (nl_val_tag tag) 0) 0
-                       (wf_bytecode_w_eqw tag (ptr-read-u64 h 8)))
+                       (wf_bytecode_w_eqw tag (ptr-read-u64 h 16)))
                    0)
                  (seq (setq destination dest)
-                      (setq saved-sp (sar (ptr-read-u64 h 24) 2))
-                      (ptr-write-u64 aux 80 (ptr-read-u64 h 32))
-                      (ptr-write-u64 aux 88 (ptr-read-u64 h 40))
+                      (setq saved-sp (sar (ptr-read-u64 h 32) 2))
+                      (ptr-write-u64 aux 80 (ptr-read-u64 h 40))
+                      (ptr-write-u64 aux 88 (ptr-read-u64 h 48))
                       (setq found 1))
-               (setq cursor (ptr-read-u64 h 40)))))
+               (setq cursor (ptr-read-u64 h 48)))))
          (if (= found 1)
              (seq
               (setq unwind-rc
@@ -26066,18 +26080,18 @@ bytes are written into a fresh 8-byte buffer instead."
              (unwind-rc 0) (new-bindings 0))
         (seq
          (while (if (= found 0) (/= cursor 3) 0)
-           (let* ((h (- cursor 6))
-                  (encoded (sar (ptr-read-u64 h 16) 2)))
+           (let* ((h (sar cursor 2))
+                  (encoded (sar (ptr-read-u64 h 24) 2)))
              (if (if (< encoded 0)
-                     (if (= (wf_bytecode_condition_matches env tag (ptr-read-u64 h 8)) 1)
+                     (if (= (wf_bytecode_condition_matches env tag (ptr-read-u64 h 16)) 1)
                          (= (ptr-read-u64 268435472 0) 1) 0)
                    0)
                  (seq (setq destination (- (- encoded) 1))
-                      (setq saved-sp (sar (ptr-read-u64 h 24) 2))
-                      (ptr-write-u64 aux 80 (ptr-read-u64 h 32))
-                      (ptr-write-u64 aux 88 (ptr-read-u64 h 40))
+                      (setq saved-sp (sar (ptr-read-u64 h 32) 2))
+                      (ptr-write-u64 aux 80 (ptr-read-u64 h 40))
+                      (ptr-write-u64 aux 88 (ptr-read-u64 h 48))
                       (setq found 1))
-               (setq cursor (ptr-read-u64 h 40)))))
+               (setq cursor (ptr-read-u64 h 48)))))
          (if (= found 1)
              (seq
               (setq unwind-rc
@@ -27701,15 +27715,23 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; with none the list code below runs; a mix is declined untouched.
       (let* ((cnt (sar (ptr-read-u64 aux 96) 2)))
         (if (>= cnt n)
-            (seq (while (> n 0)
-                   (seq (wf_bytecode_w_pop_lean aux) (setq n (- n 1))))
-                 0)
+            (let* ((i 0) (lean 1))
+              (seq
+               (while (if (= lean 1) (< i n) 0)
+                 (let* ((slot (+ aux (+ 88 (* (- cnt i) 16)))))
+                   (if (= (logand (ptr-read-u64 slot 0) 1) 1)
+                       (setq lean 0)
+                     (setq i (+ i 1)))))
+               (if (= lean 0) 1
+                 (seq (while (> n 0)
+                        (seq (wf_bytecode_w_pop_lean aux) (setq n (- n 1))))
+                      0))))
           (if (/= cnt 0) 1
             (wf_bytecode_w_fast_unbind_list env aux n)))))
     (defun wf_bytecode_w_fast_unbind_list (env aux n)
       (let* ((cur (heap-read-u64 (+ aux 8) 0))
              (hd (heap-read-u64 aux 0))
-             (hu (if (= hd 3) 0 (ptr-read-u64 hd 26)))
+             (hu (if (= hd 3) 0 (ptr-read-u64 (sar hd 2) 40)))
              (k 0) (ok 1) (ev 0) (entry 0) (e1 0))
         (seq
          (while (if (= ok 1) (< k n) 0)
@@ -28023,14 +28045,14 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; root stack, every one a valid WORD: +0 handlers (GNU's handlerlist),
       ;; +8 unwinds (its specpdl), +16 the binding-link record, +24
       ;; unwind-bindings, +32 resume-dest, +40 resume-sp, +48 resume-bindings
-      ;; (fixnums), +56 catch-pool (the fixnum-coded address of the first free
-      ;; catch node, 1 for none), +64 the binding count while the frame is not
+      ;; (fixnums), +56 handler pool (the fixnum-coded address of the first free
+      ;; handler node, 1 for none), +64 the binding count while the frame is not
       ;; the one running, +72 the event being undone, +80 and +88 the unwind
       ;; target and the handler tail of a non-local exit while its cleanups
       ;; run.  w3spec: +96 the lean record count (fixnum-coded) and +104 + 16*i
       ;; (i < 24; vmfast: was 5, whose spill consed 2 cells per record on 6-deep let*) the in-place binding records {NAME, SAVED}, the newest
-      ;; events. fx general frame events use {fixnum zero, nil}; byte-code
-      ;; array records remain symbol-only. Handler and binding-walker entry
+      ;; events. FX general frame events use {fixnum zero, nil}; bytecode
+      ;; cleanup uses {fixnum one, cleanup}. Handler and binding-walker entry
       ;; points spill first, exposing the original list event representation.
       ;; segment of the event stack (see wf_bytecode_w_aux_spill).
       ;; The binding-link record is a 32-byte integer-tagged block, normally
@@ -29424,10 +29446,38 @@ bytes are written into a fresh 8-byte buffer instead."
                                                         (+ (heap-read-u8 data (+ pc 1))
                                                            (shl (heap-read-u8 data (+ pc 2)) 8)))))
                                             (if (<= b 0) (setq go 0)
-                                              (if (= (wf_bytecode_w_fast_unbind env (sar ref 2) b) 0)
-                                                  (seq (setq pc (+ pc a 1))
-                                                       (setq last-name -1))
-                                                (setq go 0)))))))))
+                                              (let* ((ctx (sar ref 2))
+                                                     (count (sar (ptr-read-u64 ctx 96) 2))
+                                                     (slot (+ ctx (+ 88 (* count 16)))))
+                                                (if (if (= b 1)
+                                                        (if (> count 0) (= (ptr-read-u64 slot 0) 5) 0) 0)
+                                                    (if (= (wf_bytecode_unwind_inline_cleanup env ctx slot) 0)
+                                                        (seq (setq pc (+ pc a 1)) (setq last-name -1))
+                                                      (seq (setq failed 1) (setq go 0)))
+                                                  (if (= (wf_bytecode_w_fast_unbind env ctx b) 0)
+                                                      (seq (setq pc (+ pc a 1)) (setq last-name -1))
+                                                    (setq go 0)))))))))))
+                                    ((and (>= raw 48) (<= raw 50))
+                                     ;; Once AUX exists, handler push/pop keep
+                                     ;; the operand stack in this batch.
+                                     (let* ((f (ptr-read-u64 foot 40)))
+                                       (if (= f 3) (setq go 0)
+                                         (let* ((ctx (sar f 2)))
+                                           (if (= raw 48)
+                                               (if (= (wf_bytecode_handlers_pop env ctx) 0)
+                                                   (setq pc (+ pc 1))
+                                                 (setq go 0))
+                                             (if (or (<= sp 0) (>= (+ pc 2) length))
+                                                 (setq go 0)
+                                               (let* ((dst (+ (ptr-read-u8 data (+ pc 1))
+                                                              (shl (ptr-read-u8 data (+ pc 2)) 8))))
+                                                 (if (if (< dst length)
+                                                         (= (wf_bytecode_handlers_push
+                                                             env ctx (ptr-read-u64 mem (* (- sp 1) 8))
+                                                             (if (= raw 50) dst (- -1 dst)) (- sp 1)) 0)
+                                                       0)
+                                                     (seq (setq sp (- sp 1)) (setq pc (+ pc 3)))
+                                                   (setq go 0)))))))))
                                     (t (setq go 0)))
                                  (if (< raw 66)
                                      (if (<= sp 0) (setq go 0)
@@ -30176,6 +30226,14 @@ bytes are written into a fresh 8-byte buffer instead."
                        (if (< raw 192)
                            (if (< raw 165)
                                (cond
+                                ((= raw 142)
+                                 (let* ((f (ptr-read-u64 foot 40)))
+                                   (if (or (= f 3) (<= sp 0)) (setq go 0)
+                                     (seq
+                                      (wf_bytecode_unwind_push env (sar f 2) 1
+                                                               (ptr-read-u64 mem (* (- sp 1) 8)))
+                                      (setq sp (- sp 1))
+                                      (setq pc (+ pc 1))))))
                                 ((or (= raw 152) (= raw 153))
                                  (if (< sp 2) (setq go 0)
                                    (let* ((dst (+ mem (* (- sp 2) 8)))
@@ -30744,11 +30802,11 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; unsupported operands replay in the outer handler.
                   ;; Constants 192..255 also enter the existing batch runner.
                   (if (= (if (< first-op 64)
-			     (if (/= (logand -1945274392959254529 (shl 1 first-op)) 0) 1 0)
+			     (if (/= (logand -1943304068122279937 (shl 1 first-op)) 0) 1 0)
 			   (if (< first-op 128)
 			       (if (/= (logand 2146960515 (shl 1 (- first-op 64))) 0) 1 0)
 			     (if (< first-op 192)
-				 (if (/= (logand 55169526056092542 (shl 1 (- first-op 128))) 0) 1 0)
+				 (if (/= (logand 55169526056108926 (shl 1 (- first-op 128))) 0) 1 0)
 			       1))) 1)
                       (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env curfp)))
                         (seq
@@ -31188,7 +31246,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                  env aux
                                  (heap-read-u64 top 0)
                                  (if (= base 50) operand (- 0 (+ operand 1)))
-                                 (- sp 1) bindings) 0)
+                                 (- sp 1)) 0)
                              0 (setq done 5))
                          (setq sp (- sp 1)))))
                      ((= base 48)
@@ -31213,10 +31271,13 @@ bytes are written into a fresh 8-byte buffer instead."
                       ;; in-place records cover OPERAND, pop them (they are the newest events
                       ;; and enclose no handler: a handler push spills them first) without
                       ;; folding them into the list (wf_bytecode_w_aux_unwinds would cons).
-                      (if (if (> operand 0) (>= (sar (ptr-read-u64 aux 96) 2) operand) 0)
-                          (let* ((k operand))
-                            (while (> k 0)
-                              (seq (wf_bytecode_w_pop_lean aux) (setq k (- k 1)))))
+                      (let* ((count (sar (ptr-read-u64 aux 96) 2))
+                             (event (+ aux (+ 88 (* count 16)))))
+                        (if (if (= operand 1) (if (> count 0) (= (ptr-read-u64 event 0) 5) 0) 0)
+                            (if (= (wf_bytecode_unwind_inline_cleanup env aux event) 0) 0
+                              (setq done 4))
+                          (if (if (> operand 0) (= (wf_bytecode_w_fast_unbind env aux operand) 0) 0)
+                              0
                       (let* ((target (wf_bytecode_w_aux_unwinds env aux))
                              (k 0))
                         (seq
@@ -31230,7 +31291,7 @@ bytes are written into a fresh 8-byte buffer instead."
                             (if (= (wf_bytecode_unwind_to env aux target bindings) 0)
                                 (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
                               (seq (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
-                                   (setq done 4)))))))))
+                                   (setq done 4)))))))))))
                      ((= base 165)
                       (if (< sp 2)
                           (seq (setq bad-op raw) (setq done 2))
@@ -33383,20 +33444,21 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun m5_fx_env_ok (lst _pad)
       (if (/= (logand lst 7) 2)
           (m5_fx_env_ok_legacy lst)
-        (let* ((w lst) (ok 1))
+        (let* ((w lst))
           (seq
-           (while (if (= ok 1) (= (logand w 7) 2) 0)
+           (while (= (logand w 7) 2)
              (let* ((e (ptr-read-u64 (- w 2) 0)))
-               (if (if (= e 7) 1
-                     (if (= (logand e 7) 6)
-                         (= (logand (ptr-read-u64 (- e 6) 0) 63) 4)
-                       (if (= (logand e 7) 0)
-                           (or (= (nl_val_tag e) 1) (= (heap-sexp-tag-word e) 4))
-                         0)))
-                   (setq w (ptr-read-u64 w 6))
-                 (setq ok 0))))
-           (if (= ok 0) 0
-             (if (= w 3) 1 (if (= (nl_val_tag w) 0) 1 (m5_fx_env_ok_legacy w))))))))
+               (setq w (if (if (= e 7) 1
+                              (if (= (logand e 7) 6)
+                                  (= (logand (ptr-read-u8 (- e 6) 0) 63) 4)
+                                (if (= (logand e 7) 0)
+                                    (or (= (nl_val_tag e) 1) (= (heap-sexp-tag-word e) 4))
+                                  0)))
+                           (ptr-read-u64 w 6) 7))))
+           (if (= w 3) 1
+             (if (= (logand w 7) 0)
+                 (if (= (nl_val_tag w) 0) 1 (m5_fx_env_ok_legacy w))
+               0))))))
     (defun m5_fx_env_ok_legacy (lst)
       (if (/= (m5_fx_word_cons_p lst 0) 1) 0
         (let* ((w lst) (r 2))
@@ -36457,6 +36519,65 @@ bytes are written into a fresh 8-byte buffer instead."
                              out))
                     (nl_abi_fail (bf_wrong_type_fixnump depth) 0))
                 (nl_abi_fail (bf_wrong_type_arrayp constants) 0)))))))
+    ;; Fmake_closure owns a new constants vector and bytecode object, sharing
+    ;; the prototype's other slots. BASE is either rooted argv past PROTOTYPE
+    ;; or zero for a list of captures. Nothing in this allocator collects.
+    (defun bf_make_closure_copy_w (prototype constants count base captures)
+      (let* ((size (nl_vector_length constants))
+             (src (+ (nl_word_payload constants) 8))
+             (vec (if (= size 0) (nl_alloc_vector 0) (nl_alloc_vector_uninit size)))
+             (slots (record-slot-count prototype))
+             (src-fn (nl_word_payload prototype))
+             (out (alloc-bytes 32 8))
+             (i 0))
+        (seq
+         (while (< i count)
+           (let* ((w (if (= base 0) (nl_cons_car_word captures)
+                       (ptr-read-u64 base (* i 8)))))
+             (seq
+              (extern-call nl_val_clone_into w (+ vec (+ 8 (* i 8))))
+              (if (= base 0) (setq captures (nl_cons_cdr_word captures)) 0)
+              (setq i (+ i 1)))))
+         (while (< i size)
+           (seq (ptr-write-u64 vec (+ 8 (* i 8)) (ptr-read-u64 src (* i 8)))
+                (setq i (+ i 1))))
+         (record-make (nl_record_slot_word prototype 0) slots out)
+         (let* ((dst (nl_word_payload out)) (j 0))
+           (seq
+            (while (< j slots)
+              (let* ((offset (+ 16 (* j 8))))
+                (seq (ptr-write-u64 dst offset
+                                    (if (= j 2) (+ vec 6) (ptr-read-u64 src-fn offset)))
+                     (setq j (+ j 1)))))
+            (ptr-write-u64 out 0 17)
+            out)))))
+    (defun bf_make_closure_w (args _pad)
+      (let* ((prototype (wf_arg_word args 0)))
+        (if (/= (nl_word_tag64 prototype) 17)
+            (nl_abi_fail (bf_wrong_type_named prototype 7237112172834486626 7598807797348052325 1882025583 20) 0)
+          (let* ((vars (nl_cons_cdr_word args))
+                 (count (m5_list_len vars 0))
+                 (constants (nl_record_slot_word prototype 2)))
+            (if (> count (nl_vector_length constants))
+                (let* ((buf (alloc-bytes 40 8)))
+                  (seq (ptr-write-u64 buf 0 2334397830634892355)
+                       (ptr-write-u64 buf 8 2337196822167183734)
+                       (ptr-write-u64 buf 16 2338609993864212334)
+                       (ptr-write-u64 buf 24 8391171955404861033)
+                       (ptr-write-u64 buf 32 6514038)
+                       (nl_exit_signal_w 'error
+                                        (wf_bytecode_w_cons2 (nl_string_new buf 35 1) 3))
+                       0))
+              (bf_make_closure_copy_w prototype constants count 0 vars))))))
+    (defun bf_make_closure_argv (base argc out)
+      (let* ((prototype (ptr-read-u64 base 0)))
+        (if (/= (nl_word_tag64 prototype) 17) -3
+          (let* ((constants (nl_record_slot_word prototype 2))
+                 (count (- argc 1)))
+            (if (> count (nl_vector_length constants)) -3
+              (seq (ptr-write-u64 out 0
+                                  (bf_make_closure_copy_w prototype constants count (+ base 8) 3))
+                   0))))))
     ;; Doc 215 builtin word ABI: bf_make_native_subr_w returns the result WORD (0 = signal stashed).
     (defun bf_make_native_subr_w (args _pad env)
       (let* ((out (alloc-bytes 32 8)))
@@ -42758,6 +42879,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ((:lit "nelisp--native-sub-char-table-p") :word . (bf_sub_char_table_p_w args 0))
     ((:lit "nelisp--native-sub-char-table-slot") :word . (bf_sub_char_table_slot_w args 0))
     ((:lit "make-byte-code") :word . (bf_make_byte_code_w args 0))
+    ((:lit "make-closure") :word . (bf_make_closure_w args 0))
     ((:lit "fetch-bytecode") :word . (wf_write_nil_w 0))
     ((:lit "recordp")     :word . (bf_recordp_w args 0))
     ((:lit "byte-code-function-p") :word . (bf_byte_code_function_p_w args 0))
@@ -43215,7 +43337,7 @@ the name path costs time, never an answer)."
   '("consp" "atom" "subrp" "stringp" "symbolp" "symbol-with-pos-p" "integerp" "natnump" "numberp" "floatp" "sin" "cos" "tan" "asin" "acos" "atan" "exp" "log" "sqrt" "float" "logb" "ffloor" "fceiling" "ftruncate" "fround" "nelisp--pow" "sxhash-eq" "sxhash-equal" "sxhash-eql"
     "nelisp--float-word-half"
     "nl--read-int" "nl--int-token-p" "nl--read-float-token" "nl--nthcdr"
-    "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode"
+    "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode" "make-closure"
     "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "functionp" "boundp" "featurep" "provide" "require"
     "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup" "nelisp--intern-table-symbols"
     "nelisp--symbol-position-op"
@@ -44290,7 +44412,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((1 . 7)
       nelisp-portable-syscall)
     ((1 . many)
-      / < <= = > >= apply error format funcall max min nelisp--native-format nelisp-process-call-process
+      / < <= = > >= apply error format funcall make-closure max min nelisp--native-format nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
       nelisp--hash-set-index nelisp--hash-make nelisp--make-lisp-primitive
@@ -44836,23 +44958,28 @@ never has one."
                     0))
               0)
           0))
-      ;; applyfn2: the length of the proper list W, -1 for a dotted or circular
-      ;; one (GNU list_length, which signals there; the generic apply does).
-      ;; Floyd's cycle test as `nl_eic_apply_list_ok', counting as it goes.
+      ;; Fast for a short canonical spread. At the caller's argv limit
+      ;; the usual apply takes over. Legacy tails still use a cycle test.
       (defun m5_fx_apply_list_len (w)
-        (let* ((slow w) (fast w) (n 0) (ok 1))
+        (let* ((tail w) (n 0))
           (seq
-           (while (if (= ok 1) (if (= (logand fast 1) 0) (= (nl_val_tag fast) 7) 0) 0)
-             (seq
-              (setq fast (nl_cons_cdr_word fast))
-              (setq n (+ n 1))
-              (if (= (logand n 1) 0)
-                  (seq (setq slow (nl_cons_cdr_word slow))
-                       (if (= slow fast)
-                           (if (= (nl_val_tag fast) 7) (setq ok 0) 0)
-                         0))
-                0)))
-           (if (= ok 1) (if (= (nl_val_tag fast) 0) n -1) -1))))
+           (while (if (< n 256) (= (logand tail 7) 2) 0)
+             (seq (setq tail (ptr-read-u64 tail 6))
+                  (setq n (+ n 1))))
+           (if (= tail 3) n
+             (if (>= n 256) -1
+               (let* ((slow tail) (fast tail) (k 0) (ok 1))
+                 (seq
+                  (while (if (= ok 1) (= (nl_val_tag fast) 7) 0)
+                    (seq
+                     (setq fast (nl_cons_cdr_word fast))
+                     (setq k (+ k 1))
+                     (if (= (logand k 1) 0)
+                         (seq (setq slow (nl_cons_cdr_word slow))
+                              (if (and (= slow fast) (= (nl_val_tag fast) 7))
+                                  (setq ok 0) 0))
+                       0)))
+                  (if (and (= ok 1) (= (nl_val_tag fast) 0)) (+ n k) -1))))))))
       ;; applyfn2: GNU Fapply (eval.c:2803-2870) for a builtin: the spread list
       ;; measured once, FUNCTION, the leading arguments and the list's elements
       ;; copied into one rooted argument array, and Ffuncall -> funcall_general
@@ -51134,7 +51261,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "subrp" "stringp" "symbolp" "symbol-with-pos-p" "integerp" "natnump" "numberp" "floatp" "sxhash-eq" "sxhash-equal" "sxhash-eql"
     "nl--read-int" "nl--int-token-p" "nl--read-float-token" "nl--nthcdr"
-    "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode"
+    "byte-code" "byte-code-function-p" "make-byte-code" "fetch-bytecode" "make-closure"
     "vectorp" "listp" "nlistp" "zerop" "set" "makunbound" "symbol-value" "symbol-function" "fboundp" "functionp" "boundp" "featurep" "provide" "require"
     "symbol-name" "bare-symbol" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup" "nelisp--intern-table-symbols"
     "nelisp--symbol-position-op"
@@ -67554,14 +67681,15 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; boundary, an encoded AUX-base empty-list sentinel, or an outer list tail.
     ;; No allocation occurs on ordinary call entry.
     (defun nl_n4_cut_capture (env)
-      (let* ((state (heap-read-u64 env 176))
-             (link (if (= state 0) 0 (heap-read-u64 state 16))))
-        (if (= link 0) 3
-          (let* ((aux (- (heap-read-u64 link 16) 8))
-                 (count (sar (ptr-read-u64 aux 96) 2))
-                 (tail (ptr-read-u64 aux 8)))
-            (if (> count 0) (+ (* (+ aux (+ 104 (* count 16))) 4) 1)
-              (if (= tail 3) (+ (* aux 4) 1) tail))))))
+      (let* ((state (ptr-read-u64 env 176))
+             (link (if (= state 0) 0 (ptr-read-u64 state 16))))
+        (if (= link 0) 3 (nl_n4_cut_of_link link))))
+    (defun nl_n4_cut_of_link (link)
+      (let* ((aux (- (ptr-read-u64 link 16) 8))
+             (count (sar (ptr-read-u64 aux 96) 2))
+             (tail (ptr-read-u64 aux 8)))
+        (if (> count 0) (+ (shl (+ aux (+ 104 (shl count 4))) 2) 1)
+          (if (= tail 3) (+ (shl aux 2) 1) tail))))
     (defun nl_n4_owner_view (owner)
       ;; Slot2 remains the frame-registry cache. Only private reflection owners
       ;; have slot3; ordinary frame stacks retain their three-slot ABI.
@@ -67750,7 +67878,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (ptr-write-u64 frame 24 (+ (* argp 65536) argc))
              (ptr-write-u64 frame 32 (sar (heap-read-u64 frames-data 24) 2))
              (ptr-write-u64 frame 40 (+ frames-data 6))
-             (ptr-write-u64 frame 56 (nl_n4_cut_capture env))
+             (let* ((link (ptr-read-u64 state 16)))
+               (ptr-write-u64 frame 56 (if (= link 0) 3 (nl_n4_cut_of_link link))))
              (ptr-write-u64 state 0 (+ depth 1))
              frame)))))
     ;; The general push for `nl_n4_push_words': allocates the chunk on first use,
@@ -69126,7 +69255,7 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
     ;; Allocating primitives (WORD bodies in `nl_directcall_alloc_run').
     ("vector" 112) ("make-vector" 113) ("list" 114)
     ("concat" 115) ("make-string" 117)
-    ("make-hash-table" 118)
+    ("make-hash-table" 118) ("make-closure" 122)
     ;; corecall (W2a): the primitives the VM and the interpreter run by id in
     ;; `m5_fx_primitive_run', with the exact arity the id's body assumes.
     ("aref" -14) ("null" 3) ("not" 3) ("consp" 4) ("setcdr" 5) ("setcar" 6)
@@ -69671,7 +69800,8 @@ remains the reference. No production hit/fallback counters are emitted."
                                                        (if (< c 513) 1 0))))
                       (if (= w 0) 1 (seq (ptr-write-u64 result 0 w) 0)))
                   -3))
-            (nl_directcall_text_run id base argc result)))))
+            (if (= id 122) (bf_make_closure_argv base argc result)
+              (nl_directcall_text_run id base argc result))))))
       (defun nl_directcall_text_run (id base argc result)
         ;; 115 concat of strings, 116 substring of a string by fixnum indices:
         ;; GNU Fconcat/Fsubstring for text whose characters are its bytes
@@ -70012,11 +70142,12 @@ remains the reference. No production hit/fallback counters are emitted."
         ;; push, decline, pop. Direct substring also qualifies. Its allocator
         ;; takes the string pool lock, charges the next GC poll and returns
         ;; without polling or running Lisp. Any case requiring the property
-        ;; copier declines to the ordinary call. The other allocating ids
+        ;; copier declines to the ordinary call. Bytecode closure allocation
+        ;; has the same no-safepoint contract. The other allocating ids
         ;; keep the record.
         (let* ((id (nl_directcall_id fn original argc)))
           (if (if (= id 0) 1 (/= (logand (heap-read-u64 env 112) 3145728) 0)) 2
-           (if (if (or (< id 112) (= id 116))
+           (if (if (or (< id 112) (= id 116) (= id 122))
                    (if (= (heap-read-u64 env 176) 0) 0
                      (< (heap-read-u64 (heap-read-u64 env 176) 0) 32768))
                  0)
@@ -71175,7 +71306,8 @@ two flag bits 20 and 21."
             0)))
       ;; A head that is no special form goes straight to the function call.
       (defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
-        (if (= (nl_val_tag head_ptr) 4)
+        (let* ((head-tag (nl_val_tag head_ptr)))
+          (if (= head-tag 4)
             (let* ((sp (nl_sp_index head_ptr)))
               (if (= sp 0)
                   (nl_eic_symbol_w form_ptr head_ptr tail_ptr env)
@@ -71194,9 +71326,9 @@ two flag bits 20 and 21."
                             (nl_eic_symbol_dispatch_w
                              (nl_apply_special_index_w head_ptr tail_ptr env sp)
                              form_ptr head_ptr tail_ptr env)))))))))
-          (if (= (nl_val_tag head_ptr) 16)
+          (if (= head-tag 16)
               (nl_eic_symbol_w form_ptr head_ptr tail_ptr env)
-            (nl_eic_callable_w head_ptr tail_ptr env (nl_root_mark env))))))))
+            (nl_eic_callable_w head_ptr tail_ptr env (nl_root_mark env)))))))))
 
 (defun nelisp-standalone--patch-combiner-cons-word (src)
   "SRC with the legacy evaluator chain replaced by its Doc 215 word forms."
