@@ -2,7 +2,7 @@
 
 ;;; Code:
 
-(dolist (symbol '(defface suppress-keymap make-mode-line-mouse-map
+(dolist (symbol '(defface make-mode-line-mouse-map
                           define-derived-mode easy-menu-binding
                           substitute-command-keys))
   (put symbol 'emacs-stub-bulk t))
@@ -15,11 +15,6 @@
            (custom-declare-face ',name ,spec ,doc ,@opts)
          (put ',name 'face-defface-spec ,spec))
        ',name)))
-
-(unless (fboundp 'suppress-keymap)
-  (fset 'suppress-keymap
-        '(lambda (keymap &optional _nodigits)
-           keymap)))
 
 (unless (fboundp 'make-mode-line-mouse-map)
   (fset 'make-mode-line-mouse-map

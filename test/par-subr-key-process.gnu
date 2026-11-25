@@ -1,0 +1,7 @@
+(owners t t t t t t t t t t t)
+(prefix-mapvar par-prefix-command original t "Prefix")
+(global-bindings ignore nil arrayp)
+(local-bindings ignore nil arrayp)
+(suppress undefined negative-argument digit-argument)
+(process-lines ("first" "" "last") ("output") ("handled") 7)
+(shell-process 7 "shell output")

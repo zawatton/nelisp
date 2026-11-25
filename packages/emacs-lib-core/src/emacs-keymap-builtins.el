@@ -491,31 +491,6 @@ Reverse enumeration leaves RESOLVE-FILTERS nil, as GNU get_keyelt does."
           (fboundp 'nelisp--write-stdout-bytes))
   (defalias 'define-key-after #'emacs-keymap-define-key-after))
 
-(when (emacs-keymap-builtins--install-function-p 'define-prefix-command)
-  (defun define-prefix-command (command &optional mapvar name)
-    "Define COMMAND as a prefix command backed by a sparse keymap.
-When MAPVAR is non-nil, also store the keymap there.  NAME becomes the
-prompt carried by the created keymap."
-    (let ((map (emacs-keymap-make-sparse-keymap name)))
-      (fset command map)
-      (set command map)
-      (when mapvar
-        (set mapvar map))
-      command)))
-
-(when (emacs-keymap-builtins--install-function-p 'suppress-keymap)
-  (defun suppress-keymap (keymap &optional nodigits)
-    "Suppress insertion by remapping, keeping unbound keys available as prefixes."
-    (emacs-keymap-builtins--define-key
-     keymap [remap self-insert-command] #'undefined)
-    (or nodigits
-        (let ((digit ?0))
-          (emacs-keymap-builtins--define-key keymap "-" #'negative-argument)
-          (while (<= digit ?9)
-            (emacs-keymap-builtins--define-key
-             keymap (char-to-string digit) #'digit-argument)
-            (setq digit (1+ digit)))))))
-
 (when (emacs-keymap-builtins--install-function-p 'set-keymap-parent)
   (defun set-keymap-parent (keymap parent)
     "Set KEYMAP's parent to PARENT, a keymap or nil, and return PARENT.
@@ -684,37 +659,6 @@ to its legacy spelling.  This handoff is idempotent."
     (when keymap
       (setq keymap (emacs-keymap-builtins--require-keymap keymap)))
     (emacs-keymap-use-local-map keymap)))
-
-(when (emacs-keymap-builtins--install-function-p 'global-set-key)
-  (defun global-set-key (key command)
-    "Bind KEY to COMMAND in the current global map."
-    (emacs-keymap-define-key (emacs-keymap-current-global-map) key command)))
-
-(when (emacs-keymap-builtins--install-function-p 'global-key-binding)
-  (defun global-key-binding (keys &optional accept-default)
-    "Return the binding for KEYS in the current global map."
-    (emacs-keymap-lookup-key (emacs-keymap-current-global-map)
-                             keys accept-default)))
-
-(when (emacs-keymap-builtins--install-function-p 'local-set-key)
-  (defun local-set-key (key command)
-    "Bind KEY to COMMAND in the current local map."
-    (let ((map (or (emacs-keymap-current-local-map)
-                   (emacs-keymap-make-sparse-keymap))))
-      (emacs-keymap-use-local-map map)
-      (emacs-keymap-define-key map key command))))
-
-(when (emacs-keymap-builtins--install-function-p 'global-unset-key)
-  (defun global-unset-key (key)
-    "Remove KEY from the current global map."
-    (emacs-keymap-define-key (emacs-keymap-current-global-map) key nil)))
-
-(when (emacs-keymap-builtins--install-function-p 'local-unset-key)
-  (defun local-unset-key (key)
-    "Remove KEY from the current local map."
-    (let ((map (emacs-keymap-current-local-map)))
-      (when map
-        (emacs-keymap-define-key map key nil)))))
 
 ;;;; --- reverse lookup --------------------------------------------------
 

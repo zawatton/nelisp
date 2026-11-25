@@ -1180,7 +1180,7 @@ shape whose only signal is the naive test."
         (should (string-match-p "defun easy-menu-add-item" source))
         (should (string-match-p "defun current-idle-time" source))
         (should (string-match-p "defun shell-command-to-string" source))
-        (should (string-match-p "defun call-process-shell-command" source))
+        (should-not (string-match-p "defun call-process-shell-command" source))
         (should (string-match-p "defmacro bound-and-true-p" source))
         (should (string-match-p "defun emacs-stub--add-hook" source))
         (should (string-match-p "defun emacs-stub--run-hook" source))
