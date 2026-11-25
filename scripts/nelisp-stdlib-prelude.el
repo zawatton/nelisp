@@ -10253,10 +10253,6 @@ NeLisp uses `intern' (= the standalone runtime has no
 (unless (fboundp 'symbol-value)
   (defun symbol-value (sym)
     (nelisp--env-globals-get-value sym)))
-;; Inspect dynamic cells and global values without exposing lexical cells.
-;; Classification is stored when a binding is created, so later declarations
-;; cannot reclassify an existing lexical binding.
-(fset 'boundp '(builtin boundp))
 ;; The existing symbol-cell entry validates types and constants, including
 ;; GNU's keyword self-assignment exception. A second scope here duplicated
 ;; validation, rejected that exception and hid the entry from the word VM.
@@ -10281,12 +10277,6 @@ NeLisp uses `intern' (= the standalone runtime has no
     ;; with `setting-constant' rather than a type error.
     (when (memq sym '(nil t)) (signal 'setting-constant (list sym)))
     (fset sym nil) sym))
-(unless (fboundp 'functionp)
-  (defun functionp (x)
-    ;; nil and t are symbols but can never be fbound, and `fboundp' signals
-    ;; for a non-symbol now -- so ask about the shape before asking it.
-    (or (and (consp x) (eq (car x) 'lambda))
-        (and (symbolp x) (not (memq x '(nil t))) (fboundp x)))))
 (unless (fboundp 'recordp) (defun recordp (x) nil))
 ;; `eql' compares numbers of the SAME TYPE: (eql 0.0 0) is nil, where `='
 ;; says t.  Routing both through `=' made a float and an integer identical,
@@ -13826,6 +13816,10 @@ add_properties, i.e. reversed) with property-less gaps; they are built in one pa
       (nelisp--tp-set-intervals result (nelisp--tp-build (nreverse nodes))))
     result))
 
+(defvar nelisp--tp-sub-props-hook nil
+  "Functions that copy additional string properties for `substring'.
+Each receives RESULT, SOURCE, FROM and TO.")
+
 (defun nelisp--tp-sub-props (result source &optional from to)
   "GNU copy_text_properties for Fsubstring: copy the intervals of SOURCE's
 [FROM, TO) onto RESULT (built in one pass, see `nelisp--tp-cat-props')."
@@ -13846,7 +13840,9 @@ add_properties, i.e. reversed) with property-less gaps; they are built in one pa
               (setq pos e))))
         (when nodes
           (when (< pos (- end start)) (push (nelisp--tp-node (- (- end start) pos) nil) nodes))
-          (nelisp--tp-set-intervals result (nelisp--tp-build (nreverse nodes)))))))
+          (nelisp--tp-set-intervals result (nelisp--tp-build (nreverse nodes))))))
+    (when nelisp--tp-sub-props-hook
+      (run-hook-with-args 'nelisp--tp-sub-props-hook result source from to)))
   result)
 
 (defun nelisp--tp-copy-buffer-range-to-string (buf start end newstring)
@@ -27891,31 +27887,10 @@ argument end extends over right padding (textprop.c:2123)."
           (setq out (concat out (substring template i (1+ i))) i (1+ i)))))
     (if multibyte (string-to-multibyte out) out))))
 
-;; A13: `type-of' is VOID on the bare reader (returns nil for everything), and
-;; native `functionp' fails to recognise a `(lambda ...)' / `(closure ...)' /
-;; `(builtin ...)' cons (returns nil).  Provide a predicate-composed `type-of'
-;; and a corrected `functionp' so function type-dispatch works.
-(unless (fboundp 'nelisp--native-functionp) (fset 'nelisp--native-functionp (symbol-function 'functionp)))
-(defun functionp (object)
-  "Return t if OBJECT is a function, with the semantics of GNU Emacs 31 eval.c.
-A symbol is followed through `indirect-function'; an autoload object found
-that way counts when its type slot is nil.  A closure object, a byte-code
-object, a non-special subr and a (lambda ...) list are functions.  A macro
-cons, a special form, a `(closure ...)' list and an unbound symbol are not."
-  (let ((f object) (sym nil))
-    (if (and f (symbolp f)) (setq sym t f (indirect-function f)))
-    ;; A subr is cons-shaped in the standalone reader, so `subrp' must be
-    ;; asked before `consp'.
-    (cond ((null f) nil)
-          ((nelisp--closure-p f) t)
-          ((subrp f) (not (special-form-p f)))
-          ((consp f)
-           (let ((h (car f)))
-             (cond ((eq h 'lambda) t)
-                   ((and sym (eq h 'autoload)) (null (nth 4 f)))
-                   (t nil))))
-          ((byte-code-function-p f) t)
-          (t nil))))
+;; Keep the private native handle used by the late-prelude optimizer and
+;; existing substrate consumers. The reader owns the public predicate.
+(unless (fboundp 'nelisp--native-functionp)
+  (fset 'nelisp--native-functionp (symbol-function 'functionp)))
 
 (unless (fboundp 'type-of)
   (defun type-of (x)
@@ -31872,16 +31847,45 @@ the variables a closure and the compiled code must share."
 (defun nelisp--fxc-box-call (fn argc &rest args)
   "Emit a call of FN on the ARGC values already pushed; ARGS are their fxir."
   (push fn nelisp--fx-called)
-  (cons :call (cons (nelisp--fxc-emit 16 (vector fn nil nil nil nil) argc)
+  (cons :call (cons (nelisp--fxc-emit-call fn argc)
                     (cons argc args))))
+
+(defun nelisp--fxc-emit-call (fn argc)
+  (let ((opcode
+         (cond
+          ((and (= argc 1)
+                (memq fn '(car cdr symbol-value fboundp functionp boundp intern-soft))) 28)
+          ((and (= argc 2) (memq fn '(aref nth memq assq get plist-get))) 28)
+          ((and (= argc 3) (eq fn 'aset)) 28)
+          ((and (<= 2 argc 3) (memq fn '(substring gethash))) 28)
+          ((and (<= 2 argc 8) (eq fn 'format)) 28)
+          (t 16))))
+    (nelisp--fxc-emit opcode (vector fn nil nil nil nil) argc)))
+
+(defun nelisp--fxc-pair-local (form)
+  "Return the unboxed operand binding for a unary pair read in FORM."
+  (when (and (consp form) (memq (car form) '(car cdr))
+             (consp (cdr form)) (null (cddr form)))
+    (let ((operand (cadr form)))
+      (when (and (symbolp operand) (not (memq operand nelisp--fxc-boxed)))
+        (assq operand nelisp--fxc-vars)))))
+
+(defun nelisp--fxc-emit-pair-local (fn source destination)
+  "Emit a pair read from SOURCE, optionally assigning DESTINATION."
+  (push fn nelisp--fx-called)
+  (let ((site (vector fn nil nil nil nil)))
+    (list :call (if destination
+                    (nelisp--fxc-emit 30 site 1 source destination)
+                  (nelisp--fxc-emit 29 site 1 source))
+          1 (list :slot source))))
 
 (defun nelisp--fxc-emit (&rest items)
   ;; Track the operand-stack depth along the code as laid out; at a
   ;; label the real depth is never larger, so MAXDEPTH bounds it.
   (let ((op (car items)))
-    (setq nelisp--fxc-depth (+ nelisp--fxc-depth (cond ((memq op '(1 2 12 18 19)) 1)
+    (setq nelisp--fxc-depth (+ nelisp--fxc-depth (cond ((memq op '(1 2 12 18 19 29 30)) 1)
                                                        ((memq op '(3 9 11 4 5 6 13 14 20 0 22 27)) -1)
-                                                       ((eq op 16) (- 1 (nth 2 items)))
+                                                       ((memq op '(16 28)) (- 1 (nth 2 items)))
                                                        (t 0))))
     (when (> nelisp--fxc-depth nelisp--fxc-maxdepth) (setq nelisp--fxc-maxdepth nelisp--fxc-depth)))
   ;; GNU bytecomp.el's byte-compile-out retains one instruction
@@ -32019,16 +32023,22 @@ the variables a closure and the compiled code must share."
               (while args
                 (let ((sym (car args)) (val (cadr args)))
                   (unless (symbolp sym) (nelisp--fxc-unsupported x))
-                  (let ((c (assq sym nelisp--fxc-vars)))
+                  (let ((c (assq sym nelisp--fxc-vars)) (source nil))
                     (if c (if (memq sym nelisp--fxc-boxed)
                               (progn
                                 (nelisp--fxc-emit 2 (cdr c))
                                 (let ((v (nelisp--fxc-comp val)))
                                   (push (nelisp--fxc-box-call 'setcdr 2 (list :slot (cdr c)) v)
                                         items)))
-                            (let ((v (nelisp--fxc-comp val)))
-                              (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 (cdr c))
-                              (push (list :setslot (cdr c) v) items)))
+                            (if (and (setq source (nelisp--fxc-pair-local val))
+                                     (fboundp (car val)) (not (macrop (car val)))
+                                     (not (special-form-p (car val))))
+                                (push (list :setslot (cdr c)
+                                            (nelisp--fxc-emit-pair-local (car val) (cdr source) (cdr c)))
+                                      items)
+                              (let ((v (nelisp--fxc-comp val)))
+                                (nelisp--fxc-emit 12) (nelisp--fxc-emit 3 (cdr c))
+                                (push (list :setslot (cdr c) v) items))))
                       (let* ((ks (nelisp--fxc-emit 1 sym)) (v (nelisp--fxc-comp val)))
                         ;; varaccess: setq site cache -- a call-site cache like every other call, so the
                         ;; VM's call-out decodes `set' once per site (GNU Bvarset has no lookup at all).
@@ -32289,13 +32299,17 @@ the variables a closure and the compiled code must share."
        ;; may turn out to be a macro (the interpreter expands at
        ;; each evaluation; compiled code would call the macro).
        ((and (symbolp op) (fboundp op) (not (macrop op)))
-        (let ((args nil))
-          (dolist (a (cdr x)) (push (nelisp--fxc-comp a) args))
-          (push op nelisp--fx-called)
-          ;; Cache the live function cell, never its value. Rebinding
-          ;; still takes effect; replacing/growing the table expires it.
-          (cons :call (cons (nelisp--fxc-emit 16 (vector op nil nil nil nil) (length (cdr x)))
-                            (cons (length (cdr x)) (nreverse args))))))
+        (let* ((argc (length (cdr x)))
+               (local (nelisp--fxc-pair-local x)))
+          (if local
+              (nelisp--fxc-emit-pair-local op (cdr local) nil)
+            (let ((args nil))
+              (dolist (a (cdr x)) (push (nelisp--fxc-comp a) args))
+              (push op nelisp--fx-called)
+              ;; Cache the live function cell, never its value. Rebinding
+              ;; still takes effect; replacing/growing the table expires it.
+              (cons :call (cons (nelisp--fxc-emit-call op argc)
+                                (cons argc (nreverse args))))))))
        ;; A function not defined yet whose arguments cannot fail or
        ;; have effects (GNU signals void-function before it
        ;; evaluates any argument).  The call goes out through the
@@ -35322,30 +35336,9 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
     (put (car e) 'error-conditions (nth 1 e))
     (when (nth 2 e) (put (car e) 'error-message (nth 2 e)))))
 
-;; Emacs 31.1 `signal' refuses a symbol that carries no `error-conditions':
-;; it raises (error "Invalid error symbol" SYM) instead, so a handler for SYM
-;; itself does not catch it and a non-symbol is a type error.  The native
-;; `signal' trusts its caller, hence this wrapper.  It sits at the very end
-;; of the prelude, after every built-in error symbol has its conditions, and
-;; the native subr stays reachable as `nelisp--native-signal'.
+;; Keep the private handle for the reader's signal primitive.
 (unless (fboundp 'nelisp--native-signal)
   (defalias 'nelisp--native-signal (symbol-function 'signal)))
-(defun signal (error-symbol &optional data)
-  "Signal an error of type ERROR-SYMBOL with DATA.
-ERROR-SYMBOL must have an `error-conditions' property; otherwise
-\(error \"Invalid error symbol\" ERROR-SYMBOL) is signaled.  A nil
-ERROR-SYMBOL re-signals DATA, whose car is the real symbol.  When
-re-signaling an error object, as GNU Emacs 31.1 allows, DATA is omitted
-and ERROR-SYMBOL is the whole error descriptor (eval.c `signal_or_quit')."
-  (when (and (null data) (consp error-symbol))
-    (setq data (cdr error-symbol) error-symbol (car error-symbol)))
-  (when (and (null error-symbol) (consp data))
-    (setq error-symbol (car data) data (cdr data)))
-  (unless (symbolp error-symbol)
-    (nelisp--native-signal 'wrong-type-argument (list 'symbolp error-symbol)))
-  (if (and error-symbol (get error-symbol 'error-conditions))
-      (nelisp--native-signal error-symbol data)
-    (nelisp--native-signal 'error (list "Invalid error symbol" error-symbol))))
 
 ;; Last form of the prelude (the build calls it again after the later
 ;; providers; a function defined after that stays a plain closure).

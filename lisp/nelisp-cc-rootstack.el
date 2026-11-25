@@ -177,8 +177,14 @@
     ;; vectorlike keeps its identity), and the mutation epoch (@268435544)
     ;; moves because the values escape.
     (defun nl_exit_signal_w (sym data)
-      (seq (extern-call nl_val_clone_into sym (data-addr nl_exit_values))
-           (extern-call nl_val_clone_into data (+ (data-addr nl_exit_values) 8))
+      ;; Tagged words already have the representation `nl_val_clone_into'
+      ;; would store. A 32-byte view still needs the usual owned conversion.
+      (seq (if (= (logand sym 7) 0)
+               (extern-call nl_val_clone_into sym (data-addr nl_exit_values))
+             (ptr-write-u64 (data-addr nl_exit_values) 0 sym))
+           (if (= (logand data 7) 0)
+               (extern-call nl_val_clone_into data (+ (data-addr nl_exit_values) 8))
+             (ptr-write-u64 (data-addr nl_exit_values) 8 data))
            (ptr-write-u64 268435472 0 1)
            (atomic-fetch-add 268435544 1)
            0))

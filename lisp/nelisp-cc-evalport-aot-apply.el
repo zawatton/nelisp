@@ -23,11 +23,69 @@
 ;; applies them, `apply' spreading its last argument.  The argument list
 ;; is built as the calln provider builds its own (one cons slot per
 ;; position under an `argc' if-chain), and a signal travels through the
-;; result word as it does there.
+;; result word as it does there. Short native Subr calls can use the
+;; shared word dispatcher before the provider builds any conses.
 
 ;;; Code:
 
 (require 'nelisp-cc-evalport-aot-builtin-calln)
+
+(defconst nelisp-cc-evalport-aot-apply--direct-subr
+  '((defun nl_aot_leaf_arg (value)
+      ;; Native entry points can supply a legacy immediate view. Read it
+      ;; without allocating or taking ownership of the caller's value.
+      (if (if (= (logand value 7) 0)
+              (if (> value 4096) (= (ptr-read-u8 value 0) 2) 0) 0)
+          (let* ((fix (m5_fx_fix (ptr-read-u64 value 8))))
+            (if (= fix -1) value fix))
+        (nl_word_canon_view value)))
+    (defun nl_aot_funcall_subr_w (env fn argc a0 a1 a2)
+     ;; The generic provider still owns all closures, autoloads and spread
+     ;; arguments. Read the live Subr cell before copying any operands.
+     (if (if (< argc 0) 1 (> argc 3)) 2
+       (let* ((name (nl_word_canon fn)) (cls (logand name 7))
+              (subr (if (= cls 6)
+                        (if (< name 4096) name
+                          (let* ((kind (logand (ptr-read-u8 (- name 6) 0) 63)))
+                            (if (or (= kind 4) (= kind 16))
+                                (ptr-read-u64 (- name 6) 24)
+                              name)))
+                      (if (if (= cls 0) (> name 4096) 0)
+                          (let* ((tag (ptr-read-u8 name 0)))
+                            (if (or (= tag 4) (= tag 16))
+                                (bf_function_cell_w name env)
+                              name))
+                        name)))
+              (id (nl_directcall_id subr name argc)))
+         (if (= id 0) 2
+           (let* ((leaf (if (if (= id 101) 1
+                             (if (<= argc 2)
+                                 (or (= id 1) (= id 10) (= id 88) (= id 109)
+                                     (and (>= id 94) (<= id 100))) 0))
+                           (if (= (m5_fx_leaf_allowed env) 1)
+                               (let* ((a (nl_aot_leaf_arg a0))
+                                      (b (if (>= argc 2) (nl_aot_leaf_arg a1) 3)))
+                                 (if (= id 101)
+                                     (nl_directcall_hash_get_leaf_w a b
+                                       (if (= argc 3) (nl_aot_leaf_arg a2) 3))
+                                   (nl_directcall_leaf_value id a b env))) 0) 0)))
+             ;; The artifact frame owns the arguments through the leaf call.
+             (if (/= leaf 0) leaf
+             (let* ((mark (nl_root_mark env))
+                    (argv (nl_root_frame env (+ argc 3))))
+               (if (= argv 0) 2
+                 (let* ((out (+ argv (* argc 8))))
+                   (seq
+                    (ptr-write-u64 out 16 subr)
+                    (if (> argc 0) (nl_val_clone_into a0 argv) 0)
+                    (if (> argc 1) (nl_val_clone_into a1 (+ argv 8)) 0)
+                    (if (> argc 2) (nl_val_clone_into a2 (+ argv 16)) 0)
+                    (let* ((operator (nl_val_clone_into name (+ out 8)))
+                           (status (nl_directcall_invoke subr operator argv argc env out)))
+                      (nl_cons_root_finish env mark
+                        (if (= status 0) (ptr-read-u64 out 0)
+                          (if (= status 2) 2 0)))))))))))))))
+  "Try a native Subr with up to three arguments. Result 2 means decline.")
 
 (defun nelisp-cc-evalport-aot-apply--provider (name evaluator)
   "Return the word-ABI provider NAME that hands (FN ARG...) to EVALUATOR."
@@ -55,10 +113,16 @@
         (pad (lambda (n)
                (make-list (- nelisp-cc-evalport-aot-builtin-calln--max-args n) 0))))
     `(seq
+      ,@nelisp-cc-evalport-aot-apply--direct-subr
       ,(nelisp-cc-evalport-aot-apply--provider
-        'nelisp_aot_funcalln_w 'nl_apply_do_funcall_w)
+        'nl_aot_funcall_list_w 'nl_apply_do_funcall_w)
       ,(nelisp-cc-evalport-aot-apply--provider
         'nelisp_aot_applyn_w 'nl_apply_do_apply_w)
+      (defun nelisp_aot_funcalln_w (mirror frames fn argc _pad scratch ,@args)
+        (let* ((word (nl_aot_funcall_subr_w mirror fn argc a0 a1 a2)))
+          (if (= word 2)
+              (nl_aot_funcall_list_w mirror frames fn argc 0 scratch ,@args)
+            word)))
       ;; The AOT-emitted callers' ABIs: fill OUT and return OUT.
       (defun nelisp_aot_funcalln (mirror frames fn argc out scratch ,@args)
         (seq (nl_abi_word_to_rc
