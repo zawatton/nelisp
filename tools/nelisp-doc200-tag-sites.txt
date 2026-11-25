@@ -59,7 +59,6 @@ lisp/nelisp-cc-fnv1a.el	nelisp_fnv1a	tag-test-bound-sym	0	pending	Added after th
 lisp/nelisp-cc-fnv1a.el	nelisp_fnv1a	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-fnv1a.el	nelisp_symbol_key_equal	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-fnv1a.el	nelisp_symbol_key_equal	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
-lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_captured_decls	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_valid_key	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_valid_key	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_walk_bucket_m	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
@@ -367,7 +366,6 @@ scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	0	pen
 scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
-scripts/nelisp-standalone-build.el	m5_fx_literal_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	m5_fx_run_body	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	m5_fx_run_body	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	m5_fx_run_body	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
@@ -717,3 +715,14 @@ scripts/nelisp-standalone-build.el	bf_read_one_hint_start	tag-test-sexp-tag	0	pe
 scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	6	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	7	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_captured_decls	unresolved-numeric	0	walked	Classifies the direct WORD representation and then the semantic kind. The name predicate and the two mutable-string kinds remain admitted.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_captured_decls	unresolved-numeric	1	walked	Classifies the direct WORD representation and then the semantic kind. The name predicate and the two mutable-string kinds remain admitted.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_captured_decls	unresolved-numeric	2	walked	Classifies the direct WORD representation and then the semantic kind. The name predicate and the two mutable-string kinds remain admitted.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_captured_decls	unresolved-numeric	3	walked	Classifies the direct WORD representation and then the semantic kind. The name predicate and the two mutable-string kinds remain admitted.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_chain_has_name	unresolved-numeric	0	n-a	Low three bits classify a canonical vectorlike WORD before its symbol header is inspected.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_chain_has_name	unresolved-numeric	1	n-a	Low three bits classify a canonical vectorlike WORD before its symbol header is inspected.
+lisp/nelisp-cc-frame-stack-find.el	nl_capture_filter_contains	unresolved-numeric	0	n-a	Low three bits classify a canonical vectorlike WORD before its symbol header is inspected.
+lisp/nelisp-cc-frame-stack-find.el	nl_capture_filter_contains	unresolved-numeric	1	n-a	Low three bits classify a canonical vectorlike WORD before its symbol header is inspected.
+scripts/nelisp-standalone-build.el	m5_fx_leaf_result_w	unresolved-numeric	0	n-a	Checks the opcode vector length or the immediate encoding of the CONST opcode.
+scripts/nelisp-standalone-build.el	m5_fx_leaf_result_w	unresolved-numeric	1	n-a	Checks the opcode vector length or the immediate encoding of the CONST opcode.
+scripts/nelisp-standalone-build.el	nl_eval_inner_cons_w	unresolved-numeric	0	n-a	The low WORD class selects the vectorlike header. The semantic classifier serves all other WORD classes.

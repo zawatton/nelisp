@@ -309,28 +309,40 @@
                      (or (= (nl_val_tag history) 0) (= (nl_val_tag history) 11)))
                 saved 0)) 0))
     (defun nl_capture_filter_contains (filter-ptr name-ptr)
-      ;; Doc 215: FILTER-PTR may be a view or a WORD; walk by WORD.
-      (if (= (nl_val_tag filter-ptr) 7)
-          (let* ((item (nl_cons_car_word filter-ptr))
-                 ;; Stored carrier conses are canonical WORDs (tag010).
-                 ;; Ordinary symbol names retain their existing call path.
-                 (saved (if (= (logand item 7) 2)
-                            (nl_sb_migrated_default_vector item) 0))
-                 (sym-ptr (if (= saved 0) item (nl_vector_slot_word saved 0))))
-            ;; A direct cons WORD (low bits 010) that is not a migrated
-            ;; default carrier is the closure-env sentinel of frame slot 3
-            ;; (see `nelisp_frame_captured_decls'); it is no name, never a match.
-            (if (if (= (logand sym-ptr 1) 0)
-                    (if (= (logand sym-ptr 7) 2)
-                        0
-                      (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1))
-                  0)
-                1
-              (nl_capture_filter_contains
-               (nl_cons_cdr_word filter-ptr)
-               name-ptr)))
-        0))
-
+      (let* ((tail filter-ptr) (hit 0)
+             (symbol-name (if (= (logand name-ptr 7) 6)
+                              (logand (ptr-read-u8 (- name-ptr 6) 0) 63) 0)))
+        (seq
+         ;; The normal filter is a list of direct conses containing symbol
+         ;; objects. Canonical symbols compare by identity. At a legacy entry
+         ;; or a specpdl carrier, retain the polymorphic comparison below.
+         (while (if (= hit 0) (= (logand tail 7) 2) 0)
+           (let* ((item (ptr-read-u64 (- tail 2) 0))
+                  (kind (if (= (logand item 7) 6)
+                            (logand (ptr-read-u8 (- item 6) 0) 63) 0)))
+             (if (if (if (= kind 4) 1 (= kind 16))
+                     (if (= symbol-name 4) 1 (= symbol-name 16))
+                   (= (logand item 1) 1))
+                 (seq (if (if (= (logand item 1) 1) 0 (= item name-ptr))
+                          (setq hit 1) 0)
+                      (setq tail (ptr-read-u64 tail 6)))
+               (setq hit 2))))
+         (if (= hit 1) 1
+           (if (= (logand tail 1) 1) 0
+             (if (= (nl_val_tag tail) 7)
+                 (let* ((item (nl_cons_car_word tail))
+                        (saved (if (= (logand item 7) 2)
+                                   (nl_sb_migrated_default_vector item) 0))
+                        (key (if (= saved 0) item (nl_vector_slot_word saved 0))))
+                   ;; Slot 3 can also contain a closure-env sentinel. A
+                   ;; direct cons which was not a carrier isn't a name.
+                   (if (if (= (logand key 1) 0)
+                           (if (= (logand key 7) 2) 0
+                             (= (extern-call nelisp_symbol_key_equal key name-ptr) 1))
+                         0)
+                       1
+                     (nl_capture_filter_contains (nl_cons_cdr_word tail) name-ptr)))
+               0))))))
     ;; perf/frame-declaration-check: a record's per-slot storage is one
     ;; 8-byte tagged WORD (Doc 147 Phase 2): low bit 0 = pointer to a
     ;; 32-byte Sexp box, low bit 1 = immediate (Nil = 3, T = 7,
@@ -453,22 +465,34 @@
     ;; 2: sharing first needs to wrap a plain value. Combine validation
     ;; with detection so repeated calls only scan a Cell chain once.
     (defun nelisp_frame_chain_shareable (al n)
-      (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
-          1
-        (let* ((p (nl_cons_car_word al)) (rest (nl_cons_cdr_word al)))
-          (if (= (nelisp_frame_stack_find_word_tag_p p 7) 0)
-              (nelisp_frame_chain_shareable rest n)
-            (if (>= n 8) 0
-              (let* ((name (nl_cons_car_word p)))
-                (if (= (nelisp_frame_stack_find_word_name_p name) 0) 0
-                  (if (= (nelisp_frame_chain_has_name rest name) 1) 0
-                    (let* ((status (nelisp_frame_chain_shareable rest (+ n 1))))
-                      (if (= status 1)
-                          (if (= (nelisp_frame_stack_find_word_tag_p (nl_cons_cdr_word p) 11) 1)
-                              1
-                            2)
-                        status))))))))))
-
+      (let* ((tail al) (count n) (status 1))
+        (seq
+         (while (if (/= status 0)
+                    (if (= (logand tail 7) 2) 1
+                      (= (nelisp_frame_stack_find_word_tag_p tail 7) 1))
+                  0)
+           (let* ((direct (= (logand tail 7) 2))
+                  (pair (if direct (ptr-read-u64 (- tail 2) 0) (nl_cons_car_word tail))))
+             (seq
+              (setq tail (if direct (ptr-read-u64 tail 6) (nl_cons_cdr_word tail)))
+              (if (if (= (logand pair 7) 2) 1
+                    (= (nelisp_frame_stack_find_word_tag_p pair 7) 1))
+                  (if (>= count 8) (setq status 0)
+                    (let* ((name (if (= (logand pair 7) 2)
+                                     (ptr-read-u64 (- pair 2) 0) (nl_cons_car_word pair))))
+                      (if (if (= (nelisp_frame_stack_find_word_name_p name) 0) 1
+                            (= (nelisp_frame_chain_has_name tail name) 1))
+                          (setq status 0)
+                        (seq
+                         (setq count (+ count 1))
+                         (if (= status 1)
+                             (let* ((value (if (= (logand pair 7) 2)
+                                              (ptr-read-u64 pair 6) (nl_cons_cdr_word pair))))
+                               (if (= (nelisp_frame_stack_find_word_tag_p value 11) 1) 0
+                                 (setq status 2)))
+                           0)))))
+                0))))
+         status)))
     ;; Convert every plain (non-Cell) pair cdr of an already validated chain
     ;; into a persistent Cell, in place.  Same method as `nl_pc_bind_one':
     ;; `cell-make' into a scratch Sexp slot (clones the value into a new
@@ -497,18 +521,36 @@
                (nelisp_frame_chain_wrap_cells (nl_cons_cdr_word al) slot 0 0)))))
 
     (defun nelisp_frame_chain_has_name (al name)
-      (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
-          0
-        (let* ((p (nl_cons_car_word al)))
-          (if (if (= (nelisp_frame_stack_find_word_tag_p p 7) 1)
-                  (= (extern-call nelisp_symbol_key_equal (nl_cons_car_word p) name) 1)
-                0)
-              1
-            (nelisp_frame_chain_has_name (nl_cons_cdr_word al) name)))))
-
+      (let* ((tail al) (hit 0)
+             (name-kind (if (= (logand name 7) 6)
+                            (logand (ptr-read-u8 (- name 6) 0) 63) 0)))
+        (seq
+         (while (if (= hit 0) (= (logand tail 7) 2) 0)
+           (let* ((pair (ptr-read-u64 (- tail 2) 0)))
+             (if (= (logand pair 7) 2)
+                 (let* ((key (ptr-read-u64 (- pair 2) 0))
+                        (kind (if (= (logand key 7) 6)
+                                  (logand (ptr-read-u8 (- key 6) 0) 63) 0)))
+                   (seq (setq tail (ptr-read-u64 tail 6))
+                        (if (if (if (= kind 4) 1 (= kind 16))
+                                (if (= name-kind 4) 1 (= name-kind 16)) 0)
+                            (setq hit (= key name))
+                          (setq hit (extern-call nelisp_symbol_key_equal key name)))))
+               (if (= (logand pair 1) 1) (setq tail (ptr-read-u64 tail 6))
+                 (setq hit 2)))))
+         (if (= hit 1) 1
+           (if (= (logand tail 1) 1) 0
+             (if (= (nelisp_frame_stack_find_word_tag_p tail 7) 0)
+                 0
+               (let* ((pair (nl_cons_car_word tail)))
+                 (if (if (= (nelisp_frame_stack_find_word_tag_p pair 7) 1)
+                         (= (extern-call nelisp_symbol_key_equal (nl_cons_car_word pair) name) 1)
+                       0)
+                     1
+                   (nelisp_frame_chain_has_name (nl_cons_cdr_word tail) name)))))))))
     ;; The bare declarations of a shared environment, recorded on the top
     ;; frame as `nl_push_captured_walk' does.
-    ;; MODE 0 walks AL (the recursion always passes 0) and answers 1 when a
+    ;; MODE 0 walks AL and answers 1 when a
     ;; globally special name was skipped, else 0.  MODE 1 is the env-view
     ;; sentinel step: SKIPPED is the answer of the install walk; when it is 1,
     ;; prepend the closure's env list AL itself, as one direct-cons element, to
@@ -526,36 +568,34 @@
                     al)
                    0)
             0)
-      (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
-          0
-        (let* ((p (nl_cons_car_word al))
-               (skip (if (= (logand p 1) 1) 0
-                       (if (= (sexp-tag p) 4)
-                           ;; Call-time cost: a globally special interned name
-                           ;; needs no frame marker (a let of it is dynamic
-                           ;; anyway), so the per-call install skips it.  The
-                           ;; nested-closure env view is restored from the
-                           ;; sentinel.  frames = env+32, the mirror is env+0
-                           ;; (same as nl_n3_eval_bind_pairs).
-                           (if (= (extern-call bf_declared_special_p (- frames 32) p) 1) 1 0)
-                         0))))
-          (seq (if (= skip 1) 0
-                 (if (= (logand p 1) 1) 0
-                   (if (if (= (sexp-tag p) 4) 1
-                         (if (or (= (nelisp_frame_stack_find_word_name_p p) 1)
-                                 (= (sexp-tag p) 6)
-                                 (= (sexp-tag p) 15))
-                             1
-                           0))
-                       (nelisp_frame_local_prepend_fresh
-                        (vector-ref-ptr
-                         (nl_record_slot_word frames 0)
-                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
-                        p)
-                     0)))
-               (let* ((rest (nelisp_frame_captured_decls (nl_cons_cdr_word al) frames 0 0)))
-                 (if (= skip 1) 1 rest)))))))
-
+        (let* ((tail al) (skip 0))
+          (seq
+           (while (if (= (logand tail 7) 2) 1
+                    (= (nelisp_frame_stack_find_word_tag_p tail 7) 1))
+             (let* ((direct (= (logand tail 7) 2))
+                    (item (if direct (ptr-read-u64 (- tail 2) 0) (nl_cons_car_word tail)))
+                    (rep (logand item 7)))
+               (seq
+                (setq tail (if direct (ptr-read-u64 tail 6) (nl_cons_cdr_word tail)))
+                ;; Lexical pairs and immediate markers install no declaration.
+                (if (if (= rep 2) 1 (= (logand item 1) 1)) 0
+                  (let* ((header (if (= rep 6) (ptr-read-u64 (- item 6) 0) 0))
+                         (tag (if (= rep 6) (logand header 63) (sexp-tag item))))
+                    (if (if (= tag 4)
+                            (if (= rep 6) (/= (logand header 16384) 0)
+                              (= (extern-call bf_declared_special_p (- frames 32) item) 1))
+                          0)
+                        (setq skip 1)
+                      (if (if (if (= tag 4) 1 (= tag 16)) 1
+                            (if (if (= tag 6) 1 (= tag 15)) 1
+                              (= (nelisp_frame_stack_find_word_name_p item) 1)))
+                          (nelisp_frame_local_prepend_fresh
+                           (vector-ref-ptr
+                            (nl_record_slot_word frames 0)
+                            (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))
+                           item)
+                        0)))))))
+           skip))))
     ;; Unconditional prepend, no membership test.  Only for the FRESH frame
     ;; `nl_env_push_captured' has just pushed (slot 3 is Nil, nothing else
     ;; writes it before the closure's markers are installed): the markers

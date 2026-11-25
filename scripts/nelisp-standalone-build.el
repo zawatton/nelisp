@@ -33839,14 +33839,17 @@ bytes are written into a fresh 8-byte buffer instead."
 
     ;; The length of the proper list TAIL (a Sexp slot), or -1.
     (defun m5_fx_form_count (tail _pad)
-      (let* ((n 0) (cur tail) (done 0))
+      (let* ((n 0) (cur tail))
         (seq
-         (while (= done 0)
-           (if (= (logand cur 1) 1) (setq done (if (= cur 3) 1 2))
-             (if (= (sexp-tag cur) 7)
-                 (seq (setq n (+ n 1)) (setq cur (heap-read-u64 (nl_word_payload cur) 8)))
-               (setq done (if (= (sexp-tag cur) 0) 1 2)))))
-         (if (= done 1) (if (> n 255) -1 n) -1))))
+         (while (if (<= n 255) (= (logand cur 7) 2) 0)
+           (seq (setq n (+ n 1)) (setq cur (ptr-read-u64 cur 6))))
+         (while (if (<= n 255)
+                    (if (= (logand cur 1) 0) (= (sexp-tag cur) 7) 0) 0)
+           (seq (setq n (+ n 1)) (setq cur (nl_cons_cdr_word cur))))
+         (if (> n 255) -1
+           (if (= (logand cur 1) 1)
+               (if (= cur 3) n -1)
+             (if (= (sexp-tag cur) 0) n -1))))))
     (defun m5_fx_interp_run_w (rec fn tail env argc code scratch)
       (let* ((base (m5_fx_arg_words env argc)))
         (if (and (= base 0) (> argc 0)) 0
@@ -34049,26 +34052,39 @@ bytes are written into a fresh 8-byte buffer instead."
           (let* ((depth (heap-read-u64 state 0)))
             (if (= depth 0) 0
               (if (/= (heap-read-u8 (nl_n4_record state (- depth 1)) 18) 0) 1 0))))))
-    (defun m5_fx_literal_w (code _pad)
-      ;; ENTRY-CHECK, CONST, RETURN. Keep the entry guard and read the
-      ;; constant afterwards; no frame, allocation or callback is observable.
+    (defun m5_fx_leaf_result_w (code env args nparams argw)
+      ;; ENTRY-CHECK; CONST or a fixed argument LOAD; RETURN. Validate the
+      ;; live vector because the record is Lisp-visible. Keep the usual
+      ;; entry guard and debugger fallback.
       (if (and (= (vector-len code) 6)
-               (= (wf_bytecode_w_int (nl_vector_slot_word code 2)) 1)
                (= (wf_bytecode_w_int (nl_vector_slot_word code 0)) 17)
                (= (wf_bytecode_w_int (nl_vector_slot_word code 4)) 0)
                (= (nl_val_tag (nl_vector_slot_word code 5)) 2)
-               (> (nl_word_payload (nl_vector_slot_word code 5)) 0))
-          (if (and (= (nl_n4_exit_debug_active_p _pad 0) 0)
-                   (= (m5_fx_entry_check (nl_vector_slot_word code 1) _pad) 0))
-              (nl_vector_slot_word code 3) 2)
+               (> (nl_word_payload (nl_vector_slot_word code 5)) 0)
+               (= (nl_n4_exit_debug_active_p env 0) 0)
+               (= (m5_fx_entry_check (nl_vector_slot_word code 1) env) 0))
+          (let* ((op (nl_vector_slot_word code 2))
+                 (operand (nl_vector_slot_word code 3)))
+            (if (= op 5) operand
+              (if (and (= op 9) (= (logand operand 3) 1)
+                       (>= operand 1) (< nparams 65536) (< (sar operand 2) nparams))
+                  (let* ((i (sar operand 2)) (tail args))
+                    (if (/= argw 0) (ptr-read-u64 argw (* i 8))
+                      (seq
+                       (while (> i 0)
+                         (seq (setq tail (nl_cons_cdr_word tail))
+                              (setq i (- i 1))))
+                       (nl_cons_car_word tail))))
+                2)))
         2))
-    (defun m5_fx_run_literal (code env out args argw wout)
-      (let* ((literal (m5_fx_literal_w code env)))
-        (if (/= literal 2)
-            (seq (if (= wout 0) (nl_abi_word_to_rc literal out)
-                   (ptr-write-u64 wout 0 literal)) -1)
-          ;; Mutation of code or exit debugging restores the ordinary frame.
-          (m5_fx_run_body code 0 env out args 0 argw wout))))
+    (defun m5_fx_run_leaf (code env out args nparams argw wout)
+      (let* ((value (m5_fx_leaf_result_w code env args nparams argw)))
+        (if (if (= value 2) 1 (= value 0))
+            ;; The marker is installed only when the local count is exactly
+            ;; the required argument count. Recover it for the original VM.
+            (m5_fx_run_body code nparams env out args nparams argw wout)
+          (seq (if (= wout 0) (nl_abi_word_to_rc value out)
+                 (ptr-write-u64 wout 0 value)) -1))))
     (defun m5_fx_alias_ref (desc env dst tmp)
       ;; DESC is rooted by CODE: [SOURCE BASE GEN-CELL SNAPSHOT]. Invalid
       ;; metadata falls back at this reference, never by replaying effects.
@@ -34128,7 +34144,8 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; Ordinary VM calls pay one integer branch, with no extra call or
       ;; instruction decode. Keep the existing recursion guard around both.
       (if (< nlocals 0)
-          (if (= nlocals -2) (m5_fx_run_literal code env out args argw wout)
+          (if (= nlocals -2) (m5_fx_run_leaf code env out args 0 argw wout)
+          (if (= nlocals -3) (m5_fx_run_leaf code env out args nparams argw wout)
           ;; nativecomp N1: -(16+ID) runs the native code nc_ID lowered from
           ;; this record's fxir (lisp/nelisp-cc-fxir-native.el).
           (if (<= nlocals -16) (nc_run (- -16 nlocals) code env out args nparams argw wout)
@@ -34138,7 +34155,7 @@ bytes are written into a fresh 8-byte buffer instead."
                 (if (= word 2) -3
                   (seq (if (= wout 0) (nl_abi_word_to_rc word out)
                          (ptr-write-u64 wout 0 word)) -1)))
-            -3)))
+            -3))))
       (let* ((base (+ (nl_word_payload code) 8))
              (mark (nl_root_mark env))
              ;; The code vector's last element is its operand stack size.
@@ -34265,7 +34282,8 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (= op 9)
                 (seq (setq sp (- sp 1))
                      (setq a (ptr-read-u64 (+ stk (* sp 8)) 0))
-                     (if (if (= (logand a 1) 1) (= a 3) (= (nl_val_tag a) 0))
+                     (if (if (= a 3) 1
+                           (if (= (logand a 7) 0) (= (ptr-read-u8 a 0) 0) 0))
                          (seq (setq a (ptr-read-u64 (+ base (* (+ pc 1) 8)) 0))
                               (setq b (if (= (logand a 1) 1) (sar a 2) (wf_bytecode_w_int a)))
                               (if (< b pc)
@@ -45187,39 +45205,56 @@ answer -3 or 0 (`m5_fx_subr_prim2', `m5_fx_funcall_value', `bf_builtin_subr_arit
               (index (length arms)))
           (unless opcodes (throw 'unsupported-fx-dispatch nil))
           (dolist (opcode opcodes)
-            (unless (and (<= 0 opcode 255) (null (gethash opcode keys)))
+            (unless (and (<= 0 opcode 63) (null (gethash opcode keys)))
               (throw 'unsupported-fx-dispatch nil))
             (puthash opcode index keys)
             (setq max-op (max max-op opcode)))
           (push (cons index (nth 2 cursor)) arms)
           (setq cursor (nth 3 cursor))))
       (when (<= 4 (length arms) 64)
-        (let* ((limit (let ((n 1))
-                        (while (<= n max-op) (setq n (ash n 1)))
-                        n))
-               (table (apply #'unibyte-string (make-list limit 255)))
+        (let* ((table (apply #'unibyte-string (make-list 256 255)))
+               (raw (make-symbol "opcode-word"))
                (class (make-symbol "opcode-class"))
                (dispatch cursor))
-          (maphash (lambda (opcode index) (aset table opcode index)) keys)
-          ;; Contiguous equality cases select the existing x86 jump-table
-          ;; lowering. Both unknown opcodes and unused table entries decline.
+          ;; Index by the stored word. Both odd encodings preserve the
+          ;; existing arithmetic-shift decode for immediate opcodes.
+          (maphash (lambda (opcode index)
+                     (aset table (+ (* 4 opcode) 1) index)
+                     (aset table (+ (* 4 opcode) 3) index))
+                   keys)
+          ;; Contiguous equality cases select the existing x86 jump table.
+          ;; Only a shared handler needs the decoded opcode.
           (dolist (arm arms)
-            (setq dispatch `(if (= ,class ,(car arm)) ,(cdr arm) ,dispatch)))
-          (list table
-                `(let ((,class (if (= (logand op ,(1- limit)) op)
-                                    (ptr-read-u8 (data-addr m5_fx_opcode_classes) op)
-                                  255)))
-                   ,dispatch)))))))
+            (let ((body (cdr arm)))
+              (when (memq 'op (flatten-tree body))
+                (setq body `(let ((op (sar ,raw 2))) ,body)))
+              (setq dispatch `(if (= ,class ,(car arm)) ,body ,dispatch))))
+          (list table raw class max-op dispatch))))))
 
 (defun nelisp-standalone--fx-dense-dispatch (helpers)
-  "Use a balanced dispatch for the FX interpreter's opcode switch on x86."
+  "Dispatch the FX interpreter directly from the encoded opcode on x86."
   (if (not (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)) helpers
     (let (table)
       (cl-labels ((rewrite (node)
                     (pcase node
-                      (`(seq (setq op ,fetch) ,dispatch)
+                      (`(seq (setq op (seq (setq a ,fetch)
+                                           (if (= (logand a 1) 1) (sar a 2)
+                                             (wf_bytecode_w_int a))))
+                             ,dispatch)
                        (if-let* ((plan (nelisp-standalone--fx-dispatch-table dispatch)))
-                           (progn (setq table (car plan)) `(seq (setq op ,fetch) ,(cadr plan)))
+                           (pcase-let ((`(,bytes ,raw ,class ,max-op ,body) plan))
+                             (setq table bytes)
+                             `(let* ((,raw ,fetch)
+                                     (,class
+                                      (if (= (logand ,raw 255) ,raw)
+                                          (ptr-read-u8 (data-addr m5_fx_opcode_classes) ,raw)
+                                        (if (= (logand ,raw 1) 1) 255
+                                          (let* ((legacy (wf_bytecode_w_int ,raw)))
+                                            (if (if (>= legacy 0) (<= legacy ,max-op) 0)
+                                                (seq (setq ,raw (+ (* legacy 4) 1))
+                                                     (ptr-read-u8 (data-addr m5_fx_opcode_classes) ,raw))
+                                              255))))))
+                                ,body))
                          node))
                       ((pred consp) (cons (rewrite (car node)) (rewrite (cdr node))))
                       (_ node))))
@@ -68742,7 +68777,18 @@ tails run against a private box), and the (rc, OUT) adapter F."
                 (when (= stashes 0)
                   (error "apply word ABI: no void/invalid-function stash to keep ORIG"))))
             (when (eq name 'nl_n4_apply_raw)
-              (setq word-body `(let* ((func_ptr_u (nl_cl_unwrap func_ptr))) ,(cl-subst 'func_ptr_u 'func_ptr word-body))))
+              (pcase word-body
+                (`(progn (if ,flat-test ,flat (if ,subr-test ,subr ,dispatch)))
+                 (setq word-body
+                       `(let* ((func_ptr_u (nl_cl_unwrap func_ptr)))
+                          ,(cl-subst
+                            'func_ptr_u 'func_ptr
+                            `(if ,flat-test ,flat
+                               (if ,subr-test ,subr
+                                 (let* ((fn-tag (heap-sexp-tag-word func_ptr)))
+                                   ,(cl-subst 'fn-tag '(heap-sexp-tag-word func_ptr)
+                                              dispatch :test #'equal))))))))
+                (_ (error "apply word ABI: unexpected raw dispatch"))))
             (push `(defun ,wname ,wparams ,word-body) result)
             (push `(defun ,name ,params
                      (nl_abi_word_to_rc (,wname ,@(butlast params) 0) ,out))
@@ -70468,20 +70514,21 @@ two flag bits 20 and 21."
                 (setq i (+ i 1)))))
            ok)))
       (defun nl_fl_call_w (d tail env av fr fw call_name)
-        (if (/= (logand (nl_cl_unwrap d) 7) 2) 2
-          (if (/= (nl_sym_sid (ptr-read-u64 (- (nl_cl_unwrap d) 2) 0)) ,sid-closure) 2
-            (let* ((r1 (ptr-read-u64 (- (nl_cl_unwrap d) 2) 8)))
-              (if (/= (logand r1 7) 2) 2
-                (let* ((cap (ptr-read-u64 (- r1 2) 0)) (r2 (ptr-read-u64 (- r1 2) 8)))
-                  (if (if (= cap 3) 1 (/= (logand r2 7) 2)) 2
-                    (let* ((formals (ptr-read-u64 (- r2 2) 0))
-                           (body (ptr-read-u64 (- r2 2) 8))
-                           (nf (nl_fl_formals formals)))
-                      (if (if (< nf 0) 1 (> nf 6)) 2
-                        (if (if (> nf 1) (= (nl_fl_distinct formals nf) 0) 0) 2
+        (let* ((fn (nl_cl_unwrap d)))
+          (if (/= (logand fn 7) 2) 2
+            (if (/= (nl_sym_sid (ptr-read-u64 (- fn 2) 0)) ,sid-closure) 2
+                (let* ((r1 (ptr-read-u64 fn 6)))
+                (if (/= (logand r1 7) 2) 2
+                  (let* ((cap (ptr-read-u64 (- r1 2) 0)) (r2 (ptr-read-u64 (- r1 2) 8)))
+                    (if (if (= cap 3) 1 (/= (logand r2 7) 2)) 2
+                      (let* ((formals (ptr-read-u64 (- r2 2) 0))
+                             (body (ptr-read-u64 (- r2 2) 8))
+                             (nf (nl_fl_formals formals)))
+                        (if (if (< nf 0) 1 (> nf 6)) 2
+                          (if (if (> nf 1) (= (nl_fl_distinct formals nf) 0) 0) 2
                         (if (/= (logand (ptr-read-u64 (+ env 112) 0) 3145728) 0) 2
                           (if (/= (nl_sp_nargs tail) nf) 2
-                            (nl_fl_run_w cap formals body nf tail env av fr fw call_name)))))))))))))
+                            (nl_fl_run_w cap formals body nf tail env av fr fw call_name))))))))))))))
       ;; AV: eight nil words of the argument stack, D in the last, registered in the
       ;; activation FR (extent 8, no arguments yet).
       (defun nl_fl_av_init (av d fr)
@@ -71306,7 +71353,9 @@ two flag bits 20 and 21."
             0)))
       ;; A head that is no special form goes straight to the function call.
       (defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
-        (let* ((head-tag (nl_val_tag head_ptr)))
+        (let* ((head-tag (if (= (logand head_ptr 7) 6)
+                             (logand (ptr-read-u8 (- head_ptr 6) 0) 63)
+                           (nl_val_tag head_ptr))))
           (if (= head-tag 4)
             (let* ((sp (nl_sp_index head_ptr)))
               (if (= sp 0)
