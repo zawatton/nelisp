@@ -4622,7 +4622,7 @@ Use the original FILE for handler discovery and general expansion."
            (prefixes emacs-load--directory-prefixes)
            (access-mode (or mode 0))
            (checks (emacs-load--lookup-handlers-p file names mode))
-           ;; Linux x86-64 paths passed to access(2) can share the prefix
+           ;; Linux x86-64 access probes can share the prefix
            ;; in a scratch buffer.  Keep non-ASCII names on the ordinary
            ;; path, where concat and the syscall wrapper handle encoding.
            (tails (and (not (eq checks t))
@@ -4647,7 +4647,8 @@ Use the original FILE for handler discovery and general expansion."
                             (emacs-load--directory-prefix directory)))
                  (prefix (car entry))
                  (names-left names)
-                 (special-names (aref checks 2)))
+                 (special-names (aref checks 2))
+                 found-mtime)
             (if (and prefix
                      (not (and (aref checks 0) (cadr entry)))
                      (not (and (aref checks 1)
@@ -4662,7 +4663,7 @@ Use the original FILE for handler discovery and general expansion."
                       (if (and special-names (memq name special-names))
                           (progn
                             (setq found (emacs-load--search-candidates
-                                         prefix names-left newer mode nil found)
+                                         prefix names-left newer mode nil found found-mtime)
                                   names-left nil)
                             (unless found
                               (setq checks (emacs-load--lookup-handlers-p file names mode))))
@@ -4670,16 +4671,23 @@ Use the original FILE for handler discovery and general expansion."
                                 (if tail-address
                                     (progn
                                       (ptr-write-bytes tail-address (car tails-left))
-                                      (syscall-direct 21 scratch access-mode 0 0 0 0))
+                                      ;; faccessat2(AT_FDCWD, ..., AT_EACCESS).
+                                      (let ((rc (syscall-direct 439 -100 scratch
+                                                                access-mode 512 0 0)))
+                                        (if (= rc -38)
+                                            (syscall-direct 21 scratch access-mode 0 0 0 0)
+                                          rc)))
                                   (nelisp--syscall-path-int
                                    21 (concat prefix name) access-mode))))
                           (when (and (/= access -2) (/= access -20))
                             (let ((candidate (concat prefix name)))
-                              (when (and (emacs-load--local-file-p candidate mode access)
-                                         (or (not found)
-                                             (emacs-load--newer-file-p candidate found)))
-                                (setq found candidate)
-                                (unless newer (setq names-left nil))))))))
+                              (let ((probe (emacs-load--local-file-p
+                                            candidate mode access newer)))
+                                (when (and probe
+                                           (emacs-load--prefer-file-p
+                                            candidate probe found found-mtime))
+                                  (setq found candidate found-mtime probe)
+                                  (unless newer (setq names-left nil)))))))))
                     (setq names-left (cdr names-left)
                           tails-left (cdr tails-left))))
               ;; Expansion and handler callbacks can change the active
@@ -4691,9 +4699,18 @@ Use the original FILE for handler discovery and general expansion."
             (setq directories (cdr directories)))))
       found))
 
-  (defun emacs-load--local-file-p (file access-mode &optional access-result)
+  (defun emacs-load--prefer-file-p (candidate probe previous previous-probe)
+    (or (not previous)
+        (if (and (consp probe) (consp previous-probe))
+            (or (> (car probe) (car previous-probe))
+                (and (= (car probe) (car previous-probe))
+                     (> (cdr probe) (cdr previous-probe))))
+          (emacs-load--newer-file-p candidate previous))))
+
+  (defun emacs-load--local-file-p (file access-mode &optional access-result mtime)
     "Test local FILE, optionally using an ACCESS-RESULT already obtained.
-ACCESS-MODE, when non-nil, is the caller's explicit access mask."
+ACCESS-MODE, when non-nil, is the caller's explicit access mask.
+With MTIME, return the observed modification timespec when available."
     (cond
      (access-mode
       (and (if (fboundp 'nelisp--syscall-path-int)
@@ -4718,7 +4735,11 @@ ACCESS-MODE, when non-nil, is the caller's explicit access mask."
         (when (>= fd 0)
           (unwind-protect
               (and (= 0 (syscall-direct 5 fd stat 0 0 0 0)) ; fstat
-                   (/= (logand (ptr-read-u64 stat 24) #o170000) #o40000))
+                   (/= (logand (ptr-read-u64 stat 24) #o170000) #o40000)
+                   ;; GNU openp records mtime from this same fstat.
+                   (if mtime
+                       (cons (ptr-read-u64 stat 88) (ptr-read-u64 stat 96))
+                     t))
             (syscall-direct 3 fd 0 0 0 0 0))))) ; close
      (t (and (file-readable-p file) (not (file-directory-p file))))))
 
@@ -4815,7 +4836,8 @@ can be an access mask or a function that may return `dir-ok'."
         (setq directories (and (not absolute) (cdr directories))))
       found))
 
-  (defun emacs-load--search-candidates (base remaining newer mode filter &optional found)
+  (defun emacs-load--search-candidates
+      (base remaining newer mode filter &optional found found-mtime)
     "Check each suffix in REMAINING appended to the already expanded BASE."
     (while (and (consp remaining) (or newer (not found)))
       (let* ((candidate (concat base (car remaining)))
@@ -4842,10 +4864,11 @@ can be an access mask or a function that may return `dir-ok'."
                     (file-readable-p expanded))
               ;; GNU returns a handler result immediately even with NEWER.
               (setq found candidate remaining nil))))
-         ((and (emacs-load--local-file-p candidate mode)
-               (or (not found)
-                   (emacs-load--newer-file-p candidate found)))
-          (setq found candidate))))
+         (t
+          (let ((probe (emacs-load--local-file-p candidate mode nil newer)))
+            (when (and probe
+                       (emacs-load--prefer-file-p candidate probe found found-mtime))
+              (setq found candidate found-mtime probe))))))
       (setq remaining (cdr remaining)))
     found)
 

@@ -1,0 +1,6 @@
+(:dangling nil nil nil)
+(:created t t t "entry.link")
+(:unreadable t nil nil)
+(:directory t t "entry.two")
+(:observed-mtime two)
+(:tie one)

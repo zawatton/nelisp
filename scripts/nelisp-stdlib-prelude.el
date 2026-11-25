@@ -24171,47 +24171,30 @@ processors not available."
 ;; access=21, unlink=87, mkdir=83.  Returns 0 on success / -errno.
 ;;
 ;; nelisp--syscall-stat: pure-elisp reimplementation on top of
-;; nelisp--syscall-path-int (access(2), NR=21).  The Rust bi_syscall_stat shim
-;; uses extern-call stat (libc symbol), which hangs on the standalone reader
-;; (no libc link; the combiner stashes a WTA and aborts the caller).  This
-;; fallback uses the access(2) trichotomy instead:
-;;   - access(path, F_OK) != 0              -> 'absent
-;;   - access(concat(path, "/"), F_OK) == 0 -> 'directory  (trailing slash is
-;;                                              accepted by a dir but returns
-;;                                              ENOTDIR for a regular file)
-;;   - else                                 -> 'file
-;; Installed unconditionally when nelisp--syscall-path-int is fboundp (=
-;; standalone reader binary); uses fset to shadow the broken deferred builtin
-;; registration that makes fboundp return t but causes the combiner to abort.
-;; On host Emacs, nelisp--syscall-path-int is not fboundp, so no shadowing.
-;;
-;; Doc 201 §4 item 2: the trichotomy's middle step asks whether PATH
-;; accepts a trailing slash, and Windows answers YES for an ordinary file
-;; -- so on a windows-native build every regular file read as a directory,
-;; `file-regular-p' answered nil for all of them and `file-directory-p'
-;; answered t.  Now that this target has a real `stat'
-;; (`nelisp--syscall-stat-field' -> `nl_os_stat_path' ->
-;; GetFileAttributesExW), the file/directory answer comes from st_mode.
-;; The access(2) F_OK check stays FIRST and the trichotomy stays as the
-;; fallback: absence is still one syscall (the shape `executable-find'
-;; walks a whole PATH with), and a target whose `stat' is still -ENOSYS
-;; (macos) keeps exactly the behaviour it had.
+;; Classify a name with one stat on Linux.  Keep the access(2) trichotomy
+;; for systems without a stat implementation.
 (when (fboundp 'nelisp--syscall-path-int)
   (fset 'nelisp--syscall-stat
         (lambda (path)
-          (if (not (= 0 (nelisp--syscall-path-int 21 path 0)))
-              'absent
-            (let ((mode (if (fboundp 'nelisp--syscall-stat-field)
-                            (nelisp--syscall-stat-field path 24)
-                          -1)))
-              (if (>= mode 0)
-                  ;; S_IFMT 0o170000 = 61440, S_IFDIR 0o40000 = 16384.
-                  ;; Everything else keeps answering `file', which is what
-                  ;; the trichotomy did with the same inputs.
-                  (if (= (logand mode 61440) 16384) 'directory 'file)
-                (if (= 0 (nelisp--syscall-path-int 21 (concat path "/") 0))
+          (let ((mode (if (and (eq system-type 'gnu/linux)
+                               (fboundp 'nelisp--syscall-stat-field))
+                          (nelisp--syscall-stat-field path 24)
+                        -38)))
+            (cond
+             ((>= mode 0)
+              (if (= (logand mode #o170000) #o40000) 'directory 'file))
+             ((/= mode -38) 'absent)
+             ((/= 0 (nelisp--syscall-path-int 21 path 0)) 'absent)
+             (t
+              (let ((mode (if (and (not (eq system-type 'gnu/linux))
+                                   (fboundp 'nelisp--syscall-stat-field))
+                              (nelisp--syscall-stat-field path 24)
+                            -1)))
+                (if (if (>= mode 0)
+                        (= (logand mode #o170000) #o40000)
+                      (= 0 (nelisp--syscall-path-int 21 (concat path "/") 0)))
                     'directory
-                  'file)))))))
+                  'file))))))))
 ;; nelisp--syscall-readdir: pure-elisp reimplementation on top of the
 ;; working `nelisp--syscall-readdir-names' builtin.  The Rust-side
 ;; `nelisp--syscall-readdir' is a CLASS-2 deferred builtin on the standalone
@@ -24284,13 +24267,16 @@ processors not available."
 ;; here ignored NOSORT, always dropped "." and "..", and answered nil for a
 ;; missing directory; because it ran first, it also kept that GNU-shaped
 ;; definition from ever being installed.
+(defun nelisp--file-access-p (filename operation mode)
+  (let* ((path (expand-file-name filename))
+         (handler (and file-name-handler-alist
+                       (find-file-name-handler path operation))))
+    (if handler (funcall handler operation path)
+      (= 0 (nelisp--syscall-path-int 21 path mode)))))
 (unless (fboundp 'file-exists-p)
-  ;; The stat classifier first performs this same F_OK test. Existence does
-  ;; not require its second syscall or its file/directory classification.
-  ;; Keep the Lisp reference for hosts without the existing raw OS primitive.
   (if (fboundp 'nelisp--syscall-path-int)
       (defun file-exists-p (filename)
-        (= 0 (nelisp--syscall-path-int 21 filename 0)))
+        (nelisp--file-access-p filename 'file-exists-p 0))
     (defun file-exists-p (filename)
       (let ((s (nelisp--syscall-stat filename)))
         (or (eq s 'file) (eq s 'directory))))))
@@ -24594,12 +24580,8 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
   (defun nelisp-ec-write-region (string _end filename &rest _ignore)
     (write-region string nil filename)))
 (unless (fboundp 'file-readable-p)
-  ;; Returns t only for regular files with R_OK (nil for directories, by design).
-  ;; Uses nelisp--syscall-stat when available (checks file type first); falls back
-  ;; to access(R_OK) only on non-reader environments where syscall-stat is absent.
-  (if (fboundp 'nelisp--syscall-stat)
-      (defun file-readable-p (filename) (eq (nelisp--syscall-stat filename) 'file))
-    (defun file-readable-p (filename) (= 0 (nelisp--syscall-path-int 21 filename 4)))))
+  (defun file-readable-p (filename)
+    (nelisp--file-access-p filename 'file-readable-p 4)))
 (unless (fboundp 'file-writable-p)
   (defun file-writable-p (filename)
     (nelisp--check-string filename)
@@ -25069,9 +25051,13 @@ through an undecoded unibyte buffer, so every byte value survives.
     (nelisp--check-string filename)
     (let* ((absolute (expand-file-name filename))
            (handler (find-file-name-handler absolute 'file-accessible-directory-p)))
-      (if handler
-          (funcall handler 'file-accessible-directory-p absolute)
-        (and (file-directory-p absolute) (file-executable-p absolute)))))
+      (cond
+       (handler (funcall handler 'file-accessible-directory-p absolute))
+       ((and (eq system-type 'gnu/linux) (fboundp 'nelisp--syscall-path-int))
+        ;; Resolving the final "." requires search permission and a directory.
+        (= 0 (nelisp--syscall-path-int
+              21 (concat (file-name-as-directory absolute) "./") 0)))
+       (t (and (file-directory-p absolute) (file-executable-p absolute))))))
   ;; Marks this definition as the prelude's own, so that
   ;; `nelisp-stdlib-filesystem-access-install' may replace it with the
   ;; authenticated POSIX search semantics.
