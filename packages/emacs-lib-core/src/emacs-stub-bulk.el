@@ -354,7 +354,7 @@ Forwarder to `forward-char' with negated count."
       (put --s-- 'emacs-stub-bulk t))))
 
 (let ((--stub-defmacros--
-       '(add-function bound-and-true-p cl--define-built-in-type define-inline define-minor-mode define-obsolete-function-alias define-obsolete-variable-alias defsubst
+       '(add-function bound-and-true-p cl--define-built-in-type define-minor-mode define-obsolete-function-alias define-obsolete-variable-alias defsubst
     eval-and-compile eval-when-compile gv-letplace macroexp-let2 minibuffer-with-setup-hook oclosure-define oclosure-lambda pcase
     pcase-defmacro pcase-dolist pcase-exhaustive pcase-let setf with-connection-local-variables with-help-window with-suppressed-warnings
     with-temp-buffer-window)))

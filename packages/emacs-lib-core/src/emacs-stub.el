@@ -2196,11 +2196,6 @@ Supports symbol variables and `(local 'SYMBOL)' function variables."
 	(list 'emacs-stub--remove-function-symbol (list 'quote place) function nil))
        (t nil)))))
 
-(unless (fboundp 'register-definition-prefixes)
-  (defun register-definition-prefixes (file prefixes)
-    "Stub: loaddefs prefix registration is unused in standalone."
-    (ignore file prefixes) nil))
-
 (unless (fboundp 'custom-add-load)
   (defun custom-add-load (symbol load)
     "Add LOAD to SYMBOL's `custom-loads' metadata."
@@ -2691,21 +2686,6 @@ left them intact, yielding `void-function inline-const-val' at runtime."
             (cons 'progn (mapcar #'emacs-stub--inline-lower body))
           (emacs-stub--inline-lower (car body)))))
 
-(when (and (fboundp 'rdf) (not (featurep 'inline)))
-  (defmacro define-inline (name args &rest body)
-    "Runtime `define-inline': define NAME as a plain function (no inlining).
-The inline DSL in BODY is lowered against the runtime backquote."
-    (emacs-stub--define-inline name args body)))
-
-;; Pre-provide `inline' so a later `(require 'inline)' is inert.  On the
-;; standalone, `inline.el' is not on the load-path, so `require' silent-succeeds
-;; (sets featurep) AND leaves the runtime `define-inline' above a no-op -- every
-;; subsequent `define-inline' form then fails (observed: org-element-ast.el,
-;; which does `(require 'inline)' before defining many inline accessors, crashed
-;; the whole load).  Providing the feature here keeps the working macro.
-(when (and (fboundp 'rdf) (not (featurep 'inline)))
-  (provide 'inline))
-
 ;; `buffer-base-buffer' (C primitive, buffer.c) returns the base buffer of an
 ;; indirect buffer, or nil for a normal buffer.  It is only registered under
 ;; the `emacs-buffer-buffer-base-buffer' name (nelisp-emacs.el) and never
@@ -2841,41 +2821,6 @@ If PLACE is already non-nil, return it without evaluating CODE."
            (let ((,val (progn ,@code)))
              (setf ,place ,val)
              ,val)))))
-
-;;;; --- Doc 16 breadth round 12: subr.el / macroexp list helpers --------
-;; delete-consecutive-dups / rassq-delete-all (subr.el) and macroexp-quote
-;; (macroexp.el) were void.  Mirror the Emacs definitions; gated on
-;; `unless (fboundp ...)'.  (`dlet' and `with-output-to-string' are not
-;; shimmed here: the runtime's `let' is lexical so `dlet's dynamic binding
-;; does not take effect, and `princ' ignores a buffer `standard-output' so
-;; output capture is unavailable.)
-
-(unless (fboundp 'delete-consecutive-dups)
-  (defun delete-consecutive-dups (list &optional circular)
-    "Destructively remove `equal' consecutive duplicates from LIST.
-With CIRCULAR, the first and last elements are treated as consecutive."
-    (let ((tail list) last)
-      (while (cdr tail)
-        (if (equal (car tail) (cadr tail))
-            (setcdr tail (cddr tail))
-          (setq last tail
-                tail (cdr tail))))
-      (when (and circular last (equal (car tail) (car list)))
-        (setcdr last nil))
-      list)))
-
-(unless (fboundp 'rassq-delete-all)
-  (defun rassq-delete-all (value alist)
-    "Delete from ALIST all elements whose cdr is `eq' to VALUE.
-Return the modified alist; non-cons elements are ignored."
-    (while (and (consp (car alist)) (eq (cdr (car alist)) value))
-      (setq alist (cdr alist)))
-    (let ((tail alist) tail-cdr)
-      (while (setq tail-cdr (cdr tail))
-        (if (and (consp (car tail-cdr)) (eq (cdr (car tail-cdr)) value))
-            (setcdr tail (cdr tail-cdr))
-          (setq tail tail-cdr))))
-    alist))
 
 (unless (fboundp 'macroexp-quote)
   (defun macroexp-quote (v)
@@ -3088,250 +3033,6 @@ on) hit `void-variable' on the setter symbol at first invocation."
   ;; unconditional one after this file, defeating the guard above.
   (provide (identity 'gv)))
 
-;;;; --- pcase placeholder (avoid loading vendor pcase.el which uses old `\,' symbol escape) ---
-
-(unless (fboundp 'pcase)
-  ;; Phase 4 batch 2 — pcase with backquote / pred / and / or patterns.
-  ;; Implements the pattern subset cl-macs / cl-loop / cl-some etc.
-  ;; expand into.  Pure elisp on top of bootstrap eval primitives.
-  ;;
-  ;; Pattern syntax supported:
-  ;;   `_'                — catch-all
-  ;;   INTEGER / STRING   — `equal' test
-  ;;   `(quote X)' / `'X' — `eq' test
-  ;;   SYMBOL (bare)      — bind to value, always match
-  ;;   `(pred FN)'        — call (FN value), match if non-nil
-  ;;   `(and P1 P2 ...)'  — match if every P matches (binds ALL)
-  ;;   `(or P1 P2 ...)'   — match if any P matches (no bindings)
-  ;;   `(guard EXPR)'     — match if EXPR true
-  ;;   `(let PAT EXPR)'   — bind PAT to result of EXPR (always match)
-  ;;   `(backquote PAT)'  — destructure PAT.  Inside PAT:
-  ;;     - `(comma SYM)'  → bind SYM to value-at-position
-  ;;     - literal cons   → recursive shape match
-  ;;     - literal atom   → equality test
-  ;;
-  ;; Backquote-pattern is the critical one — cl-macs uses it heavily
-  ;; for destructuring.  E.g. `\`(,a ,b)' matches a 2-elem cons; binds
-  ;; a=(car val), b=(cadr val).
-
-  (defun emacs-stub--pcase-test (pattern value-form)
-    "Build (TEST-FORM . BINDINGS) for matching PATTERN against VALUE-FORM.
-VALUE-FORM is an elisp expression that evaluates to the value being
-tested.  TEST-FORM is an elisp expression that evaluates to non-nil
-when the pattern matches.  BINDINGS is a list of (SYMBOL FORM) pairs
-to let-bind in the case body when matched."
-    (cond
-     ;; `_' wildcard.
-     ((eq pattern '_) (cons t nil))
-     ;; Bare symbol: bind to value, always match.
-     ((symbolp pattern)
-      (cons t (list (list pattern value-form))))
-     ;; Number / string literal.
-     ((or (integerp pattern) (stringp pattern))
-      (cons (list 'equal value-form pattern) nil))
-     ;; Cons cell — examine head for pattern type.
-     ((consp pattern)
-      (let ((head (car pattern))
-            (rest (cdr pattern)))
-        (cond
-         ;; (quote X)
-         ((eq head 'quote)
-          (cons (list 'eq value-form (list 'quote (car rest))) nil))
-         ;; (pred FN)
-         ((eq head 'pred)
-          (let ((fn (car rest)))
-            (cons (list 'funcall (list 'function fn) value-form) nil)))
-         ;; (guard EXPR)
-         ((eq head 'guard)
-          (cons (car rest) nil))
-         ;; (let PAT EXPR)
-         ((eq head 'let)
-          (let* ((sub-pat (car rest))
-                 (sub-expr (car (cdr rest)))
-                 (built (emacs-stub--pcase-test sub-pat sub-expr)))
-            (cons (car built) (cdr built))))
-         ;; (and P1 P2 ...)
-         ((eq head 'and)
-          (emacs-stub--pcase-and rest value-form))
-         ;; (or P1 P2 ...)
-         ((eq head 'or)
-          (emacs-stub--pcase-or rest value-form))
-         ;; (backquote ...) - destructure cons / atom shape.  Accept both
-         ;; the NeLisp reader's normalized `backquote' head and host
-         ;; Emacs's `\\=`' symbol (host-normalized bundles print patterns
-         ;; as `(\\=` ...)', Doc 33 item 243).
-         ((or (eq head 'backquote) (eq head '\`))
-          (emacs-stub--pcase-backquote (car rest) value-form))
-         ;; Unknown — treat as opaque catch-all (= permissive).
-         (t (cons t nil)))))
-     ;; Other atom (symbol via symbolp above; vector etc.)
-     (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
-
-  (defun emacs-stub--pcase-and (patterns value-form)
-    "Build (TEST . BINDINGS) for an `and' pattern (= all PATTERNS match)."
-    (let ((tests nil)
-          (bindings nil)
-          (cur patterns))
-      (while cur
-        (let* ((built (emacs-stub--pcase-test (car cur) value-form))
-               (t1 (car built))
-               (b1 (cdr built)))
-          (setq tests (cons t1 tests))
-          (setq bindings (append bindings b1)))
-        (setq cur (cdr cur)))
-      (cons (cons 'and (let ((rev nil))
-                         (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
-                         rev))
-            bindings)))
-
-  (defun emacs-stub--pcase-or (patterns value-form)
-    "Build (TEST . BINDINGS) for an `or' pattern.  No bindings (= ambiguous)."
-    (let ((tests nil)
-          (cur patterns))
-      (while cur
-        (let* ((built (emacs-stub--pcase-test (car cur) value-form))
-               (t1 (car built)))
-          (setq tests (cons t1 tests)))
-        (setq cur (cdr cur)))
-      (cons (cons 'or (let ((rev nil))
-                        (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
-                        rev))
-            nil)))
-
-  (defun emacs-stub--pcase-backquote (pat value-form)
-    "Build (TEST . BINDINGS) for a backquote-pattern.
-Walks PAT recursively; `(comma SYM)' binds SYM to corresponding
-position; literal cons recurses with `car'/`cdr' index forms; atom
-does `equal' check."
-    (cond
-     ;; (comma SYM) — bind SYM to value-form, always match.  `\\=,' is
-     ;; host Emacs's comma symbol (host-normalized bundles, item 243).
-     ((and (consp pat) (or (eq (car pat) 'comma) (eq (car pat) '\,)))
-      (let ((sym (car (cdr pat))))
-        (cond
-         ((eq sym '_) (cons t nil))
-         ((symbolp sym) (cons t (list (list sym value-form))))
-         (t (emacs-stub--pcase-test sym value-form)))))
-     ;; (comma-at SYM) — bind SYM to remaining list (= value-form is tail).
-     ((and (consp pat) (or (eq (car pat) 'comma-at) (eq (car pat) '\,@)))
-      (let ((sym (car (cdr pat))))
-        (cons t (list (list sym value-form)))))
-     ;; Cons cell — recursively destructure car / cdr.
-     ((consp pat)
-      (let* ((head-build (emacs-stub--pcase-backquote
-                          (car pat) (list 'car value-form)))
-             (tail-build (emacs-stub--pcase-backquote
-                          (cdr pat) (list 'cdr value-form))))
-        (cons (list 'and
-                    (list 'consp value-form)
-                    (car head-build)
-                    (car tail-build))
-              (append (cdr head-build) (cdr tail-build)))))
-     ;; nil at end of list — match nil tail.
-     ((null pat)
-      (cons (list 'null value-form) nil))
-     ;; Other atom — equality test.
-     (t
-      (cons (list 'equal value-form (list 'quote pat)) nil))))
-
-  (defmacro pcase (expr &rest cases)
-    "Phase 4 batch 2 pcase: dispatch EXPR through CASES.
-See `emacs-stub--pcase-test' for supported pattern shapes."
-    (let ((value-sym (make-symbol "--pcase-value--"))
-          (cond-clauses nil))
-      (dolist (case cases)
-        (let* ((pat (car case))
-               (body (cdr case))
-               (built (emacs-stub--pcase-test pat value-sym))
-               (test (car built))
-               (bindings (cdr built)))
-          (push (list test
-                      (if bindings
-                          (cons 'let (cons bindings body))
-                        (cons 'progn body)))
-                cond-clauses)))
-      (let ((forward nil))
-        (while cond-clauses
-          (setq forward (cons (car cond-clauses) forward))
-          (setq cond-clauses (cdr cond-clauses)))
-        (list 'let (list (list value-sym expr))
-              (cons 'cond forward))))))
-
-;; A pcase pattern written inside an outer backquote (for example the
-;; `org-persist--gc-expired-p' macro body, which contains a `nil clause)
-;; reaches `pcase' as (backquote nil): this runtime's nested backquote
-;; keeps the `backquote' head instead of GNU's \=`-symbol head.  Share the
-;; genuine pcase expander so both heads expand the same way.
-(when (and (get '\` 'pcase-macroexpander)
-           (not (get 'backquote 'pcase-macroexpander)))
-  (put 'backquote 'pcase-macroexpander (get '\` 'pcase-macroexpander)))
-
-(defun emacs-stub--pcase-let-binding (binding)
-  "Return (TEMP TEST BINDINGS) for a single pcase-let BINDING."
-  (let* ((pattern (car binding))
-         (expr (car (cdr binding)))
-         (value-sym (make-symbol "--pcase-let-value--"))
-         (built (emacs-stub--pcase-test pattern value-sym)))
-    (list (list value-sym expr) (car built) (cdr built))))
-
-(unless (fboundp 'pcase-let)
-  (defmacro pcase-let (bindings &rest body)
-    "Minimal `pcase-let' supporting the local pcase pattern subset.
-Faithful to Emacs semantics: the patterns are ASSUMED to match, so the
-bindings destructure unconditionally instead of gating BODY behind a
-match test (Emacs: \"BINDINGS are treated as if they always match\").
-A too-short list therefore binds the missing positions to nil -- e.g.
-`(pcase-let ((\\=`(,a ,b ,c) \\='(1))) ...)' binds a=1, b=nil, c=nil,
-because the binding value-forms are plain `car'/`cdr' chains and
-`(car nil)' is nil.  Doc 33 item 243: the previous strict `(when TEST
-...)' gating silently evaluated the whole form to nil whenever the
-value was shorter than the pattern -- vendor code like magit's
-`magit-insert-section' macro (pattern `((,class ,value ,hide . ,args)
-. ,body)' against the common short form `((status) BODY...)') relies
-on the real, lenient destructuring, and the strict variant made that
-macro expand to nil, so no status section was ever inserted."
-    (let ((forms body)
-          (rev-bindings nil))
-      (dolist (binding bindings)
-        (push binding rev-bindings))
-      (dolist (binding rev-bindings)
-        (let* ((built (emacs-stub--pcase-let-binding binding))
-               (temp-binding (car built))
-               (pattern-bindings (car (cdr (cdr built)))))
-          (setq forms
-                (list (list 'let (list temp-binding)
-                            (if pattern-bindings
-                                (cons 'let (cons pattern-bindings forms))
-                              (cons 'progn forms)))))))
-      (if bindings (car forms) (cons 'progn body)))))
-
-(unless (fboundp 'pcase-let*)
-  (defmacro pcase-let* (bindings &rest body)
-    "Minimal `pcase-let*' supporting sequential pcase bindings."
-    (if bindings
-        (list 'pcase-let (list (car bindings))
-              (cons 'pcase-let* (cons (cdr bindings) body)))
-      (cons 'progn body))))
-
-(unless (fboundp 'pcase-dolist)
-  (defmacro pcase-dolist (spec &rest body)
-    "Minimal `pcase-dolist' supporting the local pcase pattern subset.
-Like `pcase-let' (see there), Emacs treats PATTERN as if it always
-matches, so each element destructures unconditionally -- no per-element
-match filtering (Doc 33 item 243, same lenient-destructure fix)."
-    (let* ((pattern (car spec))
-           (list-form (car (cdr spec)))
-           (result-form (car (cdr (cdr spec))))
-           (value-sym (make-symbol "--pcase-dolist-value--"))
-           (built (emacs-stub--pcase-test pattern value-sym))
-           (pattern-bindings (cdr built)))
-      (list 'dolist (list value-sym list-form result-form)
-            (if pattern-bindings
-                (cons 'let (cons pattern-bindings body))
-              (cons 'progn body))))))
-
-(unless (featurep 'pcase) (provide 'pcase))
-
 ;;;; --- cl-* macros / fns (Phase 4 batch 3 — minimal cl-lib subset) ---
 ;;
 ;; Bypass loading vendor cl-macs.el (= which fails on deep pcase patterns).
@@ -3466,28 +3167,6 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
 (unless (fboundp 'cl-decf)
   (defmacro cl-decf (place &optional delta)
     (list 'setq place (list '- place (or delta 1)))))
-
-(unless (fboundp 'cl-some)
-  (defun cl-some (predicate sequence &rest more)
-    "Stub: return first non-nil PREDICATE result over SEQUENCE.
-Ignores MORE (= multi-list version)."
-    (ignore more)
-    (let ((cur sequence)
-          (result nil))
-      (while (and cur (not result))
-        (setq result (funcall predicate (car cur)))
-        (setq cur (cdr cur)))
-      result)))
-
-(unless (fboundp 'cl-every)
-  (defun cl-every (predicate sequence &rest more)
-    (ignore more)
-    (let ((cur sequence)
-          (ok t))
-      (while (and cur ok)
-        (unless (funcall predicate (car cur)) (setq ok nil))
-        (setq cur (cdr cur)))
-      ok)))
 
 (unless (fboundp 'cl-position)
   (defun cl-position (item sequence &rest _keys)
@@ -3705,7 +3384,6 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
                   forms)))
         (cons 'progn (nreverse forms))))))
 
-(put 'cl-defstruct 'emacs-stub-placeholder t)
 
 (unless (fboundp 'cl-case)
   (defmacro cl-case (expr &rest cases)
@@ -3724,16 +3402,6 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
         (while clauses (setq rev (cons (car clauses) rev)) (setq clauses (cdr clauses)))
         (list 'let (list (list value-sym expr))
               (cons 'cond rev))))))
-
-(unless (fboundp 'cl-pushnew)
-  (defmacro cl-pushnew (item place &rest _keys)
-    ;; Same generalized-place handling as `push' below: a non-symbol
-    ;; PLACE goes through the substrate's `setf' polyfill instead of an
-    ;; invalid `(setq (cdr ...) ...)' expansion.
-    (list 'unless (list 'member item place)
-          (if (symbolp place)
-              (list 'setq place (list 'cons item place))
-            (list 'setf place (list 'cons item place))))))
 
 (when (or (fboundp 'nl-write-file)
           (fboundp 'nelisp--write-stdout-bytes)
@@ -3780,9 +3448,6 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 (unless (fboundp 'cl-return)
   (defalias 'cl-return 'cl-return-from))
 
-(unless (fboundp 'cl-getf)
-  (defalias 'cl-getf 'plist-get))
-
 (unless (fboundp 'cl-first)
   (defalias 'cl-first 'car))
 (unless (fboundp 'cl-second)
@@ -3790,18 +3455,7 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 (unless (fboundp 'cl-third)
   (defun cl-third (l) (car (cdr (cdr l)))))
 
-(unless (featurep 'cl-macs) (provide 'cl-macs))
-(unless (featurep 'cl-seq) (provide 'cl-seq))
-(unless (featurep 'cl-extra) (provide 'cl-extra))
 (unless (featurep 'cl-generic) (provide 'cl-generic))
-;; Phase B5 (= 2026-05-09): phantom-provide cl-lib so anvil-server's
-;; `(require 'cl-lib)' short-circuits without descending into vendor
-;; cl-lib.el (= ~80s load on standalone NeLisp).  The Cl primitives
-;; anvil-* uses are already covered by NeLisp natives (`cl-defstruct',
-;; `cl-incf', `cl-decf', `setf' from Phase B4) plus the `cl-loop' /
-;; `cl-some' / `cl-pushnew' / etc. stubs lower in this file.
-(unless (featurep 'cl-lib) (provide 'cl-lib))
-(unless (featurep 'cl-loaddefs) (provide 'cl-loaddefs))
 ;; The genuine `cl-loaddefs' registers `cl-typep--inliner' (a `define-inline'
 ;; product of cl-macs.el) as the `cl-typep' compiler macro.  Standalone keeps
 ;; the native `cl-typep' and does not load cl-macs.el, so drop the dangling
@@ -3845,33 +3499,6 @@ it) and `file-missing' would lose `file-error'."
   (emacs-stub--define-missing-error 'invalid-read-syntax "Invalid read syntax")
   (emacs-stub--define-missing-error 'user-error "User error")
   (emacs-stub--define-missing-error 'quit "Quit"))
-
-;;;; --- rx.el placeholder (= regex DSL not used by anvil dispatch) ---
-
-(unless (fboundp 'rx-define)
-  (defmacro rx-define (name &rest body)
-    "Stub: no-op (= NeLisp standalone uses raw regex strings)."
-    (ignore name body) nil))
-
-(unless (fboundp 'rx-let)
-  (defmacro rx-let (bindings &rest body)
-    "Stub: drop BINDINGS, eval BODY."
-    (ignore bindings) (cons 'progn body)))
-
-(unless (fboundp 'rx-let-eval)
-  (defmacro rx-let-eval (bindings &rest body)
-    (ignore bindings) (cons 'progn body)))
-
-(unless (fboundp 'rx)
-  (defmacro rx (&rest forms)
-    "Stub: return empty regex string (= placeholder, never matches)."
-    (ignore forms) ""))
-
-(unless (fboundp 'rx-to-string)
-  (defun rx-to-string (form &optional no-group)
-    (ignore form no-group) ""))
-
-(unless (featurep 'rx) (provide 'rx))
 
 ;;;; --- url stack ---
 ;; The genuine GNU url stack (url.el, url-vars, url-parse, ...) is vendored

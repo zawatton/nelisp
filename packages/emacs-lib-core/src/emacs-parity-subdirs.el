@@ -71,6 +71,8 @@
            (fboundp 'nelisp--syscall-path-int)
            (fboundp 'nelisp--syscall-lstat-buf)
            (fboundp 'nelisp--syscall-readdir-names)
+           (fboundp 'nelisp--file-name-absolute-posix-p)
+           (fboundp 'nelisp--file-name-handler-possible-p)
            (stringp default-directory)
            (nelisp--file-name-absolute-posix-p default-directory)
            (not (nelisp--string-search ":" default-directory 0))

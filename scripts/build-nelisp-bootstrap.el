@@ -784,25 +784,30 @@ bundled source that may evaluate a declaration."
                   (member (file-relative-name file (nelisp-bootstrap--vendor-dir))
                           nelisp-bootstrap-runtime-lazy-vendor-files)))
            files))
-         (macroexp (nelisp-bootstrap--vendor-source-file
-                    "emacs-lisp/emacs-lisp/macroexp.el"))
-         (gv (nelisp-bootstrap--vendor-source-file
-              "emacs-lisp/emacs-lisp/gv.el"))
-         (shim (nelisp-bootstrap--package-file "emacs-parity-eieio.el")))
-    (unless (and macroexp gv (member shim eager))
-      (error "Cannot place GNU macroexp/gv before bootstrap sources"))
-    ;; The declaration may be evaluated before the EIEIO shim itself, so
-    ;; prepend these genuine providers ahead of the entire source stream.
-    ;; Genuine `inline.el' (define-inline + compiler-macro) must precede the
-    ;; first define-inline user and `emacs-stub.el', whose stub defers to it
-    ;; when the `inline' feature is already provided.  Order: macroexp, gv,
-    ;; inline.
-    (let ((inline (nelisp-bootstrap--vendor-source-file
-                   "emacs-lisp/emacs-lisp/inline.el")))
-      (when inline
-        (setq eager (cons inline (delete inline eager))))
-      (setq eager (cons gv (delete gv eager)))
-      (setq eager (cons macroexp (delete macroexp eager))))
+         ;; loadup.el reads byte-run before backquote and macroexp.  The
+         ;; source bootstrap also needs gv and inline before its first
+         ;; declaration and define-inline consumers.
+         (language-core
+          (mapcar #'nelisp-bootstrap--vendor-source-file
+                  '("emacs-lisp/emacs-lisp/byte-run.el"
+                    "emacs-lisp/emacs-lisp/backquote.el"
+                    "staged-emacs-lisp/subr.el"
+                    "emacs-lisp/emacs-lisp/macroexp.el"
+                    "emacs-lisp/emacs-lisp/pcase.el"
+                    "emacs-lisp/emacs-lisp/gv.el"
+                    "emacs-lisp/emacs-lisp/inline.el"
+                    "emacs-lisp/loaddefs.el"
+                    "emacs-lisp/emacs-lisp/cl-lib.el"
+                    "emacs-lisp/emacs-lisp/cl-macs.el"))))
+    (when (memq nil language-core)
+      (error "Missing GNU language-core bootstrap source"))
+    (let ((backquote-shim (nelisp-bootstrap--package-file "emacs-backquote.el")))
+      (setq eager
+            (append language-core
+                    (cl-remove-if (lambda (file)
+                                    (or (equal file backquote-shim)
+                                        (member file language-core)))
+                                  eager))))
     (nelisp-bootstrap--validate-ffi-publication-order eager)))
 
 ;; Local files re-appended AFTER the vendor tail.
@@ -1149,8 +1154,10 @@ local path; other names with a directory part are vendor files."
             (t
              (walk (car form))
              (walk (cdr form))))))
-      (dolist (form (nelisp-bootstrap--read-forms-from-file file))
-        (walk form)))
+      (unless (assoc (nelisp-bootstrap--logical-name file)
+                     nelisp-bootstrap--early-gnu-definitions)
+        (dolist (form (nelisp-bootstrap--read-forms-from-file file))
+          (walk form))))
     (delete-dups (nreverse features))))
 
 (defun nelisp-bootstrap--file-requires (file)
@@ -1587,8 +1594,7 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/uniquify.el"
     "vendor/emacs-lisp/dired.el"
     "vendor/emacs-lisp-31.1/button.el"
-    "vendor/emacs-lisp/obsolete/cl.el"
-    "vendor/emacs-lisp/emacs-lisp/cl-macs.el")
+    "vendor/emacs-lisp/obsolete/cl.el")
   "Bundle members inserted as normalized source rather than verbatim text.
 
 `nelisp-bootstrap--write-bundle' otherwise concatenates every file
@@ -1672,13 +1678,43 @@ strings or comments, and calls with any non-literal argument, are kept."
     (goto-char end)
     (set-marker end nil)))
 
+(defconst nelisp-bootstrap--early-gnu-definitions
+  '(;; Full subr.el installs the global keymap using the C-side
+    ;; use-global-map entry point, published later in this bundle.
+    ("vendor/staged-emacs-lisp/subr.el"
+     delete-consecutive-dups rassq-delete-all macrop
+     definition-prefixes register-definition-prefixes)
+    ;; Publish the Custom metadata needed during bootstrap.  The complete
+    ;; generated autoload table remains available through the vendor path.
+    ("vendor/emacs-lisp/loaddefs.el"
+     customize-package-emacs-version-alist))
+  "Definitions read verbatim from GNU files before the editor substrate.")
+
+(defun nelisp-bootstrap--early-gnu-source (file relative-file)
+  "Return the GNU source subset from FILE pinned as RELATIVE-FILE."
+  (require 'nelisp-vendor-source)
+  (nelisp-vendor-source-forms
+   relative-file
+   (cdr (assoc relative-file nelisp-bootstrap--early-gnu-definitions))
+   file))
+
 (defun nelisp-bootstrap--insert-bundle-file-body (file rel)
   "Insert FILE's bundle body text for relative name REL at point."
   (let ((start (point)))
-    (if (nelisp-bootstrap--normalized-bundle-file-p file rel)
-        (insert (standalone-source-normalize-file-to-string file))
+    (cond
+     ((assoc rel nelisp-bootstrap--early-gnu-definitions)
+      (insert (nelisp-bootstrap--early-gnu-source file rel)))
+     ((equal rel "vendor/emacs-lisp/progmodes/elisp-mode.el")
+      ;; Preserve the file loader's macroexpansion boundary.  Concatenating
+      ;; this source eagerly expands flymake-log and loads Flymake at boot.
+      ;; The separate load owns its load-history entry.
+      (insert "(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment nil))\n")
+      (insert (format "(load %S nil 'no-message t t)\n" file)))
+     ((nelisp-bootstrap--normalized-bundle-file-p file rel)
+      (insert (standalone-source-normalize-file-to-string file)))
+     (t
       (insert-file-contents file)
-      (goto-char (point-max)))
+      (goto-char (point-max))))
     (nelisp-bootstrap--fold-constant-regexp-opt start)))
 
 (defun nelisp-bootstrap--write-bundle (files output)
@@ -1894,7 +1930,11 @@ Nested source-string evaluation is reserved for explicit diagnostics."
     (dolist (file files)
       (let ((rel (nelisp-bootstrap--logical-name file)))
         (insert "\n;;; >>> " rel "\n")
-        (dolist (source-form (nelisp-bootstrap--read-forms-from-file file))
+        (dolist (source-form
+                 (if (assoc rel nelisp-bootstrap--early-gnu-definitions)
+                     (car (read-from-string
+                           (concat "(" (nelisp-bootstrap--early-gnu-source file rel) ")")))
+                   (nelisp-bootstrap--read-forms-from-file file)))
           (let* ((form (nelisp-bootstrap--standalone-repl-form source-form))
                  (form-string (nelisp-bootstrap--repl-form-string form)))
             (if (nelisp-bootstrap--direct-repl-form-p rel form form-string)

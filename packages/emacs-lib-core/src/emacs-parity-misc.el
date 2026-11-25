@@ -520,13 +520,6 @@ Return a reordered plist."
               (cons (cons criteria (delete-dups profiles))
                     connection-local-criteria-alist))))))
 
-;; `emacs-parity-macros2.el' is hoisted before `generator.el' for bootstrap
-;; parsing, while this miscellaneous parity layer naturally follows it.  Put
-;; the saved finite-generator shim back after GNU generator has overwritten it.
-(when (and (fboundp 'nelisp--write-stdout-bytes)
-           (fboundp 'emacs-parity-macros2--restore-iter-shims))
-  (emacs-parity-macros2--restore-iter-shims))
-
 ;;;; --- native compilation (explicit "unavailable" graceful no-op) ----
 
 ;; This runtime has no native compiler.  Rather than leave `native-compile-async'

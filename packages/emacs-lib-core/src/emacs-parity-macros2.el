@@ -17,7 +17,7 @@
 ;; the offending expander/expansion NOT error.
 ;;
 ;; All overrides are GUARDED to the standalone NeLisp runtime -- these are
-;; global clobbers (backquote, with-eval-after-load, iter-defun, ...) that
+;; global clobbers (with-eval-after-load, define-minor-mode, ...) that
 ;; MUST NOT touch host Emacs (Doc: "Host Emacs should remain safe to load.
 ;; Avoid global overrides except in guarded compatibility layers.").
 ;;
@@ -36,11 +36,6 @@
 ;;                                     (lambda () ...))'; funcalling that lambda
 ;;                                     (feature already loaded) aborts on the
 ;;                                     substrate's closure application.
-;;   E. iter-defun / iter-lambda    -> generator.el's CPS transform needs
-;;                                     `macroexpand-all' to honor its ENV arg
-;;                                     (Doc 22 A12, a CORE gap); a narrow eager
-;;                                     non-CPS shim covers the FINITE generators
-;;                                     that init actually defines.
 
 ;;; Code:
 
@@ -247,130 +242,7 @@ evaluator, which consults the hashtable rather than the function cell."
   (defmacro with-eval-after-load (file &rest body)
     "Closure-free `with-eval-after-load' (audit parity): defer a QUOTED form."
     (list 'eval-after-load file (list 'quote (cons 'progn body))))
-  (emacs-parity-macros2--register-macro 'with-eval-after-load)
-
-  ;;;; === E. Eager (non-CPS) iter-defun / iter-lambda =================
-  ;;
-  ;; ROOT (/tmp/err-evil:767 (iter-defun avl-tree-iter ...); :13
-  ;; (queue--when-generators (iter-defun queue-iter ...))): generator.el's
-  ;; real `iter-defun' is a continuation-passing transform that passes a
-  ;; special macro-environment to `macroexpand-all' to intercept `iter-yield'.
-  ;; The substrate's `macroexpand-all'/`-1' currently IGNORE their ENV arg
-  ;; (Doc 22 A12) -- a CORE reader gap in vendor/nelisp that NO disk shim can
-  ;; close for general (lazy/infinite/bidirectional) generators.  The CPS
-  ;; transform bare-aborts even at DEFINITION.
-  ;;
-  ;; FIX (narrow, honest): the generators init actually defines
-  ;; (avl-tree-iter, queue-iter) are FINITE and have the eager shape
-  ;;   (let (...) (while COND (iter-yield X)))
-  ;; where the yield return value is unused.  Provide an EAGER, non-CPS
-  ;; `iter-defun' that, at CALL time, runs the body and collects every yield
-  ;; into a list, returning a cursor iterator.  It never calls
-  ;; `macroexpand-all' (A12-independent), emits no closures (C-independent),
-  ;; and is hang-safe via a hard yield cap (a pathological infinite generator
-  ;; degrades to a caught error, never a stall).  This is a PARITY
-  ;; APPROXIMATION: lazy/infinite/bidirectional generators are NOT supported
-  ;; and still require the Doc 22 A12 CORE fix.
-  (defvar nelisp-iter--yield-cap 200000
-    "Hard cap on eager `iter-yield' count; exceeding it signals rather than hangs.")
-
-  (defun nelisp-iter--make (list)
-    "Wrap LIST in a mutable cursor iterator (a `nelisp-iter'-tagged cons box)."
-    (cons 'nelisp-iter list))
-
-  (defun nelisp-iter--drain (it)
-    "Return the remaining element list of iterator IT (or IT if not one)."
-    (if (and (consp it) (eq (car it) 'nelisp-iter)) (cdr it) it))
-
-  (defun nelisp-iter--walk (form accsym nsym)
-    "Rewrite (iter-yield X) / (iter-yield-from IT) inside FORM to accumulate
-into ACCSYM (reversed), counting via NSYM against `nelisp-iter--yield-cap'.
-Quote / function(#') templates are left untouched."
-    (cond
-     ((not (consp form)) form)
-     ((eq (car form) 'quote) form)
-     ((eq (car form) 'function) form)
-     ((eq (car form) 'iter-yield)
-      (list 'progn
-            (list 'setq nsym (list '1+ nsym))
-            (list 'if (list '> nsym 'nelisp-iter--yield-cap)
-                  (list 'error "nelisp eager iter cap exceeded")
-                  (list 'setq accsym
-                        (list 'cons (nelisp-iter--walk (cadr form) accsym nsym)
-                              accsym)))))
-     ((eq (car form) 'iter-yield-from)
-      (list 'setq accsym
-            (list 'append
-                  (list 'reverse
-                        (list 'nelisp-iter--drain
-                              (nelisp-iter--walk (cadr form) accsym nsym)))
-                  accsym)))
-     (t (cons (nelisp-iter--walk (car form) accsym nsym)
-              (mapcar (lambda (s) (nelisp-iter--walk s accsym nsym)) (cdr form))))))
-
-  (defun iter-next (iterator &optional _yield-result)
-    "Return the next value from eager ITERATOR, or signal `iter-end-of-sequence'."
-    (let ((rem (cdr iterator)))
-      (if rem
-          (progn (setcdr iterator (cdr rem)) (car rem))
-        (signal 'iter-end-of-sequence nil))))
-
-  (defun iter-close (_iterator)
-    "No-op close for eager iterators."
-    nil)
-
-  (defmacro iter-defun (name args &rest body)
-    "Eager (non-CPS) `iter-defun' for FINITE generators (audit parity)."
-    (let ((acc (make-symbol "--iter-acc--"))
-          (n (make-symbol "--iter-n--"))
-          (doc (when (stringp (car body)) (prog1 (car body) (setq body (cdr body))))))
-      (list 'defun name args (or doc "")
-            (list 'let (list (list acc nil) (list n 0))
-                  (cons 'progn
-                        (mapcar (lambda (s) (nelisp-iter--walk s acc n)) body))
-                  (list 'nelisp-iter--make (list 'nreverse acc))))))
-
-  (defmacro iter-lambda (args &rest body)
-    "Eager (non-CPS) `iter-lambda' for FINITE generators (audit parity)."
-    (let ((acc (make-symbol "--iter-acc--"))
-          (n (make-symbol "--iter-n--")))
-      (list 'lambda args
-            (list 'let (list (list acc nil) (list n 0))
-                  (cons 'progn
-                        (mapcar (lambda (s) (nelisp-iter--walk s acc n)) body))
-                  (list 'nelisp-iter--make (list 'nreverse acc))))))
-
-  ;; The bootstrap intentionally hoists this file ahead of `generator.el' so
-  ;; the latter can be read.  Save the eager cells here: the full GNU file is
-  ;; evaluated afterward and replaces them, while a naturally late parity
-  ;; module restores them before user init.
-  (defvar emacs-parity-macros2--iter-defun-shim
-    (symbol-function 'iter-defun))
-  (defvar emacs-parity-macros2--iter-lambda-shim
-    (symbol-function 'iter-lambda))
-  (defvar emacs-parity-macros2--iter-next-shim
-    (symbol-function 'iter-next))
-  (defvar emacs-parity-macros2--iter-close-shim
-    (symbol-function 'iter-close))
-
-  (defun emacs-parity-macros2--restore-iter-shims ()
-    "Restore eager iterator cells after bundled `generator.el' overwrites them."
-    (fset 'iter-defun emacs-parity-macros2--iter-defun-shim)
-    (fset 'iter-lambda emacs-parity-macros2--iter-lambda-shim)
-    (fset 'iter-next emacs-parity-macros2--iter-next-shim)
-    (fset 'iter-close emacs-parity-macros2--iter-close-shim)
-    (emacs-parity-macros2--register-macro 'iter-defun)
-    (emacs-parity-macros2--register-macro 'iter-lambda))
-
-  (unless (get 'iter-end-of-sequence 'error-conditions)
-    (put 'iter-end-of-sequence 'error-conditions '(iter-end-of-sequence error))
-    (put 'iter-end-of-sequence 'error-message "iteration terminated"))
-  (emacs-parity-macros2--register-macro 'iter-defun)
-  (emacs-parity-macros2--register-macro 'iter-lambda)
-  ;; generator.el is otherwise require-able; our eager macros must win, so
-  ;; re-provide only if not already, and leave the vendored file's other
-  ;; entry points (iter-yield is intercepted structurally above) in place.
-  (unless (featurep 'generator) (provide 'generator)))
+  (emacs-parity-macros2--register-macro 'with-eval-after-load))
 
 (provide 'emacs-parity-macros2)
 
