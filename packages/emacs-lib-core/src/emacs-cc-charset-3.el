@@ -6,27 +6,62 @@
   "Return non-nil if and only if OBJECT is a charset."
   (and (emacs-cc-charset--attrs-of object) t))
 
-(defun emacs-cc-charset--map-scan (function table arg cs from to lo hi)
-  "Port of map_char_table_for_charset by scanning LO..HI of TABLE.
-As in chartab.c, one RANGE cons is passed to every call of FUNCTION; its
-car is reset to nil after each call."
-  (let ((c lo) (range (cons nil nil)))
-    (while (<= c hi)
-      (let ((v (aref table c)))
-        (if (or (null v)
-                (and cs (let ((code (emacs-cc-charset--encode cs c))) (or (< code from) (> code to)))))
-            (when (car range)
-              (setcdr range (1- c))
-              (funcall function range arg)
-              (setcar range nil))
-          (unless (car range) (setcar range c))))
-      (setq c (1+ c)))
-    (when (car range)
-      (setcdr range hi)
-      (funcall function range arg))))
+(defvar emacs-cc-charset--map-runs (make-hash-table :test 'eq :weakness 'key)
+  "Non-nil runs of completed encoder and deunifier tables, keyed by table.")
 
-(defun emacs-cc-charset--bounds-of (table)
-  (or (cdr (assq table emacs-cc-charset--bounds)) (cons 0 emacs-cc-charset--max-char)))
+(defun emacs-cc-charset--encoder-runs (table)
+  "Return TABLE's stored runs in character order.
+Encoder and deunifier tables are filled before publication and reused by
+multiple partial charset scans."
+  (or (gethash table emacs-cc-charset--map-runs)
+      (let ((runs (reverse (emacs-char-table--ranges table)))
+            (c 255))
+        (while (>= c 0)
+          (let ((value (aref table c)))
+            (when value (push (cons (cons c c) value) runs)))
+          (setq c (1- c)))
+        (puthash table runs emacs-cc-charset--map-runs))))
+
+(defun emacs-cc-charset--first-index-at-or-after (cs code)
+  "Return the first index in CS with an encoded value greater than or equal to CODE."
+  (let ((lo 0) (hi (1+ (emacs-cc-charset--c2i cs (emacs-cc-charset--cs cs max-code)))))
+    (while (< lo hi)
+      (let ((mid (ash (+ lo hi) -1)))
+        (if (< (emacs-cc-charset--i2c cs mid) code)
+            (setq lo (1+ mid))
+          (setq hi mid))))
+    lo))
+
+(defun emacs-cc-charset--map-scan (function table arg cs from to)
+  "Visit the selected character runs of an encoder or deunifier TABLE.
+For a partial scan, CS supplies the encoding of the stored values.  As
+in chartab.c, each callback receives the same mutable range cons."
+  (let* ((compact (and cs (eq (emacs-cc-charset--cs cs method) 'map)
+                       (emacs-cc-charset--cs cs compact)))
+         (ascii (and cs (emacs-cc-charset--cs cs ascii-compat)))
+         ;; Convert the bounds once.  Index order is code order even
+         ;; when the codes have holes between rows of the code space.
+         (low (if (or (null cs) compact) from
+                (emacs-cc-charset--first-index-at-or-after cs from)))
+         (high (if (or (null cs) compact) to
+                 (1- (emacs-cc-charset--first-index-at-or-after cs (1+ to)))))
+         (range (cons nil nil)))
+    (dolist (run (emacs-cc-charset--encoder-runs table))
+      (let* ((start (caar run))
+             (end (cdar run))
+             (value (cdr run)))
+        ;; ASCII entries are stored individually.  ENCODE_CHAR returns
+        ;; their identity code in ASCII-compatible charsets.
+        (when (cond ((and ascii (< start 128)) (<= from start to))
+                    (cs (<= low value high))
+                    (t t))
+          (when (and (car range) (/= start (1+ (cdr range))))
+            (funcall function range arg)
+            (setcar range nil))
+          (unless (car range) (setcar range start))
+          (setcdr range end))))
+    (when (car range)
+      (funcall function range arg))))
 
 (defun emacs-cc-charset--map-chars (function arg cs from to)
   "Port of map_charset_chars."
@@ -44,16 +79,14 @@ car is reset to nil after each call."
             (emacs-cc-charset--load cs 2))
           (let ((tbl (emacs-cc-charset--at attrs deunifier)))
             (when (char-table-p tbl)
-              (let ((b (emacs-cc-charset--bounds-of tbl)))
-                (emacs-cc-charset--map-scan function tbl arg (and partial cs) from to (car b) (cdr b))))))
+              (emacs-cc-charset--map-scan function tbl arg (and partial cs) from to))))
         (funcall function (cons from-c to-c) arg)))
      ((eq method 'map)
       (unless (char-table-p (emacs-cc-charset--at attrs encoder))
         (emacs-cc-charset--load cs 2))
       (let ((tbl (emacs-cc-charset--at attrs encoder)))
         (when (char-table-p tbl)
-          (let ((b (emacs-cc-charset--bounds-of tbl)))
-            (emacs-cc-charset--map-scan function tbl arg (and partial cs) from to (car b) (cdr b))))))
+          (emacs-cc-charset--map-scan function tbl arg (and partial cs) from to))))
      ((eq method 'subset)
       (let* ((sub (emacs-cc-charset--at attrs subset))
              (pcs (emacs-cc-charset--from-id (aref sub 0))) (offset (aref sub 3)))
@@ -409,7 +442,7 @@ FUNCTION is called with two arguments: RANGE (FROM . TO) and ARG."
       emacs-cc-charset--iso (make-vector 768 -1) emacs-cc-charset--mule (make-vector 256 -1)
       emacs-cc-charset--ordered nil emacs-cc-charset--non-preferred-head nil
       emacs-cc-charset--iso-2022-list nil emacs-cc-charset--mule-list nil
-      emacs-cc-charset--unify-table nil emacs-cc-charset--bounds nil
+      emacs-cc-charset--unify-table nil
       emacs-cc-charset--work nil charset-list nil)
 
 (setq emacs-cc-charset--id-ascii

@@ -1,0 +1,15 @@
+C1 mnemonics             (".al" ".Lalr" ".Lalr" ".6alr" ".alr" "" ".bjl" ".Lcjlv" ".Lhjl" ".GLcghj" ".LYchjy" ".R" ".Rb" ".Li" ".0Lt" ".0Lo" ".L" ".Lh" ".HLchj|" ".KLchj|" ".Ljk|" ".CLchj|" ".CLj|" ".chj|" ".ALchjl|" ".CLc|" ".CLc|" "." "L")
+C2 docstrings            ("ASCII" "Japanese" "2-byte han" "line breakable" "Combining" "Strong L2R" "Strong R2L" "Base" "space for indent")
+C3 shared sets           (t t)
+C4 set type              (t 128)
+C5 unused                33
+C6 copy modify           (".LZalr" ".Lalr" "probe" nil)
+C7 reset                 (".HLch|" ".KLchj|")
+C8 regexp \cj            (3 7 0)
+C9 runs                  19238
+C10 Unicode cases        ((".Lalr" t nil t nil) (".Lcjlv" t nil t nil) (".HLchj|" t nil t nil) (".KLchj|" t nil t nil) (".CLchj|" t nil t nil) (".Lh" t nil t nil) (".0Lt" t nil t nil) (".Rb" t nil nil t) (".R" t nil nil t) ("^j" nil t nil nil) ("HK^|" nil t nil nil) (".6b" t nil nil nil) ("5R" nil nil nil t))
+C11 word boundaries      (6 12 16 20 22 24 27 31)
+C12 CJK width            ((1 1 1 2 2 2 0 2) (1 2 2 2 2 2 2 2))
+C13 Japanese             ("Japanese" 2 2)
+C14 make table           (t t t "" ("" "Z" "Z" "Z" "Z" "") nil)
+C15 regexp live table    (1 nil)
