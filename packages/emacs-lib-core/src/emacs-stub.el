@@ -2196,11 +2196,6 @@ Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
     "Stub: the standalone reader only sees local files, so always nil."
     (ignore file identification connected) nil))
 
-(unless (fboundp 'file-attribute-modification-time)
-  (defun file-attribute-modification-time (attributes)
-    "Return the modification time from a `file-attributes' list (element 5)."
-    (nth 5 attributes)))
-
 (unless (fboundp 'get-char-property)
   (defun get-char-property (position prop &optional object)
     "Stub: standalone tracks no text properties / overlays, so always nil."

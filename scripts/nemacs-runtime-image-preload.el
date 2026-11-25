@@ -185,13 +185,22 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
       ;; the complete menus with defvar, which requires unbound variables.
       (makunbound 'menu-bar-edit-menu)
       (makunbound 'menu-bar-options-menu))
-    ;; Preserve the reader's native-row functions and the setenv that
-    ;; shares the reader's environment store with getenv.
+    ;; Keep the reader's environment store and the byte-compiled GNU
+    ;; accessors.  Interpreting the accessors changes the error datum when
+    ;; an attribute list has an improper tail.
     (let ((pins (cond
-                 ((equal library "emacs-lisp/env.el") '(getenv setenv))))
+                 ((equal library "emacs-lisp/env.el") '(getenv setenv))
+                 ((equal library "emacs-lisp/files.el")
+                  '(file-attribute-type file-attribute-link-number
+                    file-attribute-user-id file-attribute-group-id
+                    file-attribute-access-time file-attribute-modification-time
+                    file-attribute-status-change-time file-attribute-size
+                    file-attribute-modes file-attribute-inode-number
+                    file-attribute-device-number file-attribute-file-identifier))))
           saved)
       (dolist (name pins)
-        (push (cons name (symbol-function name)) saved))
+        (when (fboundp name)
+          (push (cons name (symbol-function name)) saved)))
       (unwind-protect
           (condition-case err
               (nemacs-runtime-image-preload--load-source-file
