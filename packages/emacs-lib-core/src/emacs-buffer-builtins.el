@@ -556,9 +556,6 @@ called directly."
       (remhash buffer emacs-buffer-builtins--indirect-families)
       (dolist (peer family)
         (when (and (not (eq peer buffer)) (buffer-live-p peer))
-          (dolist (marker (nelisp-buffer-markers peer))
-            (setf (nelisp-marker-buffer marker) nil))
-          (setf (nelisp-buffer-markers peer) nil)
           (emacs-buffer-builtins--kill-one orig peer)
           (remhash peer emacs-buffer--state))))
     (when base
@@ -2921,34 +2918,40 @@ Supersedes the vendor NeLisp stdlib `setq-default' (plain `setq' alias)
       (funcall original buffer))))
 
 (defun emacs-buffer-builtins--save-labeled-restriction (original &rest body)
-  "Save labels and moving bounds around BODY, releasing all saved markers."
+  "Save labels and the core restriction around BODY."
   (ignore original)
-  (let ((buffer (make-symbol "restriction-buffer"))
-        (stack (make-symbol "restriction-stack"))
-        (start (make-symbol "restriction-start"))
-        (end (make-symbol "restriction-end")))
-    (list 'let* (list (list buffer '(current-buffer))
-                     (list stack (list 'emacs-buffer-builtins--label-stack buffer))
-                     (list start '(copy-marker (point-min) nil))
-                     (list end '(copy-marker (point-max) t)))
+  (let ((state (make-symbol "restriction-state")))
+    (list 'let (list (list state '(emacs-buffer-builtins--save-restriction-state)))
           (list 'unwind-protect (cons 'progn body)
-                (list 'unwind-protect
-                      (list 'progn
-                            (list 'emacs-buffer-builtins--restore-label-stack buffer stack)
-                            (list 'when (list 'buffer-live-p buffer)
-                                  (list 'with-current-buffer buffer '(widen)
-                                        (list 'narrow-to-region
-                                              (list 'marker-position start)
-                                              (list 'marker-position end)))))
-                      (list 'set-marker start nil)
-                      (list 'set-marker end nil))))))
+                (list 'emacs-buffer-builtins--restore-restriction-state state)))))
+
+(defun emacs-buffer-builtins--save-restriction-state ()
+  "Save the accessible range and any active labels for the current buffer."
+  (let* ((buffer nelisp--current-buffer)
+         (state (nelisp--save-restriction))
+         (stack (and emacs-buffer--event-states
+                     (emacs-buffer-builtins--label-stack buffer))))
+    (if stack (vector buffer stack state) state)))
+
+(defun emacs-buffer-builtins--restore-restriction-state (state)
+  "Restore the accessible range and any labels in STATE."
+  (cond
+   ((vectorp state)
+    (unwind-protect
+        (emacs-buffer-builtins--restore-label-stack (aref state 0) (aref state 1))
+      (nelisp--restore-restriction (aref state 2))))
+   (emacs-buffer--event-states
+    (let ((buffer (if (consp state) (nelisp-marker-buffer (car state)) state)))
+      (unwind-protect
+          (when buffer (emacs-buffer-builtins--restore-label-stack buffer nil))
+        (nelisp--restore-restriction state))))
+   (t (nelisp--restore-restriction state))))
 
 (defun emacs-buffer-builtins--label-stack (buffer)
   "Retain the label stack for BUFFER without allocating state."
-  (let* ((ext (gethash buffer emacs-buffer--state))
-         (stack (and ext (emacs-buffer--labeled-restrictions buffer))))
-    (emacs-buffer-builtins--retain-label-stack stack)
-    stack))
+  (let ((state (emacs-buffer--event-state buffer)))
+    (when state
+      (emacs-buffer-builtins--retain-label-stack (aref state 0)))))
 
 (defun emacs-buffer-builtins--retain-label-stack (stack)
   "Retain STACK's head; each head in turn owns its tail."
@@ -2970,13 +2973,12 @@ Supersedes the vendor NeLisp stdlib `setq-default' (plain `setq' alias)
 
 (defun emacs-buffer-builtins--restore-label-stack (buffer stack)
   "Restore BUFFER's STACK before restoring its saved accessible range."
-  (if (buffer-live-p buffer)
-      (let ((ext (gethash buffer emacs-buffer--state)))
-        (when ext
-          (emacs-buffer-builtins--release-label-stack
-           (emacs-buffer--labeled-restrictions buffer))
-          (emacs-buffer--set-labeled-restrictions buffer stack)))
-    (emacs-buffer-builtins--release-label-stack stack)))
+  (let ((state (emacs-buffer--event-state buffer)))
+    (if (and state (buffer-live-p buffer))
+        (progn
+          (emacs-buffer-builtins--release-label-stack (aref state 0))
+          (aset state 0 stack))
+      (when stack (emacs-buffer-builtins--release-label-stack stack)))))
 
 (defvar emacs-buffer-builtins--restriction-bridge-installed nil
   "Non-nil after labeled narrowing has connected to native narrowing.")
@@ -2987,6 +2989,10 @@ Supersedes the vendor NeLisp stdlib `setq-default' (plain `setq' alias)
     (setq emacs-buffer-builtins--restriction-bridge-installed t)
     (advice-add 'nelisp-narrow-to-region :around #'emacs-buffer-builtins--restricted-narrow)
     (advice-add 'nelisp-widen :around #'emacs-buffer-builtins--restricted-widen)
+    (when (boundp 'nelisp-bytecode-restriction-provider)
+      (setq nelisp-bytecode-restriction-provider
+            (cons #'emacs-buffer-builtins--save-restriction-state
+                  #'emacs-buffer-builtins--restore-restriction-state)))
     (if (fboundp 'nelisp--set-special-form-implementation)
         (nelisp--set-special-form-implementation
          'save-restriction

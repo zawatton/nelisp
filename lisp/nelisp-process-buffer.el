@@ -27,7 +27,6 @@
 (defvar nelisp-process-buffer--original-live (symbol-function 'process-live-p))
 (defvar nelisp-process-buffer--original-buffer (symbol-function 'process-buffer))
 (defvar nelisp-process-buffer--original-exit (symbol-function 'process-exit-status))
-(defvar nelisp-process-buffer--original-markerp (symbol-function 'markerp))
 
 ;; Extension point for other process representations.  A unit that owns
 ;; its own process objects registers (PREDICATE . FUNCTION) per public name;
@@ -203,40 +202,7 @@ NAME is the owning process name; GNU calls a stderr buffer's channel
                channel (format "\nProcess %s finished\n" (aref channel 1))))))))))
 
 (when (fboundp 'nl-ffi-call)
-  ;; Use the runtime's existing marker representation and edit tracking.
-  ;; gnu562: the captured native is called by name; `funcall' of the
-  ;; variable cost about 0.3 us of a 0.75 us `markerp'.
-  (defalias 'nelisp-process-buffer--original-markerp-fn
-    nelisp-process-buffer--original-markerp)
-  (defun markerp (object)
-    (or (nelisp-marker-p object)
-        (nelisp-process-buffer--original-markerp-fn object)))
-  (defun marker-position (marker)
-      (unless (nelisp-marker-p marker)
-        (signal 'wrong-type-argument (list 'markerp marker)))
-      (and (nelisp-marker-buffer marker) (nelisp-marker-position marker)))
-  (defun marker-buffer (marker)
-      (unless (nelisp-marker-p marker)
-        (signal 'wrong-type-argument (list 'markerp marker)))
-      (nelisp-marker-buffer marker))
-  (when (or (not (fboundp 'set-marker)) (get 'set-marker 'emacs-stub-bulk))
-    (defun set-marker (marker position &optional buffer)
-      "Place MARKER in BUFFER, defaulting to the current buffer."
-      (unless (nelisp-marker-p marker)
-        (signal 'wrong-type-argument (list 'markerp marker)))
-      (when (nelisp-marker-p position)
-        (setq position (marker-position position)))
-      (unless (or (null position) (integerp position))
-        (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
-      (let ((target (or buffer (current-buffer))))
-        (unless (bufferp target) (signal 'wrong-type-argument (list 'bufferp target)))
-        (if (or (null position) (not (buffer-live-p target)))
-            (nelisp-set-marker marker nil)
-          (nelisp-set-marker marker
-                             (max 1 (min (1+ (nelisp-buffer-size target)) position)) target)))
-      marker))
-  (dolist (name '(markerp marker-position marker-buffer set-marker))
-    (put name 'emacs-stub-bulk nil))
+  ;; Channel markers use the runtime's marker API and follow ordinary edits.
   (defun process-mark (process)
     (nelisp-process-kind--call 'process-mark (list process)
                                #'nelisp-process-buffer-mark))
