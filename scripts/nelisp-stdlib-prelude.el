@@ -22918,7 +22918,15 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                   (start (if sub (+ i 3) (+ i 2))))
              (unless (and (< start n) (= (aref s start) 91))
                (signal 'invalid-read-syntax (list "#^")))
-             (let ((r (nelisp--rd-one s start n)))
+             ;; A subtable's ordinary vector payload can use the fast
+             ;; reader. Stop before any reader dispatch so nested tables and
+             ;; read labels stay in this reader's shared state.
+             (let* ((limit (and sub (not nelisp--rd-positioning)
+                                (fboundp 'nelisp--read-all-from-string-native)
+                                (or (string-search "#" s start) n)))
+                    (native (and limit
+                                 (nelisp--read-all-from-string-native s start limit)))
+                    (r (or native (nelisp--rd-one s start n))))
                (cons (if sub
                          (nelisp--rd-chartab-make-subtable (car r))
                        (nelisp--rd-chartab-from-raw

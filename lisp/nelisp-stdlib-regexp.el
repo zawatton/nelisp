@@ -3097,7 +3097,10 @@ keeps this off the packed result.)"
   "Native `string-match'.  Return t when declined, else what it answers."
   (let ((fold (and case-fold-search t)))
    (if (or search-spaces-regexp nlre--cap-track
-          (and fold (not (nlre--nat-fold-default-p))))
+          ;; Like the Lisp matcher, use the built-in fold when the buffer's
+          ;; canon gives the same translations for this pattern and subject.
+          (and fold (not (nlre--nat-fold-default-p))
+               (nlre--search-translate-table regexp string)))
       t
     (let ((entry (nlre--nat-program regexp fold nil)))
       (if (null entry) t
