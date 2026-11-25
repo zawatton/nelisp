@@ -212,10 +212,6 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   (custom-reevaluate-setting 'comment-column)
   (advice-add 'substitute-command-keys :around
               #'emacs-keymap-builtins--substitute-command-keys)
-  ;; Avoid walking the expanded native Unicode keymap on the first Help lookup.
-  (let ((slot (emacs-keymap-full-slot (current-global-map))))
-    (when slot
-      (emacs-keymap-builtins--where-is-char-table #'ignore slot)))
   (nemacs-runtime-image-preload--reassert-process-bridge)
   (nemacs-runtime-image-preload--retry-stale-fx)
   ;; The reconvert compiles can record a fresh `none' behind them; one more

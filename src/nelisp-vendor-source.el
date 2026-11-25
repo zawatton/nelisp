@@ -158,6 +158,13 @@ for a consumer that wants the entire file rather than one extracted form."
          (ordered (sort forms (lambda (a b) (< (car a) (car b))))))
     (mapconcat #'cdr ordered "\n")))
 
+(defun nelisp-vendor-source-subr-keymap ()
+  "Return the exact GNU subr.el forms used by the keymap substrate."
+  (nelisp-vendor-source-forms
+   "vendor/staged-emacs-lisp/subr.el"
+   '(map-keymap-sorted key-substitution-in-progress
+     substitute-key-definition substitute-key-definition-key)))
+
 (defun nelisp-vendor-source-form-position (relative-file symbol)
   "Return SYMBOL's source position in RELATIVE-FILE."
   (car (car (gethash symbol

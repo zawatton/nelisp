@@ -224,25 +224,38 @@ strings, integers) are returned as-is (= shared)."
          (lambda (e)
            (cond
             ((emacs-char-table-p e)
-             ;; Copy raw storage first, then transform effective binding runs.
-             (if (and (fboundp 'emacs-char-table--owned-p)
-                      (emacs-char-table--owned-p e)
-                      (fboundp 'emacs-char-table--copy-storage))
-                 (let ((copy (emacs-char-table--copy-storage e)))
-                   (emacs-char-table-map
-                    (lambda (key binding)
-                      (emacs-char-table-set-range
-                       copy key
-                       (if (emacs-keymap-keymapp binding)
-                           (emacs-keymap-copy-keymap binding)
-                         binding)))
-                    copy)
-                   copy)
-               (emacs-char-table-copy
-                e (lambda (binding)
-                    (if (emacs-keymap-keymapp binding)
-                        (emacs-keymap-copy-keymap binding)
-                      binding)))))
+             ;; The general emacs-lib native copy only keeps ASCII slots.
+             ;; Keymaps need the full topology, including non-ASCII runs.
+             (let ((copy (cond
+                          ((and (emacs-char-table--native-p e)
+                                (fboundp 'nelisp--copy-char-table))
+                           (nelisp--copy-char-table e))
+                          ((and (fboundp 'emacs-char-table--owned-p)
+                                (emacs-char-table--owned-p e)
+                                (fboundp 'emacs-char-table--copy-storage))
+                           (emacs-char-table--copy-storage e)))))
+               (if copy
+                   (progn
+                     (emacs-char-table-map
+                      (lambda (key binding)
+                        (emacs-char-table-set-range
+                         copy key
+                         (if (emacs-keymap-keymapp binding)
+                             (emacs-keymap-copy-keymap binding)
+                           binding)))
+                      copy)
+                     copy)
+                 (emacs-char-table-copy
+                  e (lambda (binding)
+                      (if (emacs-keymap-keymapp binding)
+                          (emacs-keymap-copy-keymap binding)
+                        binding))))))
+            ((vectorp e)
+             (vconcat (mapcar (lambda (binding)
+                                (if (emacs-keymap-keymapp binding)
+                                    (emacs-keymap-copy-keymap binding)
+                                  binding))
+                              e)))
             ((and (consp e) (eq (car e) t) (vectorp (cdr e)))
              ;; Legacy full-keymap slot vector — copy element-wise,
              ;; recurse on nested keymap bindings.
@@ -368,15 +381,15 @@ binding is not a keymap, signal `emacs-keymap-bad-key' (= matches Emacs
   "Number of ASCII character codes a full keymap addresses directly.")
 
 (defun emacs-keymap--slot-p (e)
-  "Return non-nil when E is a full-keymap slot (char-table or legacy cons)."
+  "Return non-nil when E is a full-keymap slot."
   (or (emacs-char-table-p e)
+      (vectorp e)
       (and (consp e) (eq (car e) t) (vectorp (cdr e)))))
 
 (defun emacs-keymap--full-slot (keymap)
   "Return KEYMAP's full slot, or nil if KEYMAP is sparse.
-The slot is a char-table (current model) or a legacy =(t . VECTOR)=
-cons; use `emacs-keymap--slot-ref' / `emacs-keymap--slot-set' to access
-it regardless of representation."
+The slot is a char-table, vector, or legacy (t . VECTOR) cons.
+Use `emacs-keymap--slot-ref' and `emacs-keymap--slot-set' to access it."
   (cl-loop for e in (cdr keymap)
            when (emacs-keymap--slot-p e)
            return e))
@@ -400,6 +413,7 @@ legacy =(t . VECTOR)= shape."
      ((emacs-char-table--native-p slot) nil)
      ((emacs-char-table-p slot)
       (emacs-char-table-ascii-vector slot))
+     ((vectorp slot) slot)
      ((and (consp slot) (vectorp (cdr slot)))
       (cdr slot))
      (t nil))))
@@ -490,18 +504,19 @@ KEYMAP when installed, otherwise nil."
 (defun emacs-keymap--slot-char-p (k &optional slot)
   "Return non-nil when K is a character held by the full slot SLOT.
 A char-table slot holds every character, as in GNU keymap.c (e.g. the
-128..max-char self-insert range of GNU `global-map'); the legacy
-=(t . VECTOR)= slot holds only characters below its size."
+128..max-char self-insert range of GNU `global-map'). A dense vector
+holds only characters below its size."
   (and (integerp k) (>= k 0)
-       (< k (if (and slot (emacs-char-table-p slot))
-                (1+ (max-char))
-              emacs-keymap--full-slot-size))))
+       (< k (cond ((and slot (emacs-char-table-p slot)) (1+ (max-char)))
+                  ((vectorp slot) (length slot))
+                  ((consp slot) (length (cdr slot)))
+                  (t emacs-keymap--full-slot-size)))))
 
 (defun emacs-keymap--slot-ref (slot k)
-  "Return SLOT's binding for character K (char-table or legacy cons)."
+  "Return SLOT's binding for character K."
   (if (emacs-char-table-p slot)
       (emacs-char-table-ref slot k)
-    (aref (cdr slot) k)))
+    (aref (if (vectorp slot) slot (cdr slot)) k)))
 
 (defvar emacs-keymap--where-is-cache nil
   "Reverse binding index for the last set of maps searched without menus.")
@@ -510,13 +525,13 @@ A char-table slot holds every character, as in GNU keymap.c (e.g. the
   "Cached character runs of expanded native keymap char-tables.")
 
 (defun emacs-keymap--slot-set (slot k def)
-  "Set SLOT's binding for character K to DEF (char-table or legacy cons)."
+  "Set SLOT's binding for character K to DEF."
   (if (emacs-char-table-p slot)
       (progn
         (when (emacs-char-table--native-p slot)
           (remhash slot emacs-keymap--native-runs))
         (emacs-char-table-set slot k def))
-    (aset (cdr slot) k def)))
+    (aset (if (vectorp slot) slot (cdr slot)) k def)))
 
 (defun emacs-keymap--key-equal-p (a b)
   "Return non-nil when key events A and B should be treated as equal."
@@ -531,15 +546,21 @@ sparse binding cons cell whose car matches K, or nil."
   (let ((tail (cdr keymap))
         slot
         binding)
-    (while (and tail (or (not slot) (not binding)))
+    (while (and (consp tail) (not (and slot binding))
+                (not (eq (car tail) 'keymap)))
       (let ((entry (car tail)))
         (cond
-         ((and (not slot) (emacs-keymap--slot-p entry))
-          (setq slot entry))
-         ((and (not binding)
-               (consp entry)
-               (emacs-keymap--key-equal-p (car entry) k))
-          (setq binding entry))))
+         ((consp entry)
+          (let ((event (car entry)))
+            (cond
+             ((and (not slot) (eq event t) (vectorp (cdr entry)))
+              (setq slot entry))
+             ((and (not binding) (emacs-keymap--key-equal-p event k))
+              (setq binding entry)))))
+         ((and (or (not slot)
+                   (and (vectorp slot) (not (emacs-keymap--slot-char-p k slot))))
+               (or (emacs-char-table-p entry) (vectorp entry)))
+          (setq slot entry))))
       (setq tail (cdr tail)))
     (cons slot binding)))
 
@@ -744,14 +765,18 @@ without a `keymapp' guard, exactly as it would on real Emacs."
 ;; `emacs-keymap-copy-keymap' walk).
 ;;;###autoload
 (defun emacs-keymap-keymap-parent (keymap)
-  "Return KEYMAP's parent keymap, or nil (nelisp-emacs storage convention)."
+  "Return KEYMAP's parent, accepting marked or spliced parent maps."
   (unless (emacs-keymap-keymapp keymap)
     (signal 'emacs-keymap-not-keymap (list keymap)))
-  (cl-loop for e in (cdr keymap)
-           when (and (consp e)
-                     (eq (car e) :emacs-keymap-parent)
-                     (emacs-keymap-keymapp (cdr e)))
-           return (cdr e)))
+  (let ((tail (cdr keymap)) parent)
+    (while (and (consp tail) (not parent))
+      (let ((entry (car tail)))
+        (cond
+         ((eq entry 'keymap) (setq parent tail))
+         ((eq (car-safe entry) :emacs-keymap-parent)
+          (setq parent (emacs-keymap--get-keymap (cdr entry))))))
+      (setq tail (cdr tail)))
+    (or parent (and tail (emacs-keymap--get-keymap tail)))))
 
 ;;;###autoload
 (defun emacs-keymap-set-keymap-parent (keymap parent)
@@ -770,16 +795,12 @@ signals `emacs-keymap-error'."
     (signal 'emacs-keymap-not-keymap (list parent)))
   (when (eq keymap parent)
     (signal 'emacs-keymap-error (list "Cannot set keymap as its own parent")))
-  ;; Drop any existing :emacs-keymap-parent entry.
-  (setcdr keymap
-          (cl-remove-if
-           (lambda (e)
-             (and (consp e) (eq (car e) :emacs-keymap-parent)))
-           (cdr keymap)))
-  (when parent
-    ;; Append at end so it does not interfere with sparse bindings.
-    (setcdr keymap (append (cdr keymap)
-                           (list (cons :emacs-keymap-parent parent)))))
+  (let ((previous keymap) (tail (cdr keymap)))
+    (while (and (consp tail)
+                (not (eq (car tail) 'keymap))
+                (not (eq (car-safe (car tail)) :emacs-keymap-parent)))
+      (setq previous tail tail (cdr tail)))
+    (setcdr previous (and parent (list (cons :emacs-keymap-parent parent)))))
   parent)
 
 ;;;###autoload

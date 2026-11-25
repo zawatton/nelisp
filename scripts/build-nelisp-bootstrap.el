@@ -18,6 +18,7 @@
 (require 'bytecomp)
 (require 'json)
 (require 'standalone-source-normalize)
+(require 'nelisp-vendor-source)
 
 (defvar nelisp-bootstrap-output-file
   (expand-file-name "build/nemacs-bootstrap.el"
@@ -1536,6 +1537,13 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '("(provide 'custom)\n"))
+     ((string= rel "src/emacs-keymap-builtins.el")
+      (list
+       (format "\n(if (fboundp 'nelisp--lh-segment) (nelisp--lh-segment %S))\n"
+               (expand-file-name "staged-emacs-lisp/subr.el"
+                                 (nelisp-bootstrap--vendor-dir)))
+       (nelisp-vendor-source-subr-keymap)
+       "\n"))
      ((string= rel "src/nemacs-main.el")
       (mapcar (lambda (form)
                 (concat (prin1-to-string form) "\n"))
@@ -1547,6 +1555,13 @@ overrides them for workflow tests."
     (cond
      ((string= rel "src/emacs-stub.el")
       '((provide 'custom)))
+     ((string= rel "src/emacs-keymap-builtins.el")
+      (let ((source (nelisp-vendor-source-subr-keymap)) (position 0) forms)
+        (while (< position (length source))
+          (let ((parsed (read-from-string source position)))
+            (push (car parsed) forms)
+            (setq position (cdr parsed))))
+        (nreverse forms)))
      ((string= rel "src/nemacs-main.el")
       (nelisp-bootstrap--runtime-load-path-prologue-forms)))))
 

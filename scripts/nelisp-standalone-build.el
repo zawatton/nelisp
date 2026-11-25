@@ -52082,7 +52082,7 @@ skipped and re-run once cl-preloaded has defined the base types."
     text-clone--maintaining text-clone--pending-overlays
     touch-screen-events-received undo--combining-change-calls noreturn
     1value set-local buffer-local-set-state buffer-local-set-state--get
-    buffer-local-restore-state take-while undefined map-keymap-sorted
+    buffer-local-restore-state take-while undefined
     keymap--menu-item-binding keymap--menu-item-with-binding
     keymap--merge-bindings keymap-canonicalize keyboard-translate
     local-key-binding listify-key-sequence eventp mouse-movement-p
@@ -52243,6 +52243,8 @@ resolved fine.  Same feature, different answer per entry point."
    ;; global keymap tree, before help.el binds into `global-map'.  The two
    ;; `fset' forms are GNU's text (the source index covers only defs).
    "\n;; --- GNU Emacs 31.1 subr.el: kbd and the global keymap tree ---\n"
+   (nelisp-vendor-source-subr-keymap)
+   "\n"
    (nelisp-vendor-source-forms "vendor/staged-emacs-lisp/subr.el" '(kbd))
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"
