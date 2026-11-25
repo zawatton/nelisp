@@ -77,16 +77,6 @@ return nil."
     "Join all STRINGS using SEPARATOR (default empty string)."
     (mapconcat #'identity strings (or separator ""))))
 
-(unless (fboundp 'member-ignore-case)
-  (defun member-ignore-case (elt list)
-    "Like `member', but case-insensitive on string elements.
-Non-string elements in LIST are ignored, matching `subr.el'."
-    (while (and list
-                (not (and (stringp (car list))
-                          (string-equal-ignore-case elt (car list)))))
-      (setq list (cdr list)))
-    list))
-
 (unless (fboundp 'md5)
   (defun md5 (object &optional start end coding-system noerror)
     "Return the MD5 digest of OBJECT, a string or buffer.

@@ -1691,11 +1691,6 @@ resolved to its canonical (obsolete-alias aware) variable first."
                         (cons element cur))))
       (and (boundp list-var) (symbol-value list-var)))))
 
-(unless (fboundp 'add-to-ordered-list)
-  (defun add-to-ordered-list (list-var element &optional order)
-    (ignore order)
-    (add-to-list list-var element)))
-
 ;;;; --- regex/menu load-time helpers --------------------------------------
 
 (unless (fboundp 'regexp-quote)
@@ -2151,17 +2146,6 @@ Standalone: returns FILENAME unchanged (no directory arithmetic)."
     "Return a shortened version of FILENAME.
 Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
     filename))
-
-(unless (fboundp 'shell-quote-argument)
-  (defun shell-quote-argument (argument)
-    "Quote ARGUMENT for passing to an inferior POSIX shell."
-    (if (equal argument "")
-        "''"
-      (concat "'"
-              (if (fboundp 'string-replace)
-                  (string-replace "'" "'\\''" argument)
-                argument)
-              "'"))))
 
 (unless (fboundp 'executable-find)
   (defun executable-find (command &optional remote)
