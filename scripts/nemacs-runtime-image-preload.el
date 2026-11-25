@@ -155,7 +155,6 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      ;; both CL autoload providers before consumers run.
                      "emacs-lisp/emacs-lisp/cl-seq.el"
                      "emacs-lisp/emacs-lisp/cl-extra.el"
-                     "emacs-lisp/tab-line.el"
                      "emacs-lisp/international/iso-transl.el"
                      "emacs-lisp/case-table.el"
                      "emacs-lisp/emacs-lisp/easy-mmode.el"
@@ -229,6 +228,9 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
     (let ((settings (nreverse custom-delayed-init-variables))
           (custom-delayed-init-variables t))
       (mapc #'custom-reevaluate-setting settings)))
+  ;; The tab buttons search `image-load-path' while the library loads.
+  (nemacs-runtime-image-preload--load-source-file
+   (concat repo-root "/vendor/emacs-lisp/tab-line.el"))
   ;; Publish the default from GNU newcomment.el after the reader's early
   ;; buffer-local variable initialization has supplied a provisional value.
   (custom-reevaluate-setting 'comment-column)
