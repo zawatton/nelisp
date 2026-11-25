@@ -225,6 +225,7 @@ nelisp--syscall-pivot-root	native-review	No classification row; review against D
 nelisp--write-stdout-bytes	native-review	No classification row; review against Doc 211 §6.
 nelisp--write-stderr-line	native-review	No classification row; review against Doc 211 §6.
 nelisp--read-all-from-string-native	native-review	R2 existing reader escape fix: Minimal native surface clause 4, reader needed before the first Lisp form; Lisp fallback/reference in scripts/nelisp-stdlib-prelude.el. No new builtin entry.
+nelisp--load-external-utf8-p	native-review	No classification row; review against Doc 211 §6.
 nl-current-unix-time	native-review	No classification row; review against Doc 211 §6.
 nl-unix-time-usec	native-review	No classification row; review against Doc 211 §6.
 float-time	native-must-stay	clock syscall
