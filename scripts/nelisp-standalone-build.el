@@ -31383,18 +31383,13 @@ bytes are written into a fresh 8-byte buffer instead."
           (if (= tag 14) 1 (if (= tag 15) 1 0)))))
     (defun m5_unibyte_tag_p (tag)
       (if (= tag 14) 1 (if (= tag 15) 1 0)))
-    (defun m5_ascii_span_end (data i n)
-      ;; Check only whole words inside the span. If a word has any high
-      ;; bits set, finish byte by byte to find the first non-ASCII byte.
-      (seq
-       (while (and (<= (+ i 8) n)
-                   (= (logand (heap-read-u64 data i) -9187201950435737472) 0))
-         (setq i (+ i 8)))
-       (while (and (< i n) (< (heap-read-u8 data i) 128))
-         (setq i (+ i 1)))
-       i))
+    ;; body2: one data pointer for the whole scan (nothing allocates in the loop),
+    ;; not `m5_byte_at''s nl_bi_strptr + nl_word_data per byte.
     (defun m5_ascii_bytes_p (str i n)
-      (if (= (m5_ascii_span_end (nl_bi_strptr str) i n) n) 1 0))
+      (let* ((data (nl_bi_strptr str)) (ok 1))
+        (seq (while (if (< i n) (= ok 1) 0)
+               (if (< (heap-read-u8 data i) 128) (setq i (+ i 1)) (setq ok 0)))
+             ok)))
     (defun m5_observably_unibyte_p (str)
       (let* ((tag (sexp-tag str)))
         (if (= (m5_unibyte_tag_p tag) 1) 1
@@ -35392,23 +35387,15 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= (seq
       (if (= (m5_observably_unibyte_p sx) 0)
           (seq (wf_copy32 out sx) 0)
-        (let ((ms (alloc-bytes 32 8)) (i 0) (start 0)
-              (n (bf_str_len sx)) (data (nl_bi_strptr sx)))
+        (let ((ms (alloc-bytes 32 8)) (i 0) (n (bf_str_len sx)))
           (seq (mut-str-make-empty ms n)
                (while (< i n)
-                 (seq
-                  (setq i (m5_ascii_span_end data i n))
-                  (if (< i n)
-                      (let ((width (bf_external_sequence_width sx i n)))
-                        (if (> width 0)
-                            (setq i (+ i width))
-                          (seq
-                           (m5_push_str_bytes ms sx start i)
-                           (nl_u8_encode ms (+ (heap-read-u8 data i) 4194048))
-                           (setq i (+ i 1))
-                           (setq start i))))
-                    0)))
-               (m5_push_str_bytes ms sx start n)
+                 (let ((width (bf_external_sequence_width sx i n)))
+                   (if (> width 0)
+                       (seq (m5_push_str_bytes ms sx i (+ i width))
+                            (setq i (+ i width)))
+                     (seq (nl_u8_encode ms (+ (m5_byte_at sx i) 4194048))
+                          (setq i (+ i 1))))))
                (m5_finish_string ms out 1) 0)))
         ) 0)
             out
