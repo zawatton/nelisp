@@ -1,4 +1,7 @@
 ;;; -*- lexical-binding: t; -*-
+;; URL expansion needs no S/MIME support.  Skip OpenSSL discovery while
+;; loading the HTTP backend's mail dependencies.
+(defvar smime-openssl-program nil)
 (require 'url-expand)
 
 (defmacro par-url-expand-row (label form)
