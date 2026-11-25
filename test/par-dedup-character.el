@@ -18,3 +18,12 @@
   (aset standard-display-table ?あ [?x ?y ?z ?w])
   (prin1 (list 'display-table (char-width ?A) (string-width "Aあ" 0 1)))
   (terpri))
+
+(let ((parent (make-char-table 'display-table))
+      (standard-display-table (make-char-table 'display-table)))
+  (aset parent ?A [?x ?y])
+  (aset parent ?あ [?x ?y ?z])
+  (set-char-table-parent standard-display-table parent)
+  (prin1 (list 'display-table-parent (char-width ?A) (char-width ?あ)
+               (string-width "Aあ")))
+  (terpri))

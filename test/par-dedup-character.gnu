@@ -9,3 +9,4 @@
 (unibyte-char-to-multibyte 65.0 (wrong-type-argument characterp 65.0))
 (char-width 8 0 1 0 2)
 (display-table 3 3)
+(display-table-parent 1 3 4)

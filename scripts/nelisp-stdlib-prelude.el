@@ -27333,9 +27333,32 @@ final multibyte promotion."
               (nelisp--display-table-p standard-display-table))
          standard-display-table)))
 
+(defun nelisp--display-table-glyphs (table char)
+  "Read the glyph vector for CHAR using GNU's display-table lookup."
+  (when table
+    (cond
+     ((>= char 128) (or (aref table char) (char-table-range table nil)))
+     ;; ASCII uses the cached slot directly, without following the parent.
+     ((and (fboundp 'emacs-char-table--owned-p)
+           (emacs-char-table--owned-p table))
+      (let ((slot (emacs-char-table--owner-cache table)))
+        (cond ((emacs-char-table--topology-node-p slot)
+               (emacs-char-table--owner-cache-ref table char))
+              (slot)
+              (t (char-table-range table nil)))))
+     ((and (fboundp 'emacs-char-table--native-p)
+           (not (emacs-char-table--native-p table)))
+      ;; Legacy vector char-tables store a flat ASCII array.
+      (aref (emacs-char-table-ascii-vector table) char))
+     (t
+      (let ((slot (nelisp--char-table-ascii table)))
+        (cond ((nelisp--sub-char-table-p slot) (aref slot (+ char 3)))
+              (slot)
+              (t (char-table-range table nil))))))))
+
 (defun nelisp--display-char-width (char table)
   "Return CHAR's width with TABLE's glyph substitution, when present."
-  (let ((glyphs (and table (aref table char))))
+  (let ((glyphs (nelisp--display-table-glyphs table char)))
     (if (vectorp glyphs)
         (let ((width 0) (index 0))
           (while (< index (length glyphs))
