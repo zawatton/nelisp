@@ -32827,6 +32827,9 @@ bytes are written into a fresh 8-byte buffer instead."
     ;;  34 SET-LOCAL name slot (assign without popping the result)
     ;;  35 UNBIND-LOCALS slot-or-vector count (undo actual dynamic bindings)
     ;;  36 REBIND-LOCAL name slot (bind the already saved parallel init)
+    ;;  37 LOCAL-SPECIAL-P slot (push whether the binding is dynamic)
+    ;; After fixnum decoding, a negative slot operand of 32/33/34/36
+    ;; encodes the boxed lexical slot at (- -1 operand).
     ;; Arithmetic opcode fallbacks use the canonical builtin, independently
     ;; of later function-cell changes. Ordinary CALL still resolves its cell.
     (defun m5_fx_int_p (w)
@@ -34029,20 +34032,25 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (if (= op 33) 1 (= op 34))
                 (let* ((raw (heap-read-u64 base (* (+ pc 2) 8)))
                        (index (if (= (logand raw 3) 1) (sar raw 2) (wf_bytecode_w_int raw)))
-                       (slot (+ mem (* index 8)))
+                       (boxed (< index 0))
+                       (slot (+ mem (* (if (= boxed 1) (- -1 index) index) 8)))
                        (value (heap-read-u64 slot 0)))
                   (if (= op 33)
                       (let* ((dst (+ stk (* sp 8))))
                         (seq (if (/= value 2)
-                                 (ptr-write-u64 dst 0 value)
+                                 (ptr-write-u64 dst 0
+                                                (if (= boxed 1) (nl_cons_cdr_word value) value))
                                (setq status (wf_bytecode_w_varref
                                              env (heap-read-u64 base (* (+ pc 1) 8)) dst 0)))
                              (setq sp (+ sp 1)) (setq pc (+ pc 3))))
                     (let* ((new (heap-read-u64 stk (* (- sp 1) 8))))
-                      (seq (if (/= value 2)
-                               (ptr-write-u64 slot 0 new)
-                             (setq status (bf_set_dynamic_value
-                                           env (heap-read-u64 base (* (+ pc 1) 8)) new)))
+                      (seq (if (= value 2)
+                               (setq status (bf_set_dynamic_value
+                                             env (heap-read-u64 base (* (+ pc 1) 8)) new))
+                             (if (= boxed 1)
+                                 (seq (wf_dirty)
+                                      (ptr-write-u64 (- value 2) 8 (nl_word_canon new)))
+                               (ptr-write-u64 slot 0 new)))
                            (setq pc (+ pc 3))))))
             (if (= op 3)
                 (seq (setq sp (- sp 1))
@@ -34205,11 +34213,13 @@ bytes are written into a fresh 8-byte buffer instead."
                 ;; is one event, so NB counts events.
                 (if (if (= op 20) 1 (if (= op 32) 1 (= op 36)))
                     (let* ((name (heap-read-u64 base (* (+ pc 1) 8)))
+                           (index (if (= op 20) 0
+                                    (let* ((raw (heap-read-u64 base (* (+ pc 2) 8))))
+                                    (if (= (logand raw 3) 1) (sar raw 2)
+                                      (wf_bytecode_w_int raw)))))
+                           (boxed (< index 0))
                            (slot (if (= op 20) 0
-                                   (let* ((raw (heap-read-u64 base (* (+ pc 2) 8)))
-                                          (index (if (= (logand raw 3) 1) (sar raw 2)
-                                                   (wf_bytecode_w_int raw))))
-                                     (+ mem (* index 8)))))
+                                   (+ mem (* (if (= boxed 1) (- -1 index) index) 8))))
                            (value (if (= op 36) (heap-read-u64 slot 0)
                                     (heap-read-u64 stk (* (- sp 1) 8)))))
                       (if (if (= op 20) 0 (= (bf_declared_special_p env name) 0))
@@ -34217,6 +34227,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                (if (= op 32) (setq sp (- sp 1)) 0)
                                (setq pc (+ pc 3)))
                         (seq
+                         (if (= boxed 1) (setq value (nl_cons_cdr_word value)) 0)
                          ;; Adopt only at zero active bindings. An older general
                          ;; prefix stays entirely in the environment; there is
                          ;; no replay or correction of a published link depth.
@@ -34326,7 +34337,16 @@ bytes are written into a fresh 8-byte buffer instead."
                     (if (= op 27)
                         (setq status (nl_ct_throw_words env (heap-read-u64 (+ stk (* (- sp 2) 8)) 0)
                                                         (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
-                    (setq status -2))))))))))))))))))))))))))
+                    ;; 37 LOCAL-SPECIAL-P: a dynamic capture uses the name
+                    ;; as its environment marker instead of a lexical cell.
+                    (if (= op 37)
+                        (let* ((raw (heap-read-u64 base (* (+ pc 1) 8)))
+                               (index (if (= (logand raw 3) 1) (sar raw 2)
+                                        (wf_bytecode_w_int raw)))
+                               (local (heap-read-u64 mem (* index 8))))
+                          (seq (ptr-write-u64 stk (* sp 8) (if (= local 2) 7 3))
+                               (setq sp (+ sp 1)) (setq pc (+ pc 2))))
+                    (setq status -2)))))))))))))))))))))))))))
          ;; nativecomp N3: an exit (a call-out's rc, its signal or throw
          ;; stashed) while handler frames are pushed: the innermost frame
          ;; is popped; a catch whose tag is the throw's, or a

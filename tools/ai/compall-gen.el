@@ -65,15 +65,15 @@ wrapped list, so the generator does too."
 (defconst compall-gen-id-base 4096
   "First generated row id: above the fx corpus rows (1000-2135,
 lisp/nelisp-fxir-native-corpus-data.el) and the ids lanes harvested by hand.")
-(defconst compall-gen-max-ir 8000
+(defconst compall-gen-max-ir 10000
   "Largest printed fxir (characters) given a row; see the commentary.")
 (defconst compall-gen-max-rows 2000
   "Most rows generated.")
-(defconst compall-gen-meta-budget 350000
+(defconst compall-gen-meta-budget 675000
   "Estimated active-unit metadata bytes the selected (not pinned) rows may add.
-v35 with raw-address reads: fxir-native.o's entry 577,589 bytes, room up to
-1,213,221 (tools/ai/compall2-unit.el); the estimate is checked by that tool
-before a build.")
+The late-binding rows share runtime calls inside fxir-native.o, so the
+estimate can spend more of the unit's 1,213,221-byte allowance. Validate
+the actual metadata with tools/ai/compall2-unit.el.")
 (defun compall-gen--meta-cost (row)
   "Estimated metadata bytes of ROW: a symbol and its fixed relocations (about 600
 bytes) plus about 100 per call node (the call-out's relocations).  Fitted on a
@@ -373,7 +373,7 @@ macros. A source defun found elsewhere therefore cannot make them eligible."
                   ((and bc (null fn)) "bytecode-source-not-closure")
                   ((not (vectorp rec)) (if bc "bytecode-fx-declined" "no-fx-record"))
                   ((memq (aref rec 1) '(-1 -2)) "intrinsic-record")
-                  ((or (null c) (null (nth 2 c)) (not (nelisp-fxir-code-same-p (car c) (aref rec 0))))
+                  ((or (null c) (null (nth 2 c)) (not (nelisp-nc--code-same-p (car c) (aref rec 0))))
                    "recompile-differs")
                   ((> irlen max-ir) (format "ir-size %d" irlen))
                   ;; The fx compiler and its registration: the install pass and

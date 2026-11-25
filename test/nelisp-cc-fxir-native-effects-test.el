@@ -19,7 +19,6 @@
 (defvar nelisp-cc-fxir-native--temps)
 (defvar nelisp-cc-fxir-native--callees)
 (defvar nelisp-cc-fxir-native--maxargc)
-(defvar nelisp-cc-fxir-native--nbd)
 (defvar nelisp-cc-fxir-native--ncatch)
 (defvar nelisp-cc-fxir-native--uses-window)
 (defvar nelisp-cc-fxir-native--inline-sites)
@@ -73,7 +72,7 @@
 (let-store
  (((nil setq l0 (heap-read-u64 (+ base (* 1 8)) 0))) . l0))
 (let-varbind
- (((t setq st (wf_bytecode_varbind env (heap-read-u64 (+ base (* 5 8)) 0) (heap-read-u64 (+ base (* 1 8)) 0))) (nil setq nb (+ nb 1)) (nil setq t0 l0) (nil seq (wf_bytecode_unbind (+ env 32) 1) (setq nb (- nb 1)))) . t0))
+ (((t setq st (wf_bytecode_varbind env (heap-read-u64 (+ base (* 5 8)) 0) (heap-read-u64 (+ base (* 1 8)) 0))) (nil setq nb (+ nb 1)) (nil setq t0 l0) (nil seq (nc_unbind_n env 1) (setq nb (- nb 1)))) . t0))
 (while
  (((nil while (if (= st 0) (if (= st 0) (if (= l0 3) 0 (if (/= (logand l0 7) 0) 1 (nc_truthy_slow l0))) 0) 0) (seq (setq l1 (heap-read-u64 (+ base (* 2 8)) 0)) (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)))) . 3))
 (call
@@ -85,21 +84,21 @@
 (inline
  (((nil if (if (= (logand l0 3) 1) (= (logand l1 3) 1) 0) (seq (setq t0 (+ (sar l0 2) (sar l1 2))) (if (= (sar (shl t0 2) 2) t0) (setq t0 (+ (shl t0 2) 1)) (setq t0 -1))) (setq t0 -1)) (t if (= t0 -1) (seq (setq st (nc_arith env (heap-read-u64 (+ base (* 2 8)) 0) mem oslot 516 l0 l1)) (if (= st 0) (setq t0 (ptr-read-u64 mem 0)) 0)) 0)) . t0))
 (catch
- (((t seq (nc_catch_push env (+ mem (* (+ cbase 0) 8)) (heap-read-u64 (+ base (* 1 8)) 0)) (setq t0 l0) (nc_catch_pop env (+ mem (* (+ cbase 0) 8))) (if (> st 0) (if (= (nc_catch_match (+ mem (* (+ cbase 0) 8))) 1) (seq (setq nb (nc_unbind_to env nb 0)) (setq t0 (nl_ct_caught_word (nl_exit_val_w) 0)) (setq st 0)) 0) 0))) . t0))
+ (((t seq (setq t0 (+ (shl nb 2) 1)) (nc_catch_push env (+ mem (* (+ cbase 0) 8)) (heap-read-u64 (+ base (* 1 8)) 0)) (setq t1 l0) (nc_catch_pop env (+ mem (* (+ cbase 0) 8))) (if (> st 0) (if (= (nc_catch_match (+ mem (* (+ cbase 0) 8))) 1) (seq (setq nb (nc_unbind_to env nb (sar t0 2))) (setq t1 (nl_ct_caught_word (nl_exit_val_w) 0)) (setq st 0)) 0) 0))) . t1))
 (throw
  (((t setq st (nl_ct_throw_words env (heap-read-u64 (+ base (* 1 8)) 0) (heap-read-u64 (+ base (* 2 8)) 0)))) . 3))
 (condition-case
- (((t seq (setq t0 l0) (if (= st 0) 0 (if (> st 0) (if (= (nc_cc_match env (heap-read-u64 (+ base (* 7 8)) 0)) 1) (seq (setq nb (nc_unbind_to env nb 0)) (setq st 0) (m5_fx_exit_condition 0 0) (setq t0 (heap-read-u64 (+ base (* 1 8)) 0))) 0) 0)))) . t0))
+ (((t seq (setq t0 (+ (shl nb 2) 1)) (setq t1 l0) (if (= st 0) 0 (if (> st 0) (if (= (nc_cc_match env (heap-read-u64 (+ base (* 7 8)) 0)) 1) (seq (setq nb (nc_unbind_to env nb (sar t0 2))) (setq st 0) (m5_fx_exit_condition 0 0) (setq t1 (heap-read-u64 (+ base (* 1 8)) 0))) 0) 0)))) . t1))
 (unwind-protect
- (((t seq (setq t0 l0) (if (> st 0) (seq (setq t1 (+ (shl st 2) 1)) (setq t2 (+ (shl (heap-read-u64 268435472 0) 2) 1)) (setq t3 (nl_exit_tag_w)) (setq t4 (nl_exit_val_w)) (setq nb (nc_unbind_to env nb 0)) (setq st 0)) (setq t1 1)) 0 (if (= st 0) (if (= t1 1) 0 (seq (nc_exit_put t3 t4 (sar t2 2)) (setq st (sar t1 2)))) 0))) . t0))
+ (((t seq (setq t0 (+ (shl nb 2) 1)) (setq t1 l0) (if (> st 0) (seq (setq t2 (+ (shl st 2) 1)) (setq t3 (+ (shl (heap-read-u64 268435472 0) 2) 1)) (setq t4 (nl_exit_tag_w)) (setq t5 (nl_exit_val_w)) (setq nb (nc_unbind_to env nb (sar t0 2))) (setq st 0)) (setq t2 1)) 0 (if (= st 0) (if (= t2 1) 0 (seq (nc_exit_put t4 t5 (sar t3 2)) (setq st (sar t2 2)))) 0))) . t1))
     )
-  "Entries are (NAME LOWERED), captured before the effect-table change.")
+  "Entries are (NAME LOWERED).")
 
 (defun nfne--run (c)
   "Lower case C with fresh lowering state; return the lowered pair."
   (let ((nelisp-cc-fxir-native--temps nil)
         (nelisp-cc-fxir-native--callees (copy-sequence (nth 2 c)))
-        (nelisp-cc-fxir-native--maxargc 0) (nelisp-cc-fxir-native--nbd 0)
+        (nelisp-cc-fxir-native--maxargc 0)
         (nelisp-cc-fxir-native--ncatch 0) (nelisp-cc-fxir-native--uses-window nil)
         (nelisp-cc-fxir-native--inline-sites nil)
         (nelisp-cc-fxir-native--inline-budget 0)
@@ -114,6 +113,14 @@
 (ert-deftest nfne-effects-consistent ()
   (dolist (c nfne-cases)
     (should (nelisp-cc-fxir-native--effects-consistent-p (nth 1 c) (nfne--run c)))))
+
+(ert-deftest nfne-late-binding-effects ()
+  (dolist (node '((:late-ref 0 3)
+                  (:late-set 0 (:slot 1) 5)
+                  (:let ((:late-bind 0 (:slot 1) 3)) (:late-ref 0 7) 0)))
+    (let ((lowered (nfne--run (list nil node))))
+      (should (nelisp-cc-fxir-native--fallible-p (car lowered)))
+      (should (nelisp-cc-fxir-native--effects-consistent-p node lowered)))))
 
 (ert-deftest nfne-op-fallible-p ()
   (should-not (nelisp-cc-fxir-native--op-fallible-p :const))

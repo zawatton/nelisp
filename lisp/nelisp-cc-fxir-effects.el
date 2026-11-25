@@ -39,6 +39,12 @@
             :nonlocal-exit nil :diagnostic nil)
     (:varref :may-allocate t :may-gc t :may-signal t :may-call-lisp t
              :nonlocal-exit nil :diagnostic (:mutable-cell-read :signal-or-reentry))
+    (:late-ref :may-allocate t :may-gc t :may-signal t :may-call-lisp t
+               :nonlocal-exit nil :diagnostic (:mutable-cell-read :signal-or-reentry))
+    (:late-set :may-allocate t :may-gc t :may-signal t :may-call-lisp t
+               :nonlocal-exit nil :diagnostic (:mutable-cell-write :signal-or-reentry))
+    (:late-special-p :may-allocate nil :may-gc nil :may-signal nil :may-call-lisp nil
+                     :nonlocal-exit nil :diagnostic nil)
     (:alias :may-allocate t :may-gc t :may-signal t :may-call-lisp t
             :nonlocal-exit nil :diagnostic (:mutable-cell-read :signal-or-reentry))
     (:setslot :may-allocate nil :may-gc nil :may-signal nil :may-call-lisp nil
@@ -68,6 +74,8 @@
             :nonlocal-exit nil :diagnostic nil)
     (:varbind :may-allocate t :may-gc t :may-signal t :may-call-lisp t
               :nonlocal-exit nil :diagnostic (:dynamic-binding :signal-or-reentry))
+    (:late-bind :may-allocate t :may-gc t :may-signal t :may-call-lisp t
+                :nonlocal-exit nil :diagnostic (:dynamic-binding :signal-or-reentry))
     (:catch :may-allocate t :may-gc t :may-signal t :may-call-lisp t
             :nonlocal-exit t :diagnostic (:nonlocal-exit :signal-or-reentry))
     (:throw :may-allocate t :may-gc t :may-signal t :may-call-lisp t
