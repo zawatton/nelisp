@@ -19,6 +19,37 @@
 
 (defun fx-late-deep (n) (if (< n 1) 0 (1+ (fx-late-deep (1- n)))))
 
+(defun fx-late-declare (name)
+  (eval (list 'defvar name ''global) t))
+
+(defun fx-late-loop ()
+  (let ((i 0) (values nil))
+    (while (< i 2)
+      (let* ((fx-late-loop-var i)
+             (bound (boundp 'fx-late-loop-var)))
+        (setq fx-late-loop-var (+ fx-late-loop-var 10))
+        (push (list bound fx-late-loop-var
+                    (if bound (symbol-value 'fx-late-loop-var) 'void))
+              values))
+      (when (= i 0)
+        (fx-late-declare 'fx-late-loop-var))
+      (setq i (1+ i)))
+    (list (nreverse values) (symbol-value 'fx-late-loop-var))))
+
+(defun fx-late-exit ()
+  (catch 'out
+    (let ((fx-late-exit-var (progn (fx-late-declare 'fx-late-exit-var)
+                                  'local))
+          (another 3))
+      (throw 'out (list (symbol-value 'fx-late-exit-var)
+                        fx-late-exit-var another)))))
+
+(defun fx-late-compiled-p (name)
+  (let* ((fn (symbol-function name))
+         (body (nthcdr 3 (nelisp--closure-cons fn))))
+    (nelisp--fx-register-fn name fn t)
+    (vectorp (gethash body nelisp--fx-table))))
+
 (let* ((fails 0)
        (check (lambda (got want)
                 (unless (equal got want)
@@ -28,6 +59,11 @@
   (funcall check fx-late-before 'void-variable)
   (funcall check (fx-late-bind 'local) 'local)
   (funcall check fx-late-flag 'global)
+  (funcall check (fx-late-compiled-p 'fx-late-loop) t)
+  (funcall check (fx-late-loop) '(((nil 10 void) (t 11 11)) global))
+  (funcall check (fx-late-compiled-p 'fx-late-exit) t)
+  (funcall check (fx-late-exit) '(local local 3))
+  (funcall check (symbol-value 'fx-late-exit-var) 'global)
   (funcall check (fx-late-deep 500) 500)
   (funcall check (condition-case e (fx-late-deep 1000000) (error (car e)))
            'excessive-lisp-nesting)
