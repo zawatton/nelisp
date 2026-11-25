@@ -435,34 +435,39 @@
     (defun nelisp_frame_try_share_chain (frames alist)
       (if (= (nelisp_frame_stack_find_word_tag_p alist 7) 0)
           0
-        (if (= (nelisp_frame_chain_shareable alist 0) 0)
-            0
-          (let* ((frame (vector-ref-ptr
-                         (nl_record_slot_word frames 0)
-                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
-                 (scratch (alloc-bytes 32 8)))
-            (seq (nelisp_frame_chain_wrap_cells alist scratch 0 0)
-                 (record-slot-set frame 0 alist)
-                 (nl_frame_set_flags frame 13110)
-                 1)))))
+        (let* ((status (nelisp_frame_chain_shareable alist 0)))
+          (if (= status 0) 0
+            (let* ((frame (vector-ref-ptr
+                           (nl_record_slot_word frames 0)
+                           (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
+              (seq
+               (if (= status 2)
+                   (let* ((scratch (alloc-bytes 32 8)))
+                     (nelisp_frame_chain_wrap_cells alist scratch 0 0))
+                 0)
+               (record-slot-set frame 0 alist)
+               (nl_frame_set_flags frame 13110)
+               1))))))
 
+    ;; 0: cannot share the chain. 1: every binding already holds a Cell.
+    ;; 2: sharing first needs to wrap a plain value. Combine validation
+    ;; with detection so repeated calls only scan a Cell chain once.
     (defun nelisp_frame_chain_shareable (al n)
       (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
           1
-        (let* ((p (nl_cons_car_word al)))
+        (let* ((p (nl_cons_car_word al)) (rest (nl_cons_cdr_word al)))
           (if (= (nelisp_frame_stack_find_word_tag_p p 7) 0)
-              (nelisp_frame_chain_shareable (nl_cons_cdr_word al) n)
-            (if (>= n 8)
-                0
-              ;; A plain (non-Cell) cdr is accepted here; the share path
-              ;; converts it to a Cell afterwards (`nelisp_frame_chain_wrap_cells').
-              (if (= (nelisp_frame_stack_find_word_name_p (nl_cons_car_word p)) 0)
-                  0
-                (if (= (nelisp_frame_chain_has_name
-                        (nl_cons_cdr_word al) (nl_cons_car_word p))
-                       1)
-                    0
-                  (nelisp_frame_chain_shareable (nl_cons_cdr_word al) (+ n 1)))))))))
+              (nelisp_frame_chain_shareable rest n)
+            (if (>= n 8) 0
+              (let* ((name (nl_cons_car_word p)))
+                (if (= (nelisp_frame_stack_find_word_name_p name) 0) 0
+                  (if (= (nelisp_frame_chain_has_name rest name) 1) 0
+                    (let* ((status (nelisp_frame_chain_shareable rest (+ n 1))))
+                      (if (= status 1)
+                          (if (= (nelisp_frame_stack_find_word_tag_p (nl_cons_cdr_word p) 11) 1)
+                              1
+                            2)
+                        status))))))))))
 
     ;; Convert every plain (non-Cell) pair cdr of an already validated chain
     ;; into a persistent Cell, in place.  Same method as `nl_pc_bind_one':

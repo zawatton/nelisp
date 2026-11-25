@@ -23080,12 +23080,11 @@ eval applyfn.")
     ;; Doc 243 S4.3: `mapcar' over a closure with 1..4 read-only captured
     ;; variables (an S4d cap record, see `m5_fx_apply_cap_w').  Once per walk
     ;; the walk's cache (roots slot 48) becomes a vector
-    ;; [309 REC K PAIR_0..PAIR_K-1 ARG_0..ARG_K]: the fixnum 77 (word 309)
-    ;; marks it, PAIR_I is the captured binding of the record's I-th name,
-    ;; and the ARG words are the VM's argument buffer.  Each element then
-    ;; reads the captured values (through `nl_cell_get_value_w', at entry,
-    ;; as `m5_fx_apply_cap_w' does), appends the element and runs the record:
-    ;; no argument list, no alist walk, no table lookup per element.
+    ;; [309 REC NPARAMS PAIR_0..PAIR_K-1 ARG]: the fixnum 77 (word 309)
+    ;; marks it and NPARAMS is the VM arity code for K captures and one
+    ;; argument. The pairs followed by ARG form the VM's argument buffer.
+    ;; Each call fills ARG with the current element. The VM reads binding
+    ;; values from the pairs when the callback uses them.
     ;; BODY's record without counting a call (`nl_fx_lookup_in' counts one):
     ;; the record, 0 while its countdown runs or it is absent, 1 when it will
     ;; not be compiled.
@@ -23113,30 +23112,29 @@ eval applyfn.")
                 (if (/= (sexp-tag head) 4) 1 (/= (nl_apply_name_eq_closure head) 1)))
               5
             (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 0
-              (let* ((np (m5_fx_cap_count (nl_cons_car_word c1) 0)) (c2 (nl_cons_cdr_word c1)))
+              (let* ((captured (nl_cons_car_word c1))
+                     (np (m5_fx_cap_count captured 0)) (c2 (nl_cons_cdr_word c1)))
                 (if (= np 0) 5
                   (if (/= (m5_fx_word_cons_p c2 0) 1) 5
                     (let* ((rec (m5_fx_peek_body (nl_cons_cdr_word c2) env)))
                       (if (< rec 2) (if (= rec 0) 0 5)
-                        (if (< (nl_vector_length rec) 8) 5
-                          (let* ((cv (nl_vector_slot_word rec 7)))
-                            (if (/= (logand cv 7) 6) 5
-                              (if (/= (- (nl_vector_length cv) 1) np) 5
-                                (if (/= (wf_bytecode_w_int (nl_vector_slot_word cv 0)) 1) 5
-                                  (wf_mapcar_cap_fill roots rec np))))))))))))))))
-    (defun wf_mapcar_cap_fill (roots rec k)
-      (let* ((v (+ (nl_alloc_vector (+ (* 2 k) 4)) 6))
-             (captured (nl_cons_car_word (nl_cons_cdr_word (heap-read-u64 roots 0))))
+                        (if (= (m5_fx_cap_record_matches rec captured (nl_cons_car_word c2) np) 0) 5
+                          (let* ((cv (nl_vector_slot_word rec 7))
+                                 (nparams (m5_fx_cap_arity_code cv np 1)))
+                            (if (< nparams 0) 5
+                              (wf_mapcar_cap_fill roots rec np nparams captured))))))))))))))
+    (defun wf_mapcar_cap_fill (roots rec k nparams captured)
+      (let* ((v (+ (nl_alloc_vector (+ k 4)) 6))
              (cv (nl_vector_slot_word rec 7))
              (i 0) (ok 1) (pair 0))
         (seq
          (wf_dirty)
          (ptr-write-u64 (+ v 2) 0 309)
          (ptr-write-u64 (+ v 10) 0 rec)
-         (ptr-write-u64 (+ v 18) 0 (+ (* k 4) 1))
+         (ptr-write-u64 (+ v 18) 0 (+ (* nparams 4) 1))
          (while (if (< i k) (= ok 1) 0)
            (seq
-            (setq pair (wf_assq_walk_w (nl_vector_slot_word cv (+ i 1)) captured 0))
+            (setq pair (wf_assq_walk_w (nl_vector_slot_word cv (+ i 3)) captured 0))
             (if (= (nl_word_tag64 pair) 7)
                 (ptr-write-u64 (+ v (+ 2 (* 8 (+ 3 i)))) 0 pair)
               (setq ok 0))
@@ -23148,24 +23146,17 @@ eval applyfn.")
       (if (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 1
             (= (nl_sb_worker_p env) 1))
           2
-        (let* ((k (sar (nl_vector_slot_word cache 2) 2)) (i 0)
-               (buf (+ cache (+ 2 (* 8 (+ 3 k))))))
+        (let* ((nparams (sar (nl_vector_slot_word cache 2) 2))
+               (k (- (logand nparams 65535) 1)) (buf (+ cache 26)))
           (seq
            (wf_dirty)
-           (while (< i k)
-             (seq
-              (ptr-write-u64 (+ buf (* 8 i)) 0
-                             (nl_word_canon
-                              (nl_cell_get_value_w
-                               (nl_cons_cdr_word (nl_vector_slot_word cache (+ 3 i))) 0)))
-              (setq i (+ i 1))))
            (ptr-write-u64 (+ buf (* 8 k)) 0 (heap-read-u64 roots 32))
            (let* ((rec (nl_vector_slot_word cache 1))
                   (frame (nl_n4_push_words env (heap-read-u64 roots 0) (+ roots 32) 1))
                   (st (m5_fx_call_words_done
                        (m5_fx_run (nl_vector_slot_word rec 0)
                                   (wf_bytecode_w_int (nl_vector_slot_word rec 1))
-                                  env 0 0 (+ k 1) buf (+ roots 24))
+                                  env 0 0 nparams buf (+ roots 24))
                        env 0 (+ roots 24) frame 0)))
              (if (= st 0) 0 (if (= st -3) 2 1)))))))
     (defun wf_mapcar_fx_call (roots env)
@@ -32902,7 +32893,7 @@ bytes are written into a fresh 8-byte buffer instead."
     ;;  11 POP   12 DUP   0 HALT   19 VARREF sym (a global variable's value)
     ;;  4 ADD sym  5 SUB sym  6 LT sym  13 NUMEQ sym  14 GT sym   (2 args)
     ;;  7 ADD1 sym   15 SUB1 sym                                   (1 arg)
-    ;;  16 CALL sym argc
+    ;;  16 CALL sym argc   28 CAPTURE-VALUE slot
     ;; Arithmetic opcode fallbacks use the canonical builtin, independently
     ;; of later function-cell changes. Ordinary CALL still resolves its cell.
     (defun m5_fx_int_p (w)
@@ -33281,66 +33272,102 @@ bytes are written into a fresh 8-byte buffer instead."
                        (setq w (nl_cons_cdr_word w))
                      (setq r 0))))))
            r))))
-;; S4d: an anonymous lambda over 1..4 read-only captured variables.  The
-    ;; record (compiled by `nelisp--fx-register-fn') has an impossible arity
-    ;; (`m5_fx_arity_code' declines it for every other consumer) and slot 7 =
-    ;; [NFORMALS NAME...]; its code holds the captured names as the first
-    ;; locals. `m5_fx_apply_cap_w' prepends values from the closure alist to
-    ;; the argument list; that snapshot can be stale after an active rebind.
-    ;; An entry snapshot is unsound while the frame is active: a callee can
-    ;; rebind a captured variable. Keep specialization disabled until lowering
-    ;; reads each live lexical cell.
+    ;; Shape of the environment before trying the captured-argument VM path.
+    ;; The Lisp compiler verifies the symbols and rejects duplicate names.
     (defun m5_fx_cap_count (lst _pad)
-      0)
-    ;; The cap record for BODY, or 0 (the call runs interpreted).
+      (let* ((p lst) (n 0))
+        (seq
+         (while (if (<= n 4) (= (m5_fx_word_cons_p p 0) 1) 0)
+           (seq (if (= (m5_fx_word_cons_p (nl_cons_car_word p) 0) 1)
+                    (setq n (+ n 1))
+                  0)
+                (setq p (nl_cons_cdr_word p))))
+         (if (if (= p 3) (<= n 4) 0) n 0))))
+    ;; A cap record's template preserves declaration order and the identity
+    ;; of each lexical name. The pair values are free to change at any time.
+    (defun m5_fx_cap_env_match (captured template)
+      (let* ((a captured) (b template) (ok 1))
+        (seq
+         (while (if (= ok 1) (= (m5_fx_word_cons_p a 0) 1) 0)
+           (if (= (m5_fx_word_cons_p b 0) 0) (setq ok 0)
+             (let* ((x (nl_cons_car_word a)) (y (nl_cons_car_word b))
+                    (xp (m5_fx_word_cons_p x 0)) (yp (m5_fx_word_cons_p y 0)))
+               (if (if (= xp yp)
+                       (if (= xp 1)
+                           (= (wf_bytecode_w_eqw (nl_cons_car_word x) (nl_cons_car_word y)) 1)
+                         (= (wf_bytecode_w_eqw x y) 1))
+                     0)
+                   (seq (setq a (nl_cons_cdr_word a)) (setq b (nl_cons_cdr_word b)))
+                 (setq ok 0)))))
+         (if (= ok 1) (m5_fx_list_same a b) 0))))
+    (defun m5_fx_cap_record_matches (rec captured formals count)
+      (if (< (nl_vector_length rec) 10) 0
+        (let* ((cv (nl_vector_slot_word rec 7)))
+          (if (if (= (nl_val_tag cv) 8)
+                  (if (= (- (nl_vector_length cv) 3) count)
+                      (= (m5_fx_list_same formals (nl_vector_slot_word rec 9)) 1)
+                    0)
+                0)
+              (m5_fx_cap_env_match captured (nl_vector_slot_word rec 8))
+            0))))
     (defun m5_fx_cap_rec (captured body-list env formals)
-      (if (= (sexp-tag captured) 7)
-          (if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-              (if (= (nl_fx_disabled) 1) 0
-                (let* ((np (m5_fx_cap_count captured 0)))
-                  (if (= np 0) 0
-                    (let* ((rec (m5_fx_inner_lookup body-list env captured formals)))
-                      (if (= rec 0) 0
-                        (if (< (nl_vector_length rec) 8) 0
-                          (let* ((cv (nl_vector_slot_word rec 7)))
-                            (if (/= (heap-sexp-tag-word cv) 8) 0
-                              (if (= (- (nl_vector_length cv) 1) np) rec 0)))))))))
-            0) 0))
-    ;; Run cap record REC on ARGS with CAPTURED's values; 2 declines.  A
-    ;; missing name declines.  A Cell value is read once, at entry: the body
-    ;; never assigns it, so this differs from the interpreter only if a callee
-    ;; assigns the shared variable during the call.
+      (if (if (= (sexp-tag captured) 7)
+              (if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
+                  (= (nl_fx_disabled) 0)
+                0)
+            0)
+          (let* ((np (m5_fx_cap_count captured 0)))
+            (if (<= np 0) 0
+              (let* ((rec (nl_fx_lookup body-list env 0 0)))
+                (seq
+                 (if (= rec 1)
+                     (seq (m5_fx_first_call body-list env captured formals)
+                          (setq rec (nl_fx_lookup body-list env 0 0)))
+                   0)
+                 (if (<= rec 1) 0
+                   (if (= (m5_fx_cap_record_matches rec captured formals np) 1)
+                       rec
+                     0))))))
+        0))
+    ;; Slot 7 holds the ordinary lambda-list shape, followed by the names
+    ;; of the captures. Both the argument count and rest index sent to the
+    ;; VM include the prepended captures.
+    (defun m5_fx_cap_arity_code (cv k argc)
+      (let* ((amin (wf_bytecode_w_int (nl_vector_slot_word cv 0)))
+             (amax (wf_bytecode_w_int (nl_vector_slot_word cv 1)))
+             (arest (wf_bytecode_w_int (nl_vector_slot_word cv 2)))
+             (total (+ k argc)))
+        (if (or (< argc amin) (> total 65535)) -1
+          (if (= amax -1)
+              (+ total (* 65536 (+ k (+ arest 1))))
+            (if (> argc amax) -1 total)))))
+    ;; 2 declines without exposing a partially populated argument frame.
     (defun m5_fx_apply_cap_w (rec captured args env _pad)
       (let* ((cv (nl_vector_slot_word rec 7))
-             (nf (wf_bytecode_w_int (nl_vector_slot_word cv 0)))
-             (k (- (nl_vector_length cv) 1))
-             (n 0) (a args) (lst (if (= args 0) 3 args)) (i 0) (ok 1)
-             (pair 0) (v 0) (box 0))
-        (seq
-         (while (if (= a 0) 0 (if (= (logand a 1) 1) 0 (= (heap-sexp-tag-word a) 7)))
-           (seq (setq n (+ n 1)) (setq a (nl_cons_cdr_word a))))
-         (if (/= n nf) 2
-           (seq
-            (setq i k)
-            (while (if (> i 0) (= ok 1) 0)
-              (seq
-               (setq i (- i 1))
-               (setq pair (wf_assq_walk_w (nl_vector_slot_word cv (+ i 1)) captured 0))
-               (if (= (nl_word_tag64 pair) 7)
-                   (seq (setq v (nl_cons_cdr_word pair))
-                        ;; Same reader as variable lookup: a plain value
-                        ;; passes through; a pair-backed Cell answers its
-                        ;; binding pair's cdr, not the pair.
-                        (setq v (nl_cell_get_value_w v 0))
-                        (setq box (nl_alloc_consbox))
-                        (ptr-write-u64 box 0 (nl_word_canon v))
-                        (ptr-write-u64 box 8 lst)
-                        (setq lst (+ box 2)))
-                 (setq ok 0))))
-            (if (= ok 1)
-                (m5_fx_run_w (nl_vector_slot_word rec 0) (wf_bytecode_w_int (nl_vector_slot_word rec 1))
-                             env 0 lst (+ n k) 0 0)
-              2))))))
+             (k (- (nl_vector_length cv) 3))
+             (n (m5_fx_arg_count args 0))
+             (nparams (m5_fx_cap_arity_code cv k n)))
+        (if (< nparams 0) 2
+          (let* ((mark (nl_root_mark env)) (mem (nl_root_frame env (+ n k))))
+            (if (= mem 0) (seq (nl_root_release env mark) 2)
+              (let* ((i 0) (a args) (pair 0) (ok 1))
+                (seq
+                 (while (if (< i k) (= ok 1) 0)
+                   (seq (setq pair (wf_assq_walk_w (nl_vector_slot_word cv (+ i 3)) captured 0))
+                        (if (= (nl_val_tag pair) 7)
+                            (ptr-write-u64 mem (* i 8) pair)
+                          (setq ok 0))
+                        (setq i (+ i 1))))
+                 (while (if (= ok 1) (< i (+ n k)) 0)
+                   (seq (ptr-write-u64 mem (* i 8) (nl_cons_car_word a))
+                        (setq a (nl_cons_cdr_word a))
+                        (setq i (+ i 1))))
+                 (let* ((word (if (= ok 1)
+                                  (m5_fx_run_w (nl_vector_slot_word rec 0)
+                                               (wf_bytecode_w_int (nl_vector_slot_word rec 1))
+                                               env 0 0 nparams mem 0)
+                                2)))
+                   (seq (nl_root_release env mark) word)))))))))
     (defun m5_fx_closure_rec (head c1 env scratch)
       (if (/= (m5_fx_word_cons_p c1 0) 1) 0
         (let* ((captured (nl_cons_car_word c1)))
@@ -33974,15 +34001,26 @@ bytes are written into a fresh 8-byte buffer instead."
          (seq
          (while (= status 0)
            (seq
-            (setq op (wf_bytecode_w_int (heap-read-u64 (+ base (* pc 8)) 0)))
+            ;; Compiler-emitted opcodes and local indices are immediate.
+            ;; Keep the boxed integer decoder for externally supplied code.
+            (setq a (heap-read-u64 (+ base (* pc 8)) 0))
+            (setq op (if (= (logand a 1) 1) (sar a 2) (wf_bytecode_w_int a)))
             (if (= op 2)
-                (seq (ptr-write-u64 (+ stk (* sp 8)) 0
-                                    (heap-read-u64 (+ mem (* (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)) 8)) 0))
+                (seq (setq a (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
+                     (setq b (if (= (logand a 1) 1) (sar a 2) (wf_bytecode_w_int a)))
+                     (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 (+ mem (* b 8)) 0))
                      (setq sp (+ sp 1)) (setq pc (+ pc 2)))
+            (if (= op 28)
+                (let* ((index (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                       (pair (heap-read-u64 (+ mem (* index 8)) 0))
+                       (value (nl_cell_get_value_w (nl_cons_cdr_word pair) 0)))
+                  (seq (ptr-write-u64 stk (* sp 8) value)
+                       (setq sp (+ sp 1)) (setq pc (+ pc 2))))
             (if (= op 3)
                 (seq (setq sp (- sp 1))
-                     (ptr-write-u64 (+ mem (* (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)) 8)) 0
-                                    (heap-read-u64 (+ stk (* sp 8)) 0))
+                     (setq a (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
+                     (setq b (if (= (logand a 1) 1) (sar a 2) (wf_bytecode_w_int a)))
+                     (ptr-write-u64 (+ mem (* b 8)) 0 (heap-read-u64 (+ stk (* sp 8)) 0))
                      (setq pc (+ pc 2)))
             (if (= op 1)
                 (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
@@ -34001,15 +34039,18 @@ bytes are written into a fresh 8-byte buffer instead."
             ;; (bytecode.c:861-866): one load and compare of the budget.
             (if (= op 9)
                 (seq (setq sp (- sp 1))
-                     (if (= (nl_val_tag (heap-read-u64 (+ stk (* sp 8)) 0)) 0)
-                         (seq (setq b (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                     (setq a (heap-read-u64 (+ stk (* sp 8)) 0))
+                     (if (if (= (logand a 1) 1) (= a 3) (= (nl_val_tag a) 0))
+                         (seq (setq a (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
+                              (setq b (if (= (logand a 1) 1) (sar a 2) (wf_bytecode_w_int a)))
                               (if (< b pc)
                                   (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
                                 0)
                               (setq pc b))
                        (setq pc (+ pc 2))))
             (if (= op 8)
-                (seq (setq b (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                (seq (setq a (heap-read-u64 (+ base (* (+ pc 1) 8)) 0))
+                     (setq b (if (= (logand a 1) 1) (sar a 2) (wf_bytecode_w_int a)))
                      (if (< b pc)
                          (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
                        0)
@@ -34017,30 +34058,53 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (if (= op 6) 1 (if (= op 13) 1 (if (= op 14) 1 (if (= op 4) 1 (if (= op 5) 1 0)))))
                 (seq (setq b (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq a (heap-read-u64 (+ stk (* (- sp 2) 8)) 0))
-                     (setq r (if (= (+ (m5_fx_int_p a) (m5_fx_int_p b)) 2)
+                     ;; Immediate fixnum order is signed word order. For
+                     ;; addition and subtraction the decoded result fits i64;
+                     ;; an out-of-range fixnum uses the existing bignum path.
+                     (setq r
+                           (if (and (= (logand a 3) 1) (= (logand b 3) 1))
+                               (if (= op 6) (if (< a b) 7 3)
+                                 (if (= op 13) (if (= a b) 7 3)
+                                   (if (= op 14) (if (> a b) 7 3)
+                                     (let* ((v (if (= op 4) (+ (sar a 2) (sar b 2))
+                                                 (- (sar a 2) (sar b 2)))))
+                                       (if (and (>= v -2305843009213693952)
+                                                (<= v 2305843009213693951))
+                                           (+ (shl v 2) 1)
+                                         -1)))))
+                             (if (= (+ (m5_fx_int_p a) (m5_fx_int_p b)) 2)
                                  (if (= op 6) (if (< (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
                                    (if (= op 13) (if (= (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
                                      (if (= op 14) (if (> (wf_bytecode_w_int a) (wf_bytecode_w_int b)) 7 3)
                                        (m5_fx_fix (if (= op 4) (+ (wf_bytecode_w_int a) (wf_bytecode_w_int b))
                                                     (- (wf_bytecode_w_int a) (wf_bytecode_w_int b)))))))
-                               (m5_fx_float_arith op a b)))
+                               (m5_fx_float_arith op a b))))
                      (if (= r -1)
-                         (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw (+ resw 8) oslot)))
-                       (seq (ptr-write-u64 resw 0 r) (setq r 0)))
-                     (if (/= r 0) (setq status r)
+                         (seq (setq oslot (m5_fx_view_slot env oslot))
+                              (setq status (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 2 resw (+ resw 8) oslot))
+                              (setq r (heap-read-u64 resw 0)))
+                       0)
+                     (if (/= status 0) 0
                        (seq (setq sp (- sp 1))
-                            (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (heap-read-u64 resw 0))
+                            (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 r)
                             (setq pc (+ pc 2)))))
             (if (if (= op 7) 1 (if (= op 15) 1 0))
                 (seq (setq a (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
-                     (setq r (if (= (m5_fx_int_p a) 1)
+                     (setq r
+                           (if (= (logand a 3) 1)
+                               (if (= op 7)
+                                   (if (= a 9223372036854775805) -1 (+ a 4))
+                                 (if (= a -9223372036854775807) -1 (- a 4)))
+                             (if (= (m5_fx_int_p a) 1)
                                  (m5_fx_fix (if (= op 7) (+ (wf_bytecode_w_int a) 1) (- (wf_bytecode_w_int a) 1)))
-                               (m5_fx_float_incdec op a)))
+                               (m5_fx_float_incdec op a))))
                      (if (= r -1)
-                         (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw (+ resw 8) oslot)))
-                       (seq (ptr-write-u64 resw 0 r) (setq r 0)))
-                     (if (/= r 0) (setq status r)
-                       (seq (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (heap-read-u64 resw 0))
+                         (seq (setq oslot (m5_fx_view_slot env oslot))
+                              (setq status (m5_fx_intrinsic_slow op env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp 1 resw (+ resw 8) oslot))
+                              (setq r (heap-read-u64 resw 0)))
+                       0)
+                     (if (/= status 0) 0
+                       (seq (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 r)
                             (setq pc (+ pc 2)))))
             (if (= op 16)
                 (seq (setq n (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 2) 8)) 0)))
@@ -34177,7 +34241,7 @@ bytes are written into a fresh 8-byte buffer instead."
                     (if (= op 27)
                         (setq status (nl_ct_throw_words env (heap-read-u64 (+ stk (* (- sp 2) 8)) 0)
                                                         (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
-                    (setq status -2))))))))))))))))))))))))
+                    (setq status -2)))))))))))))))))))))))))
          ;; nativecomp N3: an exit (a call-out's rc, its signal or throw
          ;; stashed) while handler frames are pushed: the innermost frame
          ;; is popped; a catch whose tag is the throw's, or a
@@ -44118,10 +44182,47 @@ never has one."
       (defun m5_fx_apply_run (stk sp argc resw env cache)
         (let* ((fw (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)))
           (if (= (m5_fx_apply_no_word_subr fw) 1) -3
-            (let* ((st (if (= (m5_fx_apply_word_subr fw) 1)
-                           (m5_fx_apply_subr stk sp argc resw env)
-                         (m5_fx_apply_closure cache stk sp argc resw env))))
+            (let* ((st (if (= (nl_word_tag64 fw) 17)
+                           (m5_fx_apply_bytecode fw stk sp argc resw env)
+                         (if (= (m5_fx_apply_word_subr fw) 1)
+                             (m5_fx_apply_subr stk sp argc resw env)
+                           (m5_fx_apply_closure cache stk sp argc resw env)))))
               (if (/= st -3) st (m5_fx_apply_words_run stk sp argc resw env))))))
+
+      ;; An already evaluated byte-code function needs neither symbol
+      ;; resolution nor an intermediate copy of the apply operands. Its
+      ;; spread list is measured once and the VM receives rooted arguments.
+      ;; If the last operand is nil, the leading arguments already form its
+      ;; complete argv. A malformed list or a declined VM entry falls through.
+      (defun m5_fx_apply_bytecode (fn stk sp argc resw env)
+        (let* ((base (+ stk (* (- sp argc) 8)))
+               (last (ptr-read-u64 base (* (- argc 1) 8)))
+               (leading (- argc 2)))
+          (if (= last 3)
+              (m5_fx_funcall_value fn 0 fn stk (- sp 1) leading resw env)
+            (let* ((count (m5_fx_apply_list_len last))
+                   (total (+ leading count)))
+              (if (or (< count 0) (> total 255)) -3
+                (let* ((mark (nl_root_mark env))
+                       (argv (nl_root_frame env total)))
+                  (if (= argv 0) (seq (nl_root_release env mark) -3)
+                    (seq
+                     (m5_fx_apply_copy_words (+ base 8) leading last argv)
+                     (let* ((status (m5_fx_funcall_value fn 0 fn argv total total resw env)))
+                       (seq (nl_root_release env mark) status))))))))))
+
+      ;; Copy the leading words and the elements of a validated spread list
+      ;; to the rooted argument array. Both sources remain live in the caller.
+      (defun m5_fx_apply_copy_words (source leading last argv)
+        (let* ((i 0) (tail last))
+          (seq
+           (while (< i leading)
+             (seq (ptr-write-u64 argv (* i 8) (ptr-read-u64 source (* i 8)))
+                  (setq i (+ i 1))))
+           (while (= (nl_val_tag tail) 7)
+             (seq (ptr-write-u64 argv (* i 8) (nl_word_canon (nl_cons_car_word tail)))
+                  (setq i (+ i 1))
+                  (setq tail (nl_cons_cdr_word tail)))))))
       ;; gnu562: GNU Fapply (eval.c:2803-2870) for a closure FUNCTION (a symbol
       ;; whose cell holds one, or the closure itself) that the VM covers: the
       ;; spread list measured once, the leading arguments and its elements
@@ -44213,17 +44314,10 @@ never has one."
               (if (> total 255) -3
                 (let* ((mark (nl_root_mark env)) (mem (nl_root_frame env (+ total 2))))
                   (if (= mem 0) (seq (nl_root_release env mark) -3)
-                    (let* ((k 0) (l last))
-                      (seq
-                       (while (< k (- argc 1))
-                         (seq (ptr-write-u64 mem (* k 8) (heap-read-u64 base (* k 8)))
-                              (setq k (+ k 1))))
-                       (while (= (nl_val_tag l) 7)
-                         (seq (ptr-write-u64 mem (* k 8) (nl_word_canon (nl_cons_car_word l)))
-                              (setq k (+ k 1))
-                              (setq l (nl_cons_cdr_word l))))
-                       (let* ((st (m5_fx_call_subr_any env (heap-read-u64 mem 0) mem (+ total 1) total resw)))
-                         (seq (nl_root_release env mark) st)))))))))))
+                    (seq
+                     (m5_fx_apply_copy_words base (- argc 1) last mem)
+                     (let* ((st (m5_fx_call_subr_any env (heap-read-u64 mem 0) mem (+ total 1) total resw)))
+                       (seq (nl_root_release env mark) st))))))))))
       ;; callpath2's word apply (`nl_eic_apply_words', then the spread funcall).
       (defun m5_fx_apply_words_run (stk sp argc resw env)
         (let* ((mark (nl_root_mark env)) (base (nl_root_frame env (+ argc 3))))
@@ -44272,17 +44366,10 @@ never has one."
                (if (> total 255) -3
                  (let* ((mem (nl_root_frame env (+ total 2))))
                    (if (= mem 0) -3
-                     (let* ((k 0) (l2 last))
-                       (seq
-                        (while (< k (- argc 1))
-                          (seq (ptr-write-u64 mem (* k 8) (heap-read-u64 base (* k 8)))
-                               (setq k (+ k 1))))
-                        (while (= (nl_val_tag l2) 7)
-                          (seq (ptr-write-u64 mem (* k 8) (nl_word_canon (nl_cons_car_word l2)))
-                               (setq k (+ k 1))
-                               (setq l2 (nl_cons_cdr_word l2))))
-                        (m5_fx_funcall_site 0 (heap-read-u64 mem 0) mem (+ total 1) total resw env
-                                            (+ mem (* (+ total 1) 8))))))))))))))
+                     (seq
+                      (m5_fx_apply_copy_words base (- argc 1) last mem)
+                      (m5_fx_funcall_site 0 (heap-read-u64 mem 0) mem (+ total 1) total resw env
+                                          (+ mem (* (+ total 1) 8)))))))))))))
   "callpath2: reader definitions of the fx call helpers whose link-set stubs
 answer -3 or 0 (`m5_fx_subr_prim2', `m5_fx_funcall_value', `bf_builtin_subr_arity_w',
 `m5_fx_apply_run' in lisp/nelisp-cc-fx-call-primitives.el); they call reader-only entries

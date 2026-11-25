@@ -14,9 +14,9 @@
     ;; Alias symbols and malformed/immediate definitions retain the full
     ;; checked resolver: this answers 0 for them.  The live function cell
     ;; is read every time, including after FSET and FMAKUNBOUND.
-    ;; A symbol object is its own entry (Doc 226 D9, `nelisp_mirror_lookup_entry_owned'),
-    ;; so the function cell is its field at +24 and the lookup is skipped for it; a direct
-    ;; cons (the usual definition, `(builtin NAME)' or a closure) is no unbound marker.
+    ;; A symbol object is its own entry (Doc 226 D9). A direct cons,
+    ;; byte-code function, or interpreted closure cannot be the unbound
+    ;; marker. Read these values from the live cell, including after fset.
     (defun m5_fx_cached_function (cache env)
       (let* ((sym (nl_vector_slot_word cache 0))
              (entry (if (= (logand sym 7) 6)
@@ -25,14 +25,13 @@
                             (if (= k 16) sym (nelisp_mirror_lookup_entry_owned env sym))))
                       (nelisp_mirror_lookup_entry_owned env sym))))
         (if (or (= entry 0) (= entry 3)) 0
-          (let* ((fn (let ((w0 (nl_record_slot_word entry 1)))
-                       ;; w2subr: a Subr object answers its legacy list.
-                       (if (= (logand w0 7) 6)
-                           (if (= (logand (heap-read-u8 (- w0 6) 0) 63) 20)
-                               (heap-read-u64 (- w0 6) 8) w0)
-                         w0))))
+          (let* ((fn (nl_record_slot_word entry 1)))
             (if (= (logand fn 7) 2) fn
-              (if (= (wf_bytecode_w_unbound_p env fn) 1) 0
+              (if (and (= (logand fn 7) 6) (>= fn 4096))
+                  (let* ((kind (logand (ptr-read-u8 (- fn 6) 0) 63)))
+                    ;; The call-out consumes the legacy builtin list.
+                    (if (= kind 20) (ptr-read-u64 (- fn 6) 8)
+                      (if (or (= kind 17) (= kind 23)) fn 0)))
                 (if (= (m5_fx_word_cons_p fn 0) 1) fn 0)))))))
     ;; NAME's WORD when FN is (builtin NAME), else 0.
     (defun m5_fx_builtin_name (fn _pad)
@@ -2121,6 +2120,8 @@
     ;; gnu562: `apply' of a covered closure through the site cache; the reader's
     ;; definition is generated with `m5_fx_apply_run' (`nelisp-standalone--callpath2-m5-defs').
     (defun m5_fx_apply_closure (cache stk sp argc resw env) -3)
+    (defun m5_fx_apply_bytecode (fn stk sp argc resw env) -3)
+    (defun m5_fx_apply_copy_words (source leading last argv) 0)
     (defun m5_fx_apply_spread (base argc resw env) -3)
     (defun m5_fx_apply_no_word_subr (fw) 0)
     ;; applyfn2: GNU Fapply's spread for a builtin (reader definitions generated

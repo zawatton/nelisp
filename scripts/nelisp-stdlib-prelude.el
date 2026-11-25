@@ -31701,10 +31701,10 @@ a non-empty list of `t' and symbols, with no (NAME . VALUE) binding."
 ;; S4d: an anonymous lambda over read-only lexical variables.  The captured
 ;; environment is `t'/bare-symbol declarations plus 1..4 (NAME . VALUE) pairs
 ;; with distinct names.  The VM compiles the body with the captured names as
-;; the FIRST locals (before the formals); the runtime prepends the captured
-;; values (read from the closure's own alist at each call) to the argument
-;; list.  The record's arity fields are an impossible count, so any consumer
-;; unaware of captures declines on arity; slot 7 is [NFORMALS NAME...].
+;; the first locals (before the formals). The runtime passes the binding
+;; pairs as rooted arguments, and a read fetches the current value from its
+;; pair. The record's arity fields make the ordinary argument binders decline;
+;; slot 7 is [MIN MAX REST-INDEX NAME...].
 (defconst nelisp--fx-cap-max 4)
 (defconst nelisp--fx-cap-arity 1048576)
 (defvar nelisp--fx-cap-names nil
@@ -31895,7 +31895,7 @@ the variables a closure and the compiled code must share."
   ;; Track the operand-stack depth along the code as laid out; at a
   ;; label the real depth is never larger, so MAXDEPTH bounds it.
   (let ((op (car items)))
-    (setq nelisp--fxc-depth (+ nelisp--fxc-depth (cond ((memq op '(1 2 12 18 19)) 1)
+    (setq nelisp--fxc-depth (+ nelisp--fxc-depth (cond ((memq op '(1 2 12 18 19 28)) 1)
                                                        ((memq op '(3 9 11 4 5 6 13 14 20 0 22 27)) -1)
                                                        ((eq op 16) (- 1 (nth 2 items)))
                                                        (t 0))))
@@ -31938,10 +31938,14 @@ the variables a closure and the compiled code must share."
   (cond
    ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
     (let ((c (assq x nelisp--fxc-vars)))
-      (if c (progn (nelisp--fxc-emit 2 (cdr c))
-                   (if (memq x nelisp--fxc-boxed)
-                       (nelisp--fxc-box-call 'cdr 1 (list :slot (cdr c)))
-                     (list :slot (cdr c))))
+      (if c
+          (let ((slot (cdr c)))
+            (if (and nelisp--fx-cap-names (< slot (length nelisp--fx-cap-names)))
+                (nelisp--fxc-irk :capture-value (nelisp--fxc-emit 28 slot))
+              (nelisp--fxc-emit 2 slot)
+              (if (memq x nelisp--fxc-boxed)
+                  (nelisp--fxc-box-call 'cdr 1 (list :slot slot))
+                (list :slot slot))))
         ;; A global variable: VARREF, GNU's Bvarref, reads it
         ;; directly instead of calling `symbol-value'.
         (if (not (and nelisp--fxc-alias-hints (memq x nelisp--fxc-alias-hints)
@@ -32747,11 +32751,12 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
                                             e nelisp--fx-declared))
                                     e))))
                   (setq nelisp--fxc-mutated (nelisp--fx-setq-targets expanded))
-                  ;; S4d: a captured name is read at entry, so a setq of it
-                  ;; (also through a macro) leaves the body interpreted.
+                  ;; Writes to captured bindings still use the interpreter.
+                  ;; Watch for a later special declaration before entering.
                   (dolist (n nelisp--fx-cap-names)
                     (when (memq n nelisp--fxc-mutated)
-                      (throw 'nelisp--fx-unsupported nil)))
+                      (throw 'nelisp--fx-unsupported nil))
+                    (push n nelisp--fxc-lexlets))
                   (setq nelisp--fxc-boxed
                         (and nelisp--fxc-mutated
                              (nelisp--fx-boxed-names expanded nelisp--fxc-mutated)))
@@ -32947,9 +32952,8 @@ Called by the runtime with re-entry blocked; leaves BODY in
 FORMALS are the applied closure's environment and formal list: a body no
 name was deferred for is an anonymous lambda, compiled (on its second call;
 the first leaves the table untouched) from them when the
-environment holds no lexical binding (`nelisp--fx-env-ok-p').  A closure
-over a variable never gets here: the runtime checks the environment first,
-and `nelisp--fx-register-fn' repeats the check."
+environment has the shape accepted by `nelisp--fx-env-ok-p' or
+`nelisp--fx-cap-names'."
   (let ((first-sight nil) (expired nil) (counting nil))
   (condition-case nil
       (let ((name (gethash body nelisp--fx-pending))
@@ -33104,8 +33108,8 @@ record (else nil), NAME the function name or nil, ENV the closure's
 environment.  Consumes the next registration index.  Slots 8 and 9 hold the
 environment and formals the code was compiled under (F391); the VM runs the
 record only for a closure whose own environment and formals match them
-\(`m5_fx_rec_valid'); a cap record keeps just its bare markers, never the
-\(NAME . VALUE) pairs."
+\(`m5_fx_rec_valid'). A cap record keeps its markers and names in order,
+with fresh placeholder pairs that hold no captured values."
   ;; Compiler-private -2 selects the nullary constant path.  Ordinary VM
   ;; calls keep the original executor prologue.
   (let ((code (car c)))
@@ -33119,12 +33123,10 @@ record only for a closure whose own environment and formals match them
                  (if capnames nelisp--fx-cap-arity (nth 2 shape))
                  (nth 3 shape)
                  (and capnames
-                      (apply #'vector (nth 1 shape) capnames))
+                      (vconcat (cdr shape) capnames))
                  (if capnames
-                     (let ((r nil))
-                       (dolist (e env) (unless (consp e) (push e r)))
-                       (nreverse r))
-                   env)
+                       (mapcar (lambda (e) (if (consp e) (cons (car e) nil) e)) env)
+                     env)
                  args)
     (setq nelisp--fx-next-index (1+ nelisp--fx-next-index))))
 
@@ -33147,9 +33149,7 @@ meanwhile would otherwise record `none' again behind the compilation)."
                (nelisp--fx-declared (let ((r nil)) (dolist (e (remq t (nth 1 fn))) (unless (consp e) (push e r))) (nreverse r)))
                (shape (nelisp--fx-arglist-shape args)))
           (when (and shape
-                     (or (null capnames)
-                         (and (= (nth 1 shape) (nth 2 shape)) (< (nth 3 shape) 0)
-                              (not (cl-some #'nelisp--fx-special-p capnames))))
+                     (not (cl-some #'nelisp--fx-special-p capnames))
                      (not (cl-some #'nelisp--fx-special-p (car shape)))
                      (let ((cur (gethash body nelisp--fx-table)))
                        (or (null cur) (and force (eq cur 'none)))))

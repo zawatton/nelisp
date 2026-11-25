@@ -740,6 +740,9 @@ file).")
           ;; Four names keep rbx for the function's call-free regions.
           '((wf_bytecode_w_fast_run pc sp raw data mem length go depth)
             (wf_bytecode_execute_frame pc sp done depth)
+            ;; The FX interpreter's indices and frame addresses are live
+            ;; across each instruction. Leave rbx to the ordinary emitter.
+            (m5_fx_run_body pc sp base stk)
             ;; S10 prototype: macroexp AOT rows (scripts/nelisp-aot-bytecode.el), hottest locals first.
             (wf_aot_5 blk fail x1 x2 env)
             (wf_aot_4 blk x5 x4 x3 env)

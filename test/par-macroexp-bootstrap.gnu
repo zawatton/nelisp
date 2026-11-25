@@ -1,0 +1,6 @@
+(unchanged t)
+(alias ((8) nil))
+(compiler-macro 21)
+(lambda (7))
+(rx-locals "abc[[:digit:]]+")
+(redefined 10)
