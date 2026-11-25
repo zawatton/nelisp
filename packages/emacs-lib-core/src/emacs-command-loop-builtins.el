@@ -72,7 +72,16 @@ Host Emacs keeps its native `kill-emacs'.  This helper is installed as
     (unless (and (integerp code) (<= 0 code) (<= code 255))
       (setq code 1))
     (unwind-protect
-        (when (boundp 'kill-emacs-hook) (run-hooks 'kill-emacs-hook))
+        (when (bound-and-true-p kill-emacs-hook)
+          (run-hook-wrapped
+           'kill-emacs-hook
+           (lambda (function)
+             ;; Like GNU, report a failing hook and finish the remaining hooks.
+             (condition-case err
+                 (funcall function)
+               ((error quit)
+                (message "Error in kill-emacs-hook (%S): %S" function err)))
+             nil)))
       (when (fboundp 'terminal-raw-mode-leave) (terminal-raw-mode-leave)))
     (if (fboundp 'nelisp--exit-process)
         (nelisp--exit-process code)

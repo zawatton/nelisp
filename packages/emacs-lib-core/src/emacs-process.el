@@ -64,7 +64,7 @@
                          &rest args))
 (declare-function nelisp-process-start "nelisp-process" (program &rest args))
 (declare-function nelisp-process-wait "nelisp-process" (proc))
-(declare-function nelisp-process-read-output "nelisp-process" (proc n))
+(declare-function nelisp-process-read-output "nelisp-process" (proc n &optional raw))
 (declare-function nelisp-process-write "nelisp-process" (proc string))
 (declare-function nelisp-process-close-stdin "nelisp-process" (proc))
 (declare-function nelisp-process-poll "nelisp-process" (proc))
@@ -1007,9 +1007,13 @@ reader's stdout buffer; multi-megabyte streaming output is out of scope
                     command))
          (proc (apply #'nelisp-process-start command))
          (rc (nelisp-process-wait proc))
+         (raw (or (emacs-process--call-process-target-file destination)
+                  (memq coding-system-for-read '(no-conversion binary))))
          (out "")
          (chunk nil))
-    (while (setq chunk (nelisp-process-read-output proc 65536))
+    (while (setq chunk (if raw
+                           (nelisp-process-read-output proc 65536 t)
+                         (nelisp-process-read-output proc 65536)))
       (setq out (concat out chunk)))
     (cons (if (integerp rc) rc 0) out)))
 

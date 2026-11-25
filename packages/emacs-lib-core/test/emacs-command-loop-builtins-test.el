@@ -292,6 +292,21 @@
       (emacs-command-loop-kill-emacs 42))
     (should (equal (nreverse calls) '(hook restore (exit 42))))))
 
+(ert-deftest emacs-command-loop-builtins-test/kill-continues-after-hook-error ()
+  (let* (calls
+         (kill-emacs-hook
+          (list (lambda () (push 'failed calls) (error "shutdown hook"))
+                (lambda () (push 'quit calls) (signal 'quit nil))
+                (lambda () (push 'continued calls) t)
+                (lambda () (push 'last calls)))))
+    (cl-letf (((symbol-function 'terminal-raw-mode-leave)
+               (lambda () (push 'restore calls)))
+              ((symbol-function 'nelisp--exit-process)
+               (lambda (code) (push (list 'exit code) calls))))
+      (emacs-command-loop-kill-emacs 42))
+    (should (equal (nreverse calls)
+                   '(failed quit continued last restore (exit 42))))))
+
 (ert-deftest emacs-command-loop-builtins-test/sit-for-interrupt-preserves-input ()
   (let ((now 0.0) (unread-command-events nil)
         (unread-post-input-method-events nil)

@@ -44097,7 +44097,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--fx-run nelisp--string-width-fast nelisp--native-pin-eq-slots nelisp--plist-get-eq
       nelisp--plist-member-eq nelisp--raw-aref nelisp--sha256-bytes
       nelisp--syscall-path nelisp--syscall-pivot-root nelisp--syscall-stat-field
-      nelisp--syscall-statx-buf nelisp-process-read-output nelisp-process-write
+      nelisp--syscall-statx-buf nelisp-process-write
       nelisp-socket-recv nelisp-socket-send nelisp-spin-until
       nelisp-thread-atomic-add nelisp-thread-join
       nelisp--native-sub-char-table-slot
@@ -44107,7 +44107,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       string= wrf)
     ((2 . 3)
       try-completion all-completions test-completion assoc assoc-string gethash make-string nelisp--readdir-scan-raw
-      nelisp-socket-connect nelisp-socket-listen plist-get)
+      nelisp-process-read-output nelisp-socket-connect nelisp-socket-listen plist-get)
     ((2 . 5)
       alist-get)
     ((3 . 3)
@@ -45854,6 +45854,8 @@ POSIX-style child-fd setup step (see
 	              (nl_bi_process_refresh proc 0)
 	            (nl_bi_process_get_int proc 4))
 	        -1))
+	    ;; Optional RAW keeps pipe bytes out of the text allocator, where
+	    ;; C0/C1 followed by a continuation would become one Emacs byte8.
 	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_bi_process_read_output_w (args _pad)
       (seq
@@ -45865,7 +45867,10 @@ POSIX-style child-fd setup step (see
 	                   (n (nl_os_read_file_handle fd buf limit)))
 	              (if (< n 1)
 	                  (seq 3)
-	                (seq (nl_alloc_str_w buf n 0))))
+	                (if (and (= (nl_val_tag (nl_cons_cdr_word (nl_cons_cdr_word args))) 7)
+	                         (/= (wf_arg_word args 2) 3))
+	                    (nl_alloc_unibyte_str_w buf n 0)
+	                  (nl_alloc_str_w buf n 0))))
 	          (seq 3)))
         ))
 	    ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
@@ -46415,7 +46420,10 @@ Other targets return nil, preserving their generated process source exactly."
                             (extern-call CloseHandle pipe_handle) 0)
                         (nl_bi_process_set_int proc 2 -1)))
                      3)
-                  (nl_alloc_str_w buf n 0)))
+                  (if (and (= (nl_val_tag (nl_cons_cdr_word (nl_cons_cdr_word args))) 7)
+                           (/= (wf_arg_word args 2) 3))
+                      (nl_alloc_unibyte_str_w buf n 0)
+                    (nl_alloc_str_w buf n 0))))
             3)))
       (defun nl_bi_process_windows_read_output (args out)
         (nl_abi_word_to_rc (nl_bi_process_windows_read_output_w args 0) out))

@@ -707,7 +707,9 @@
     (unwind-protect
         (cl-letf (((symbol-function 'nelisp-process-start) (lambda (&rest _) 'p))
                   ((symbol-function 'nelisp-process-read-output)
-                   (lambda (_p _n) (pop chunks)))
+                   (lambda (_p _n raw)
+                     (should raw)
+                     (pop chunks)))
                   ((symbol-function 'nelisp-process-wait) (lambda (_p) 0)))
           (let ((rc (emacs-process--standalone-call-process
                      "/bin/echo" nil (list :file file) '("ignored"))))
