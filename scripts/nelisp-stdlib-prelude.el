@@ -31853,6 +31853,8 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
 (defvar nelisp--fxc-depth nil)
 (defvar nelisp--fxc-maxdepth nil)
 (defvar nelisp--fxc-lexlets nil)
+(defvar nelisp--fxc-callouts nil)
+(defvar nelisp--fxc-bindings nil)
 (defvar nelisp--fxc-alias-hints nil)
 (defvar nelisp--fxc-mutated nil)
 (defvar nelisp--fxc-boxed nil
@@ -31895,6 +31897,10 @@ the variables a closure and the compiled code must share."
   ;; Track the operand-stack depth along the code as laid out; at a
   ;; label the real depth is never larger, so MAXDEPTH bounds it.
   (let ((op (car items)))
+    ;; Calls, including the slow paths of arithmetic intrinsics, can
+    ;; declare variables special. VARBIND can run variable watchers.
+    (when (memq op '(4 5 6 7 13 14 15 16 20))
+      (setq nelisp--fxc-callouts (1+ nelisp--fxc-callouts)))
     (setq nelisp--fxc-depth (+ nelisp--fxc-depth (cond ((memq op '(1 2 12 18 19 28)) 1)
                                                        ((memq op '(3 9 11 4 5 6 13 14 20 0 22 27)) -1)
                                                        ((eq op 16) (- 1 (nth 2 items)))
@@ -31924,6 +31930,14 @@ the variables a closure and the compiled code must share."
 
 (defun nelisp--fxc-unsupported (x)
   (throw 'nelisp--fx-unsupported x))
+
+(defun nelisp--fxc-check-binding (form)
+  ;; The entry guard covers declarations made before entry. A callout
+  ;; can make that guard stale before this binding, and restarting the
+  ;; activation would run its effects twice. Leave such forms interpreted.
+  (when (> nelisp--fxc-callouts 0)
+    (nelisp--fxc-unsupported form))
+  (setq nelisp--fxc-bindings (1+ nelisp--fxc-bindings)))
 
 (defun nelisp--fxc-body (forms)
   (if (null forms) (nelisp--fxc-irk :const (nelisp--fxc-emit 1 nil))
@@ -32005,6 +32019,8 @@ the variables a closure and the compiled code must share."
                     (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil)))
                     (setq val (nelisp--fxc-box-call 'cons 2 (list :const kn) val)))
                 (setq val (nelisp--fxc-comp (if (consp b) (cadr b) nil))))
+              (when (or (eq op 'let*) (null (cdr (cadr x))))
+                (nelisp--fxc-check-binding x))
               (cond
                ;; A lone binding has no later value to wait for.
                ((and dyn (or (eq op 'let*) (null (cdr (cadr x)))))
@@ -32019,6 +32035,8 @@ the variables a closure and the compiled code must share."
                       ((eq op 'let*) (push (cons name nelisp--fxc-nloc) nelisp--fxc-vars))
                       (t (push (cons name nelisp--fxc-nloc) pending)))
                 (setq nelisp--fxc-nloc (1+ nelisp--fxc-nloc))))))
+          (when (and (eq op 'let) (cdr (cadr x)))
+            (nelisp--fxc-check-binding x))
           (dolist (d (nreverse dynamic))
             (nelisp--fxc-emit 2 (cdr d))
             (push (list :varbind (nelisp--fxc-emit 20 (car d)) (list :slot (cdr d))) items)
@@ -32089,9 +32107,14 @@ the variables a closure and the compiled code must share."
           (list :if c a b)))
        ((eq op 'while)
         (unless (consp (cdr x)) (nelisp--fxc-unsupported x))
-        (let ((top (nelisp--fxc-label)) (end (nelisp--fxc-label)) (c nil) (b nil))
+        (let ((top (nelisp--fxc-label)) (end (nelisp--fxc-label)) (c nil) (b nil)
+              (callouts nelisp--fxc-callouts) (bindings nelisp--fxc-bindings))
           (nelisp--fxc-place top) (setq c (nelisp--fxc-comp (nth 1 x))) (nelisp--fxc-jump 9 end)
           (setq b (nelisp--fxc-body (cddr x))) (nelisp--fxc-emit 11) (nelisp--fxc-jump 8 top)
+          ;; A callout in one iteration can affect a binding in the next.
+          (when (and (/= callouts nelisp--fxc-callouts)
+                     (/= bindings nelisp--fxc-bindings))
+            (nelisp--fxc-unsupported x))
           (nelisp--fxc-place end)
           (list :seq (list :while c b) (nelisp--fxc-irk :const (nelisp--fxc-emit 1 nil)))))
        ((eq op 'cond)
@@ -32730,6 +32753,7 @@ The walk is `nelisp--fxc-comp' over the `nelisp--fxc-' state bound here."
         (nelisp--fxc-out nil) (nelisp--fxc-pc 0) (nelisp--fxc-nloc (length params))
         (nelisp--fxc-patches nil) (nelisp--fxc-labels nil) (nelisp--fxc-nlab 0)
         (nelisp--fxc-depth 0) (nelisp--fxc-maxdepth 0) (nelisp--fxc-lexlets nil)
+        (nelisp--fxc-callouts 0) (nelisp--fxc-bindings 0)
         (nelisp--fxc-alias-hints nelisp--fx-alias-hints)
         (nelisp--fxc-mutated nil) (nelisp--fxc-nparams (length params)) (nelisp--fxc-ir nil)
         (nelisp--fxc-boxed nil)
