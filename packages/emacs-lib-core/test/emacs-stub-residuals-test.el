@@ -1207,11 +1207,11 @@ shape whose only signal is the naive test."
         (should (string-match-p "provide 'help-macro" source))))))
 
 (ert-deftest emacs-stub-residuals-test/version-compare-numeric-components ()
-  (should (= -1 (emacs-stub--version-compare "27.1" "29")))
-  (should (= -1 (emacs-stub--version-compare "29" "29.1")))
-  (should (= 0 (emacs-stub--version-compare "29" "29.0")))
-  (should (= 1 (emacs-stub--version-compare "30.1" "29.99")))
-  (should (= -1 (emacs-stub--version-compare "29.0.50" "29.1"))))
+  (should (version< "27.1" "29"))
+  (should (version< "29" "29.1"))
+  (should (version= "29" "29.0"))
+  (should (version< "29.99" "30.1"))
+  (should (version< "29.0.50" "29.1")))
 
 (ert-deftest emacs-stub-residuals-test/version-to-list-matches-host-oracle ()
   (dolist (version '(".5"

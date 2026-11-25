@@ -1702,7 +1702,10 @@ strings or comments, and calls with any non-literal argument, are kept."
      delete-consecutive-dups rassq-delete-all macrop
      definition-prefixes register-definition-prefixes
      derived-mode-set-parent derived-mode-add-parents derived-mode--flush
-     process-live-p buffer-narrowed-p)
+     process-live-p buffer-narrowed-p
+     version-separator version-regexp-alist version-to-list
+     version-list-< version-list-= version-list-<= version-list-not-zero
+     version< version<= version=)
     ;; Publish the Custom metadata needed during bootstrap.  The complete
     ;; generated autoload table remains available through the vendor path.
     ("vendor/emacs-lisp/loaddefs.el"
