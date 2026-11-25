@@ -105,6 +105,11 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      "emacs-lisp/format.el"
                      "staged-emacs-lisp/window.el"
                      "staged-emacs-lisp/faces.el"
+                     ;; The class registry precedes the dispatcher.
+                     ;; Publish advice after the dispatcher and bundled seq.
+                     "emacs-lisp/emacs-lisp/cl-preloaded.el"
+                     "emacs-lisp/emacs-lisp/cl-generic.el"
+                     "emacs-lisp/emacs-lisp/nadvice.el"
                      "emacs-lisp/frame.el"
                      "emacs-lisp/term/tty-colors.el"
                      "emacs-lisp/send-to.el"
@@ -146,6 +151,10 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
                      "emacs-lisp/international/emoji-labels.el"
                      ;; The bootstrap has already loaded GNU button.el.
                      "emacs-lisp/help-mode.el"
+                     ;; cl-extra's help integration needs help-mode.  Load
+                     ;; both CL autoload providers before consumers run.
+                     "emacs-lisp/emacs-lisp/cl-seq.el"
+                     "emacs-lisp/emacs-lisp/cl-extra.el"
                      "emacs-lisp/international/iso-transl.el"
                      "emacs-lisp/case-table.el"
                      "emacs-lisp/emacs-lisp/easy-mmode.el"
@@ -189,6 +198,11 @@ bootstrap, ahead of the bundled mode definitions that create abbrev tables."
   "Preload the batch nemacs entry into the current NeLisp image."
   (nemacs-runtime-image-setup-paths repo-root)
   (nemacs-runtime-image-load-bootstrap repo-root bootstrap-file)
+  ;; A frozen reader can retain its early cl-pushnew after bundle replay.
+  ;; Use the resolved source loader to publish cl-lib in that case.
+  (let ((source (concat repo-root "/vendor/emacs-lisp/emacs-lisp/cl-lib.el")))
+    (unless (equal (symbol-file 'cl-pushnew 'defun) source)
+      (nemacs-runtime-image-preload--load-source-file source)))
   (nemacs-runtime-image-preload--install-process-core)
   (require 'nemacs-main)
   (load (concat repo-root "/scripts/nemacs-runtime-frame-tab-preload.el")

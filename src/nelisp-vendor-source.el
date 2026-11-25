@@ -15,6 +15,8 @@
 (defconst nelisp-vendor-source--pins
   '(("vendor/emacs-lisp/help-fns.el"
      . "013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5")
+    ("vendor/emacs-lisp/loaddefs.el"
+     . "786ea48e70a6e1166a82cf4ed4485136ab859c97356c18d3631709258072a6ac")
     ("vendor/staged-emacs-lisp/subr.el"
      . "a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96")
     ("vendor/staged-emacs-lisp/simple.el"
@@ -56,7 +58,7 @@
   "SHA-256 pins for exact GNU Emacs 31.1 source providers.")
 
 (defvar nelisp-vendor-source--cache (make-hash-table :test #'equal)
-  "Cache decoded source and exact top-level forms, keyed by relative file.")
+  "Cache decoded source and exact top-level forms by pin and source path.")
 
 (defun nelisp-vendor-source--form-name (form)
   "Return the static function name defined or aliased by FORM.
@@ -82,51 +84,55 @@ For `defalias' and single-variable `setq', index only a literal symbol name."
           (symbolp (cadr form))
           (cadr form)))))
 
-(defun nelisp-vendor-source--definitions (relative-file)
-  "Return (SOURCE . DEFINITIONS) for pinned RELATIVE-FILE, cached once."
-  (or (gethash relative-file nelisp-vendor-source--cache)
-      (let* ((expected (cdr (assoc relative-file nelisp-vendor-source--pins)))
-             (file (expand-file-name relative-file nelisp-vendor-source--root)))
-        (unless expected
-          (error "No GNU source hash pinned for %s" relative-file))
-        (let* ((digest (with-temp-buffer
-                         (insert-file-contents-literally file)
-                         (secure-hash 'sha256 (current-buffer))))
-               (source (with-temp-buffer
-                         (insert-file-contents file)
-                         (buffer-string)))
-               (length (length source))
-               (position 0)
-               (definitions (make-hash-table :test #'eq)))
-          (unless (equal digest expected)
-            (error "Vendored %s SHA-256 mismatch: %s" relative-file digest))
-          (while (< position length)
-            (let ((skipping t))
-              (while (and skipping (< position length))
-                (let ((char (aref source position)))
-                  (cond
-                   ((memq char '(9 10 12 13 32))
-                    (setq position (1+ position)))
-                   ((= char 59)
-                    (while (and (< position length)
-                                (/= (aref source position) 10))
-                      (setq position (1+ position))))
-                   (t (setq skipping nil))))))
-            (when (< position length)
-              (let* ((start position)
-                     (parsed (read-from-string source position))
-                     (form (car parsed))
-                     (end (cdr parsed)))
-                (let ((name (nelisp-vendor-source--form-name form)))
-                  (when name
-                    (puthash name
-                             (cons (cons start (substring source start end))
-                                   (gethash name definitions))
-                             definitions)))
-                (setq position end))))
-          (let ((result (cons source definitions)))
-            (puthash relative-file result nelisp-vendor-source--cache)
-            result)))))
+(defun nelisp-vendor-source--definitions (relative-file &optional file)
+  "Return (SOURCE . DEFINITIONS) for pinned RELATIVE-FILE, cached once.
+When FILE is supplied, validate that path against the same pin."
+  (let* ((file (expand-file-name (or file relative-file)
+                                 nelisp-vendor-source--root))
+         (key (cons relative-file file)))
+    (or (gethash key nelisp-vendor-source--cache)
+        (let ((expected (cdr (assoc relative-file nelisp-vendor-source--pins))))
+          (unless expected
+            (error "No GNU source hash pinned for %s" relative-file))
+          (let* ((digest (with-temp-buffer
+                           (set-buffer-multibyte nil)
+                           (insert-file-contents-literally file)
+                           (secure-hash 'sha256 (current-buffer))))
+                 (source (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string)))
+                 (length (length source))
+                 (position 0)
+                 (definitions (make-hash-table :test #'eq)))
+            (unless (equal digest expected)
+              (error "Vendored %s SHA-256 mismatch: %s" relative-file digest))
+            (while (< position length)
+              (let ((skipping t))
+                (while (and skipping (< position length))
+                  (let ((char (aref source position)))
+                    (cond
+                     ((memq char '(9 10 12 13 32))
+                      (setq position (1+ position)))
+                     ((= char 59)
+                      (while (and (< position length)
+                                  (/= (aref source position) 10))
+                        (setq position (1+ position))))
+                     (t (setq skipping nil))))))
+              (when (< position length)
+                (let* ((start position)
+                       (parsed (read-from-string source position))
+                       (form (car parsed))
+                       (end (cdr parsed)))
+                  (let ((name (nelisp-vendor-source--form-name form)))
+                    (when name
+                      (puthash name
+                               (cons (cons start (substring source start end))
+                                     (gethash name definitions))
+                               definitions)))
+                  (setq position end))))
+            (let ((result (cons source definitions)))
+              (puthash key result nelisp-vendor-source--cache)
+              result))))))
 
 (defun nelisp-vendor-source-form (relative-file symbol)
   "Return exact pinned source text for SYMBOL in RELATIVE-FILE.
@@ -145,9 +151,10 @@ Gives the same fail-closed SHA-256 guarantee as `nelisp-vendor-source-form',
 for a consumer that wants the entire file rather than one extracted form."
   (car (nelisp-vendor-source--definitions relative-file)))
 
-(defun nelisp-vendor-source-forms (relative-file symbols)
-  "Return exact forms for SYMBOLS in their order in RELATIVE-FILE."
-  (let* ((definitions (cdr (nelisp-vendor-source--definitions relative-file)))
+(defun nelisp-vendor-source-forms (relative-file symbols &optional file)
+  "Return exact forms for SYMBOLS in their order in RELATIVE-FILE.
+Use FILE as the source path when supplied, with RELATIVE-FILE as its pin."
+  (let* ((definitions (cdr (nelisp-vendor-source--definitions relative-file file)))
          (forms (mapcar (lambda (symbol)
                           (let ((entries (gethash symbol definitions)))
                             (unless (= (length entries) 1)
