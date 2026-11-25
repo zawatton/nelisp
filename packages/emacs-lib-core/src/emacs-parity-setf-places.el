@@ -160,9 +160,17 @@
                   (fboundp 'gv-get) (not (macrop (car place)))
                   (function-get (car place) 'compiler-macro))
              (gv-get place (lambda (_getter setter) (funcall setter val))))
-            ;; A macro place: expand once and retry (GNU gv does the same).
-            ((and (consp place) (symbolp (car place)) (fboundp (quote macrop)) (macrop (car place)))
-             (list 'setf (macroexpand-1 place) val))
+            ;; A generalized place can use a local macro, as in the
+            ;; compiler's with-comp-cstr-accessors.  GNU gv expands it
+            ;; in the current macro environment.
+            ((and (consp place) (symbolp (car place))
+                  (or (and (boundp 'macroexpand-all-environment)
+                           (cdr (assq (car place) macroexpand-all-environment)))
+                      (and (fboundp 'macrop) (macrop (car place)))))
+             (list 'setf
+                   (macroexpand-1 place (and (boundp 'macroexpand-all-environment)
+                                             macroexpand-all-environment))
+                   val))
             ;; GNU gv fallback: bind the arguments, then call the
             ;; `(setf HEAD)' function, so unknown places expand instead of
             ;; signalling during eager macroexpansion.

@@ -58,3 +58,12 @@
                  t)
          (error (list (car err) (cadr err)))))
 (terpri)
+
+(prin1 (condition-case err
+           (eval '(let ((cell (list 0)))
+                    (cl-macrolet ((operand (place) (list 'car place)))
+                      (setf (operand cell) 17))
+                    (car cell))
+                 t)
+         (error (list (car err) (cadr err)))))
+(terpri)
