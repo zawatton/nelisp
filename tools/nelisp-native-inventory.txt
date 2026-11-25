@@ -266,6 +266,7 @@ byte-code	native-must-stay	allocation/tagged-object primitive
 byte-code-function-p	native-must-stay	type predicate on tag bits
 make-byte-code	native-must-stay	allocation/tagged-object primitive
 fetch-bytecode	native-review	No classification row; review against Doc 211 §6.
+make-closure	native-must-stay	clause 1: allocate a bytecode closure and copy its tagged constant slots
 vectorp	native-must-stay	type predicate on tag bits
 listp	native-must-stay	type predicate on tag bits
 nlistp	native-must-stay	type predicate on tag bits

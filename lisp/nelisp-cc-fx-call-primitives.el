@@ -18,14 +18,16 @@
     ;; byte-code function, or interpreted closure cannot be the unbound
     ;; marker. Read these values from the live cell, including after fset.
     (defun m5_fx_cached_function (cache env)
-      (let* ((sym (nl_vector_slot_word cache 0))
+      (let* ((sym (if (= (logand cache 7) 6) (ptr-read-u64 cache 2)
+                    (nl_vector_slot_word cache 0)))
              (entry (if (= (logand sym 7) 6)
-                        (let* ((k (logand (ptr-read-u64 (- sym 6) 0) 63)))
-                          (if (= k 4) sym
-                            (if (= k 16) sym (nelisp_mirror_lookup_entry_owned env sym))))
+                        (let* ((k (logand (ptr-read-u8 (- sym 6) 0) 63)))
+                          (if (or (= k 4) (= k 16)) sym
+                            (nelisp_mirror_lookup_entry_owned env sym)))
                       (nelisp_mirror_lookup_entry_owned env sym))))
         (if (or (= entry 0) (= entry 3)) 0
-          (let* ((fn (nl_record_slot_word entry 1)))
+          (let* ((fn (if (= (logand entry 7) 6) (ptr-read-u64 entry 18)
+                       (nl_record_slot_word entry 1))))
             (if (= (logand fn 7) 2) fn
               (if (and (= (logand fn 7) 6) (>= fn 4096))
                   (let* ((kind (logand (ptr-read-u8 (- fn 6) 0) 63)))
