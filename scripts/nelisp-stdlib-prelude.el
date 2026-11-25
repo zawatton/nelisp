@@ -9729,13 +9729,12 @@ See that variable's own docstring."
   ;; The reader has no byte-code objects (everything is interpreted).
   (defun byte-code-function-p (_object) nil))
 (unless (fboundp 'native-comp-function-p)
-  ;; GNU Emacs 31.1's `native-comp-function-p' is t only for a function
-  ;; produced by the native (.eln) AOT compiler -- verified on host: nil
-  ;; even for an ordinary C subr like `car', not just for a plain lambda.
-  ;; This runtime's VM-phase source evaluation never produces a native
-  ;; artifact, so nil unconditionally is the faithful answer here, exactly
-  ;; as `byte-code-function-p' above is unconditionally nil in this mode.
-  (defun native-comp-function-p (_object) nil))
+  (defun native-comp-function-p (object)
+    "Return non-nil if OBJECT is a native-compiled Lisp function."
+    (and (fboundp 'nelisp--native-subr-arity)
+         (let ((arity (nelisp--native-subr-arity object)))
+           ;; Built-in arities are encoded as negative integers.
+           (or (consp arity) (and (integerp arity) (>= arity 0)))))))
 (unless (fboundp 'compiled-function-p)
   ;; GNU Emacs 31.1's `compiled-function-p' (subr.el-documented, C
   ;; primitive): t for a subr (built-in or native-compiled) or a
@@ -20197,7 +20196,7 @@ If FUNC is a function alias, return the function alias chain."
 (unless (fboundp 'native-comp-available-p)
   (defun native-comp-available-p ()
     "Return non-nil if native compilation support is built-in."
-    nil))
+    (featurep 'native-compile)))
 ;; GNU 31.1 subr.el error-object accessors (verbatim, guarded); GNU ert.el's
 ;; `should-error' calls `error-has-type-p'.
 (unless (fboundp 'error-type-p)

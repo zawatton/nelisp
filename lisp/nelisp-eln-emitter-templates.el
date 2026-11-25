@@ -31,7 +31,7 @@
 (defun nelisp-eln-emitter--symbol-name (name)
   "Return GNU comp-c-func-name for NAME in the pinned no-collision unit."
   (let ((source (symbol-name name)))
-    (unless (string-match-p "\\`[A-Za-z_][A-Za-z0-9_-]*\\'" source)
+    (unless (string-match-p "\\`[A-Za-z_-][A-Za-z0-9_-]*\\'" source)
       (error "ELN emitter: unsupported function name %S" name))
     (concat
      "F"

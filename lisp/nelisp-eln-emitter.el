@@ -205,12 +205,13 @@ Keep the incoming argument in RDI while every expression result uses RAX."
      (t
       (error "ELN emitter: unsupported AOT leaf IR shape")))))
 
-(defun nelisp-eln-emitter-write-ir (ir output &optional profile)
+(defun nelisp-eln-emitter-write-ir (ir output &optional profile docs)
   "Emit supported AOT defun IR as a genuine GNU 31.1 .eln at OUTPUT.
 The pinned PROFILE must describe GNU Emacs 31.1 x86_64-linux with ABI
 hash ba35c031.  The output contains an ELF ET_DYN, real comp static
 metadata, the registered native subr, and top_level_run.  No Host Emacs
-compiler is invoked.  OUTPUT must not already exist."
+compiler is invoked.  OUTPUT must not already exist.  DOCS is the
+optional one-entry vector of native function documentation."
   (let* ((abi (or profile nelisp-eln-emitter-gnu31-profile))
          (entry (nelisp-eln-emitter--validate-ir ir))
          (name (nth 0 entry))
@@ -231,7 +232,7 @@ compiler is invoked.  OUTPUT must not already exist."
          (quality (nelisp-eln-emitter--static-object
                    '((native-comp-speed . 2)
                      (native-comp-debug . 0))))
-         (fdoc (nelisp-eln-emitter--static-object [nil]))
+         (fdoc (nelisp-eln-emitter--static-object (or docs [nil])))
          (rodata "")
          (blob-symbols nil)
          (data (make-string 72 0))

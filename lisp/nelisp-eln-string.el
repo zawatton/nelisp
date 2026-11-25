@@ -99,8 +99,9 @@
 
 (defun nelisp-eln-string--write-descriptor (base chars bytes unibyte)
   (ptr-write-u64 base nelisp-eln-string--field-size chars)
+  ;; Pass -1 as a machine word, so the FFI sees the C ptrdiff_t sentinel.
   (ptr-write-u64 base nelisp-eln-string--field-size-byte
-                 (if unibyte nelisp-eln-string--unibyte-size-byte bytes))
+                 (if unibyte -1 bytes))
   (ptr-write-u64 base nelisp-eln-string--field-intervals 0)
   (ptr-write-u64 base nelisp-eln-string--field-data
                  (+ base nelisp-eln-string--descriptor-bytes)))
