@@ -1,0 +1,495 @@
+#+TITLE: GNU parity instruction budget
+#+STATUS: draft
+
+* Decision
+
+Reduce the number of runtime boundaries crossed by ordinary Lisp operations.
+The first experiment should lower a real package-load loop and a hot FX
+body to word-native code, then measure the whole init. Use that experiment
+to decide how much of the value, frame and symbol-cell migration must land
+before expanding native coverage.
+
+The accepted m35 baseline is 21.2 s, four replay errors and 119 passing
+par rows. The preceding Fable review estimates about 20 s of m35 Lisp
+execution versus 0.9 s on GNU, with about 137–160 billion versus 10 billion
+user-space instructions. These are historical, workload-level estimates.
+The m29 capture counted 160.83 billion Ir for the full NeLisp command and
+59.80 billion for the GNU command, of which 49.60 billion were in one GNU
+regexp matcher. The m33 Callgrind replay counted 139.23 billion Ir.
+GNU's 6.5 s historical full replay includes a large regexp and filesystem
+component. Track parity for the matched Lisp workload alongside the
+end-to-end startup result.
+[[file:../../../gates/run-m35.tsv][m35 gate]] ·
+[[file:../../../defects/init-profile.md][m29 profile]] ·
+[[file:../../../defects/cold-path.md][m33 profile]]
+
+* Measurement
+
+The probes use the m35 executable and restored =m35.dump= on
+=lane/op-budget= at =202e5889bb0f3517f75538b580656e4a31bc4dec=.
+GNU 31.1 runs under =-Q --batch= with native JIT and subr trampoline
+generation disabled. Dumped or precompiled GNU library functions retain
+their installed implementation. Both runtimes consume the same lexical
+=.el= source and, in the compiled column, the exact same GNU-produced
+=.elc=. Compilation runs before profiling. The source column on m35
+includes its normal FX policy. The closure, byte-code and Subr targets
+are checked by callable type. Each run checks fixed expected values or registration effects. Fresh
+definitions, hooks and maps are checked at three sites. The repeated
+value rows check their final value. Both engines use
+=gc-cons-threshold= of 100,000,000. A fresh process and a private
+temporary home back each point, pinned to one of CPUs 11–14, with an
+8 GiB virtual-memory limit, a timeout and closed stdin.
+
+Top-level rows use one syntactic operation per form. Value-producing
+rows store to an observable global so that the byte compiler must keep
+the work. Each declaration, hook and keymap row uses its own name or
+fixture. The keymap and Custom-group fixtures have identical size at all
+trip counts. The two after-load rows reset =after-load-alist= to an empty
+list on each iteration to hold lookup and duplicate-check work constant.
+The deferred path verifies registration and invokes the last callback
+via =provide= with =load-file-name= nil. The loaded path includes callback
+execution and registration. The require hit uses a feature just provided
+by setup and skips file I/O.
+
+For a fair package-source comparison, each source workload starts with
+a comment containing the token =require=. m35's existing dependency
+heuristic selects the incremental reader and evaluator at every count.
+The comment has no Lisp semantics. Under the default hybrid routing,
+=defun= spans 22,559 bytes at 512 forms and 39,455 bytes at 896 forms.
+Crossing the 32 KiB threshold changes the path, so a single slope across
+that boundary would mix the costs of two implementations.
+[[file:../../packages/emacs-lib-core/src/emacs-load.el::56][Load policy]] ·
+[[file:../../packages/emacs-lib-core/src/emacs-load.el::1366][Source routing]] ·
+[[file:../../tmp/op-budget/top/sensitivity.tsv][Default routing sensitivity]]
+
+=Ir/op= is =(Ir(896) - Ir(128)) / 768= for top-level rows.
+The 512-form point checks both half slopes. Warm rows use 4,096, 12,288
+and 20,480 iterations of one body site. Their gross counts include the
+loop and observed result store. Their incremental counts subtract the
+same runtime's =setq= of an already bound global in the same loop. This
+exposes costs that file reading and form dispatch otherwise dominate.
+The source and compiled ratios use matched routes. An =.el= to =.elc=
+ratio also includes the change in execution model. The two measured
+budgets answer different questions about init's mixed workload.
+Callgrind counts user-space guest instructions. Kernel work, wall time
+and machine-dependent instructions per cycle are outside this unit.
+
+[[file:../../tmp/op-budget/bench.py][Probe and launcher]] ·
+[[file:../../tmp/op-budget/summarize.py][Callgrind summarizer]] ·
+[[file:../../tmp/op-budget/package/identity.json][Artifact hashes]]
+
+* Instruction budgets
+
+** Top-level load, gross Ir per operation
+
+| Operation | m35 .el | GNU .el | m35 .elc | GNU .elc | .el ratio | .elc ratio |
+|-----------+---------+---------+----------+----------+-----------+------------|
+| defun, fresh name | 252,264 | 25,517 | 149,879 | 9,831 | 9.89× | 15.25× |
+| defvar, fresh name | 129,519 | 14,731 | 57,722 | 6,106 | 8.79× | 9.45× |
+| defcustom, fresh option and group | 307,028 | 55,645 | 244,586 | 15,486 | 5.52× | 15.79× |
+| setq, fresh name | 92,117 | 10,116 | 7,896 | 1,946 | 9.11× | 4.06× |
+| add-hook, fresh hook | 208,720 | 14,417 | 162,775 | 4,377 | 14.48× | 37.19× |
+| with-eval-after-load, deferred | 411,845 | 44,929 | 218,063 | 10,223 | 9.17× | 21.33× |
+| with-eval-after-load, loaded | 613,960 | 43,204 | 211,086 | 8,508 | 14.21× | 24.81× |
+| define-key, fresh sparse map | 179,035 | 15,145 | 121,106 | 3,795 | 11.82× | 31.91× |
+| setq control, global read | 89,775 | 9,694 | 1,024 | 253 | 9.26× | 4.05× |
+| funcall, captured closure | 120,262 | 16,684 | 10,065 | 1,670 | 7.21× | 6.03× |
+| funcall, byte-code function | 120,458 | 15,966 | 2,501 | 738 | 7.54× | 3.39× |
+| funcall, Subr | 117,015 | 16,165 | 4,407 | 625 | 7.24× | 7.05× |
+| let, lexical | 218,226 | 33,215 | 15,270 | 3,433 | 6.57× | 4.45× |
+| let*, lexical | 248,683 | 40,329 | 23,594 | 5,278 | 6.17× | 4.47× |
+| let, special | 244,753 | 40,354 | 13,965 | 3,569 | 6.07× | 3.91× |
+| let*, special | 283,095 | 48,950 | 21,061 | 5,252 | 5.78× | 4.01× |
+| car | 108,527 | 13,396 | 1,471 | 372 | 8.10× | 3.95× |
+| cdr | 108,559 | 13,394 | 1,466 | 372 | 8.11× | 3.94× |
+| cons | 114,473 | 15,460 | 2,124 | 540 | 7.41× | 3.93× |
+| aref | 116,534 | 16,552 | 2,163 | 541 | 7.04× | 4.00× |
+| gethash | 116,849 | 16,727 | 7,816 | 1,277 | 6.99× | 6.12× |
+| plist-get | 117,130 | 16,948 | 7,837 | 1,265 | 6.91× | 6.19× |
+| assq | 115,991 | 16,185 | 3,512 | 873 | 7.17× | 4.02× |
+| concat | 117,773 | 16,965 | 2,470 | 851 | 6.94× | 2.90× |
+| format | 123,915 | 21,299 | 9,212 | 3,957 | 5.82× | 2.33× |
+| require, already loaded | 128,850 | 15,151 | 42,096 | 1,430 | 8.50× | 29.44× |
+
+The half slopes agree within 6.1% on the substantive rows. The two
+compiled =setq= controls have wider spreads of about 12.0% on m35
+and 7.5% on GNU. Keep per-route controls and sensitivities when
+comparing subsequent small changes.
+[[file:../../tmp/op-budget/package/budget.tsv][Exact slopes and cross-route ratios]] ·
+[[file:../../tmp/op-budget/package/sensitivity.tsv][Half slopes]]
+
+** Warm body, incremental Ir per operation
+
+| Operation | m35 .el | GNU .el | m35 .elc | GNU .elc | .el ratio | .elc ratio |
+|-----------+---------+---------+----------+----------+-----------+------------|
+| funcall, captured closure | 7,565.7 | 1,512.5 | 4,446.9 | 1,189.4 | 5.00× | 3.74× |
+| funcall, byte-code function | 2,310.8 | 678.1 | 978.9† | 257.0 | 3.41× | 3.81×† |
+| funcall, Subr | 1,274.7 | 504.0 | 599.6 | 141.9 | 2.53× | 4.23× |
+| let, lexical | 1,261.9 | 2,061.0 | 335.7 | 129.9 | 0.61× | 2.58× |
+| let*, lexical | 1,314.8 | 2,248.0 | 433.6 | 175.9 | 0.58× | 2.46× |
+| let, special | 1,724.9 | 1,676.0 | 969.1 | 370.0 | 1.03× | 2.62× |
+| let*, special | 1,751.2 | 1,901.0 | 1,103.1 | 425.9 | 0.92× | 2.59× |
+| car | 219.5 | 205.1 | 55.6 | 15.9 | 1.07× | 3.49× |
+| cdr | 221.1 | 205.2 | 55.0 | 16.0 | 1.08× | 3.44× |
+| cons | 591.4 | 417.3 | 212.3 | 62.2 | 1.42× | 3.41× |
+| aref | 397.6 | 422.0 | 290.1 | 53.9 | 0.94× | 5.38× |
+| gethash | 682.0 | 630.0 | 808.7 | 264.0 | 1.08× | 3.06× |
+| plist-get | 455.4 | 616.0 | 619.7 | 250.0 | 0.74× | 2.48× |
+| assq | 475.8 | 445.0 | 256.7 | 89.9 | 1.07× | 2.85× |
+| concat | 1,071.9 | 699.9 | 575.7 | 367.1 | 1.53× | 1.57× |
+| format | 1,448.2 | 3,169.0 | 1,982.7 | 2,808.1 | 0.46× | 0.71× |
+| require, already loaded | 12,202.4 | 789.3 | 15,026.2 | 389.3 | 15.46× | 38.60× |
+
+The gross warm =setq= control is 1,276.3 / 1,396.6 Ir per iteration
+for m35 / GNU source and 447.7 / 151.6 for m35 / GNU bytecode.
+Control subtraction isolates incremental work in this body shape.
+It includes any extra operands and transitions caused by the operation. The warm half slopes for all
+other operations agree within 0.7%. The byte-code callee is
+placement-sensitive on m35. The source and compiled half slopes span
+3,143–4,032 and 1,051–1,803 gross Ir in the primary series. An
+independent repeat returns 2,234 and 530 incremental Ir at the
+endpoints for m35 source and compiled respectively, versus 2,311 and
+979 in the primary series.
+
+† For the compiled caller, two pairs with zero per-iteration AOT
+table scans agree at 1,051 gross Ir, or approximately 600–607
+incremental Ir. On runs that reach the candidate table,
+=wf_aot_find_in=, =wf_aot_vec= and =wf_aot_mask_sync= add about
+288 self Ir per call in total. Their per-iteration count is either
+zero or one. The address-based =wf_aot_maybe= filter explains the
+layout dependence. The ratios in the table preserve the observed
+primary endpoints, including the route selection. This separates
+AOT probing from the actual bytecode activation cost.
+[[file:../../scripts/nelisp-aot-bytecode.el::1306][AOT table and filter]] ·
+[[file:../../tmp/op-budget/warm-bc-repeat/incremental.tsv][Repeat slopes]] ·
+[[file:../../tmp/op-budget/warm-bc-guard.tsv][AOT scan counts and self instructions]]
+[[file:../../tmp/op-budget/warm/budget.tsv][Gross warm budgets]] ·
+[[file:../../tmp/op-budget/warm/incremental.tsv][Exact net budgets]] ·
+[[file:../../tmp/op-budget/warm/sensitivity.tsv][Warm half slopes]]
+
+* Paths and structural costs
+
+** Common path
+
+The package-source reader probe is visible once per form through
+=bf_read_all_from_string_native_w__af0= → =bf_read_one_external_utf8_p=.
+The latter costs 7.68k Ir self in the load control, before token dispatch,
+interning or cons construction. The Lisp incremental driver does cursor,
+window, rewrite and per-form =eval= work. Its own closures exercise FX
+when admitted. The m35 =setq= control costs 89.8k Ir per form versus
+9.69k on GNU. In that control alone, =m5_fx_run_body= takes 27.7k self,
+=bf_read_one_external_utf8_p= 7.7k, =m5_fx_callout= 7.2k, and
+=m5_fx_call_subr_resolved= 4.1k. The hot =car= site adds only 220 Ir
+above the m35 source loop control. A file-level =car= slope of 109k
+contains a much larger read and dispatch budget.
+
+After the reader the source evaluator enters =nl_eval_inner_w= and
+=nl_eval_inner_cons_w=, then either a special form or live function-cell
+resolution and apply. Closure calls go through an FX record lookup and
+shape validation when eligible. FX execution uses =m5_fx_run_body= and
+its callout, with a resolved Subr route, a source apply fallback or the
+GNU bytecode VM as required by the callee. Intermediate operations can
+root tagged arguments or convert through a view/clone API. Binding and
+debug state appear in =nl_root_frame=, =nl_n4_push_words= and
+=nl_n4_finish_w=. Symbol access uses =nelisp_mirror_lookup_entry_owned=
+and sometimes =nl_symcell_entry=. Canonical symbols can already resolve
+directly to their own object. New interned names, syntax, closures and
+Lisp results account for real allocation, plus temporary materialization
+on mixed paths.
+[[file:../../packages/emacs-lib-core/src/emacs-load.el::1152][Incremental source loop]] ·
+[[file:../../scripts/nelisp-standalone-build.el::71515][Source eval]] ·
+[[file:../../scripts/nelisp-standalone-build.el::34205][FX run loop]] ·
+[[file:../../lisp/nelisp-cc-fx-call-primitives.el::1899][Subr route]]
+
+GNU's =readevalloop= reads a form, runs eager expansion where needed and
+passes a single tagged =Lisp_Object= through its evaluator, bytecode
+engine or C Subr ABI. GNU retains allocation, obarray intern, live cells,
+arity checks and backtrace, lexical and specpdl records. The NeLisp-only
+layers are the Lisp window/reader probe around source load, FX lookup,
+shape admission and dispatch, the FX-to-Subr or FX-to-bytecode bridge,
+word-to-view copies and legacy mirror indirection. GNU's bytecode
+dispatch can directly execute simple access opcodes such as =car=.
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/lread.c#L2021][GNU source load]] ·
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/eval.c#L2409][GNU source eval]] ·
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/eval.c#L2944-L3063][GNU call dispatch]] ·
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/bytecode.c#L622-L630][GNU car opcode]] ·
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/lisp.h#L725-L761][GNU symbol cells]]
+
+** Five largest matched source ratios
+
+The counts here are each function's exclusive Ir per added form. Named
+edges identify transitions. Recursive and inclusive edge costs overlap
+and can exceed the whole operation. Use exclusive self costs for totals.
+
+1. *Fresh =add-hook=, 14.48×.* Read and source eval resolve the Lisp
+   closure. Captured or FX helper paths and GNU bytecode both occur,
+   with about one extra =nl_n4_apply_raw_w= → =wf_bytecode_function_w=
+   per form. The FX loop costs 33.3k, the bytecode loop 14.1k and its
+   frame entry 6.6k. Resolved Subr and generic global/write paths show
+   up in =m5_fx_call_subr_resolved=, =nl_apply_builtin_w= and
+   =nl_pa_operation_w=. =nl_word_data= costs 11.5k, with 2.9k each
+   for =nl_root_frame= and =nl_n4_push_words=, 1.2k for the owned
+   mirror entry and 1.9k in =nl_alloc_bytes=. The live GNU provider is
+   GNU-native Lisp from =subr.el=, visible as =add_hook_0= below GNU's
+   reader, macroexpansion and call path. It updates the hook using GNU
+   tagged objects and cells without crossing a second VM.
+   [[file:../../vendor/emacs-lisp/subr.el::2311][GNU Lisp hook definition]] ·
+   [[file:../../tmp/op-budget/package/add-hook-m35-source.arcs.tsv][m35 edges]] ·
+   [[file:../../tmp/op-budget/package/add-hook-gnu-source.self.tsv][GNU self costs]]
+
+2. *Loaded =with-eval-after-load=, 14.21×.* Read and expand the macro
+   to =eval-after-load= plus a zero-argument callback. Evaluate the
+   loaded-feature branch and the callback's =setq= immediately, then
+   register the wrapper. The source evaluator pair contributes 45.7k
+   self. The FX loop contributes 83.7k and the resolved Subr bridge
+   16.0k. The profile records one extra =m5_fx_closure_rec= →
+   =m5_fx_first_call_in= edge per form. That entrance runs first-call
+   analysis and may decline compilation. There are four extra
+   =nl_n4_apply_raw_w= → =wf_bytecode_function_w= crossings. Capture
+   filtering and bucket walks cost 13.2k and 19.0k self. Word data
+   accesses cost 13.1k, root frames 8.3k, owned mirror entry reads
+   1.55k and =nl_alloc_bytes= 4.0k. GNU also creates closures and
+   dispatches the callback, through the installed native Lisp
+   =eval-after-load= and the ordinary Lisp call machinery.
+   [[file:../../vendor/emacs-lisp/subr.el::6324][GNU Lisp callback rules]] ·
+   [[file:../../scripts/nelisp-standalone-build.el::33783][First-call bridge]] ·
+   [[file:../../tmp/op-budget/package/after-load-loaded-m35-source.arcs.tsv][m35 edges]] ·
+   [[file:../../tmp/op-budget/package/after-load-loaded-gnu-source.self.tsv][GNU self costs]]
+
+3. *Fresh sparse =define-key=, 11.82×.* The m35 provider is
+   =emacs-keymap-builtins--define-key=. After read and source eval,
+   the FX calls validate the map, decode the single event and update
+   its own sparse binding. The loop has 59.6k Ir self, the FX callout
+   19.4k and resolved Subr dispatch 11.3k. The slope has about 122
+   resolved Subr probes, including the package driver. The callout
+   reaches the value and key helpers through both frame and direct
+   routes. =nl_n4_push_words= costs 4.47k, =nl_root_frame= 3.32k,
+   =nl_word_data= 2.02k, the owned mirror lookup 0.46k and the
+   allocator entry 1.46k. The stable FX-record check is visible and
+   there is no material per-form first-call compile slope. GNU reaches
+   =Fdefine_key= and =store_in_keymap= directly after source
+   evaluation. This row also measures the difference between a Lisp
+   provider and a C implementation of the same public operation.
+   [[file:../../packages/emacs-lib-core/src/emacs-keymap-builtins.el::296][m35 provider]] ·
+   [[file:../../tmp/op-budget/package/define-key-m35-source.arcs.tsv][m35 edges]] ·
+   [[file:../../tmp/op-budget/package/define-key-gnu-source.self.tsv][GNU self costs]]
+
+4. *Fresh =defun=, 9.89×.* Read and intern a new name, enter
+   =nl_sf_defun_w= → =nl_sf_definer_route=, expand through the live
+   macro and install with =nl_sf_defalias_w=. The last entry reaches
+   =nelisp_eval_call_w= and allocation. The FX loop is 61.0k self,
+   callouts 24.0k, resolved Subr bridge 10.1k, and the bytecode loop
+   7.2k. The trace records capture filtering and FX lookup work, with
+   5.2k Ir in =nl_word_data=, 4.6k in backtrace pushes, 4.4k in
+   =nl_root_frame=, 1.58k in owned mirror access and 3.39k in the
+   allocator entry. The measured operation defines the closure.
+   Each process invokes exactly three definitions for verification, so
+   routine user-body compilation and execution are outside its linear
+   budget. GNU's macro expansion builds the closure and reaches
+   =Fmake_interpreted_closure=, =Fdefalias= and =Ffset= directly.
+   [[file:../../tmp/op-budget/package/defun-m35-source.arcs.tsv][m35 edges]] ·
+   [[file:../../tmp/op-budget/package/defun-gnu-source.self.tsv][GNU self costs]]
+
+5. *Deferred =with-eval-after-load=, 9.17×.* The source reader and
+   evaluator expand the macro and create the callback. =eval-after-load=
+   tests the absent feature and creates a wrapper for the registry.
+   The workload registers without invoking the body. The FX loop
+   costs 69.6k self, bytecode loop 16.9k, FX callout 16.1k and
+   resolved bridge 12.4k. Capture filtering and walk account for
+   13.2k and 17.8k. Word data accesses cost 9.24k, root frames
+   5.34k, owned mirror lookups 0.92k and =nl_alloc_bytes= 3.20k.
+   FX shape checks occur, while the loaded path's per-form first-call
+   edge is absent here. GNU uses the same macro and registry semantics
+   through its ordinary closure and Lisp call machinery.
+   [[file:../../tmp/op-budget/package/after-load-deferred-m35-source.arcs.tsv][m35 edges]] ·
+   [[file:../../tmp/op-budget/package/after-load-deferred-gnu-source.self.tsv][GNU self costs]]
+
+** Compiled and warm comparisons
+
+The five largest matched top-level =.elc= ratios are =add-hook= 37.19×,
+=define-key= 31.91×, loaded =require= 29.44×, and loaded and deferred
+after-load 24.81× and 21.33×. The same closure, capture, frame and
+call mechanisms reappear behind the =.elc= entrance. In the two
+after-load rows the m35 =.elc= label/proxy number reader alone costs
+26.8k Ir per operation self, a cost specific to this emitted fixture.
+The extra top-five path, the =require= hit, is a Lisp closure in m35.
+It validates a symbol, handles load history, then does =memq= of the
+feature. Its warm source profile still spends 4.42k in
+=m5_fx_run_body= and 3.48k in =m5_fx_callout= per iteration, without
+per-iteration I/O. GNU implements the hit in =Frequire=.
+[[file:../../packages/emacs-lib-core/src/emacs-fns.el::342][m35 require]] ·
+[[https://github.com/emacs-mirror/emacs/blob/emacs-31.1/src/fns.c#L3557][GNU require]] ·
+[[file:../../tmp/op-budget/package/require-loaded-m35-byte.self.tsv][m35 compiled require]] ·
+[[file:../../tmp/op-budget/warm/require-loaded-m35-source.self.tsv][m35 warm require]]
+
+The five largest *cross-route* package-source-to-GNU-bytecode ratios
+are =cdr= 291.81×, =car= 291.76×, =aref= 215.47×, =cons= 211.99×
+and =funcall= of a Subr 187.17×. GNU emits direct access or allocation
+opcodes for the first four. The =funcall= of a Subr keeps an indirect
+call because the callable is in a variable. The m35 source profiles of
+these rows include the common form reader and evaluator. The m35 expression-specific edges use the following paths after the
+shared reader, symbol, frame and source-eval work above.
+
+| Operation | m35 source expression path | GNU bytecode |
+|-----------+----------------------------+--------------|
+| =cdr= / =car= | =nl_eic_prim_frame_w= → =m5_fx_primitive_run=, taking the tag-checked cons field | Direct =cdr= / =car= instruction |
+| =aref= | =nl_eic_prim_frame_w= → =m5_fx_primitive_run=, taking the checked vector slot | =aref= instruction |
+| =cons= | =nl_eic_prim_frame_w= → =nl_eic_prim2_run= → =nelisp_cons_construct_w= → =nl_cons_alloc= | =cons= instruction and allocation |
+| =funcall= of a Subr | =nl_eic_funcall_words= → =nl_directcall_invoke_id= after evaluating the variable-held callable and argument | Generic call to the live Subr with tagged arguments |
+
+The four direct operations are about 4× when both engines load the
+same =.elc=.
+[[file:../../tmp/op-budget/package/trace-rows.txt][Cross-route raw trace names]] ·
+[[file:../../tmp/op-budget/warm/disassembly.txt][GNU bytecode listings]]
+
+For warm bodies, the largest matched =.el= increments are the loaded
+=require= at 15.46×, captured =funcall= at 5.00×, byte-code =funcall=
+at 3.41×, Subr =funcall= at 2.53× and =concat= at 1.53×. The captured
+case checks the record and environment, finds captured slots, roots them
+and enters =m5_fx_apply_cap_w= → =m5_fx_run_body=. The bytecode case
+goes from =m5_fx_funcall_value= through =wf_bytecode_w_function= to
+frame setup and the VM loop, each once per iteration. The Subr case
+reaches =m5_fx_primitive_id= and =m5_fx_primitive_run= after the live
+callable guard. =concat= goes through =nl_directcall_text_run= and
+allocates its string. GNU's paths are the ordinary closure, VM or
+native Subr call with tagged arguments. =format= and both lexical
+binding rows are already cheaper than GNU on the warm source
+increments for these input shapes. GNU bytecode is the tighter
+reference for lexical slots and the simple access operations.
+[[file:../../tmp/op-budget/warm/funcall-closure-m35-source.arcs.tsv][Warm closure edges]] ·
+[[file:../../tmp/op-budget/warm/funcall-bytecode-m35-source.arcs.tsv][Warm byte-code edges]] ·
+[[file:../../tmp/op-budget/warm/funcall-subr-m35-source.arcs.tsv][Warm Subr edges]] ·
+[[file:../../tmp/op-budget/m35-providers.txt][m35 live definitions]] ·
+[[file:../../tmp/op-budget/gnu-providers.txt][GNU live definitions]]
+
+* Redesign options
+
+The table models a first production rollout starting at 21.2 s. The
+addressable budgets are scenario inputs, informed by m29 exclusive wall
+groups and m33 call traces. Savings are the pool multiplied by the
+assumed fraction removed. The projections use historical subsystem budgets. Measure each
+pool on the m35 replay before accepting a forecast.
+
+| Option | Addressable init pool | Fraction removed | Projected init | Effort | Main risk |
+|--------+-----------------------+------------------+----------------+--------+-----------|
+| A. Lower FX and load-loop control flow | 4.2–5.2 s | 60–80% | 17.0–18.7 s | 4–8 engineer-weeks | Analysis or code-cache cost moves onto first call |
+| B. Unify managed values and frame slots | 4.3–5.8 s | 55–75% | 16.9–18.8 s | 10–18 engineer-weeks | Root visibility, object identity and image migration |
+| C. Use the live symbol cell directly | 2.5–3.5 s | 50–75% | 18.6–20.0 s | 4–8 engineer-weeks | Stale aliases, advice or dynamically rebound state |
+
+** A. Lower FX and load-loop control flow
+
+Compile a loader loop that retains a rooted source cursor and alternates
+read, macro-alias handling and evaluation one form at a time. The loader
+still sees macros and local declarations installed by earlier forms.
+Make the FX baseline a threaded stream with fused common operations and
+a guarded slow entry. Lower admitted hot FX blocks to native code using
+Doc 248's instruction encoders, register and spill machinery and
+relocations. Its GNU LIMPLE frontend and GNU =.eln= ABI remain specific
+to that route. FX bodies can share code generation while using the
+internal NeLisp word ABI. Keep load-loop policy and public Lisp functions
+in Lisp. Reuse a validated image or artifact for preload and repeated
+user cohorts. Leave one-shot dynamic forms on cheap baseline execution
+when compile work would exceed their expected savings.
+
+Begin with the package-source control and two paths seen in the warm
+traces. Require a reduction in exclusive VM and source-driver dispatch
+Ir, reader-to-eval transitions and first-call analysis. Then qualify only
+well-covered blocks for native admission. On shape, macro or live-cell
+change, reject the specialization before any externally visible effect.
+Keep source locations, debugger backtraces, dynamic declarations,
+handler unwind and live arguments across safepoints. Check
+=par-fx-core-opcodes=, =par-fx-core-source=, =par-fxshape=,
+=par-macroexp-bootstrap=, =par-elc-stream-boundaries= and
+=par-comp-limple=. The 4.2–5.2 s pool is FX dispatch and analysis plus an
+assumed share of source and bytecode dispatch. Count each exclusive
+bucket once.
+[[file:248-comp-backend-replacement.org][Doc 248]] ·
+[[file:../../scripts/nelisp-stdlib-prelude.el::33014][Current FX admission]]
+
+** B. Unify managed values and frame slots
+
+Use one canonical Lisp word in evaluator registers, argument vectors,
+closure slots, bytecode and FX stacks, and object fields. Bring the
+remaining pointer-view and result-out conventions to adapters at
+foreign or old-artifact boundaries. For canonical objects, pass identity
+and liveness with the word through calls and stores. Put lexical slots,
+escaping mutable cells, dynamic restoration records and debugger metadata
+on a frame layout that can be traced and unwound once. Allocate escaping
+state when a closure actually needs it and retain shared mutation and
+lexical-environment reflection. The goal is to remove conversions and
+materializations while preserving the object identity GNU exposes.
+
+Start with a word-only call and store cohort, dual-run with identity,
+mutation and forced-GC probes, then migrate one object family at a time.
+Treat the heap image layout as versioned. Rebuild and rehydrate through
+a versioned decoder or keep old-image compatibility at an explicit load
+boundary until deployed snapshots are refreshed. Keep safe traced slots
+where liveness cannot yet be proved. Measure spill/root health,
+allocated bytes, minor faults and Ir separate from collection time.
+Require =par-dyn-closure=, =par-call-path-frames=,
+=par-eval-core2-specpdl=, =par-fx-core-captures=,
+=par-nested-env2=, =par-alloc-io-heap= and =par-user-snapshot-load-state=.
+The 4.3–5.8 s pool covers a share of lexical frame, value
+transport, allocation and root work. Page-fault improvements are
+upside outside the estimate.
+[[file:../../lisp/nelisp-cc-val-load.el::258][Clone boundary]] ·
+[[file:../../scripts/nelisp-standalone-build.el::67988][Word backtrace frame]]
+
+** C. Use the live symbol cell directly
+
+Extend Doc 226's current symbol-object route to read and write plain
+canonical value, function and plist cells directly from an owned symbol.
+Use a compact callable descriptor from the live function object, with a
+single shared path for arity, fallback and debug. The existing fast
+route already answers some canonical symbol lookups with the object
+itself, and main-thread shallow binding already exists. Move the
+remaining canonical accesses off name re-keying and legacy entry
+traffic. Keep interning, overflow, older views, aliases, forwarded and
+buffer-local values, watchers, worker bindings and debug as explicit
+guarded cases. Reads may use a proven cell or descriptor, while writes
+must update the semantic authority before invalidating compiled
+assumptions. Prefer cheap reads of live data to caching copies of the
+cell value. For non-AOT byte-code callees, test a guarded cached miss
+against repeated candidate scans. Tie it to the live compiled function
+object and AOT table generation. Preserve the precise time at which function resolution
+occurs relative to argument evaluation.
+
+Migrate one source/FX/bytecode call and value-access cohort behind a
+guard, compare it with the general authority in diagnostics, then
+expand to dump rebinding and generated code. Validate =fset= and advice
+changed during argument evaluation, =defvaralias=, late special
+declarations, buffer-local forwarding and =let= unwind on both normal
+and nonlocal exits. Require =par-call-path-subr=, =par-late-special=,
+=par-eval-core2-apply=, =par-keymap-traversal=,
+=par-load-require-registry= and =par-subr-runtime=. This estimate covers
+the remaining cell and generic Subr bridge work. Value and frame
+materialization belongs to B.
+[[file:../../scripts/nelisp-standalone-build.el::40044][Current direct value path]] ·
+[[file:../../lisp/nelisp-cc-mirror-lookup-entry.el::303][Owned mirror entry path]]
+
+* Acceptance and parity target
+
+With the scenario pools above and a 0.5–1.0 s allowance for overlap
+between the high and low scenarios, the joint first rollout projects
+roughly 10.6–16.1 s, with a central scenario near 14 s. This is a
+rollout checkpoint. Full Lisp parity needs roughly 93% fewer Ir from a
+137 billion starting budget to reach 10 billion, and an approximately
+22-fold change in measured Lisp elapsed time from the quoted 20 s to
+0.9 s. Even 5% of the current Lisp time left unchanged consumes one
+second. Broad lowering and cheaper value and cell paths must reach the
+bulk of dynamic source, vendor bytecode and init callbacks. A useful
+later target is 2–3 s overall if a 1.2 s non-Lisp remainder is confirmed
+and the Lisp component reaches 0.9–1.8 s. Time the complete matched
+replay before making a startup parity claim.
+
+Capture a fresh m35 and GNU replay instruction breakdown with the same
+inputs before committing the seconds budget. For each cohort, compare
+per-route operation rows, replay Ir, paired native wall time, first-call
+cost, fault and allocation counts, and the journal, Evil, Eat, diff-hl
+and Org phases. Verify GNU source and the common =.elc= against the
+fixture output. Run the 12 quick rows and all 119 accepted m35 par rows
+against the pinned GNU goldens, and compare init form/skip/error counts
+and material effects. Add fault-level controls for invalidation,
+debugging, nonlocal exits, captured mutation and collection. Retain a
+general semantic route and test it with each fast route disabled.
+These are acceptance criteria for the proposed implementation.
