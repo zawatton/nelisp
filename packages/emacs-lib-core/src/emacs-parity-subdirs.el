@@ -4,6 +4,7 @@
 
 (defvar normal-top-level-add-subdirs-inode-list nil)
 (defvar emacs-parity-subdirs--gnu-walk nil)
+(defvar emacs-parity-subdirs--gnu-adder nil)
 (defvar emacs-parity-subdirs--local-operations nil)
 
 (defun emacs-parity-subdirs--local-operations-p ()
@@ -14,6 +15,19 @@
         (setq local (and (eq (symbol-function (car entry)) (cdr entry))
                          (not (nelisp--file-name-handler-possible-p (car entry) t))))))
     local))
+
+(defun emacs-parity-subdirs--add-absolute-dirs (directories)
+  ;; The local walker already made these paths absolute.
+  ;; Preserve advised or replaced GNU helpers and use their usual entry point.
+  (if (eq (symbol-function 'normal-top-level-add-to-load-path)
+          emacs-parity-subdirs--gnu-adder)
+      (let ((tail load-path)
+            (root (directory-file-name default-directory)))
+        (while (and (cdr tail) (not (equal root (car tail))))
+          (setq tail (cdr tail)))
+        (when tail
+          (setcdr tail (nconc directories (cdr tail)))))
+    (normal-top-level-add-to-load-path directories)))
 
 (defun emacs-parity-subdirs--local-walk ()
   "Add local descendants to `load-path' in GNU's breadth-first order."
@@ -61,7 +75,7 @@
                 (push child next)))))
         (setq pending (nreverse next))))
     (when matched (set-match-data '(0 1)))
-    (normal-top-level-add-to-load-path (cdr (nreverse dirs)))))
+    (emacs-parity-subdirs--add-absolute-dirs (cdr (nreverse dirs)))))
 
 (defun emacs-parity-subdirs--walk ()
   "Use the local startup walk where no file operation can dispatch."
@@ -88,6 +102,8 @@
                       #'emacs-parity-subdirs--walk)))
     (setq emacs-parity-subdirs--gnu-walk
           (symbol-function 'normal-top-level-add-subdirs-to-load-path))
+    (setq emacs-parity-subdirs--gnu-adder
+          (symbol-function 'normal-top-level-add-to-load-path))
     (setq emacs-parity-subdirs--local-operations
           (mapcar (lambda (operation) (cons operation (symbol-function operation)))
                   '(expand-file-name directory-files directory-file-name

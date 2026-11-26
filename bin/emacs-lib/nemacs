@@ -17,6 +17,7 @@
 #   nemacs --frontend=xcb          use the graphical frontend
 #   nemacs --fg-daemon[=NAME]       start a foreground daemon
 #   nemacs --runtime-dump FILE      start from an existing flat heap
+#   nemacs --user-snapshot=DIR      validate a package heap; fall back to base
 #   nemacs --batch --runtime-image FILE load a NeLisp .nlri runtime image first
 #   nemacs --runtime-image auto       choose build/*.nlri by batch/interactive mode
 #   nemacs --cold-image FILE --cold-artifact FILE
@@ -671,6 +672,9 @@ NO_BANNER=0
 DOCTOR=0
 FRONTEND=""
 DAEMON=""
+USER_SNAPSHOT=""
+SNAPSHOT_INIT_DIRECTORY="${NEMACS_USER_EMACS_DIRECTORY:-}"
+SNAPSHOT_OTHER_USER=0
 HOST_EARLY_ARGS=()
 IMAGE_FILES=()
 ACTION_ARGS=()
@@ -713,6 +717,15 @@ while (( $# > 0 )); do
     --runtime-dump|--cold-load-from)
       NEMACS_RUNTIME_DUMP="${2:?$1 requires an argument}"; shift 2; continue ;;
     --runtime-dump=*|--cold-load-from=*) NEMACS_RUNTIME_DUMP="${1#*=}"; shift; continue ;;
+    --user-snapshot)
+      USER_SNAPSHOT="${2:?$1 requires an argument}"; shift 2; continue ;;
+    --user-snapshot=*)
+      USER_SNAPSHOT="${1#*=}"
+      if [[ -z "$USER_SNAPSHOT" ]]; then
+        echo "nemacs: --user-snapshot requires a directory" >&2
+        exit 2
+      fi
+      shift; continue ;;
     --cold-image)
       NEMACS_COLD_IMAGE="${2:?$1 requires an argument}"; shift 2; continue ;;
     --cold-image=*) NEMACS_COLD_IMAGE="${1#*=}"; shift; continue ;;
@@ -724,8 +737,14 @@ while (( $# > 0 )); do
     -q|--no-init-file|-no-init-file) priority=50 ;;
     --no-comp-spawn|-no-comp-spawn) priority=60 ;;
     --no-x-resources|-no-x-resources|--no-site-file|-no-site-file) priority=40 ;;
-    --init-directory|-init-directory|--user|-user|-u) priority=30; operands=1 ;;
-    --init-directory=*|--user=*) priority=30 ;;
+    --init-directory|-init-directory)
+      SNAPSHOT_INIT_DIRECTORY="${2-}"
+      priority=30; operands=1 ;;
+    --init-directory=*)
+      SNAPSHOT_INIT_DIRECTORY="${1#*=}"
+      priority=30 ;;
+    --user|-user|-u) SNAPSHOT_OTHER_USER=1; priority=30; operands=1 ;;
+    --user=*) SNAPSHOT_OTHER_USER=1; priority=30 ;;
     --debug-init|-debug-init) priority=20 ;;
     --iconic|-iconic) priority=15 ;;
     --basic-display|-basic-display|-D|--no-blinking-cursor|-nbc) priority=12 ;;
@@ -893,7 +912,8 @@ EOF
 # Use an explicit eval, leaving stdin available to the terminal frontend.
 COLD_BOOT_FORM="$(cat <<EOF
 (progn
-  (when (fboundp 'nemacs-runtime-dump-reinit) (nemacs-runtime-dump-reinit))
+  (cond ((fboundp 'nemacs-user-snapshot-reinit) (nemacs-user-snapshot-reinit))
+        ((fboundp 'nemacs-runtime-dump-reinit) (nemacs-runtime-dump-reinit)))
   (setq nemacs-nelisp-executable "$(shell_quote "$NEMACS_NELISP")")
 $OPTIONS_FORM
   (nemacs-main))
@@ -904,6 +924,10 @@ EOF
 
 case "$NEMACS_DRIVER" in
   host)
+    if [[ -n "$USER_SNAPSHOT" ]]; then
+      echo "nemacs: user snapshots require the NeLisp driver" >&2
+      exit 2
+    fi
     if (( BATCH )); then HOST_EARLY_ARGS+=("--batch"); fi
     if [[ -n ${NEMACS_USER_EMACS_DIRECTORY:-} ]]; then
       HOST_EARLY_ARGS+=("--init-directory" "$NEMACS_USER_EMACS_DIRECTORY")
@@ -919,6 +943,22 @@ case "$NEMACS_DRIVER" in
     fi
     ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
     [[ "$NEMACS_NELISP_MEMORY" == "unlimited" ]] || ulimit -v "$NEMACS_NELISP_MEMORY" 2>/dev/null || true
+    if [[ -n "$USER_SNAPSHOT" ]]; then
+      snapshot_base="${NEMACS_RUNTIME_DUMP:-$NEMACS_HOME/build/nemacs-runtime.dump}"
+      if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+        echo "nemacs: user snapshots require Linux x86-64; starting normally" >&2
+      elif [[ -z "$SNAPSHOT_INIT_DIRECTORY" || "$SNAPSHOT_OTHER_USER" == 1
+            || -n "$DAEMON" || ( "$FRONTEND" != tty && "$BATCH" == 0 )
+            || -n "$NEMACS_RUNTIME_IMAGE" || ${#IMAGE_FILES[@]} != 0 ]]; then
+        echo "nemacs: user snapshot does not match these startup options; starting normally" >&2
+      elif [[ -r "$snapshot_base" ]]; then
+        exec "${PYTHON:-python3}" "$NEMACS_HOME/tools/dev/nemacs-user-snapshot.py" run \
+          --snapshot "$USER_SNAPSHOT" --binary "$NEMACS_NELISP" --base "$snapshot_base" \
+          --init-directory "$SNAPSHOT_INIT_DIRECTORY" -- --eval "$COLD_BOOT_FORM"
+      else
+        echo "nemacs: user snapshot base is unavailable; starting normally" >&2
+      fi
+    fi
     # A saved runtime dump (make bake-runtime-dump) beats every replay route.
     if [[ -n "${NEMACS_RUNTIME_DUMP:-}" ]]; then
       if [[ ! -r "$NEMACS_RUNTIME_DUMP" ]]; then
