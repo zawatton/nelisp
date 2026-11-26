@@ -21,8 +21,10 @@
                                     (file-name-directory (or load-file-name buffer-file-name
                                                              default-directory)))
                   (intern f)))
-          '("nelisp-fxir-native-data" "nelisp-fxir-native-corpus-data"))
-  "Harvested rows: the prelude hot set, then the fx corpus functions
+          '("nelisp-fxir-native-data" "nelisp-fxir-native-corpus-data"
+            "nelisp-fxir-native-load-data"))
+  "Harvested rows for the prelude, the FX corpus, and package loading.
+The fx corpus functions
 \(test/nelisp-fx-adopt-corpus.el) whose native transcripts
 tools/ai/nc1-native-check.sh compares; a corpus row is dormant unless a
 function of that name with the same fxir is defined.")

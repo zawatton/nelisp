@@ -31,6 +31,7 @@
 (defvar nelisp--lh-parked)
 (defvar nelisp--lh-seg)
 (declare-function nelisp--lh-record "nelisp-standalone" (file entries))
+(declare-function nelisp--lh-select "nelisp-standalone" (file))
 
 (declare-function nelisp--rd-read-one "nelisp-stdlib-prelude" (string start end))
 (declare-function nelisp--read-all-from-string-native "nelisp-standalone"
@@ -4248,7 +4249,7 @@ A successful load files RESOLVED in `load-history' and runs its
 after-load forms, as GNU `load' does (lread.c build_load_history)."
     (let ((result (nelisp--load-resolved-file-1 resolved noerror)))
       (when (and result (fboundp 'nelisp--after-load-feature))
-        (if (eq result :compiled)
+        (if (memq result '(:compiled :source))
             (do-after-load-evaluation resolved)
           (nelisp--after-load-feature resolved))
         ;; Resume the enclosing file before its next form can locally
@@ -4335,19 +4336,10 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
                        (emacs-load--replace-source-literal "(cc-provide 'cc-defs)"
                                        "(provide 'cc-defs)"
                                        (substring source tail-start))))))
-            ;; Per-file replay marker for the CC Mode language-constant
-            ;; machinery.  `(setq load-file-name resolved)' below is invisible
-            ;; to the interpreted elisp inside the native source evaluator, so
-            ;; `c-get-current-file' (cc-defs.el) would otherwise collapse every
-            ;; cc-*.el onto one synthetic key.  The per-file `source' anchor
-            ;; alist that `c-define-lang-constant' relies on then overwrites
-            ;; prior files' bindings, producing spurious cyclic-reference
-            ;; errors.  Splice a marker `setq' at the head of the source (same
-            ;; eval-source-string, hence visible to the following top-level
-            ;; forms -- decisively unlike the outer `setq') plus a restoring
-            ;; `pop' at the tail.  For cc-defs.el itself, also append a
-            ;; `c-get-current-file' redefinition (defun, so the new function
-            ;; cell reaches every caller) that consults the marker.
+            ;; Preserve a distinct source key for the CC Mode language
+            ;; constants when the bootstrap evaluator uses one shared key.
+            ;; For cc-defs.el, install c-get-current-file before returning
+            ;; so subsequent calls consult this marker.
             (when (string-prefix-p "cc-" (file-name-sans-extension base))
               (let* ((base (file-name-sans-extension base))
                      (cc-redef
@@ -4370,18 +4362,22 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
                        cc-redef
                        "\n(setq nelisp--cc-replay-file"
                        " (pop nelisp--cc-replay-file-stack))"))))
-            (let* ((prior-lfn (and (boundp 'load-file-name) load-file-name))
-                   (loader (nelisp--load-source-loader source)))
-              (setq load-file-name resolved)
-              (unwind-protect
-                  (progn
-                    ;; GNU Lisp can push straight onto current-load-list.
-                    ;; Select this file before the first form can do so.
-                    (when (fboundp 'nelisp--lh-select)
-                      (nelisp--lh-select resolved))
-                    (funcall loader source)
-                    t)
-                (setq load-file-name prior-lfn))))))))))
+            ;; Start with this file's history selected so GNU Lisp can push
+            ;; directly onto current-load-list from the first form.
+            (let ((loader (nelisp--load-source-loader source))
+                  (load-file-name resolved)
+                  (load-true-file-name resolved)
+                  (load-in-progress t)
+                  (current-load-list (list resolved))
+                  (nelisp--lh-file resolved)
+                  (nelisp--lh-parked nil)
+                  (nelisp--lh-seg nil))
+              (funcall loader source)
+              ;; Publish only after a successful read/eval loop. Dynamic
+              ;; bindings restore the caller's history on errors and throws.
+              (when (fboundp 'nelisp--lh-record)
+                (nelisp--lh-record resolved (cdr (nreverse current-load-list))))
+              :source))))))))
 
   (defun emacs-load--candidate-suffixes (file nosuffix must-suffix)
     "Return GNU load suffixes for FILE, NOSUFFIX and MUST-SUFFIX."
