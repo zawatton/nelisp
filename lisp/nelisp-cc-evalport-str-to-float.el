@@ -570,7 +570,9 @@
                           (if (= (nl_stf_is_digit (nelisp_ptr_read_u8 bytes_ptr start)) 1)
                               0 2251799813685247))))
                        (t
-                        (let* ((mem (alloc-bytes 32768 8))
+                        ;; The scanner and converter own this workspace for one
+                        ;; conversion. Only the bits written to SLOT escape.
+                        (let* ((mem (frame-alloc-or-heap 32768))
                                (meta (+ mem 24576)))
                           (seq (nlf_big_zero mem 0 (if (> len 120) 1024 16))
                                (if (= (nlf_t91_parse bytes_ptr len mem 1024 meta start) 1)

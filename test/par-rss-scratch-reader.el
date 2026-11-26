@@ -1,0 +1,25 @@
+;;; par-rss-scratch-reader.el --- Reader scratch lifetimes -*- lexical-binding: t; -*-
+
+(let* ((depth 80)
+       (source (concat (make-string depth ?\() "leaf" (make-string depth ?\))))
+       (result (read-from-string (concat "   " source " tail")))
+       (tree (car result))
+       (count 0)
+       (cycle (let ((read-circle t)) (car (read-from-string "#1=(leaf . #1#)"))))
+       (bad (condition-case err (read-from-string "(unterminated") (error (car err)))))
+  (while (consp tree)
+    (setq tree (car tree) count (1+ count)))
+  (garbage-collect)
+  (prin1 (list :reader count tree (cdr result)
+               (car cycle) (eq cycle (cdr cycle)) bad
+               (car (read-from-string (if (getenv "PAR_RSS_READER_MUTATION")
+                                         "changed" "next")))))
+  (terpri))
+
+(let ((small (car (read-from-string "1.25")))
+      (maximal (car (read-from-string "1.7976931348623157e308")))
+      (subnormal (car (read-from-string "5.0e-324")))
+      (long (car (read-from-string (concat "2.5" (make-string 180 ?0) "e-1")))))
+  (prin1 (list :floats (= (* small 4) 5) (and (> maximal 1e308) (< maximal 1.0e+INF))
+               (> subnormal 0.0) (< subnormal 1e-323) (= long 0.25)))
+  (terpri))

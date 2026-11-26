@@ -13401,6 +13401,16 @@ functions `((NAME . ARITY) ...)'."
    ;; block is stable across re-evaluations (slots fixed at parse time),
    ;; so it models a C local array / struct-by-value / address-taken
    ;; scalar — NOT a dynamic C99 `alloca'.  Result class: gp.
+   ;; A private, non-escaping scratch block can keep its existing arena
+   ;; implementation on targets that do not support native frame allocation.
+   ((and (consp sexp) (eq (car sexp) 'frame-alloc-or-heap))
+    (unless (and (= (length sexp) 2) (integerp (cadr sexp)) (> (cadr sexp) 0))
+      (signal 'nelisp-aot-compiler-error (list :frame-alloc-bad-size sexp)))
+    (nelisp-aot-compiler--parse-value
+     (if (eq nelisp-aot-compiler--arch 'x86_64)
+         (list 'frame-alloc (cadr sexp))
+       (list 'alloc-bytes (cadr sexp) 8))
+     env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'frame-alloc))
     (unless (= (length sexp) 2)
       (signal 'nelisp-aot-compiler-error

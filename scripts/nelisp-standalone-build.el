@@ -1776,32 +1776,27 @@ cross-unit call) before the freed payload is poisoned."
           (nl_alloc_bytes_slow size align))))
     (defun nl_alloc_bytes (size align)
       (let* ((p8 (logand (+ size 7) -8))
-             (want (+ 8 (if (< p8 8) 8 p8)))
-             (gate (if (> want 472) 0
-                     (if (= (heap-read-u64 (data-addr nl_alloc_check) 0) 0)
-                         (if (= (heap-read-u64 (data-addr nl_alloc_diag) 0) 0)
-                             (if (= (heap-read-u64 268435624 0) 1) 0
-                               (if (< want (heap-read-u64 268435656 0)) 0 1))
-                           0)
-                       0))))
-        (if (= gate 0)
-            (if (> want 472) (nl_alloc_large_fast size align want)
-              (nl_alloc_bytes_slow size align))
-          ;; The sweep's cumulative dead-block count is zero until any
-          ;; allocator free list can contain a block.  Skip the bucket and
-          ;; run probes in that case, but use the same atomic bump and debt.
-          (if (= (heap-read-u64 268435632 0) 0)
-              (let* ((chunk (heap-read-u64 268436168 0))
-                     (obj (if (= chunk 0) 0 (nl_chunk_try_alloc chunk want))))
-                (if (= obj 0) (nl_alloc_bytes_slow size align)
-                  (seq
-                   (ptr-write-u64 (data-addr nl_gc_until) 0
-                                  (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
-                   obj)))
-            (if (= (heap-read-u64 (+ 268435696 (- want 16)) 0) 0)
-                (nl_alloc_bytes_run size align want)
-              (let* ((popped (nl_alloc_pop_fast want)))
-                (if (= popped 0) (nl_alloc_bytes_slow size align) popped)))))))
+             (want (+ 8 (if (< p8 8) 8 p8))))
+        (if (> want 472) (nl_alloc_large_fast size align want)
+          (if (or (/= (heap-read-u64 (data-addr nl_alloc_check) 0) 0)
+                  (/= (heap-read-u64 (data-addr nl_alloc_diag) 0) 0)
+                  (= (heap-read-u64 268435624 0) 1)
+                  (< want (heap-read-u64 268435656 0)))
+              (nl_alloc_bytes_slow size align)
+            ;; Before any block has been swept, the free lists are empty.
+            ;; Reserve from the current chunk and charge the same debt.
+            (if (= (heap-read-u64 268435632 0) 0)
+                (let* ((chunk (heap-read-u64 268436168 0))
+                       (obj (if (= chunk 0) 0 (nl_chunk_try_alloc chunk want))))
+                  (if (= obj 0) (nl_alloc_bytes_slow size align)
+                    (seq
+                     (ptr-write-u64 (data-addr nl_gc_until) 0
+                                    (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
+                     obj)))
+              (if (= (heap-read-u64 (+ 268435696 (- want 16)) 0) 0)
+                  (nl_alloc_bytes_run size align want)
+                (let* ((popped (nl_alloc_pop_fast want)))
+                  (if (= popped 0) (nl_alloc_bytes_slow size align) popped))))))))
     (defun nl_alloc_bytes_slow (size align)
       (nl_alloc_check_stamp
        (nl_alloc_bytes_uncheck (nl_alloc_check_size size) align)))
@@ -2343,10 +2338,11 @@ root evidence are bounded.")
   (string-to-number (or (getenv "NELISP_INLINE_MAX_NODES") "80"))
   "Largest body, in cons cells, that is inlined.")
 
-(defconst nelisp-standalone--cold-inline-boundaries '(nl_abi_fail)
-  "Cold signal helpers retained as calls by every inliner.
-Duplicating their signal-state access into every handler repeats relocations
-without improving the successful handler path.")
+(defconst nelisp-standalone--cold-inline-boundaries
+  '(nl_abi_fail nl_alloc_bytes_slow nl_alloc_large_fast)
+  "Cold helpers retained as calls by every inliner.
+Duplicating error and allocation slow paths enlarges their hot callers'
+frames and code without improving the successful small-request path.")
 
 (defun nelisp-standalone--no-inline-p (name &optional ordinary)
   "Protect generated leaves and cold signal helpers in every inliner.
@@ -7139,9 +7135,7 @@ it shares with cons and symbol blocks.")
     (defun nl_chunk_try_alloc (chunk want)
       (let* ((base (heap-read-u64 (+ chunk 0) 0))
              (size (heap-read-u64 (+ chunk 8) 0))
-             (cursor_addr (nl_chunk_cursor_addr chunk))
-             (obj 0)
-             (done 0))
+             (cursor_addr (nl_chunk_cursor_addr chunk)))
         ;; Workers are registered before launch and stay registered until
         ;; retirement.  The single mutator can advance the same cursor
         ;; without acquiring the cache line through a locked instruction.
@@ -7154,19 +7148,20 @@ it shares with cons and symbol blocks.")
                  (ptr-write-u64 cursor_addr 0 new)
                  (ptr-write-u64 (+ base old) 0 want)
                  (+ base (+ old 8)))))
-          (seq
-           (while (= done 0)
-             (let* ((old (heap-read-u64 cursor_addr 0))
-                    (new (+ old want)))
-               (if (> new size)
-                   (setq done 1)
-                 (if (= (atomic-compare-exchange cursor_addr old new) 1)
-                     (seq
-                      (setq obj (+ base (+ old 8)))
-                      (ptr-write-u64 (- obj 8) 0 want) ; BT @ hdr; low bits 0 = mark 0
-                      (setq done 1))
-                   0))))
-           obj))))
+          (let* ((obj 0) (done 0))
+            (seq
+             (while (= done 0)
+               (let* ((old (heap-read-u64 cursor_addr 0))
+                      (new (+ old want)))
+                 (if (> new size)
+                     (setq done 1)
+                   (if (= (atomic-compare-exchange cursor_addr old new) 1)
+                       (seq
+                        (setq obj (+ base (+ old 8)))
+                        (ptr-write-u64 (- obj 8) 0 want) ; BT @ hdr; low bits 0 = mark 0
+                        (setq done 1))
+                     0))))
+             obj)))))
     ;; Doc 170 Stage 2: renamed from `nl_alloc_bytes' — the public
     ;; symbol is now the checked-allocator wrapper appended at the end
     ;; of this unit (`nelisp-standalone--alloc-check-arena-forms').
@@ -21027,8 +21022,11 @@ eval applyfn.")
                   (m5_string_tag_p (nl_val_tag kb))
                 0)))
           (m5_streq ka kb)
+      ;; Both callers start at 100 and nested comparisons only shrink
+      ;; that bound. Reserve the maximum per invocation; every pair
+      ;; is written before it is popped.
       (let* ((limit (if (<= depth 0) 1 depth))
-             (stack (alloc-bytes (* limit 16) 8))
+             (stack (frame-alloc-or-heap 1600))
              (sp 1)
              (steps 0)
              (ok 1)
@@ -21101,38 +21099,6 @@ eval applyfn.")
                                             (setq ok 0)))))))))))
                       (setq ok 0)))))))))
          ok))))
-    ;; Segment G1, two independent fixes, both measured:
-    ;;
-    ;; 1) `eq' always implies `equal', and `bf_eq2' (already the
-    ;;    comparator `memq'/`assq' use, allocation-free) answers that for
-    ;;    free.  A same-object, same-fixnum-value, or same-interned-
-    ;;    symbol/keyword comparison -- the overwhelming majority of a
-    ;;    SUCCESSFUL match on a realistic key -- now short-circuits
-    ;;    before ever touching `wf_key_eq_depth'.
-    ;;
-    ;; 2) That still leaves every NON-matching step of a linear search
-    ;;    (the majority of the work walking up to a match, or the whole
-    ;;    walk on a miss) falling through to `wf_key_eq_depth', which
-    ;;    allocates a `limit'*16-byte scratch stack on EVERY call
-    ;;    regardless of how quickly the comparison actually resolves.
-    ;;    At the original `limit'=1024 (16KB/call) this measured
-    ;;    ~40-45us PER COMPARISON -- independent of the compared
-    ;;    values' own shape -- which is why `member'/`assoc'/`rassoc'
-    ;;    (all `equal'-by-default) cost ~10x what `memq'/`assq' (`eq'-
-    ;;    by-default) do for a same-shaped search, even once bare `eq'
-    ;;    hits and the interpreter-dispatch shadow are both gone.
-    ;;    `limit'=100 (1.6KB/call) measured indistinguishable from
-    ;;    `memq'/`assq' for atom keys (the realistic case for this
-    ;;    workload), while still covering any REALISTIC alist/plist/
-    ;;    list depth `equal' would need to walk -- a value nested more
-    ;;    than 100 cons/vector levels deep, compared for `equal' inside
-    ;;    a `member'/`assoc'/`rassoc'/equal-mode-hash-table lookup, was
-    ;;    already an extreme case this SAME bounded-and-sound design
-    ;;    accepted losing at the original 1024 (see `wf_key_eq_depth''s
-    ;;    own header: "exceeding the cap answers not-equal... a lookup
-    ;;    miss is sound, while a false hit would corrupt table
-    ;;    semantics") -- this segment narrows that pre-existing,
-    ;;    already-bounded tradeoff, not introduces a new one.
     ;; core1: allocation-free structural `equal' after GNU internal_equal
     ;; (fns.c).  Answers 1 (equal), 0 (not equal), 2 (undecided: a record,
     ;; char-table or symbol-with-pos is involved, or the nesting is deeper
@@ -41402,9 +41368,14 @@ bytes are written into a fresh 8-byte buffer instead."
          (limit (let* ((n (* 4 (- byte-end byte-start))))
                   (if (< n 256) 256 (if (> n 4194304) 4194304 n))))
          (cap (if (> limit 256) 256 limit))
-         (pool (alloc-bytes (* cap 32) 8))
+         (pool (frame-alloc-or-heap 8192))
+         (mapped 0)
          (word 0) (byte-pos 0) (again 1) (prevcap (heap-read-u64 268436448 0)))
     (seq
+     ;; The parser reads the scratch header before it clears the used
+     ;; slots. The recursive read has no evaluation safepoint and returns
+     ;; only a Lisp word, never a pointer into this workspace.
+     (nl_alloc_zero_fill pool 0 128)
      (ptr-write-u64 view 0
                     (if (and (= (bf_string_unibyte_p src) 1)
                              (/= (wf_arg_word args 3) (nl_imm_int 1)))
@@ -41420,8 +41391,11 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (or (/= word 0) (>= cap limit))
                 (setq again 0)
               (seq (ptr-write-u64 268435472 0 0)
+                   (if (/= mapped 0) (nl_os_free_chunk mapped (* cap 32)) 0)
                    (setq cap (if (> (* cap 8) limit) limit (* cap 8)))
-                   (setq pool (alloc-bytes (* cap 32) 8))))))
+                   (setq mapped (nl_string_alloc_mapping (* cap 32)))
+                   (setq pool (if (= mapped 0) (alloc-bytes (* cap 32) 8) mapped))))))
+     (if (/= mapped 0) (nl_os_free_chunk mapped (* cap 32)) 0)
      (if (and (/= word 0) (/= word 2)
               (= (bf_read_one_native_compatible_p src byte-start byte-pos 0) 1))
          (let* ((position (+ start (bf_read_one_bytes_to_chars src byte-start byte-pos))))
@@ -47215,9 +47189,9 @@ Other targets return nil, preserving their generated process source exactly."
             3
           ;; Most directories fit in one small read. Keep the input buffer
           ;; separate from the result, which grows only as names arrive.
-          (let* ((dbuf (alloc-bytes 8192 8))
+          (let* ((dbuf (frame-alloc-or-heap 8192))
                  (capacity 4096)
-                 (sbuf (alloc-bytes capacity 1))
+                 (sbuf (frame-alloc-or-heap 4096))
                  (slen 0)
                  (n 1))
             (seq
