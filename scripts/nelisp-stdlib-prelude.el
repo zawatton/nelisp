@@ -32819,58 +32819,61 @@ machinery is not ready, else 32 * 4^TRIES (32 .. 32768)."
   (and nelisp--fx-anon-ready (nelisp--fx-active-p) (fboundp 'nelisp--fx-run)))
 
 (defun nelisp--fx-first-call (body &optional captured formals)
-  "Compile BODY, a closure body just applied for the first time.
-Called by the runtime with re-entry blocked; leaves BODY in
-`nelisp--fx-table' (its record, or `none') whatever happens.  CAPTURED and
-FORMALS are the applied closure's environment and formal list: a body no
-name was deferred for is an anonymous lambda, compiled (on its second call;
-the first leaves the table untouched) from them when the
-environment has the shape accepted by `nelisp--fx-env-ok-p' or
-`nelisp--fx-cap-names'."
+  "Admit the applied closure BODY to FX or record when to reconsider it.
+The runtime calls with re-entry blocked.  A newly seen loop-free named
+body keeps its pending name through a short native countdown.  An anonymous
+body is compiled from CAPTURED and FORMALS when its countdown expires and
+the environment is accepted by `nelisp--fx-env-ok-p' or `nelisp--fx-cap-names'."
   (let ((first-sight nil) (expired nil) (counting nil))
   (condition-case nil
-      (let ((name (gethash body nelisp--fx-pending))
-            (nelisp--fx-tries (gethash body nelisp--fx-pending-tries 0)))
-        (remhash body nelisp--fx-pending)
-        (remhash body nelisp--fx-pending-tries)
-        ;; The countdown lives in `nelisp--fx-table' as a fixnum.  The runtime
-        ;; (`nl_fx_lookup_in') decrements it natively and calls this function
-        ;; only when it reaches 1 (expired); a direct call with a larger count
-        ;; counts down here, as the former separate table did.
-        (let ((cur (gethash body nelisp--fx-table)))
+      (let* ((name (gethash body nelisp--fx-pending))
+             (tries (gethash body nelisp--fx-pending-tries))
+             (nelisp--fx-tries (or tries 0))
+             (cur (gethash body nelisp--fx-table)))
+        ;; Keep the pending name until the countdown expires. Retried and
+        ;; loopy bodies use the usual eager admission path.
+        (if (and name (null tries) (null cur) nelisp--fx-anon-ready
+                 (not (nelisp--fx-loopy-p body)))
+            (progn (puthash body 5 nelisp--fx-table)
+                   (setq first-sight t))
+          (when name (remhash body nelisp--fx-pending))
+          (when tries (remhash body nelisp--fx-pending-tries))
+          ;; The countdown lives in `nelisp--fx-table' as a fixnum.  The runtime
+          ;; (`nl_fx_lookup_in') decrements it natively and calls this function
+          ;; only when it reaches 1 (expired); a direct call with a larger count
+          ;; counts down here, as the former separate table did.
           (when (integerp cur)
             (if (<= cur 1)
                 (progn (remhash body nelisp--fx-table) (setq expired t))
-              (setq counting (1- cur)))))
-        (when (and (null name) (consp body) (listp formals)
-                   nelisp--fx-anon-ready
-                   (not (gethash body nelisp--fx-named))
-                   ;; A compiled record or `none' is final: never restart a
-                   ;; countdown over it.
-                   (let ((cur (gethash body nelisp--fx-table)))
-                     (or (null cur) (integerp cur)))
-                   (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
-          (let ((left (cond (expired 0)
-                            (counting counting)
-                            (t (if (nelisp--fx-loopy-p body) 1 (1- nelisp--fx-anon-calls))))))
-            (if (> left 0)
-                (progn (puthash body left nelisp--fx-table)
-                       (setq first-sight t))
-              (nelisp--fx-register-fn
-               nil (cons 'closure (cons captured (cons formals body)))))))
-        (when (and name (fboundp name)
-                   (eq (car-safe (nelisp--closure-cons (symbol-function name))) 'closure)
-                   (eq (nthcdr 3 (nelisp--closure-cons (symbol-function name))) body))
-          (let* ((trace (nelisp--fx-trace-file)) (t0 (and trace (float-time))))
-            (nelisp--fx-register name)
-            (nelisp--fx-retry-errored)
-            (when trace
-              (condition-case nil
-                  (write-region
-                   (format "%.3f %s %.2f %s\n" t0 name (* 1000 (- (float-time) t0))
-                           (if (nelisp--fx-macros-used body) "macros" "plain"))
-                   nil trace t 'silent)
-                (error nil))))))
+              (setq counting (1- cur))))
+          (when (and (null name) (consp body) (listp formals)
+                     nelisp--fx-anon-ready
+                     (not (gethash body nelisp--fx-named))
+                     ;; A compiled record or `none' is final: never restart a
+                     ;; countdown over it.
+                     (or (null cur) (integerp cur))
+                     (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
+            (let ((left (cond (expired 0)
+                              (counting counting)
+                              (t (if (nelisp--fx-loopy-p body) 1 (1- nelisp--fx-anon-calls))))))
+              (if (> left 0)
+                  (progn (puthash body left nelisp--fx-table)
+                         (setq first-sight t))
+                (nelisp--fx-register-fn
+                 nil (cons 'closure (cons captured (cons formals body)))))))
+          (when (and name (fboundp name)
+                     (eq (car-safe (nelisp--closure-cons (symbol-function name))) 'closure)
+                     (eq (nthcdr 3 (nelisp--closure-cons (symbol-function name))) body))
+            (let* ((trace (nelisp--fx-trace-file)) (t0 (and trace (float-time))))
+              (nelisp--fx-register name)
+              (nelisp--fx-retry-errored)
+              (when trace
+                (condition-case nil
+                    (write-region
+                     (format "%.3f %s %.2f %s\n" t0 name (* 1000 (- (float-time) t0))
+                             (if (nelisp--fx-macros-used body) "macros" "plain"))
+                     nil trace t 'silent)
+                  (error nil)))))))
     (error nil))
   ;; Retry policy (replaces the unconditional permanent `none').  A body
   ;; with a retry record that a direct call counted down keeps counting.
@@ -32922,6 +32925,7 @@ environment has the shape accepted by `nelisp--fx-env-ok-p' or
             (puthash body 'none nelisp--fx-table))))
     (error nil))
   nil))
+
 
 (defvar nelisp--fx-called nil
   "Bound by `nelisp--fx-register-1': functions the compiled code calls.")
@@ -33015,15 +33019,15 @@ existing `none' record in place (never removing it first: a call made
 meanwhile would otherwise record `none' again behind the compilation)."
   (when (and (nelisp--closure-p fn) (not (consp fn)))
     (setq fn (nelisp--closure-cons fn)))
-  (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
-    (progn
-      (when (and (consp fn) (eq (car fn) 'closure)
-                 (or (nelisp--fx-env-ok-p (nth 1 fn))
-                     (and (null name) (nelisp--fx-cap-names (nth 1 fn)))))
+  (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run)
+             (consp fn) (eq (car fn) 'closure))
+    (let* ((env (nth 1 fn))
+           (markers-only (nelisp--fx-env-ok-p env))
+           (capnames (and (not markers-only) (null name)
+                          (nelisp--fx-cap-names env))))
+      (when (or markers-only capnames)
         (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
-               (capnames (and (not (nelisp--fx-env-ok-p (nth 1 fn)))
-                              (nelisp--fx-cap-names (nth 1 fn))))
-               (nelisp--fx-declared (let ((r nil)) (dolist (e (remq t (nth 1 fn))) (unless (consp e) (push e r))) (nreverse r)))
+               (nelisp--fx-declared (let ((r nil)) (dolist (e (remq t env)) (unless (consp e) (push e r))) (nreverse r)))
                (shape (nelisp--fx-arglist-shape args)))
           (when (and shape
                      (not (cl-some #'nelisp--fx-special-p capnames))
@@ -33040,7 +33044,7 @@ meanwhile would otherwise record `none' again behind the compilation)."
                    (macros (nelisp--fx-macros-used body))
                    (nelisp--fx-expand (and macros t))
                    ;; A lambda inside a captured-variable body stays interpreted.
-                   (nelisp--fx-outer-env (and (null capnames) (nth 1 fn)))
+                   (nelisp--fx-outer-env (and (null capnames) env))
                    (nelisp--fx-cap-names capnames)
                    (c (condition-case nil (nelisp--fx-compile (cons 'progn (if (and (stringp (car body)) (cdr body)) (cdr body) body))
                                                               (append capnames (car shape)))
@@ -33066,7 +33070,7 @@ meanwhile would otherwise record `none' again behind the compilation)."
               (puthash body (if c
                                 ;; The head record also carries the variant list (slot 10)
                                 ;; and its state (slot 11, 0 = open): see `nelisp--fx-add-variant'.
-                                (vconcat (nelisp--fx-make-record c shape capnames name (nth 1 fn) args)
+                                (vconcat (nelisp--fx-make-record c shape capnames name env args)
                                          (vector nil 0))
                               'none)
                        nelisp--fx-table)))))))))
