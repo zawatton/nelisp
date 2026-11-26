@@ -1629,19 +1629,6 @@ resolved to its canonical (obsolete-alias aware) variable first."
     (emacs-stub--remove-hook hook function local)))
 
 
-;;;; --- list helpers ------------------------------------------------------
-
-(unless (fboundp 'add-to-list)
-  (defun add-to-list (list-var element &optional append compare-fn)
-    "Stub: prepend (or append) ELEMENT to LIST-VAR if not already present."
-    (ignore compare-fn)
-    (let ((cur (and (boundp list-var) (symbol-value list-var))))
-      (unless (member element cur)
-        (set list-var (if append
-                          (append cur (list element))
-                        (cons element cur))))
-      (and (boundp list-var) (symbol-value list-var)))))
-
 ;;;; --- regex/menu load-time helpers --------------------------------------
 
 ;; Unconditional: an earlier no-op bulk stub may claim `regexp-opt' first

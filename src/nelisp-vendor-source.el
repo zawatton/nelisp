@@ -15,6 +15,8 @@
 (defconst nelisp-vendor-source--pins
   '(("vendor/emacs-lisp/help-fns.el"
      . "013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5")
+    ("vendor/emacs-lisp/startup.el"
+     . "856927b8ef69c4028a5aea917fad5ddcce5d4eff1c677ea85ed8db47f7dba0ce")
     ("vendor/emacs-lisp/loaddefs.el"
      . "786ea48e70a6e1166a82cf4ed4485136ab859c97356c18d3631709258072a6ac")
     ("vendor/staged-emacs-lisp/subr.el"

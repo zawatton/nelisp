@@ -2092,6 +2092,7 @@ $(NEMACS_BOOTSTRAP_BUNDLE).elc-inputs: nemacs-bootstrap-elc-force
 
 $(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el scripts/standalone-source-normalize.el src/nelisp-vendor-source.el \
 		scripts/nelisp-prelude-bytecode.el lisp/nelisp-stdlib-regexp.el lisp/nelisp-fxir-native-data.el \
+		test/nelisp-prelude-bytecode-parity-fixtures.tsv \
 		$(NELISP_BOOTSTRAP_VENDOR_ROOT)/staged-emacs-lisp/subr.el $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS) \
 		$(NEMACS_BOOTSTRAP_BUNDLE).elc-inputs
 	NELISP_BOOTSTRAP_VENDOR_DIR="$(abspath $(NELISP_BOOTSTRAP_VENDOR_ROOT))" $(EMACS) -Q -L scripts $(NELISP_LOAD_PATH) $(NELISP_LOAD_PATH) \

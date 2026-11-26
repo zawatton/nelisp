@@ -55,7 +55,6 @@ This GNU C-core option is also read by genuine files.el before auto-save.")
 (defconst emacs-fileio-builtins--standalone-overrides
   '(insert-file-contents
     load-file
-    normal-top-level-add-subdirs-to-load-path
     add-to-load-path
     write-region
     file-name-quoted-p
@@ -65,7 +64,6 @@ This GNU C-core option is also read by genuine files.el before auto-save.")
     buffer-file-name
     set-visited-file-name
     get-file-buffer
-    locate-library
     executable-find
     substitute-in-file-name
     find-file-noselect
@@ -663,27 +661,6 @@ INTERACTIVE-CALL is accepted for Emacs API parity and ignored."
                 (throw 'done nil)))))))
     found))
 
-(defun emacs-fileio--runtime-locate-library-works-p ()
-  "Return non-nil when the runtime's own `locate-library' resolves a file.
-NeLisp v1.2.0 ships a `locate-file'-backed `locate-library' that is
-correct on every standalone target.  Replacing it with the
-directory-listing port above is only right on readers whose own
-implementation is missing or broken: on v1.2.0 the port's
-`emacs-fileio--safe-directory-probe-p' guard (keyed on the legacy
-`nl-syscall-opendir' name) answers nil, so the port returns nil for
-every library and the first `require' after this file loads dies with
-file-missing (measured 2026-09-04, windows-x86_64, `emacs-standalone').
-A functional probe on a file this bridge knows exists decides instead
-of a primitive's name."
-  (and (fboundp 'locate-library)
-       (condition-case nil
-           (stringp (locate-library "emacs-fileio-builtins"))
-         (error nil))))
-
-(when (and (emacs-fileio-builtins--install-function-p 'locate-library)
-           (not (emacs-fileio--runtime-locate-library-works-p)))
-  (defalias 'locate-library #'emacs-fileio-locate-library))
-
 (when (emacs-fileio-builtins--install-function-p 'file-name-quoted-p)
   (defun file-name-quoted-p (name &optional top)
     "Return non-nil when NAME starts with the Emacs quote prefix `/:'."
@@ -1030,11 +1007,6 @@ default directory.  However, if FULL is non-nil, they are absolute."
   (dolist (directory directories)
     (emacs-fileio-builtins-add-load-path-tree directory))
   load-path)
-
-(when (emacs-fileio-builtins--install-function-p
-       'normal-top-level-add-subdirs-to-load-path)
-  (defalias 'normal-top-level-add-subdirs-to-load-path
-    #'emacs-fileio-builtins-normal-top-level-add-subdirs-to-load-path))
 
 (when (emacs-fileio-builtins--install-function-p 'add-to-load-path)
   (defalias 'add-to-load-path #'emacs-fileio-builtins-add-to-load-path))

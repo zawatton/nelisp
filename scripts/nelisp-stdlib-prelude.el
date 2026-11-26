@@ -541,21 +541,6 @@ new vector, or with DEST the vector when it changed and nil when it did not."
 ;; real definition is the ONLY one that ever runs, so `unless (fboundp
 ;; ...)' still means "only if nothing has defined this yet" everywhere in
 ;; this file, not "only if my own earlier stub hasn't already claimed it".
-(unless (fboundp 'locate-library)
-  (defun locate-library (library &optional _nosuffix _path _interactive-call)
-    "Find LIBRARY on `load-path', preferring compiled Elisp files."
-    (nelisp--check-string library)
-    (let ((dirs load-path) (hit nil))
-      (while (and dirs (null hit))
-        (let ((dir (car dirs)))
-          (when (stringp dir)
-            (dolist (suffix '(".elc" ".el" ""))
-              (let ((candidate
-                     (concat (expand-file-name library dir) suffix)))
-                (when (and (null hit) (file-regular-p candidate))
-                  (setq hit candidate))))))
-        (setq dirs (cdr dirs)))
-      hit)))
 (unless (and (fboundp 'exp) (condition-case nil (progn (exp 0.0) t) (error nil)))
   (defun nelisp--two-sum (a b)
     "A+B as an exact pair (SUM . ERR)."
@@ -735,6 +720,34 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
                       (null (gethash b nelisp--tp-string-properties)))
                  (nelisp--tp-strings-equal a b))
            t))))
+;; lread.c DEFVAR (initial value ("") at lread.c:5666).  GNU
+;; jka-cmpr-hook.el adds ".gz"; a nil start would leave only ".gz".
+(unless (boundp 'load-file-rep-suffixes)
+  (defvar load-file-rep-suffixes (list "")
+    "List of suffixes that indicate representations of the same file.
+This list should normally start with the empty string.
+
+Enabling Auto Compression mode appends the suffixes in
+`jka-compr-load-suffixes' to this list and disabling Auto Compression
+mode removes them again.  `load' and related functions use this list to
+determine whether they should look for compressed versions of a file
+and, if so, which suffixes they should try to append to the file name
+in order to do so.  However, if you want to customize which suffixes
+the loading functions recognize as compression suffixes, you should
+customize `jka-compr-load-suffixes' rather than the present variable."))
+(unless (fboundp 'get-load-suffixes)
+  (defun get-load-suffixes ()
+    "Return the ordered combinations of load and representation suffixes."
+    (let ((suffixes load-suffixes) result)
+      (while (consp suffixes)
+        (let ((representations load-file-rep-suffixes))
+          (while (consp representations)
+            (setq result (cons (concat (car suffixes) (car representations))
+                               result)
+                  representations (cdr representations))))
+        (setq suffixes (cdr suffixes)))
+      (nreverse result))))
+
 (unless (fboundp 'locate-file)
   (defun locate-file (filename path &optional suffixes _predicate)
     "Find FILENAME in PATH, trying each of SUFFIXES; nil when not found."
@@ -24361,51 +24374,37 @@ processors not available."
 (unless (fboundp 'nelisp--stat-mode-string)
   (defun nelisp--stat-mode-string (mode)
     "Build the 10-char `ls -l' style mode string for raw stat MODE."
-    (let* ((ifmt (logand mode 61440))
-           (tc (cond ((= ifmt 16384) ?d)   ; S_IFDIR
-                     ((= ifmt 40960) ?l)   ; S_IFLNK
-                     ((= ifmt 8192) ?c)    ; S_IFCHR
-                     ((= ifmt 24576) ?b)   ; S_IFBLK
-                     ((= ifmt 4096) ?p)    ; S_IFIFO
-                     ((= ifmt 49152) ?s)   ; S_IFSOCK
-                     (t ?-)))              ; S_IFREG and anything else
-           (r (lambda (bit) (if (/= (logand mode bit) 0) ?r ?-)))
-           (w (lambda (bit) (if (/= (logand mode bit) 0) ?w ?-)))
-           (x (lambda (bit special setc unsetc)
-                (let ((has-x (/= (logand mode bit) 0))
-                      (has-special (/= (logand mode special) 0)))
-                  (cond ((and has-special has-x) setc)
-                        (has-special unsetc)
-                        (has-x ?x)
-                        (t ?-))))))
-      (string tc
-              (funcall r 256) (funcall w 128) (funcall x 64 2048 ?s ?S)
-              (funcall r 32) (funcall w 16) (funcall x 8 1024 ?s ?S)
-              (funcall r 4) (funcall w 2) (funcall x 1 512 ?t ?T)))))
+    (let* ((type (logand (ash mode -12) 15))
+           (set-id ["---" "--x" "-w-" "-wx" "r--" "r-x" "rw-" "rwx"
+                    "--S" "--s" "-wS" "-ws" "r-S" "r-s" "rwS" "rws"])
+           (sticky ["---" "--x" "-w-" "-wx" "r--" "r-x" "rw-" "rwx"
+                    "--T" "--t" "-wT" "-wt" "r-T" "r-t" "rwT" "rwt"]))
+      (concat (aref ["-" "p" "c" "-" "d" "-" "b" "-" "-" "-" "l" "-" "s" "-" "-" "-"] type)
+              (aref set-id (logior (logand (ash mode -6) 7)
+                                  (logand (ash mode -8) 8)))
+              (aref set-id (logior (logand (ash mode -3) 7)
+                                  (logand (ash mode -7) 8)))
+              (aref sticky (logior (logand mode 7)
+                                  (logand (ash mode -6) 8)))))))
 (unless (fboundp 'file-attributes)
   (defun file-attributes (filename &optional _id-format)
     (let ((buf (nelisp--syscall-lstat-buf filename)))
-      (if (< buf 0)
-          nil
-        (let* ((f (nelisp-stat-buf-fields buf))
-               (mode (nth 0 f))
-               (ifmt (logand mode 61440))
-               (type (cond ((= ifmt 16384) t)                 ; S_IFDIR
-                           ((= ifmt 40960)                    ; S_IFLNK
-                            (nelisp--syscall-readlink filename))
-                           (t nil))))
-          (list type
-                (nth 1 f)
-                (nth 2 f)
-                (nth 3 f)
-                (nelisp--stat-lisp-time (nth 4 f) (nth 5 f))
-                (nelisp--stat-lisp-time (nth 6 f) (nth 7 f))
-                (nelisp--stat-lisp-time (nth 8 f) (nth 9 f))
-                (nth 10 f)
+      (when (>= buf 0)
+        (let* ((mode (ptr-read-u32 buf 24))
+               (ifmt (logand mode #o170000)))
+          (list (cond ((= ifmt #o040000) t)
+                      ((= ifmt #o120000) (nelisp--syscall-readlink filename)))
+                (ptr-read-u64 buf 16)
+                (ptr-read-u32 buf 28)
+                (ptr-read-u32 buf 32)
+                (nelisp--stat-lisp-time (ptr-read-u64 buf 72) (ptr-read-u64 buf 80))
+                (nelisp--stat-lisp-time (ptr-read-u64 buf 88) (ptr-read-u64 buf 96))
+                (nelisp--stat-lisp-time (ptr-read-u64 buf 104) (ptr-read-u64 buf 112))
+                (ptr-read-u64 buf 48)
                 (nelisp--stat-mode-string mode)
                 t
-                (nth 11 f)
-                (nth 12 f)))))))
+                (ptr-read-u64 buf 8)
+                (ptr-read-u64 buf 0)))))))
 ;; `time-less-p'/`time-equal-p' are the other half of making the fixed
 ;; atime/mtime/ctime usable: callers compare them, they do not just read
 ;; them.  This runtime's integers have no bignum (max ~2^61), so a
@@ -25129,25 +25128,6 @@ through an undecoded unibyte buffer, so every byte value survives.
       (while ks (remhash (car ks) table) (setq ks (cdr ks))))
     table))
 ;; `assoc-delete-all' is supplied from pinned GNU subr.el source.
-(unless (fboundp 'add-to-list)
-  (defun add-to-list (list-var element &optional append compare-fn)
-    (nelisp--check-symbol list-var)
-    (unless (listp (symbol-value list-var))
-      (signal 'wrong-type-argument (list 'listp (symbol-value list-var))))
-    (let* ((lst (symbol-value list-var))
-           (test (or compare-fn (function equal)))
-           (cur lst)
-           (found nil))
-      (while (and cur (not found))
-        (when (funcall test element (car cur))
-          (setq found t))
-        (setq cur (cdr cur)))
-      (unless found
-        (setq lst (if append
-                      (append lst (list element))
-                    (cons element lst)))
-        (set list-var lst))
-      lst)))
 ;; `declare' must be a no-op MACRO (not a function): NeLisp's defmacro does not
 ;; strip a `(declare (indent N) ...)' form from a macro/defun body, so it is
 ;; evaluated at runtime; as a macro it expands to nil without evaluating the

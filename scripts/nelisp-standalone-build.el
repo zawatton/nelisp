@@ -14303,14 +14303,7 @@ argument (reachability + in-arena bounds checks).")
                                      3)
                                  w))
                            (nl_abi_fail (bf_wrong_type_listp l) 0))))
-    ((:lit "member")  :word . (if (if (= (sexp-tag (wf_arg_ptr args 1)) 0) 1 (if (= (sexp-tag (wf_arg_ptr args 1)) 7) 1 0))
-                            (let* ((w (wf_member_w args 0)))
-                              (if (= w 3)
-                                  (if (= (bf_proper_list_raw (wf_arg_ptr args 1)) 0)
-                                      (nl_abi_fail (bf_wrong_type_listp (wf_arg_ptr args 1)) 0)
-                                    3)
-                                w))
-                          (nl_abi_fail (bf_wrong_type_listp (wf_arg_ptr args 1)) 0)))
+    ((:lit "member")  :word . (wf_member_w args 0))
     ((:lit "assq")    :word . (if (if (= (sexp-tag (wf_arg_ptr args 1)) 0) 1 (if (= (sexp-tag (wf_arg_ptr args 1)) 7) 1 0))
                             (let* ((w (wf_assq_w args 0)))
                               (if (= w 3)
@@ -22067,14 +22060,50 @@ eval applyfn.")
       (nl_abi_word_to_rc (wf_memq_walk_w elt_ptr list_ptr 0) out))
     (defun wf_memq_w (args _pad)
       (wf_memq_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
-    (defun wf_member_walk_w (elt_ptr list_ptr _pad)
-      (if (= (heap-sexp-tag-word list_ptr) 7)
-          (if (= (wf_key_eqn elt_ptr (nl_cons_car_ptr list_ptr)) 1)
-              list_ptr
-            (wf_member_walk_w elt_ptr (nl_cons_cdr_ptr list_ptr) 0))
-        3))
-    (defun wf_member_walk (elt_ptr list_ptr out)
-      (nl_abi_word_to_rc (wf_member_walk_w elt_ptr list_ptr 0) out))
+    (defun wf_member_walk_w (elt list _pad)
+      ;; Walk the live cons words once.  For flat strings, reject a different
+      ;; length or final eight bytes before calling the full equal comparator.
+      ;; All bytes are read from the current strings, including mutable ones.
+      (let* ((tail list) (checkpoint list) (span 2) (left 2)
+             (result 0) (running 1)
+             (tag (nl_val_tag elt))
+             (length (if (or (= tag 5) (= tag 14)) (m5_strlen elt) 0))
+             (offset (- length 8))
+             (last (if (>= offset 0) (heap-read-u64 (nl_bi_strptr elt) offset) 0)))
+        (seq
+         (while (= running 1)
+           (let* ((tail-tag (nl_val_tag tail)))
+             (cond
+              ((= tail-tag 0) (seq (setq result 3) (setq running 0)))
+              ((/= tail-tag 7)
+               (seq (bf_wrong_type_listp list) (setq running 0)))
+              (t
+               (let* ((cell (heap-sexp-payload tail))
+                      (item (heap-read-u64 cell 0))
+                      (compare (if (and (>= offset 0) (= (logand item 7) 4))
+                                   (and (= (nl_word_length item) length)
+                                        (= (heap-read-u64 (heap-read-u64 (- item 4) 24) offset)
+                                           last))
+                                 1)))
+                 (if (and compare (= (wf_key_eqn elt item) 1))
+                     (seq (setq result tail) (setq running 0))
+                   (seq
+                    (setq tail (heap-read-u64 cell 8))
+                    (setq left (- left 1))
+                    ;; Brent's cycle check uses the same checkpoint distances
+                    ;; as GNU's FOR_EACH_TAIL for these list lengths.
+                    (if (= left 0)
+                        (seq (setq span (* span 2))
+                             (setq left span)
+                             (setq checkpoint tail))
+                      (if (= tail checkpoint)
+                          (if (= (nl_val_tag tail) 7)
+                              (seq (bf_signal_circular_list tail) (setq running 0))
+                            0)
+                        0)))))))))
+         result)))
+    (defun wf_member_walk (elt list out)
+      (nl_abi_word_to_rc (wf_member_walk_w elt list 0) out))
     (defun wf_member_w (args _pad)
       (wf_member_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
     (defun wf_assq_walk_w (key_ptr alist_ptr _pad)
@@ -27454,15 +27483,7 @@ bytes are written into a fresh 8-byte buffer instead."
        ((= base 157)
         (let* ((elt (wf_bytecode_slot slots (- sp 2)))
                (list (wf_bytecode_slot slots (- sp 1))))
-          (if (if (= (heap-sexp-tag-word list) 0) 1
-                (if (= (heap-sexp-tag-word list) 7) 1 0))
-              (seq (wf_member_walk elt list elt)
-                   (if (= (sexp-tag elt) 0)
-                       (if (= (bf_proper_list_raw list) 0)
-                           (seq (bf_wrong_type_listp list) 1)
-                         0)
-                     0))
-            (seq (bf_wrong_type_listp list) 1))))
+          (if (= (wf_member_walk elt list elt) 0) 0 1)))
        ((or (= base 80) (= base 81) (= base 82) (= base 176))
         (let* ((callargs (alloc-bytes 32 8))
                (dst (wf_bytecode_slot slots 0))
@@ -51611,6 +51632,11 @@ listing it would make the load-path lie about what is reachable."
    "\n;; --- GNU Emacs 31.1 subr.el: error helpers ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el" '(ignore-errors ignore-error user-error))
+   "\n;; --- GNU Emacs 31.1 subr.el: bootstrap list and library helpers ---\n"
+   (nelisp-standalone--vendor-function-source
+    "vendor/staged-emacs-lisp/subr.el" 'add-to-list)
+   (nelisp-standalone--vendor-function-source
+    "vendor/staged-emacs-lisp/subr.el" 'locate-library)
    "\n;; --- GNU Emacs 31.1 subr.el: list utilities ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"
@@ -53542,7 +53568,8 @@ caller at once and broke the JIT ledger's S1.3/S3.5/S5.8/S6.16-21/S7.6."
 
 (defconst nelisp-standalone--vendor-bytecode-defuns
   '(("vendor/staged-emacs-lisp/subr.el"
-     function-get assoc-default assoc-delete-all assq-delete-all))
+     function-get assoc-default assoc-delete-all assq-delete-all
+     add-to-list define-symbol-prop locate-library))
   "Embedded genuine vendor definitions compiled with host GNU byte code.
 Each entry is (RELATIVE-FILE NAME...).  A listed definition goes through the
 same `nelisp-prelude-bytecode-transform' gates as a prelude defun (opcode

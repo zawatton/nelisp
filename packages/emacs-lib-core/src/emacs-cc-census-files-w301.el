@@ -5,19 +5,6 @@
 (defvar emacs-cc-census-files-w301--visited-time 0
   "Recorded modification time, made local when a buffer records a value.")
 
-(unless (fboundp 'get-load-suffixes)
-  (defun get-load-suffixes ()
-    "Return the ordered combinations of load and representation suffixes."
-    (let ((suffixes load-suffixes) result)
-      (while (consp suffixes)
-        (let ((representations load-file-rep-suffixes))
-          (while (consp representations)
-            (setq result (cons (concat (car suffixes) (car representations))
-                               result)
-                  representations (cdr representations))))
-        (setq suffixes (cdr suffixes)))
-      (nreverse result))))
-
 (defun emacs-cc-census-files-w301--accessible-p (filename predicate)
   "Test FILENAME with PREDICATE, respecting its directory acceptance rule."
   (let* ((access-mode (cond ((or (null predicate) (eq predicate t)) 4)

@@ -528,21 +528,6 @@ regular file (per `nelisp--syscall-stat'), or nil if none match."
       (setq dirs (cdr dirs)))
     hit))
 
-(defun locate-library (library &optional _nosuffix _path _interactive-call)
-    "Find LIBRARY on `load-path', preferring compiled Elisp files."
-    (nelisp--check-string library)
-    (let ((dirs load-path) (hit nil))
-      (while (and dirs (null hit))
-        (let ((dir (car dirs)))
-          (when (stringp dir)
-            (dolist (suffix '(".elc" ".el" ""))
-              (let ((candidate
-                     (concat (expand-file-name library dir) suffix)))
-                (when (and (null hit) (file-regular-p candidate))
-                  (setq hit candidate))))))
-        (setq dirs (cdr dirs)))
-      hit))
-
 ;; Rust-min batch 7f (2026-05-07, Doc 50 stage 2): `load' migrated
 ;; from Rust to elisp on top of two new I/O / reader primitives:
 ;;   - `nelisp--syscall-read-file'      = `std::fs::read_to_string'

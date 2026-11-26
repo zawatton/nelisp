@@ -102,21 +102,6 @@ or local variable spec of the tailing lines with `coding:' tag."))
 (unless (boundp 'hexl-program-name)
   (defvar hexl-program-name "hexl"
     "File name for the program that converts files to and from hexl format."))
-;; lread.c DEFVAR (initial value ("") at lread.c:5666).  GNU
-;; jka-cmpr-hook.el adds ".gz"; a nil start would leave only ".gz".
-(unless (boundp 'load-file-rep-suffixes)
-  (defvar load-file-rep-suffixes (list "")
-    "List of suffixes that indicate representations of the same file.
-This list should normally start with the empty string.
-
-Enabling Auto Compression mode appends the suffixes in
-`jka-compr-load-suffixes' to this list and disabling Auto Compression
-mode removes them again.  `load' and related functions use this list to
-determine whether they should look for compressed versions of a file
-and, if so, which suffixes they should try to append to the file name
-in order to do so.  However, if you want to customize which suffixes
-the loading functions recognize as compression suffixes, you should
-customize `jka-compr-load-suffixes' rather than the present variable."))
 ;; xdisp.c DEFVAR_INT (default 0, xdisp.c:38556); GNU info.el binds it
 ;; around node display.
 (unless (boundp 'scroll-conservatively)
