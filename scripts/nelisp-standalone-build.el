@@ -35432,7 +35432,7 @@ bytes are written into a fresh 8-byte buffer instead."
 ;; assq/memq/plist).
 ;; ===================================================================
 (defconst nelisp-standalone--applyfn-bf-helpers
-  '(;; symbol-name str-bytes -> Symbol(tag4).  A Str (tag5) keeps ptr@16/len@24,
+  `(;; symbol-name str-bytes -> Symbol(tag4).  A Str (tag5) keeps ptr@16/len@24,
     ;; a MutStr (tag6) wraps NlStr* @8 with ptr@8/len@16.  nl_alloc_symbol takes
     ;; (bytes-ptr len result-slot).
     (defun bf_str_ptr (sx0)
@@ -39275,12 +39275,14 @@ bytes are written into a fresh 8-byte buffer instead."
               (let* ((frame (vector-ref-ptr
                              (nl_record_slot_word frames 0)
                              (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
-                (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
-                  (let* ((names (alloc-bytes 32 8)))
-                    (seq (cons-make-with-clone name (nl_record_slot_word frame 1) names)
-                         (record-slot-set frame 1 names) (wf_dirty) 1))))
+                (bf_mark_frame_dynamic frame name))
             1)
         1))
+    (defun bf_mark_frame_dynamic (frame name)
+      (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 1
+        (let* ((names (alloc-bytes 32 8)))
+          (seq (cons-make-with-clone name (nl_record_slot_word frame 1) names)
+               (record-slot-set frame 1 names) (wf_dirty) 1))))
     ;; GNU funcall_lambda (eval.c:3350): lexenv = Fcons (Fcons (sym, arg),
     ;; lexenv), two conses per parameter and no cell.  A function call's frame
     ;; (an alist of fewer than 8 bindings, not a shared closure chain, not
@@ -40053,28 +40055,46 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun nl_sym_find_value_w (env sym _pad)
       (if (= (nl_sym_direct_env_p env) 0)
           (bf_dynamic_lookup_w env sym 0)
-        ;; RESULT is -1 until the walk has an answer: a value WORD can be
-        ;; 1 (the fixnum 0 that a store leaves in the cell), but never -1.
-        (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
-               (hops 0) (result -1))
-          (seq
-           (while (= result -1)
-             (if (= obj 0) (setq result 2)
-               (let ((r (nl_sym_redirect obj)))
-                 (if (or (= r 0) (= r 3))
-                     (let ((v (nl_ent_w obj 0)))
-                       (setq result (if (= (wf_bytecode_w_unbound_p env v) 1) 2 v)))
-                   (if (and (= r 1) (< hops 100))
-                       (seq (setq obj (nelisp_mirror_lookup_entry_owned
-                                       env (nl_ent_w obj 4)))
-                            (setq hops (+ hops 1)))
-                     ;; vmcore W1e: LOCALIZED reads the selected buffer's cell directly; a void or
-                     ;; unexpected shape takes the general path, which also signals.
-                     (let ((v (if (= r 2) (wf_bytecode_w_local_read env obj) 0)))
-                       (setq result (if (or (= v 0) (= (wf_bytecode_w_unbound_p env v) 1))
-                                        (bf_dynamic_lookup_w env sym 0)
-                                      v))))))))
-           result))))
+        ,(if (member (getenv "NELISP_SYMCELL_DISABLE") '("read" "all"))
+             '(nl_sym_find_value_general_w env sym)
+           '(if (if (= (logand sym 7) 6)
+                    (let* ((plain (logand (ptr-read-u64 (- sym 6) 0) 831)))
+                      (if (= plain 4) 1 (= plain 16)))
+                  0)
+                ;; A direct value cell holds Qunbound as a legacy view.
+                (let* ((w (ptr-read-u64 sym 10)))
+                  (if (if (= (logand w 7) 0)
+                          (if (> w 4095)
+                              (if (= (ptr-read-u8 w 0) 16)
+                                  (= (ptr-read-u64 w 8) (ptr-read-u64 env 72))
+                                0)
+                            0)
+                        0)
+                      2 w))
+              (nl_sym_find_value_general_w env sym)))))
+    (defun nl_sym_find_value_general_w (env sym)
+      ;; RESULT is -1 until the walk has an answer: a value WORD can be
+      ;; 1 (the fixnum 0 that a store leaves in the cell), but never -1.
+      (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
+             (hops 0) (result -1))
+        (seq
+         (while (= result -1)
+           (if (= obj 0) (setq result 2)
+             (let ((r (nl_sym_redirect obj)))
+               (if (or (= r 0) (= r 3))
+                   (let ((v (nl_ent_w obj 0)))
+                     (setq result (if (= (wf_bytecode_w_unbound_p env v) 1) 2 v)))
+                 (if (and (= r 1) (< hops 100))
+                     (seq (setq obj (nelisp_mirror_lookup_entry_owned
+                                     env (nl_ent_w obj 4)))
+                          (setq hops (+ hops 1)))
+                   ;; vmcore W1e: LOCALIZED reads the selected buffer's cell directly; a void or
+                   ;; unexpected shape takes the general path, which also signals.
+                   (let ((v (if (= r 2) (wf_bytecode_w_local_read env obj) 0)))
+                     (setq result (if (or (= v 0) (= (wf_bytecode_w_unbound_p env v) 1))
+                                      (bf_dynamic_lookup_w env sym 0)
+                                    v))))))))
+         result)))
     ;; GNU store_symval_forwarding (data.c:1470) on the object's storage:
     ;; descriptor 1 is an intfwd (integer check), 2 a boolfwd (t or nil).
     ;; VAL may be a WORD or a 32-byte view (`wf_bytecode_w_view').  Answers
@@ -40098,33 +40118,47 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (or (= (nl_sym_direct_env_p env) 0)
               (/= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0))
           1
-        (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
-               (hops 0) (result -1))
-          (seq
-           (while (= result -1)
-             (if (= obj 0) (setq result 1)
-               (if (if (= (nl_so_p obj) 1)
-                       (= (logand (sar (ptr-read-u64 (- obj 6) 0) 10) 3) 1)
-                     (= (nl_val_tag (nl_ent_w obj 3)) 1))
-                   (setq result 1)
-                 (let ((r (nl_sym_redirect obj)))
-                   (if (and (= r 1) (< hops 100))
-                       (seq (setq obj (nelisp_mirror_lookup_entry_owned
-                                       env (nl_ent_w obj 4)))
-                            (setq hops (+ hops 1)))
-                     (if (= r 0)
-                         (seq (if (= (logand val 1) 0) (wf_dirty) 0)
-                              (nl_ent_set obj 0 val) (setq result 0))
-                       (if (= r 3)
-                           (if (= (wf_bytecode_w_unbound_p env val) 1)
-                               (setq result 1)
-                             (let ((v (nl_sym_fwd_value obj val)))
-                               (if (= v 0) (setq result 2)
-                                 (seq (if (= (logand v 1) 0) (wf_dirty) 0)
-                                      (nl_ent_set obj 0 v) (setq result 0)))))
-                         ;; varaccess: blv cache -- LOCALIZED with a local binding in this buffer
-                         (setq result (if (= r 2) (wf_bytecode_w_local_set env obj val) 1)))))))))
-           result))))
+        ,(if (member (getenv "NELISP_SYMCELL_DISABLE") '("write" "all"))
+             '(nl_sym_set_general_w env sym val)
+           '(if (if (= (logand sym 7) 6)
+                    (let* ((plain (logand (ptr-read-u64 (- sym 6) 0) 3903)))
+                      (if (= plain 4) 1 (= plain 16)))
+                  0)
+                (seq (if (= (logand val 7) 0)
+                         (nl_val_clone_into val (+ sym 10))
+                       (ptr-write-u64 sym 10 val))
+                     ;; Publish before advancing the persistent-store epoch.
+                     (if (= (logand val 1) 0) (wf_dirty) 0)
+                     0)
+              (nl_sym_set_general_w env sym val)))))
+    (defun nl_sym_set_general_w (env sym val)
+      (let* ((obj (nelisp_mirror_lookup_entry_owned env sym))
+             (hops 0) (result -1))
+        (seq
+         (while (= result -1)
+           (if (= obj 0) (setq result 1)
+             (if (if (= (nl_so_p obj) 1)
+                     (= (logand (sar (ptr-read-u64 (- obj 6) 0) 10) 3) 1)
+                   (= (nl_val_tag (nl_ent_w obj 3)) 1))
+                 (setq result 1)
+               (let ((r (nl_sym_redirect obj)))
+                 (if (and (= r 1) (< hops 100))
+                     (seq (setq obj (nelisp_mirror_lookup_entry_owned
+                                     env (nl_ent_w obj 4)))
+                          (setq hops (+ hops 1)))
+                   (if (= r 0)
+                       (seq (if (= (logand val 1) 0) (wf_dirty) 0)
+                            (nl_ent_set obj 0 val) (setq result 0))
+                     (if (= r 3)
+                         (if (= (wf_bytecode_w_unbound_p env val) 1)
+                             (setq result 1)
+                           (let ((v (nl_sym_fwd_value obj val)))
+                             (if (= v 0) (setq result 2)
+                               (seq (if (= (logand v 1) 0) (wf_dirty) 0)
+                                    (nl_ent_set obj 0 v) (setq result 0)))))
+                       ;; varaccess: blv cache -- LOCALIZED with a local binding in this buffer
+                       (setq result (if (= r 2) (wf_bytecode_w_local_set env obj val) 1)))))))))
+         result)))
     ;; lexpre: GNU set_internal PLAINVAL (data.c:1678).  SYM is a symbol
     ;; object WORD (an interned or uninterned symbol) whose redirect is
     ;; PLAINVAL (header bits 8-9 clear) and whose trapped-write field (bits
@@ -64440,27 +64474,27 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     ;; Evaluator lookup helpers expose reusable scratch views. Root/copy
     ;; operands before declaration lookup and keep them across callbacks.
     (defun nl_n3_bind (env frames name value)
-      ;; Doc 216 S6.2: the name (+0) and value (+8) are durable WORDs in one
-      ;; frame, kept across the watcher's callback.
+      ;; Doc 216 S6.2: keep both words rooted across the watcher.
       (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
         (seq
          (nl_val_clone_into name fr)
          (nl_val_clone_into value (+ fr 8))
-         (if (or (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-                 (= (bf_declared_special_p (+ env 0) (heap-read-u64 fr 0)) 1)
-                 (= (nelisp_frame_local_special_p frames (heap-read-u64 fr 0)) 1))
-             ;; A watcher may retarget the original alias. Bind the same
-             ;; canonical name whose pending binding the watcher observed,
-             ;; retaining it in the existing root across the callback.
-             (let ((canonical (nl_pa_binding_name env frames (heap-read-u64 fr 0))))
-               (if (= canonical 0) (setq rc 1)
-                 (seq (nl_val_clone_into canonical fr)
-                      (setq rc (nl_n3_notify env (heap-read-u64 fr 0)
-                                             (heap-read-u64 (+ fr 8) 0) 2))))) 0)
-         (if (= rc 0)
-             (setq rc (nl_n4_bind_declared env frames (heap-read-u64 fr 0)
-                                           (heap-read-u64 (+ fr 8) 0)))
-           (setq rc 0))
+         (if (= (nl_sb_dynamic_p env frames (heap-read-u64 fr 0)) 1)
+             ;; Preserve the original binding kind through resolution.
+             ;; A private cell can lack its owner's special declaration.
+             (let* ((canonical (nl_pa_binding_name env frames (heap-read-u64 fr 0))))
+               (if (/= canonical 0)
+                   (seq
+                    (nl_val_clone_into canonical fr)
+                    (if (= (nl_n3_notify env (heap-read-u64 fr 0)
+                                         (heap-read-u64 (+ fr 8) 0) 2) 0)
+                        (setq rc (nl_n4_bind_declared_mode
+                                  env frames (heap-read-u64 fr 0)
+                                  (heap-read-u64 (+ fr 8) 0) 1))
+                      0))
+                 0))
+           (setq rc (nl_n4_bind_declared env frames (heap-read-u64 fr 0)
+                                         (heap-read-u64 (+ fr 8) 0))))
          (nl_cons_root_finish env mark rc))))
     (defun nl_n3_dynamic_write (env name value operation)
       (let* ((mark (nl_root_mark env)) (fr (nl_root_words env 2)) (rc 0))
@@ -68432,17 +68466,24 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                           (seq (nl_sexp_clone_into value (+ copies 32))
                                (+ copies 32)))))
              (let* ((entry (nelisp_mirror_lookup_entry (+ env 0) copies)))
-               (if (if (= (nl_sb_plain_entry_p entry) 1) 1
-                     (if (= entry 0) 0
-                       (if (= (nl_sym_redirect entry) 2)
-                           (let* ((address (alloc-bytes 8 8))
-                                  (status (nelisp_env_variable_canonicalize
-                                           env frames entry copies address 0)))
-                             (if (= status 0)
-                                 (= (nelisp_symbol_key_equal copies
-                                      (heap-read-u64 address 0)) 1) 0)) 0)))
+               (if (= (nl_sb_plain_entry_p entry) 1)
                    (nl_sb_bind_plain env frames copies saved entry)
-                 -1)))))))
+                 (if (= (nl_sym_redirect entry) 2)
+                     (let* ((address (alloc-bytes 8 8))
+                            (status (nelisp_env_variable_canonicalize
+                                     env frames entry copies address 0)))
+                       (if (/= status 0) -1
+                         (let* ((selected (heap-read-u64 address 0)))
+                           ;; SPECPDL_LET_LOCAL saves the selected buffer's
+                           ;; private cell. It remains the restore target if
+                           ;; the current buffer changes during the binding.
+                           (if (= selected copies)
+                               (nl_sb_bind_plain env frames copies saved entry)
+                             (let* ((local (nelisp_mirror_lookup_entry_owned env selected)))
+                               (if (and (/= local 0) (= (nl_sb_plain_entry_p local) 1))
+                                   (nl_sb_bind_plain env frames selected saved local)
+                                 -1))))))
+                   -1))))))))
     (defun nl_sb_saved_default_match (item name buffer)
       ;; Shared query predicate; a private localized-default save has three slots.
       (if (and (= (nl_val_tag item) 8) (= (vector-len item) 3)
@@ -68538,7 +68579,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                          (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
            (seq (nelisp_cons_construct rec (nelisp_frame_slot_raw_word frame 1) cell)
                 (record-slot-set frame 1 cell)))
-         (if (= (nl_sb_set env sym val) 0)
+         ;; ENTRY already denotes the selected live cell, even for a
+         ;; private buffer-local cell. Keep its identity through the store.
+         (if (if (= entry 0) (= (nl_sb_set env sym val) 0)
+               (= (nl_ent_set entry 0 val) 1))
              (seq (wf_dirty) 0)
            -2))))
     ;; 1 when NAME's dynamic bindings are all shallow (mirror-held): a
@@ -68660,6 +68704,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (nl_sb_restore_one env e)
              (nl_sb_restore_list env (nl_cons_cdr_word names)))))))
     (defun nl_n4_bind_declared (env frames name value)
+      (nl_n4_bind_declared_mode env frames name value 0))
+    (defun nl_n4_bind_declared_mode (env frames name value dynamic)
       (let* ((copies (alloc-bytes 64 8)))
         (seq (nl_sexp_clone_into name copies)
              ;; Doc 226 D5: GNU specbind stores through set_internal, so an
@@ -68676,18 +68722,23 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                                (if (= (nl_val_tag value) 13) 0 1)))))))
                    ;; (wrong-type-argument integerp VALUE).
                    (nl_sym_signal_wta_integerp value)
-                 (nl_n4_bind_declared_1 env frames copies
-                   (if (= (logand value 1) 1) value
-                     (seq (nl_sexp_clone_into value (+ copies 32)) (+ copies 32)))))))))
-    (defun nl_n4_bind_declared_1 (env frames name value)
-      (if (= (nl_sb_dynamic_p env frames name) 1)
-          (if (= (nl_sb_bind env frames name value) 0) 1
-            (let* ((canonical (nl_pa_binding_name env frames name)))
-              (if (= canonical 0) 0
-                (if (= (nl_sb_bind env frames canonical value) 0) 1
-                  (nl_n4_bind_declared_deep env frames canonical value)))))
-        (nl_n4_bind_declared_deep env frames name value)))
-    (defun nl_n4_bind_declared_deep (env frames name value)
+                 (let* ((saved (if (= (logand value 1) 1) value
+                                 (seq (nl_sexp_clone_into value (+ copies 32))
+                                      (+ copies 32)))))
+                   (nl_n4_bind_declared_1 env frames copies saved dynamic)))))))
+    (defun nl_n4_bind_declared_1 (env frames name value dynamic)
+      (if (if (= dynamic 1) 1 (= (nl_sb_dynamic_p env frames name) 1))
+          (let* ((shallow (nl_sb_bind env frames name value)))
+            (if (= shallow 0) 1
+              (if (= shallow -2) 0
+                (let* ((canonical (nl_pa_binding_name env frames name)))
+                  (if (= canonical 0) 0
+                    (let* ((bound (nl_sb_bind env frames canonical value)))
+                      (if (= bound 0) 1
+                        (if (= bound -2) 0
+                          (nl_n4_bind_declared_deep env frames canonical value 1)))))))))
+        (nl_n4_bind_declared_deep env frames name value 0)))
+    (defun nl_n4_bind_declared_deep (env frames name value dynamic)
       (let* ((frame (vector-ref-ptr (nl_record_slot_word frames 0)
                       (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
              (old (nelisp_frame_stack_find_in_frame frame name)))
@@ -68698,7 +68749,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                    (record-slot-set frame 1 names)
                    (nl_bind_frame_fast frames name value) 1))
           (seq (nl_bind_frame_fast frames name value)
-               (bf_mark_declared_special env frames name)))))
+               (if (= dynamic 1)
+                   (bf_mark_frame_dynamic frame name)
+                 (bf_mark_declared_special env frames name))))))
     (defun nl_n4_pop_repeat (env names depth status)
       (let* ((pair (nl_cons_car_word names)) (sym (nl_cons_car_ptr pair))
              (old (nl_cons_cdr_ptr pair)) (value (alloc-bytes 32 8)))
@@ -69632,17 +69685,10 @@ remains the reference. No production hit/fallback counters are emitted."
                                     (- (logand desc 255) 17)
                                   (if (= name-sid 0) ,dispatch-zero ,dispatch))))))))))))))))))
       (defun nelisp_env_lookup_function_raw_w (mirror-ptr unbound-ptr name-ptr _pad)
-        ;; w2subr: `nelisp_env_lookup_function_w' as it was, answering a Subr
-        ;; object as it is.  Only the directcall callers use it; every other
-        ;; reader gets the legacy (builtin NAME) list the object wraps.
-        (let ((entry (nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
-          (if (= entry 0) 2
-            (let ((w (nl_record_slot_word entry 1)))
-              (if (if (= (logand w 1) 1) 0
-                    (if (= (nl_val_tag w) 16)
-                        (if (= (heap-sexp-payload w) (heap-sexp-payload unbound-ptr)) 1 0)
-                      0))
-                  2 w)))))
+        ;; Directcall consumes the live Subr object itself.
+        ,(progn
+           (require 'nelisp-cc-env-lookup-function)
+           (nelisp-cc-env-lookup-function--cell-form)))
       (defun nl_install_subr (mirror_ptr unbound_ptr name_bytes_ptr name_len builtin_sym_slot desc argv)
         ;; Boot-time `nl_install_one' for a directcall primitive: the function
         ;; cell gets a Subr object [header = 20 | DESC << 8][legacy list WORD]
