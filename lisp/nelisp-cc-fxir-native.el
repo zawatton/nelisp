@@ -88,6 +88,10 @@ Native qualification is required before enabling this compiler option.")
   "Function receiving one structured M0 row report when diagnostics is enabled.")
 
 ;; ---- per-function generator state ----
+(defvar nelisp-cc-fxir-native--live-calls nil
+  "Do not lower generic FX calls to fixed GNU byte opcodes.
+Source loader rows must retain the live dispatch of the source FX VM.")
+
 (defvar nelisp-cc-fxir-native--temps nil "Temporaries of the function being generated.")
 (defvar nelisp-cc-fxir-native--callees nil "Remaining callee names, in walk order.")
 (defvar nelisp-cc-fxir-native--maxargc 0 "Largest staged argument count.")
@@ -697,9 +701,11 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
                       (pop nelisp-cc-fxir-native--inline-sites)))
          (args (nelisp-cc-fxir-native--args (nthcdr 3 n)))
          (vals (cdr args))
-         (fast (nelisp-cc-fxir-native--inline-fast name vals (nelisp-cc-fxir-native--cv k)))
-         (nary (and (null fast) (memq name '(+ -)) (>= argc 3)))
-         (gkind (and (null fast)
+         (fixed (not nelisp-cc-fxir-native--live-calls))
+         (fast (and fixed
+                    (nelisp-cc-fxir-native--inline-fast name vals (nelisp-cc-fxir-native--cv k))))
+         (nary (and fixed (null fast) (memq name '(+ -)) (>= argc 3)))
+         (gkind (and fixed (null fast)
                      (cond ((and (eq name 'set) (= argc 2)) 22)
                            ((and (eq name 'symbol-value) (= argc 1)) 21))))
          (drow (and (null fast) (null gkind) (nelisp-cc-fxir-native--direct-row name argc)))
@@ -1744,11 +1750,18 @@ BODY-FACTORY receives the original lowering after frame sizing facts are set."
     (if (null rows)
         '(seq (defun nc_run (id code env out args nparams argw wout) -3))
       (let* ((nelisp-cc-fxir-native--row-index (make-hash-table :test 'eq))
-             (nelisp-cc-fxir-native--direct-ids nil))
+             (nelisp-cc-fxir-native--direct-ids nil)
+             (load-data (rassq 'nelisp-fxir-native-load-data
+                               nelisp-cc-fxir-native--data-files))
+             (load-names (and load-data
+                              (mapcar #'car (nelisp-cc-fxir-native--read-data
+                                             (car load-data) (cdr load-data))))))
         (dolist (r rows)
           (unless (nth 6 r) (puthash (car r) r nelisp-cc-fxir-native--row-index)))
         (let ((defuns (mapcar (lambda (row)
-                                (let ((nelisp-cc-fxir-native--mutant (eq (nth 6 row) :mutant)))
+                                (let ((nelisp-cc-fxir-native--mutant (eq (nth 6 row) :mutant))
+                                      (nelisp-cc-fxir-native--live-calls
+                                       (memq (car row) load-names)))
                                   (nelisp-cc-fxir-native--defun row)))
                               rows)))
           (setq nelisp-cc-fxir-native--wrapper-names
