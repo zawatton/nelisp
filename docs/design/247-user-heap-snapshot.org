@@ -93,8 +93,8 @@ These flags still select init according to GNU startup.
 An automatic cache, if added, is scoped to a validated profile and is
 bypassed for clean startup, changed user/init directory, incompatible
 backend or other unmodeled options. Its fallback is a fresh base startup
-before any user code has run. An explicit stale image produces an error
-with the invalidation reason.
+before any user code has run. An explicitly selected stale image reports the invalidation reason and
+starts from the base image.
 
 The first supported checkpoint is a dedicated preload file or function,
 called headlessly after restoring the base but before normal startup.
@@ -106,6 +106,67 @@ part of init requires an explicit split into a preload part and a per-run
 part plus matching startup state. Capturing a full arbitrary init and
 skipping its evaluation would change GNU semantics, lose startup effects
 and risk executing hooks twice.
+
+* Using the explicit user snapshot
+
+The Linux x86-64 launcher supports headless baking and batch or TTY restore.
+First build the standalone reader and its base.
+
+#+begin_src sh
+make -f mk/emacs-lib.mk bake-runtime-dump
+tools/dev/nemacs-user-snapshot.py bake \
+  --snapshot "$HOME/.cache/nemacs/my-packages" \
+  --init-directory "$HOME/.emacs.d" \
+  --load-path "$HOME/.emacs.d/elpa/example-1.0" \
+  --require org --require example
+bin/nemacs --user-snapshot="$HOME/.cache/nemacs/my-packages" \
+  --init-directory "$HOME/.emacs.d" -nw
+#+end_src
+
+Use repeated =--load-path= and =--require= options in the intended order.
+=--prefer-newer= selects GNU's newer-library policy. Use =--input= for
+additional local files consulted by a package or the init's package-path
+setup, and for directories whose membership controls that setup. The
+preload search path is temporary. Package-owned additions at the front
+of =load-path= survive, and the GNU startup adapter still reads early init
+and init. Preloads that reorder or remove search entries are refused.
+When using a nondefault base, pass =--base= to the baker and
+=--runtime-dump= to the launcher. An alternate executable is selected with
+=--binary= at bake time and =NEMACS_NELISP= at start.
+
+The profile should use the same package files and resolution order as init.
+Preloading changes when =with-eval-after-load= runs for that feature and
+when startup code can observe its definitions. Package initializers can also
+observe site settings or an init variable set before their normal first load.
+Review and compare the profile before using it. Leave session initialization,
+libraries whose early availability changes init, and environment-dependent
+initializers in ordinary init. Use the explicit init directory at startup.
+The snapshot bypasses unmodeled startup modes such as an alternate user,
+daemon and graphical startup. GNU flags such as =-q=, =-Q= and =--batch=
+keep their usual control over init.
+
+The baker refuses visiting, modified or indirect buffers, changed live
+display state, new timers, subprocesses, network endpoints, threads, file
+watches, modules, unmanaged foreign handles and unexpected open descriptors.
+The base editor's inherited show-paren idle timer is removed and scheduled
+again on restore. The original base scratch and frame remain available for
+normal startup; the baker removes build messages. The cold driver restores
+live environment and argument state and already discards managed FFI handles
+and function addresses before reopening them on demand. Library declarations
+through that registry can survive. Baked Lisp hooks survive and
+=after-pdump-load-hook= runs once before normal startup.
+
+The manifest stores an ordered preload recipe, the exact executable and
+base digest, init and early-init variants, observed loaded-file digests and
+local lookup candidates, and environment reads visible through =getenv=.
+Declared inputs cover ambient reads outside the Lisp loader. Profiles must
+use trusted local Lisp. The baker cannot identify opaque pointers copied by
+arbitrary Lisp or infer undeclared data read through lower-level I/O.
+Use a private directory. Updating the manifest publishes a complete immutable
+heap; old heap files can be removed when no launch can still be validating
+them. The selected heap and executable are opened before handing off to the
+cold loader. A stale, missing or corrupt user heap produces a diagnostic and
+falls back to the normal base startup.
 
 * Invalidation and publication
 
