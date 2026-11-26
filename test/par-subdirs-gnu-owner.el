@@ -8,7 +8,10 @@
   (unwind-protect
       (progn
         (make-directory "a/b" t)
-        (dolist (mode '(first repeat replaced-predicate))
+        ;; replaced-predicate (fset of string-match) is omitted: native-compiled GNU
+        ;; calls the primitive directly and ignores the redefinition, bytecode GNU
+        ;; follows it, so the expected transcript depends on how GNU was built.
+        (dolist (mode '(first repeat))
           (let ((load-path (list root "/keep")))
             (when (eq mode 'replaced-predicate)
               (setq normal-top-level-add-subdirs-inode-list nil)
