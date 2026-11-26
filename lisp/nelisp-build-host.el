@@ -143,40 +143,6 @@ any `-l FILE'.")
 )
 
 ;; ---------------------------------------------------------------------------
-;; 5. add-to-list — idempotent list prepend.
-;; ---------------------------------------------------------------------------
-
-(unless (fboundp 'add-to-list)   ; noqa: NeLisp builtin-compat
-  ;; Gated, because this file's own job is to FILL A GAP: "pure-elisp shims
-  ;; that fill the gap between the nelisp standalone runtime and the Emacs
-  ;; batch-mode functions" (top of this file).  A gap-filler that defines
-  ;; unconditionally does not fill a gap, it replaces whatever was there --
-  ;; on a host Emacs that is Emacs's own definition.  `nelisp--cli-batch-
-  ;; ensure-host', which loads this file, already gates its own fallback
-  ;; stub the same way; this file did not.  (2026-08-19, found by
-  ;; `make emacs-compat'.)
-  (defun add-to-list (list-var element &optional append compare-fn)
-    "Add ELEMENT to the value of LIST-VAR if not already present.
-
-  APPEND non-nil means append rather than prepend.  COMPARE-FN
-  defaults to `equal'.  Returns the (possibly updated) list value."
-    (let* ((lst     (symbol-value list-var))
-           (cmp-fn  (or compare-fn 'equal))
-           (present (let ((cur lst))
-                      (catch 'hit
-                        (while cur
-                          (when (funcall cmp-fn (car cur) element)
-                            (throw 'hit t))
-                          (setq cur (cdr cur)))
-                        nil))))
-      (unless present
-        (if append
-            (set list-var (append lst (list element)))
-          (set list-var (cons element lst))))
-      (symbol-value list-var)))
-)
-
-;; ---------------------------------------------------------------------------
 ;; 6. make-directory — forward to nl-make-directory primitive.
 ;; ---------------------------------------------------------------------------
 

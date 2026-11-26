@@ -55,6 +55,10 @@
 
 (require 'emacs-window)
 
+;; GNU window.c initializes this before loading window.el.
+(defvar window-persistent-parameters (list (cons 'clone-of t))
+  "Alist of window parameters saved by window configurations and states.")
+
 (defun emacs-window-builtins--function-cell-live-p (symbol)
   "Return non-nil when SYMBOL has a usable function cell."
   (and (fboundp symbol)

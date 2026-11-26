@@ -46,7 +46,6 @@ final `.el' suffix with `.repl'.")
     "emacs-lisp/emacs-lisp/subr-x.el"
     ;; Standalone runtime-speed repairs.  Their prerequisites
     ;; are available by the `emacs-string.el' insertion anchor.
-    "emacs-parity-addtolist.el"
     "seq.el"
     "map.el"
     "json.el"
@@ -495,7 +494,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     "emacs-parity-regex-charclass.el"
     "emacs-parity-makunbound.el"
     "emacs-parity-skk.el"
-    "emacs-parity-subdirs.el"
     ;; GNU C-core coverage (tools/ai/c-core-progress.org): every
     ;; src/emacs-cc-*.el unit, in name order.
     ,@(nelisp-bootstrap--c-core-unit-files)
@@ -1780,6 +1778,18 @@ strings or comments, and calls with any non-literal argument, are kept."
     (cond
      ((assoc rel nelisp-bootstrap--early-gnu-definitions)
       (insert (nelisp-bootstrap--early-gnu-source file rel)))
+     ((equal rel "vendor/emacs-lisp/startup.el")
+      (let* ((name 'normal-top-level-add-subdirs-to-load-path)
+             (source (nelisp-vendor-source-forms rel (list name) file))
+             (fixtures (nelisp-prelude-bytecode-read-parity-fixtures
+                        (expand-file-name "test/nelisp-prelude-bytecode-parity-fixtures.tsv"
+                                          nelisp-bootstrap-repo-root)))
+             (compiled (nelisp-prelude-bytecode-transform source rel fixtures)))
+        (insert-file-contents file)
+        (unless (search-forward (string-trim-right source) nil t)
+          (error "GNU startup walk source is missing from %s" file))
+        (replace-match (string-trim-right (car compiled)) t t)
+        (goto-char (point-max))))
      ((equal rel "vendor/emacs-lisp/progmodes/elisp-mode.el")
       ;; Preserve the file loader's macroexpansion boundary.  Concatenating
       ;; this source eagerly expands flymake-log and loads Flymake at boot.

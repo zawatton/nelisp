@@ -187,27 +187,6 @@ Accepts the single-binding `(SYM VALUE)' form and the list-of-bindings form."
     (nemacs--if-let-expand (nemacs--if-let-normalize bindings)
                            (cons 'progn body) nil)))
 
-;; `add-to-list' -- pervasive in real init.el (load-path, auto-mode-alist,
-;; package-archives, ...).  Its absence breaks almost any config, so it is the
-;; single highest-value init-parity helper.
-(unless (fboundp 'add-to-list)
-  (defun add-to-list (list-var element &optional append compare-fn)
-    "Add ELEMENT to the list in symbol LIST-VAR if not already present.
-Prepends by default, or appends when APPEND is non-nil.  Membership is tested
-with COMPARE-FN (default `equal').  Returns the new list value."
-    (let ((lst (if (boundp list-var) (symbol-value list-var) nil))
-          (cmp (or compare-fn #'equal))
-          (found nil))
-      (let ((l lst))
-        (while (and l (not found))
-          (when (funcall cmp element (car l)) (setq found t))
-          (setq l (cdr l))))
-      (if found
-          lst
-        (let ((new (if append (append lst (list element)) (cons element lst))))
-          (set list-var new)
-          new)))))
-
 (unless (fboundp 'ignore)
   (defun ignore (&rest _) "Do nothing and return nil." nil))
 (unless (fboundp 'always)

@@ -87,9 +87,6 @@ libffi primitive is available).")
   (defvar emacs-pid 0))
 (defvar load-in-progress t)
 
-;; Minor mode book-keeping — `push'ed by `server-start' when it flips
-;; `server-mode' on.
-(defvar global-minor-modes nil)
 ;; server-start builds the listener :coding from this C-level scalar;
 ;; on the standalone reader an unbound variable reference hard-aborts
 ;; the whole form (it does not signal through `condition-case'), so

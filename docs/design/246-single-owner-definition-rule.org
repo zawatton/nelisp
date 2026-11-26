@@ -70,7 +70,6 @@ nested definitions in addition to the 45 previously reported.
 | =shell-command= | The shell bridge routes synchronous and asynchronous output into NeLisp process buffers and frontends. |
 | =shell-command-on-region= | The shell bridge supplies region input, replacement and output routing for the NeLisp process and GUI backends. |
 | =newline= | The shared editing dispatch uses this entry point for both native buffers and explicit editor-adapter buffers. The latter need adapter undo and font-lock tracking. |
-| =normal-top-level-add-subdirs-to-load-path= | The bounded local directory walk protects init replay time and delegates to the saved GNU implementation whenever file operations can dispatch. |
 | =called-interactively-p= | The command loop publishes an interactive-call flag. GNU inspects the evaluator's interactive call frames. |
 | =make-syntax-table= | The editor syntax bridge supplies the constructor for its char-table representation and its bootstrap standard table. |
 | =remove-from-invisibility-spec= | The editor bridge updates the invisibility slot in the explicit editor-adapter buffer as well as in the native buffer. |
@@ -79,9 +78,6 @@ nested definitions in addition to the 45 previously reported.
 | =process-put= | The process-kind dispatch updates properties for adapter processes and Lisp buffer channels. |
 | =process-get= | The process-kind dispatch reads properties for adapter processes and Lisp buffer channels. |
 | =start-process= | The process bridge dispatches through NeLisp's process adapter and buffer ownership rules. |
-| =locate-library= | The live loader uses its own source and artifact resolution, including suffix and file-name-handler decisions. It is on the init and require paths. |
-| =define-symbol-prop= | The shim avoids changing =current-load-list= in source-image replay, where the structured property-bookkeeping entry has been replayed as a bare symbol. |
-| =add-to-list= | The membership cache keeps the large load-path and package activation lists from quadratic init replay cost. |
 | =event-basic-type= | The keymap event layer supplies bases for frontend event symbols without GNU's C event reader interning their symbol metadata. |
 | =event-modifiers= | The keymap event layer supplies modifier parsing in place of GNU's C event-symbol parser. |
 | =define-key-after= | The keymap bridge handles NeLisp keymap representations and the empty-menu path exercised by =woman.el=. |
@@ -107,6 +103,15 @@ The project owner reviewed the Round 4 runtime exceptions and classified them.
   definitions work: =replace-buffer-contents=, =subregexp-context-p=,
   =message=, =calendar=, =cvs-dired-noselect=,
   =treesit-install-language-grammar=, =treesit-font-lock-rules=.
+
+** GNU providers for startup performance shims
+
+| GNU name | GNU definition | NeLisp substrate |
+|----------+----------------+------------------|
+| =add-to-list= | =subr.el= | =member= traverses the live list and compares current string contents. |
+| =define-symbol-prop= | =subr.el= | =current-load-list= holds property definitions for the load history. |
+| =normal-top-level-add-subdirs-to-load-path= | =startup.el= | =directory-files= and the file metadata primitives supply the filesystem view. |
+| =locate-library= | =subr.el= | =get-load-suffixes= and =locate-file= supply suffix expansion and file lookup. |
 
 ** Round 5 follow-up on =message=
 

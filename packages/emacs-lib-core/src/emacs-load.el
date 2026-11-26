@@ -4375,6 +4375,10 @@ after-load forms, as GNU `load' does (lread.c build_load_history)."
               (setq load-file-name resolved)
               (unwind-protect
                   (progn
+                    ;; GNU Lisp can push straight onto current-load-list.
+                    ;; Select this file before the first form can do so.
+                    (when (fboundp 'nelisp--lh-select)
+                      (nelisp--lh-select resolved))
                     (funcall loader source)
                     t)
                 (setq load-file-name prior-lfn))))))))))
@@ -4900,20 +4904,6 @@ access modes."
                               (if (memq 'writable predicate) 2 0)
                               (if (memq 'readable predicate) 4 0))))
     (locate-file-internal filename path suffixes predicate))
-
-  (defun emacs-load--locate-library
-      (library &optional nosuffix path interactive-call)
-    "Locate LIBRARY with GNU `locate-library' suffix and PATH semantics."
-    (let ((file (locate-file
-                 library (or path (and (boundp 'load-path) load-path))
-                 (if nosuffix load-file-rep-suffixes
-                   (emacs-load--candidate-suffixes library nil nil)))))
-      (when interactive-call
-        (if file (message "Library is file %s" (abbreviate-file-name file))
-          (message "No library %s in search path" library)))
-      file))
-
-  (defalias 'locate-library #'emacs-load--locate-library)
 
   (defun load (file &optional noerror nomessage nosuffix must-suffix)
     "Resolve FILE through `load-path' and execute it."
