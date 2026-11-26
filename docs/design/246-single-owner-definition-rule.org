@@ -129,3 +129,12 @@ echo-area state and batch stderr.  Editor bridges use that entry point.
 This identifies where NeLisp must supply the C primitive's behaviour
 and leaves the exception for owner review.  Its output, return value
 and clear and inhibit behaviour remain subject to GNU parity.
+
+* Round 5 owner decision on =message= (2026-11-26)
+
+The project owner approved =message= as a substrate boundary, the same class
+as the other approved names: GNU 31.1 implements it as the C subr =Fmessage=
+(src/editfns.c) feeding =message3= and the echo-area/redisplay machinery in
+src/xdisp.c, so NeLisp supplies it from its own runtime.  The approved set is
+now 17 names (the 16 above plus =message=); the 4 performance shims still have
+to return to GNU after the init speed gate.
