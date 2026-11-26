@@ -41365,15 +41365,19 @@ bytes are written into a fresh 8-byte buffer instead."
               (t (setq at (+ at 1))))))
          ok)))
     ;; Check a bounded source window against the external UTF-8 rules used
-    ;; by string-as-multibyte.  ASCII needs one load per byte.
+    ;; by string-as-multibyte. Skip eight ASCII bytes at a time. A group
+    ;; containing a non-ASCII byte uses the existing scalar validation.
     (defun bf_read_one_external_utf8_p (src pos end)
       (let* ((data (nl_bi_strptr src)) (width 1))
         (seq
          (while (and (< pos end) (> width 0))
-           (seq
-            (setq width (if (< (heap-read-u8 data pos) 128)
-                            1 (bf_external_sequence_width src pos end)))
-            (setq pos (+ pos width))))
+           (if (and (<= (+ pos 8) end)
+                    (= (logand (ptr-read-u64 data pos) -9187201950435737472) 0))
+               (setq pos (+ pos 8))
+             (seq
+              (setq width (if (< (heap-read-u8 data pos) 128)
+                              1 (bf_external_sequence_width src pos end)))
+              (setq pos (+ pos width)))))
          (> width 0))))
     (defun bf_load_external_utf8_p_w (args _pad)
       (let* ((src (wf_arg_ptr args 0)))
