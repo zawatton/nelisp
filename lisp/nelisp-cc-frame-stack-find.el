@@ -310,23 +310,22 @@
                 saved 0)) 0))
     (defun nl_capture_filter_contains (filter-ptr name-ptr)
       (let* ((tail filter-ptr) (hit 0)
-             (symbol-name (if (= (logand name-ptr 7) 6)
-                              (logand (ptr-read-u8 (- name-ptr 6) 0) 63) 0)))
+             (name-kind (if (= (logand name-ptr 7) 6)
+                            (logand (ptr-read-u8 (- name-ptr 6) 0) 63) 0))
+             (canonical-name (or (= name-kind 4) (= name-kind 16))))
         (seq
-         ;; The normal filter is a list of direct conses containing symbol
-         ;; objects. Canonical symbols compare by identity. At a legacy entry
-         ;; or a specpdl carrier, retain the polymorphic comparison below.
+         ;; Skip immediate run markers. Two symbol objects compare by
+         ;; identity. Legacy names and carriers use the checked walk below.
          (while (if (= hit 0) (= (logand tail 7) 2) 0)
-           (let* ((item (ptr-read-u64 (- tail 2) 0))
-                  (kind (if (= (logand item 7) 6)
-                            (logand (ptr-read-u8 (- item 6) 0) 63) 0)))
-             (if (if (if (= kind 4) 1 (= kind 16))
-                     (if (= symbol-name 4) 1 (= symbol-name 16))
-                   (= (logand item 1) 1))
-                 (seq (if (if (= (logand item 1) 1) 0 (= item name-ptr))
-                          (setq hit 1) 0)
-                      (setq tail (ptr-read-u64 tail 6)))
-               (setq hit 2))))
+           (let* ((item (ptr-read-u64 (- tail 2) 0)))
+             (if (= (logand item 1) 1)
+                 (setq tail (ptr-read-u64 tail 6))
+               (if (if (and (= canonical-name 1) (= (logand item 7) 6))
+                       (let* ((kind (logand (ptr-read-u8 (- item 6) 0) 63)))
+                         (or (= kind 4) (= kind 16)))
+                     0)
+                   (if (= item name-ptr) (setq hit 1) (setq tail (ptr-read-u64 tail 6)))
+                 (setq hit 2)))))
          (if (= hit 1) 1
            (if (= (logand tail 1) 1) 0
              (if (= (nl_val_tag tail) 7)

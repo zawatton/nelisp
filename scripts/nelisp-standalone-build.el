@@ -33712,6 +33712,15 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= a0 b0) 1
         (let* ((a a0) (b b0) (r 2))
           (seq
+           ;; Most captured marker and formal lists use direct conses.
+           ;; Walk their words in place, retaining the mixed-view check below.
+           (while (and (= r 2) (= (logand a 7) 2) (= (logand b 7) 2))
+             (let* ((x (ptr-read-u64 a -2)) (y (ptr-read-u64 b -2)))
+               (if (or (= x y) (= (wf_bytecode_w_eqw x y) 1))
+                   (seq (setq a (ptr-read-u64 a 6))
+                        (setq b (ptr-read-u64 b 6)))
+                 (setq r 0))))
+           (if (and (= r 2) (= a 3) (= b 3)) (setq r 1) 0)
            (while (= r 2)
              (let* ((ae (if (= a 0) 1 (if (= (nl_val_tag a) 0) 1 0)))
                     (be (if (= b 0) 1 (if (= (nl_val_tag b) 0) 1 0))))
@@ -44779,15 +44788,14 @@ never has one."
               (if (/= (logand hdr 63) 20) -3
                 (let* ((base (+ stk (* (- sp argc) 8)))
                        (lo (logand (shr hdr 8) 255))
-                       (min (logand (shr hdr 16) 255))
-                       (max (logand (shr hdr 24) 255))
                        (st 2))
                   (seq
                    ;; Keep the call boundary's poll even when it has no direct arm.
                    (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
-                   (if (if (if (= lo 0) 1 (= lo 17)) 0
-                         (if (< argc min) 0
-                           (if (> argc 255) 0 (if (= max 127) 1 (<= argc max)))))
+                   (if (if (or (= lo 0) (= lo 17)) 0
+                         (if (or (> argc 255) (< argc (logand (shr hdr 16) 255))) 0
+                           (let* ((max (logand (shr hdr 24) 255)))
+                             (or (= max 127) (<= argc max)))))
                        (setq st (nl_directcall_invoke_id fn operator base argc env resw (- lo 17)))
                      0)
                    (if (/= st 2) st
@@ -44809,12 +44817,17 @@ never has one."
           (if (= p 0) -3
             (m5_fx_subr_prim2_desc env p (+ stk (* (- sp argc) 8)) argc resw))))
       (defun m5_fx_subr_prim2_desc (env p base argc resw)
-        (let* ((desc (logior (logand p 63) (shl (shr p 6) 8))))
-          (if (= (nl_subr_arity_bad desc argc) 1) -3
-            (let* ((id (nl_subr_prim desc argc)))
-              (if (< id 15) -3
-                (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
-                     (nl_eic_prim2_run id base argc resw env)))))))
+        ;; Test the entry and both arity ranges in the immutable packed
+        ;; descriptor. A Subr can carry arity metadata with no prim2 entry.
+        (let* ((id (logand p 63)))
+          (if (or (< id 15) (> argc 255)) -3
+            (if (or (< argc (logand (shr p 6) 15))
+                    (< argc (logand (shr p 14) 255))) -3
+              (let* ((pmax (logand (shr p 10) 15))
+                     (max (logand (shr p 22) 255)))
+                (if (or (and (/= pmax 15) (> argc pmax)) (> argc max)) -3
+                  (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+                       (nl_eic_prim2_run id base argc resw env))))))))
       ;; callpath2: GNU funcall_general (eval.c:3105-3140) for a definition DEF
       ;; that is no primitive id: a Subr object through its argument-array entry
       ;; (`m5_fx_subr_argv', GNU funcall_subr), a byte-code function through the
@@ -64013,7 +64026,23 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
         (seq
          (nl_clx_write_nil nil_slot)
          (nl_env_capture_lexical_with_filter env nil_slot 0 out))))
+    (defun nl_clx_empty_bindings_p (backing i)
+      (if (< i 0) 1
+        (let* ((frame (nl_vector_slot_word backing i)))
+          (if (/= (nelisp_frame_slot_raw_word frame 0) 3) 0
+            (if (= (nelisp_frame_scope_boundary_p frame) 1) 1
+              (nl_clx_empty_bindings_p backing (- i 1)))))))
     (defun nl_env_capture_lexical_filtered_w (env lambda-args _pad _pad2)
+      (let* ((frames (+ env 32))
+             (backing (nl_record_slot_word frames 0))
+             (i (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
+        (if (< i 0) 3
+          ;; A filter only selects binding pairs. With no pairs in scope,
+          ;; keep the same declaration walk without reading the lambda body.
+          (if (= (nl_clx_empty_bindings_p backing i) 1)
+              (nl_capture_walk_frames_rooted_w backing i 0 3 env)
+            (nl_env_capture_filter_body_w env lambda-args backing i)))))
+    (defun nl_env_capture_filter_body_w (env lambda-args backing i)
       ;; Doc 216 S6.2: ROOTS is a native 4-slot vector (acc, pair, filter,
       ;; backing) whose WORD sits in one WORD root.
       (let* ((mark (nl_root_mark env)) (root (nl_root_word env))
@@ -64029,15 +64058,12 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                          (let* ((word (nl_clx_build_symbol_filter_w lambda-args roots)))
                            (if (= (nl_val_tag word) 7) (nl_fvcache_store lambda-args word) 0)
                            word)
-                       cached))))
-                (frames (+ env 32))
-                (backing (nl_record_slot_word frames 0))
-                (depth (sar (nelisp_frame_slot_raw_word frames 1) 2)))
+                       cached)))))
            ;; Reuse the same roots for filtering and capture. Keep the final
            ;; filter alive when capture replaces its accumulator in slot 0.
            (nl_capture_root_set_word roots 2 filter)
            (nl_capture_root_set_word roots 3 backing)
-           (let* ((word (nl_capture_walk_frames_w backing (- depth 1) 3
+           (let* ((word (nl_capture_walk_frames_w backing i 3
                          (if (= (nl_n4_reflection_filter_p filter) 1) 0 1) filter roots)))
              (nl_root_release env mark)
              word)))))
@@ -70253,10 +70279,11 @@ remains the reference. No production hit/fallback counters are emitted."
         ;; takes the string pool lock, charges the next GC poll and returns
         ;; without polling or running Lisp. Any case requiring the property
         ;; copier declines to the ordinary call. Bytecode closure allocation
-        ;; has the same no-safepoint contract. The other allocating ids
-        ;; keep the record.
+        ;; and the direct vector, make-vector and list constructors also have
+        ;; no safepoint or Lisp callback. The constructors validate operands
+        ;; before the first allocation and publish into the caller's roots.
         (if (/= (logand (heap-read-u64 env 112) 3145728) 0) 2
-           (if (if (or (< id 112) (= id 116) (= id 122))
+           (if (if (or (<= id 114) (= id 116) (= id 122))
                    (if (= (heap-read-u64 env 176) 0) 0
                      (< (heap-read-u64 (heap-read-u64 env 176) 0) 32768))
                  0)
