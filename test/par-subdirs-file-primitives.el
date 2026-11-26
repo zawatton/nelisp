@@ -1,0 +1,62 @@
+;;; par-subdirs-file-primitives.el --- directory enumeration and live metadata -*- lexical-binding: t; -*-
+
+(let* ((root (make-temp-file "par-subdirs-files-" t))
+       (default-directory (file-name-as-directory root))
+       (file-name-handler-alist nil)
+       (case-fold-search t)
+       (print-escape-newlines t))
+  (unwind-protect
+      (progn
+        (dolist (name '("z-last" "alpha" "Alpha" "éclair" "été" "à" "z-line\nbreak"))
+          (write-region "x" nil (concat default-directory name) nil 'silent))
+        (make-directory (concat default-directory "z-dir"))
+        (make-symbolic-link "z-dir" (concat default-directory "z-symlink"))
+        (add-name-to-file (concat default-directory "alpha")
+                          (concat default-directory "alpha-hard"))
+        (string-match "\\(b\\)" "abc")
+        (let* ((regexp "\\`[Az]")
+               (sorted (directory-files "." nil regexp))
+               (unsorted (directory-files "." nil regexp t))
+               (first (directory-files "." nil regexp t 2))
+               (full (directory-files "." t regexp nil))
+               (saved-data (match-data)))
+          (prin1 (list 'directory-files sorted
+                       (equal sorted (sort (copy-sequence unsorted) #'string-lessp))
+                       (equal first (nthcdr (- (length unsorted) 2) unsorted))
+                       (equal full (mapcar (lambda (name)
+                                             (concat default-directory name))
+                                           sorted))
+                       saved-data))
+          (terpri))
+        (prin1 (list 'mixed-names (directory-files "." nil "\\`[^.]")))
+        (terpri)
+        (let ((lessp (symbol-function 'string-lessp)))
+          (unwind-protect
+              (progn
+                (fset 'string-lessp (lambda (&rest _) (error "called public comparator")))
+                (prin1 (list 'directory-sort-calls-comparator
+                             (condition-case err
+                                 (directory-files "." nil "\\`[Az]")
+                               (error (car err)))))
+                (terpri))
+            (fset 'string-lessp lessp)))
+        (let* ((original (file-attributes "alpha" 'integer))
+               (hard (file-attributes "alpha-hard" 'integer))
+               (link (file-attributes "z-symlink" 'integer)))
+          (prin1 (list 'file-identifiers
+                       (equal (file-attribute-file-identifier original)
+                              (file-attribute-file-identifier hard))
+                       (equal (file-attribute-device-number original)
+                              (file-attribute-device-number link))
+                       (file-attribute-type link)
+                       (file-directory-p "z-symlink")
+                       (eq (file-attribute-type (file-attributes "z-symlink/")) t)))
+          (terpri))
+        (let ((before (file-exists-p "z-dir/.nosearch")))
+          (write-region "" nil (concat default-directory "z-dir/.nosearch") nil 'silent)
+          (let ((present (file-exists-p "z-dir/.nosearch")))
+            (delete-file "z-dir/.nosearch")
+            (prin1 (list 'live-nosearch before present
+                         (file-exists-p "z-dir/.nosearch")))
+            (terpri))))
+    (delete-directory root t)))

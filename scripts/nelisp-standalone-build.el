@@ -22061,12 +22061,13 @@ eval applyfn.")
     (defun wf_memq_w (args _pad)
       (wf_memq_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
     (defun wf_member_walk_w (elt list _pad)
-      ;; Walk the live cons words once.  For flat strings, reject a different
-      ;; length or final eight bytes before calling the full equal comparator.
-      ;; All bytes are read from the current strings, including mutable ones.
+      ;; Walk the live cons words once. Reject unequal immediate fixnum cars
+      ;; without descending into the conses. Flat strings also have a cheap
+      ;; rejection using their live length and final eight bytes.
       (let* ((tail list) (checkpoint list) (span 2) (left 2)
              (result 0) (running 1)
              (tag (nl_val_tag elt))
+             (first (if (= tag 7) (nl_cons_car_word elt) 0))
              (length (if (or (= tag 5) (= tag 14)) (m5_strlen elt) 0))
              (offset (- length 8))
              (last (if (>= offset 0) (heap-read-u64 (nl_bi_strptr elt) offset) 0)))
@@ -22080,11 +22081,16 @@ eval applyfn.")
               (t
                (let* ((cell (heap-sexp-payload tail))
                       (item (heap-read-u64 cell 0))
-                      (compare (if (and (>= offset 0) (= (logand item 7) 4))
-                                   (and (= (nl_word_length item) length)
-                                        (= (heap-read-u64 (heap-read-u64 (- item 4) 24) offset)
-                                           last))
-                                 1)))
+                      (compare
+                       (cond
+                        ((and (= (logand first 3) 1) (= (logand item 7) 2))
+                         (let* ((other (ptr-read-u64 item -2)))
+                           (or (/= (logand other 3) 1) (= first other))))
+                        ((and (>= offset 0) (= (logand item 7) 4))
+                         (and (= (nl_word_length item) length)
+                              (= (heap-read-u64 (heap-read-u64 (- item 4) 24) offset)
+                                 last)))
+                        (t 1))))
                  (if (and compare (= (wf_key_eqn elt item) 1))
                      (seq (setq result tail) (setq running 0))
                    (seq
@@ -32289,7 +32295,7 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; ---- m5_string_search: native substring search (byte compare, no
     ;; per-position allocation).  Backs `nelisp--string-search'; replaces the
     ;; interpreted O(n*m)-with-`substring'-allocation scans that dominate the
-    ;; lock-file text parser.  Returns the 0-based index or -1 (-> nil).
+    ;; lock-file text parser. Returns the 0-based index or a negative miss.
     ;; Doc 238 A1: HDATA/NDATA are raw data pointers resolved once per search
     ;; (nothing allocates in the loop), not a per-byte `nl_bi_strptr' on a view.
     (defun m5_strmatch_at (hdata hpos ndata npos nlen)
@@ -32300,17 +32306,33 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun m5_string_search (hay needle start)
       (let* ((hlen (m5_strlen hay))
              (nlen (m5_strlen needle))
-             (hdata (nl_bi_strptr hay))
-             (ndata (nl_bi_strptr needle))
-             (i start)
-             (found -1))
-        (while (= found -1)
-          (if (> (+ i nlen) hlen)
-              (setq found -2)
-            (if (= (m5_strmatch_at hdata i ndata 0 nlen) 1)
-                (setq found i)
-              (setq i (+ i 1)))))
-        found))
+             (end (- hlen nlen)))
+        (if (or (< start 0) (> start end)) -2
+          (if (= nlen 0) start
+            (let* ((hdata (nl_bi_strptr hay))
+                   (ndata (nl_bi_strptr needle))
+                   (first (ptr-read-u8 ndata 0))
+                   (spread (* first 72340172838076673)) ; 0x0101010101010101
+                   (i start)
+                   (found -2))
+              (seq
+               (while (and (<= i end) (< found 0))
+                 ;; A word can be skipped if XOR with the repeated first
+                 ;; byte leaves no zero byte. Load only within the candidate
+                 ;; range, and check bytes individually in a possible hit.
+                 (if (and (<= (+ i 7) end)
+                          (let* ((x (logxor (ptr-read-u64 hdata i) spread)))
+                            (= (logand (logand (- x 72340172838076673)
+                                               (logxor x -1))
+                                       -9187201950435737472) ; 0x8080808080808080
+                               0)))
+                     (setq i (+ i 8))
+                   (if (and (= (ptr-read-u8 hdata i) first)
+                            (or (= nlen 1)
+                                (= (m5_strmatch_at hdata i ndata 1 nlen) 1)))
+                       (setq found i)
+                     (setq i (+ i 1)))))
+               found))))))
     ;; ---- m5_json: native JSON encoder (mirrors nelix-cli--json-normalize +
     ;; --json-encode in one native pass).  Output rules: plist(keyword car,even
     ;; len)->object, alist->object, proper list->array, dotted->{car,cdr},
@@ -34763,9 +34785,9 @@ bytes are written into a fresh 8-byte buffer instead."
       (let* ((pa (nl_bi_strptr a)) (pb (nl_bi_strptr b)) (ok 1))
         (seq
          (while (if (<= (+ i 8) n) (= ok 1) 0)
-           (if (= (heap-read-u64 pa i) (heap-read-u64 pb i)) (setq i (+ i 8)) (setq ok 0)))
+           (if (= (ptr-read-u64 pa i) (ptr-read-u64 pb i)) (setq i (+ i 8)) (setq ok 0)))
          (while (if (< i n) (= ok 1) 0)
-           (if (= (heap-read-u8 pa i) (heap-read-u8 pb i)) (setq i (+ i 1)) (setq ok 0)))
+           (if (= (ptr-read-u8 pa i) (ptr-read-u8 pb i)) (setq i (+ i 1)) (setq ok 0)))
          ok)))
     ;; Doc 243: byte lengths first (a header read); `m5_length' counts the
     ;; characters of a multibyte string.  Both checks are pure and both must

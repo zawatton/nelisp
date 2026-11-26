@@ -1,0 +1,5 @@
+(directory-files ("Alpha" "z-dir" "z-last" "z-line\nbreak" "z-symlink") t t t (1 2 1 2))
+(mixed-names ("Alpha" "alpha" "alpha-hard" "z-dir" "z-last" "z-line\nbreak" "z-symlink" "à" "éclair" "été"))
+(directory-sort-calls-comparator error)
+(file-identifiers t t "z-dir" t t)
+(live-nosearch nil t nil)

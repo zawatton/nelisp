@@ -1617,12 +1617,19 @@ Use tabs before spaces when `indent-tabs-mode' is non-nil, like GNU
 (when (files--install-fallback-function-p 'file-directory-p)
   (defun file-directory-p (filename)
     "Return non-nil if FILENAME names a directory, following symlinks."
-    (let* ((path (files--expanded-directory-file-name filename))
+    (let* ((stat-field (and (eq system-type 'gnu/linux)
+                            (fboundp 'nelisp--syscall-stat-field)))
+           ;; A trailing slash on Linux either resolves to a directory or
+           ;; makes stat fail. The local predicate needs only that distinction;
+           ;; handlers still receive the GNU directory-file-name spelling.
+           (path (if (and stat-field (null file-name-handler-alist))
+                     (expand-file-name filename)
+                   (files--expanded-directory-file-name filename)))
            (handler (and file-name-handler-alist
                          (find-file-name-handler path 'file-directory-p))))
       (cond
        (handler (funcall handler 'file-directory-p path))
-       ((and (eq system-type 'gnu/linux) (fboundp 'nelisp--syscall-stat-field))
+       (stat-field
         (= (logand (nelisp--syscall-stat-field path 24) #o170000) #o040000))
        (files--native-file-directory-p
         (funcall files--native-file-directory-p path))

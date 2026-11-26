@@ -11,7 +11,18 @@
     (defun m5_string_order_words (a b)
       ;; Public native entry for sort: checked string WORDs, negative/zero/
       ;; positive order, GNU string-lessp semantics (no raw-byte promotion).
-      (m5_string_compare_range a 0 (m5_length a) b 0 (m5_length b) 0))
+      (let* ((pa (nl_bi_strptr a)) (pb (nl_bi_strptr b))
+             (la (m5_strlen a)) (lb (m5_strlen b))
+             (end (if (< la lb) la lb)) (i 0) (ca 0) (cb 0))
+        (seq
+         (while (and (< i end) (= ca cb) (< ca 128))
+           (seq
+            (setq ca (ptr-read-u8 pa i))
+            (setq cb (ptr-read-u8 pb i))
+            (setq i (+ i 1))))
+         (if (and (>= ca 128) (>= cb 128))
+             (m5_string_compare_range a 0 (m5_length a) b 0 (m5_length b) 0)
+           (if (/= ca cb) (- ca cb) (- la lb))))))
     (defun m5_string_compare_range (a sa ea b sb eb flags)
       ;; Signed one-based mismatch index, zero for equal ranges. FLAGS bit 0
       ;; promotes mixed unibyte characters for compare-strings; bit 1 folds

@@ -24817,14 +24817,28 @@ Keep the original precision rather than reducing a timestamp's frequency."
                 (setq out (cons (substring text start end) out))
                 (setq pos (and end (nelisp--string-search needle text end)))))
             (nreverse out)))))
+    (defun nelisp--directory-files-sort (names)
+      ;; The bootstrap can wrap the original comparator as a Lisp Subr.
+      ;; Compare the underlying closures so advice and redefinitions still
+      ;; go through the live GNU comparator designator.
+      (let* ((definition (symbol-function 'string-lessp))
+             (closure (and (fboundp 'nelisp--closure-cons)
+                           (nelisp--closure-cons definition))))
+        (sort names
+              (if (or (eq definition nelisp--sort-string-lessp-definition)
+                      (and closure
+                           (eq closure (nelisp--closure-cons
+                                        nelisp--sort-string-lessp-definition))))
+                  nelisp--sort-string<-definition
+                #'string-lessp))))
     ;; fix/directory-files-count: COUNT (Emacs's 5th, optional argument) was
     ;; missing here too; clip to the first COUNT entries via `seq-take' (a
     ;; no-op when COUNT >= the entry count), post-filter, same as
     ;; lisp/nelisp-stdlib-misc.el's own 5-parameter `directory-files'.
     (defun directory-files (directory &optional full match nosort count)
       "Return entries in DIRECTORY, filtered by MATCH and limited by COUNT.
-Include dot entries.  FULL requests absolute names; NOSORT preserves the
-directory's enumeration order instead of sorting with `string-lessp'."
+Include dot entries. FULL requests absolute names; NOSORT returns entries
+in reverse enumeration order, as GNU's directory reader accumulates them."
       (when (or match count)
         (nelisp--w101-directory-arguments directory match count))
       (let* ((path (expand-file-name directory))
@@ -24842,7 +24856,8 @@ directory's enumeration order instead of sorting with `string-lessp'."
                             path)))
             (if (not (or full match count))
                 (let ((names (nelisp--readdir-scan-raw raw nil t)))
-                  (if nosort names (sort names #'string-lessp)))
+                  (if nosort (nreverse names)
+                    (nelisp--directory-files-sort names)))
               (when match
                 (nelisp--cc03-validate-regexp match)
                 (string-match-p match ""))
@@ -24856,7 +24871,7 @@ directory's enumeration order instead of sorting with `string-lessp'."
                       (setq out (cons (if full (concat prefix name) name) out))
                       (when remaining (setq remaining (1- remaining)))))
                   (setq names (cdr names))))
-              (if nosort (nreverse out) (sort out #'string-lessp)))))))))
+              (if nosort out (nelisp--directory-files-sort out)))))))))
 (unless (fboundp 'make-directory)
   ;; Three defects fixed together (v1.2.0 parity gap 4), because the first
   ;; two hid the third:
