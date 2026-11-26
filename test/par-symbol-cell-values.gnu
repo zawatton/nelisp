@@ -1,0 +1,5 @@
+(shallow 10 (31 32 32 32) 10 41 10)
+(alias par-symbol-cell-other 21 10 21 21 nil (par-symbol-cell-alias nil nil nelisp--unbound-marker))
+(buffer ((written default written) local before-exit local default) default)
+(forwarded t (wrong-type-argument integerp invalid) t)
+(identity nil nil (new) (old) (other) (new) nil (new))

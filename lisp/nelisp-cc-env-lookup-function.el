@@ -45,66 +45,58 @@
 
 ;;; Code:
 
+(defun nelisp-cc-env-lookup-function--cell-form ()
+  "Emit the live function-cell read shared by both lookup ABIs.
+The result is the raw function WORD, or 2 for the internal void marker."
+  (let ((general
+         '(let* ((entry (nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
+            (if (= entry 0) 2
+              (let* ((w (nl_record_slot_word entry 1)))
+                (if (if (= (logand w 1) 1) 0
+                      (if (= (nl_val_tag w) 16)
+                          (= (heap-sexp-payload w) (heap-sexp-payload unbound-ptr))
+                        0))
+                    2 w))))))
+    (if (member (getenv "NELISP_SYMCELL_DISABLE") '("function" "all"))
+        general
+      `(if (if (= (logand name-ptr 7) 6)
+               (let* ((kind (logand (ptr-read-u8 (- name-ptr 6) 0) 63)))
+                 (if (= kind 4) 1 (= kind 16)))
+             0)
+           ;; The owned symbol itself identifies the cell, including a
+           ;; private-obarray symbol and one retained after uninterning.
+           ;; Qunbound is a legacy tag-16 view with a small identity.
+           ;; Direct symbol words carry their object address as identity.
+           (let* ((w (ptr-read-u64 name-ptr 18)))
+             (if (if (= (logand w 7) 0)
+                     (if (> w 4095)
+                         (if (= (ptr-read-u8 w 0) 16)
+                             (= (ptr-read-u64 w 8) (ptr-read-u64 unbound-ptr 8))
+                           0)
+                       0)
+                   0)
+                 2 w))
+         ,general))))
+
+(defun nelisp-cc-env-lookup-function--legacy-form (word)
+  "Emit the public lookup representation for raw function WORD."
+  `(if (= (logand ,word 7) 6)
+       (if (= (logand (ptr-read-u8 (- ,word 6) 0) 63) 20)
+           (ptr-read-u64 (- ,word 6) 8) ,word)
+     ,word))
+
 (defconst nelisp-cc-env-lookup-function--source
-  '(seq
-    ;; Doc 215 word ABI: the function-cell WORD (the slot's own child), 2
-    ;; when the entry is missing or holds the unbound marker.
-    ;; The unbound test reads the slot's own WORD, as GNU tests the symbol's
-    ;; function cell in place (lisp.h SYMBOL_FUNCTION): `record-slot-ref-ptr'
-    ;; materialised a view of it on every call dispatch.
-    ;; (Inline: a helper function would grow the F1 prelink closure.)
+  `(seq
     (defun nelisp_env_lookup_function_w (mirror-ptr unbound-ptr name-ptr _pad)
-      (let ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
-        (if (= entry 0)
-            2
-          ;; The marker is an uninterned symbol (tag 16) compared by identity, not
-          ;; by name (gnu-semantics 3b1706d44); the slot WORD is tested in place.
-          (let ((w (nl_record_slot_word entry 1)))
-            (if (if (= (logand w 1) 1) 0
-                  (if (= (nl_val_tag w) 16)
-                      (if (= (heap-sexp-payload w) (heap-sexp-payload unbound-ptr)) 1 0)
-                    0))
-                2
-              ;; w2subr: a Subr object (header kind 20) answers the legacy
-              ;; (builtin NAME) list it wraps, so every reader but the
-              ;; `nelisp_env_lookup_function_raw_w' callers sees a list.
-              (if (= (logand w 7) 6)
-                  (if (= (logand (heap-read-u8 (- w 6) 0) 63) 20)
-                      (heap-read-u64 (- w 6) 8) w)
-                w))))))
-    ;; The (rc, OUT) form has its own body (rc 1 on a miss): it is on every
-    ;; call dispatch.  It stores the slot WORD into OUT directly
-    ;; (nl_abi_word_to_rc: an immediate or a 32-byte copy, 0), without the
-    ;; nl_abi_lookup_to_rc layer and without the old refcount-bumping clone
-    ;; of `record-slot-ref'.
+      (let* ((w ,(nelisp-cc-env-lookup-function--cell-form)))
+        ;; Legacy callers consume the builtin list carried by a Subr.
+        ,(nelisp-cc-env-lookup-function--legacy-form 'w)))
     (defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
-      (let ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
-        (if (= entry 0)
-            1
-          (let ((w (nl_record_slot_word entry 1)))
-            (if (if (= (logand w 1) 1) 0
-                  (if (= (nl_val_tag w) 16)
-                      (if (= (heap-sexp-payload w) (heap-sexp-payload unbound-ptr)) 1 0)
-                    0))
-                1
-              (nl_abi_word_to_rc
-               (if (= (logand w 7) 6)
-                   (if (= (logand (heap-read-u8 (- w 6) 0) 63) 20)
-                       (heap-read-u64 (- w 6) 8) w)
-                 w)
-               out-ptr)))))))
-  "AOT source for Wave a-2 `Env::lookup_function' body.
-
-R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun
-using `let-rt' CSE hoist of the entry pointer + `record-slot-ref'
-direct slot-1 read.  Previous shape paid 2 FNV-1a hashes per call
-(`lookup_entry' + `lookup_function'); hoisted shape pays 1.
-
-The `unbound-ptr' parameter prevents a variable-only symbol's slot-1
-`nelisp--unbound-marker' from escaping as a callable definition.  The miss
-sentinel is 1 (= absent entry or unbound function slot), found is 0 (=
-out-ptr filled with function Sexp via the refcount-safe
-`nl_sexp_clone_into' invoked by `record-slot-ref').")
+      (let* ((w ,(nelisp-cc-env-lookup-function--cell-form)))
+        (if (= w 2) 1
+          (nl_abi_word_to_rc ,(nelisp-cc-env-lookup-function--legacy-form 'w)
+                             out-ptr)))))
+  "AOT source for the environment function-cell lookup.")
 
 (provide 'nelisp-cc-env-lookup-function)
 
